@@ -127,8 +127,13 @@ button{font-family:inherit;color:inherit}
 .node.active::before{content:"";position:absolute;left:0;top:4px;bottom:4px;width:2px;border-radius:2px;background:var(--accent)}
 .node .tw{width:14px;display:inline-flex;justify-content:center;color:var(--txt-mut);font-size:10px;flex:0 0 auto}
 .node .fi{width:16px;display:inline-flex;justify-content:center;flex:0 0 auto}
-.node .nm{overflow:hidden;text-overflow:ellipsis}
-.node .tag{margin-left:auto;font-size:10px;color:var(--txt-mut);font-family:'IBM Plex Mono'}
+.node .nm{overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1}
+.node .tag{font-size:10px;color:var(--txt-mut);font-family:'IBM Plex Mono';flex:0 0 auto}
+.node-tools{margin-left:auto;display:none;align-items:center;gap:1px;flex:0 0 auto}
+.node:hover .node-tools,.node:focus-within .node-tools{display:inline-flex}
+.node-act{width:22px;height:22px;border:0;border-radius:6px;background:transparent;color:var(--txt-mut);cursor:pointer;display:grid;place-items:center;font-size:12px;line-height:1}
+.node-act:hover{background:#ffffff14;color:var(--txt)}
+.node-act.danger:hover{background:rgba(247,118,142,.13);color:var(--danger)}
 .fi.tex{color:var(--accent)}
 .fi.img{color:var(--green)}
 .fi.bib{color:var(--warn)}
@@ -328,6 +333,7 @@ button{font-family:inherit;color:inherit}
   color:var(--txt);font-size:13px;font-family:inherit}
 .select{appearance:none;cursor:pointer;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='none' stroke='%239aa5ce' stroke-width='1.6'%3E%3Cpath d='M2 4l4 4 4-4'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 12px center;padding-right:34px}
 .input{font-family:'IBM Plex Mono';font-size:12.5px}
+.input:disabled{opacity:.72;cursor:not-allowed;background:#ffffff04;color:var(--txt-mut)}
 .hint{font-size:12px;color:var(--txt-mut);margin-top:7px;display:flex;align-items:center;gap:6px}
 .checkrow{display:flex;align-items:center;gap:10px;font-size:13px;color:var(--txt-dim);cursor:pointer;user-select:none}
 

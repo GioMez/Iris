@@ -266,7 +266,7 @@
         <div class="field">
           <span class="label">Percorso dei binari LaTeX</span>
           <input class="input" id="texPath" placeholder="/usr/local/texlive/2024/bin/x86_64-linux" spellcheck="false" autocomplete="off">
-          <div class="hint">↳ la cartella che contiene gli eseguibili <b style="color:var(--s-cmd);margin:0 3px">pdflatex</b> <b style="color:var(--s-cmd);margin-right:3px">xelatex</b> <b style="color:var(--s-cmd)">lualatex</b>.</div>
+          <div class="hint" id="texPathHint">↳ la cartella che contiene gli eseguibili <b style="color:var(--s-cmd);margin:0 3px">pdflatex</b> <b style="color:var(--s-cmd);margin-right:3px">xelatex</b> <b style="color:var(--s-cmd)">lualatex</b>.</div>
         </div>
         <div class="binresolve">
           <span class="label">Eseguibile risolto · motore attivo</span>
@@ -282,6 +282,43 @@
 </div>
 
 <div class="toasts" id="toasts"></div>
+
+<!-- ===================== FILE TREE MODALS ===================== -->
+<div class="scrim" id="treeRenameModal">
+  <div class="modal narrow">
+    <div class="m-head">
+      <h3 id="treeRenameTitle">Rinomina</h3>
+      <button class="m-x" data-tree-close>✕</button>
+    </div>
+    <div class="m-body">
+      <div class="field">
+        <span class="label" id="treeRenameLabel">Nome</span>
+        <input class="input" id="treeRenameInput" spellcheck="false" autocomplete="off" maxlength="120">
+        <div class="hint" id="treeRenameHint">Usa un nome senza separatori di cartella.</div>
+      </div>
+    </div>
+    <div class="m-foot">
+      <button class="btn" data-tree-close>Annulla</button>
+      <button class="btn cta" id="treeRenameOk">Salva</button>
+    </div>
+  </div>
+</div>
+
+<div class="scrim" id="treeDeleteModal">
+  <div class="modal narrow">
+    <div class="m-head">
+      <h3 id="treeDeleteTitle">Elimina</h3>
+      <button class="m-x" data-tree-close>✕</button>
+    </div>
+    <div class="m-body">
+      <p class="confirm-txt" id="treeDeleteText">Vuoi eliminare questo elemento? L'azione non è reversibile.</p>
+    </div>
+    <div class="m-foot">
+      <button class="btn" data-tree-close>Annulla</button>
+      <button class="btn danger" id="treeDeleteOk">Elimina</button>
+    </div>
+  </div>
+</div>
 
 <!-- ===================== LOGOUT CONFIRM ===================== -->
 <div class="scrim" id="logoutModal">

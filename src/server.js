@@ -17,6 +17,8 @@ const DB_NAME = process.env.DB_NAME || "webtex";
 const DB_CONNECT_TIMEOUT = Number(process.env.DB_CONNECT_TIMEOUT_MS || 5000);
 const DATA_DIR = path.resolve(process.env.DATA_DIR || "./data/projects");
 const PUBLIC_DIR = path.resolve(process.env.PUBLIC_DIR || "./public");
+const TEX_BIN_PATH = process.env.TEX_BIN_PATH || "";
+const TEX_PATH_LOCKED = String(process.env.TEX_PATH_LOCKED || "false") === "true";
 const SECRET = process.env.WEBTEX_SECRET || "webtex-dev-secret-change-me";
 const COOKIE_SECURE = String(process.env.COOKIE_SECURE || "false") === "true";
 const MAX_BODY = Number(process.env.MAX_BODY_MB || 25) * 1024 * 1024;
@@ -301,17 +303,191 @@ function countFiles(data) {
   return n;
 }
 
+function clonePlain(value) {
+  return JSON.parse(JSON.stringify(value || {}));
+}
+
+function safeRelPath(relPath) {
+  const raw = String(relPath || "").replace(/\\/g, "/").replace(/^\/+/, "");
+  const normalized = path.posix.normalize(raw);
+  if (!normalized || normalized === "." || normalized.startsWith("../") || normalized === ".." || path.isAbsolute(normalized)) {
+    const err = new Error("Percorso file non valido");
+    err.status = 400;
+    throw err;
+  }
+  return normalized;
+}
+
+function nodeRelPath(node, fallbackName, parentPath = "") {
+  const rel = node.path || path.posix.join(parentPath, node.name || fallbackName || "");
+  return safeRelPath(rel);
+}
+
+function dataUrlToBuffer(value) {
+  const textValue = String(value || "");
+  const match = textValue.match(/^data:([^;,]+)?(;base64)?,(.*)$/s);
+  if (!match) return Buffer.from(textValue, "utf8");
+  const payload = match[3] || "";
+  return match[2] ? Buffer.from(payload, "base64") : Buffer.from(decodeURIComponent(payload), "utf8");
+}
+
+function dataUrlMime(value) {
+  const match = String(value || "").match(/^data:([^;,]+)?[;,]/);
+  return match && match[1] ? match[1] : "application/octet-stream";
+}
+
+function mimeForProjectFile(filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  if (ext === ".png") return "image/png";
+  if (ext === ".jpg" || ext === ".jpeg") return "image/jpeg";
+  if (ext === ".gif") return "image/gif";
+  if (ext === ".webp") return "image/webp";
+  if (ext === ".svg") return "image/svg+xml";
+  if (ext === ".pdf") return "application/pdf";
+  return "application/octet-stream";
+}
+
+function fileIsBinaryNode(node) {
+  return node.kind === "img" || node.data || /\.(png|jpe?g|gif|webp|svg|pdf)$/i.test(node.name || node.path || "");
+}
+
+function stripFilePayloads(data) {
+  const meta = clonePlain(data);
+  const strip = (nodes) => {
+    if (!Array.isArray(nodes)) return;
+    nodes.forEach((node) => {
+      if (node.type === "folder") strip(node.children);
+      else {
+        delete node.content;
+        delete node.data;
+      }
+    });
+  };
+  if (meta.project) strip(meta.project.nodes);
+  meta.assets = {};
+  return meta;
+}
+
+async function ensureProjectDirs(storagePath, data) {
+  const dirs = new Set([".webtex"]);
+  const walk = (nodes, parentPath = "") => {
+    if (!Array.isArray(nodes)) return;
+    nodes.forEach((node) => {
+      if (node.type === "folder") {
+        const rel = safeRelPath(path.posix.join(parentPath, node.name || ""));
+        dirs.add(rel);
+        walk(node.children, rel);
+      }
+    });
+  };
+  if (data.project) walk(data.project.nodes);
+  for (const rel of dirs) await fs.mkdir(path.join(storagePath, rel), { recursive: true });
+}
+
+async function writeProjectNodes(storagePath, data) {
+  const expectedFiles = new Set();
+  const assets = data.assets || {};
+  const walk = async (nodes, parentPath = "") => {
+    if (!Array.isArray(nodes)) return;
+    for (const node of nodes) {
+      if (node.type === "folder") {
+        const rel = safeRelPath(path.posix.join(parentPath, node.name || ""));
+        await walk(node.children, rel);
+        continue;
+      }
+      const rel = nodeRelPath(node, node.name, parentPath);
+      expectedFiles.add(rel);
+      const abs = path.join(storagePath, rel);
+      await fs.mkdir(path.dirname(abs), { recursive: true });
+      if (fileIsBinaryNode(node)) {
+        const dataUrl = node.data || assets[rel] || assets[node.path];
+        if (dataUrl != null) await fs.writeFile(abs, dataUrlToBuffer(dataUrl));
+      } else {
+        await fs.writeFile(abs, String(node.content || ""), "utf8");
+      }
+    }
+  };
+  if (data.project) await walk(data.project.nodes);
+  return expectedFiles;
+}
+
+async function pruneProjectFiles(storagePath, expectedFiles) {
+  async function walkDir(dir, relBase = "") {
+    const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      if (entry.name === ".webtex") continue;
+      const rel = relBase ? path.posix.join(relBase, entry.name) : entry.name;
+      const abs = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await walkDir(abs, rel);
+        const rest = await fs.readdir(abs).catch(() => []);
+        if (!rest.length) await fs.rmdir(abs).catch(() => {});
+      } else if (!expectedFiles.has(rel)) {
+        await fs.unlink(abs).catch(() => {});
+      }
+    }
+  }
+  await walkDir(storagePath);
+}
+
 async function readProjectFile(storagePath) {
-  const file = path.join(storagePath, "project.json");
-  return JSON.parse(await fs.readFile(file, "utf8"));
+  const metaFile = path.join(storagePath, ".webtex", "project.json");
+  const legacyFile = path.join(storagePath, "project.json");
+  let data;
+  let legacy = false;
+  try {
+    data = JSON.parse(await fs.readFile(metaFile, "utf8"));
+  } catch (err) {
+    if (err.code !== "ENOENT") throw err;
+    legacy = true;
+    data = JSON.parse(await fs.readFile(legacyFile, "utf8"));
+  }
+  data = data || {};
+  if (!data.project) data.project = { nodes: [] };
+  data.assets = data.assets || {};
+  const hydrate = async (nodes, parentPath = "") => {
+    if (!Array.isArray(nodes)) return;
+    for (const node of nodes) {
+      if (node.type === "folder") {
+        const rel = safeRelPath(path.posix.join(parentPath, node.name || ""));
+        await hydrate(node.children, rel);
+        continue;
+      }
+      const rel = nodeRelPath(node, node.name, parentPath);
+      const abs = path.join(storagePath, rel);
+      if (fileIsBinaryNode(node)) {
+        const buf = await fs.readFile(abs).catch(() => null);
+        if (buf) {
+          const mime = legacy && node.data ? dataUrlMime(node.data) : mimeForProjectFile(rel);
+          const dataUrl = `data:${mime};base64,${buf.toString("base64")}`;
+          node.data = dataUrl;
+          data.assets[rel] = dataUrl;
+        } else if (legacy && node.data) {
+          data.assets[rel] = node.data;
+        }
+      } else {
+        const content = await fs.readFile(abs, "utf8").catch(() => null);
+        if (content != null) node.content = content;
+        else if (!legacy) node.content = "";
+      }
+    }
+  };
+  await hydrate(data.project.nodes);
+  return data;
 }
 
 async function writeProjectFile(storagePath, data) {
   await fs.mkdir(storagePath, { recursive: true });
-  const file = path.join(storagePath, "project.json");
-  const tmp = path.join(storagePath, `.project.${process.pid}.${Date.now()}.tmp`);
-  await fs.writeFile(tmp, JSON.stringify(data, null, 2), "utf8");
+  await ensureProjectDirs(storagePath, data);
+  const expectedFiles = await writeProjectNodes(storagePath, data);
+  await pruneProjectFiles(storagePath, expectedFiles);
+  const webtexDir = path.join(storagePath, ".webtex");
+  await fs.mkdir(webtexDir, { recursive: true });
+  const file = path.join(webtexDir, "project.json");
+  const tmp = path.join(webtexDir, `.project.${process.pid}.${Date.now()}.tmp`);
+  await fs.writeFile(tmp, JSON.stringify(stripFilePayloads(data), null, 2), "utf8");
   await fs.rename(tmp, file);
+  await fs.rm(path.join(storagePath, "project.json"), { force: true }).catch(() => {});
 }
 
 async function projectForUser(id, userId) {
@@ -406,6 +582,15 @@ async function deleteProject(req, res, user, id) {
 }
 
 async function handleApi(req, res, url) {
+  if (req.method === "GET" && url.pathname === "/api/config") {
+    return json(res, 200, {
+      compile: {
+        texPath: TEX_BIN_PATH,
+        texPathLocked: TEX_PATH_LOCKED,
+      },
+    });
+  }
+
   if (req.method === "POST" && url.pathname === "/api/auth/login") {
     const body = await readBody(req);
     const login = String(body.username || "").trim().toLowerCase();

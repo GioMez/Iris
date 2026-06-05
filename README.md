@@ -58,6 +58,15 @@ docker compose up --build
 
 La webapp espone `http://localhost:3000`. I dati MariaDB e i progetti sono salvati in volumi Docker.
 
+Nel profilo Docker Compose il percorso dei binari LaTeX e' configurato via ambiente:
+
+```yaml
+TEX_BIN_PATH: /usr/local/texlive/bin/x86_64-linux
+TEX_PATH_LOCKED: "true"
+```
+
+Quando `TEX_PATH_LOCKED` e' `true`, il campo nei settings resta visibile ma non modificabile: il valore va cambiato nel file `docker-compose.yml` o nella configurazione del container.
+
 ## Account iniziali
 
 Alla prima partenza, se la tabella utenti e' vuota, il backend crea:
@@ -69,4 +78,5 @@ Alla prima partenza, se la tabella utenti e' vuota, il backend crea:
 
 - MariaDB contiene utenti e metadati dei progetti.
 - Ogni progetto ha una cartella sotto `DATA_DIR`.
-- Lo snapshot completo dell'editor viene salvato in `project.json`.
+- I file del progetto vengono salvati come file reali, ad esempio `main.tex`, `references.bib`, `figure/plot.png`.
+- Lo stato dell'editor e l'albero dei file vengono salvati in `.webtex/project.json`, senza duplicare il contenuto dei file sorgente.

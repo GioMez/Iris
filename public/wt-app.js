@@ -1,6 +1,8 @@
 /* ===================== WebTeX · app ===================== */
 (function () {
   const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   const LINE_H = 13 * 1.65;
 
   /* ---------------- project (loaded by the projects layer) ---------------- */
@@ -14,6 +16,7 @@
     openTabs: ["main"],
     engine: "pdflatex",
     texPath: "",          // directory of the LaTeX binaries (empty = system PATH)
+    texPathLocked: false,
     autoIndent: true,
     zoom: 1, fit: true,
     view: "preview",
@@ -117,6 +120,28 @@
     const el = $("binResolved");
     if (el) el.textContent = joinBin(state.texPath, state.engine);
   }
+  function updateTexPathControl() {
+    const input = $("texPath");
+    const hint = $("texPathHint");
+    if (!input || !hint) return;
+    input.value = state.texPath;
+    input.disabled = state.texPathLocked;
+    hint.innerHTML = state.texPathLocked
+      ? `↳ configurato dal deployment Docker Compose; modifica il mapping nel file <b style="color:var(--s-cmd);margin:0 3px">docker-compose.yml</b>.`
+      : `↳ la cartella che contiene gli eseguibili <b style="color:var(--s-cmd);margin:0 3px">pdflatex</b> <b style="color:var(--s-cmd);margin-right:3px">xelatex</b> <b style="color:var(--s-cmd)">lualatex</b>.`;
+    updateBinResolved();
+  }
+  async function loadRuntimeConfig() {
+    try {
+      const res = await fetch("/api/config", { credentials: "same-origin" });
+      if (!res.ok) return;
+      const cfg = await res.json();
+      const compile = cfg.compile || {};
+      state.texPathLocked = !!compile.texPathLocked;
+      if (state.texPathLocked) state.texPath = compile.texPath || "";
+      updateTexPathControl();
+    } catch (e) {}
+  }
 
   /* ---------------- tabs ---------------- */
   function renderTabs() {
@@ -160,29 +185,206 @@
   }
 
   /* ---------------- file tree ---------------- */
+  const joinPath = (base, name) => (base ? base.replace(/\/+$/, "") + "/" : "") + name;
+  const folderSlash = (p) => p ? p.replace(/\/+$/, "") + "/" : "";
+
+  function validTreeName(name) {
+    return !!name && name !== "." && name !== ".." && !/[\/\\]/.test(name);
+  }
+  function inferKind(name, prev) {
+    if (prev === "img") return "img";
+    if (/\.bib$/i.test(name)) return "bib";
+    if (/\.(tex|txt)$/i.test(name)) return "tex";
+    return prev || "tex";
+  }
+  function hasSiblingNamed(parent, node, name) {
+    return parent.some((x) => x !== node && x.name.toLowerCase() === name.toLowerCase());
+  }
+  function walkNodeFiles(node, fn) {
+    if (!node) return;
+    if (node.type === "folder") (node.children || []).forEach((ch) => walkNodeFiles(ch, fn));
+    else fn(node);
+  }
+  function firstFile() {
+    let found = null;
+    walk(project.nodes, (f) => { if (!found && f.kind !== "img") found = f; });
+    if (!found) walk(project.nodes, (f) => { if (!found) found = f; });
+    return found;
+  }
+  function moveAsset(oldPath, newPath) {
+    if (!oldPath || !newPath || oldPath === newPath || state.assets[oldPath] == null) return;
+    state.assets[newPath] = state.assets[oldPath];
+    delete state.assets[oldPath];
+  }
+  function updateFolderChildPaths(node, oldPrefix, newPrefix) {
+    walkNodeFiles(node, (f) => {
+      const oldPath = f.path || "";
+      if (!oldPath.startsWith(oldPrefix)) return;
+      const next = newPrefix + oldPath.slice(oldPrefix.length);
+      f.path = next;
+      moveAsset(oldPath, next);
+    });
+    Object.keys(state.assets).forEach((p) => {
+      if (!p.startsWith(oldPrefix)) return;
+      moveAsset(p, newPrefix + p.slice(oldPrefix.length));
+    });
+  }
+  function clearEditorSelection() {
+    state.activeId = null;
+    state.openTabs = [];
+    area.value = "";
+    paint();
+    renderTabs();
+    renderOutline();
+  }
+  function removeTreeNode(target) {
+    const idx = target.parent.indexOf(target.node);
+    if (idx >= 0) target.parent.splice(idx, 1);
+  }
+
+  let treeAction = null;
+
+  function openTreeRename(node, parent, parentPath) {
+    treeAction = { node, parent, parentPath };
+    const isFolder = node.type === "folder";
+    $("treeRenameTitle").textContent = isFolder ? "Rinomina cartella" : "Rinomina file";
+    $("treeRenameLabel").textContent = isFolder ? "Nome cartella" : "Nome file";
+    $("treeRenameHint").textContent = "Usa un nome senza separatori di cartella.";
+    $("treeRenameInput").value = node.name || "";
+    $("treeRenameInput").classList.remove("nomatch");
+    $("treeRenameModal").classList.add("on");
+    setTimeout(() => { const i = $("treeRenameInput"); i.focus(); i.select(); }, 40);
+  }
+  function closeTreeRename() {
+    $("treeRenameModal").classList.remove("on");
+    treeAction = null;
+  }
+  function confirmTreeRename() {
+    if (!treeAction) return;
+    const node = treeAction.node;
+    const name = $("treeRenameInput").value.trim();
+    const input = $("treeRenameInput");
+    const hint = $("treeRenameHint");
+    if (!validTreeName(name)) {
+      input.classList.add("nomatch");
+      hint.textContent = "Il nome non puo' essere vuoto e non puo' contenere / o \\.";
+      input.focus();
+      return;
+    }
+    if (hasSiblingNamed(treeAction.parent, node, name)) {
+      input.classList.add("nomatch");
+      hint.textContent = "Esiste gia' un elemento con questo nome nella stessa cartella.";
+      input.focus();
+      return;
+    }
+    const oldName = node.name;
+    if (node.type === "folder") {
+      const oldPrefix = folderSlash(joinPath(treeAction.parentPath, oldName));
+      const newPrefix = folderSlash(joinPath(treeAction.parentPath, name));
+      node.name = name;
+      updateFolderChildPaths(node, oldPrefix, newPrefix);
+      if (state.selectedFolder && state.selectedFolder.startsWith(oldPrefix)) {
+        state.selectedFolder = newPrefix + state.selectedFolder.slice(oldPrefix.length);
+      }
+    } else {
+      const oldPath = node.path || joinPath(treeAction.parentPath, oldName);
+      const newPath = joinPath(treeAction.parentPath, name);
+      node.name = name;
+      node.path = newPath;
+      node.kind = inferKind(name, node.kind);
+      moveAsset(oldPath, newPath);
+      if (node.kind === "img" && node.data && !state.assets[newPath]) state.assets[newPath] = node.data;
+    }
+    closeTreeRename();
+    renderTree();
+    renderTabs();
+    renderOutline();
+    persist();
+    toast(`Rinominato “${name}”`);
+  }
+
+  function openTreeDelete(node, parent, parentPath) {
+    treeAction = { node, parent, parentPath };
+    const isFolder = node.type === "folder";
+    $("treeDeleteTitle").textContent = isFolder ? "Elimina cartella" : "Elimina file";
+    $("treeDeleteText").innerHTML = isFolder
+      ? `Vuoi eliminare la cartella <b>${esc(node.name)}</b> e tutto il suo contenuto? L'azione non e' reversibile.`
+      : `Vuoi eliminare il file <b>${esc(node.name)}</b>? L'azione non e' reversibile.`;
+    $("treeDeleteModal").classList.add("on");
+  }
+  function closeTreeDelete() {
+    $("treeDeleteModal").classList.remove("on");
+    treeAction = null;
+  }
+  function confirmTreeDelete() {
+    if (!treeAction) return;
+    const node = treeAction.node;
+    const deletedIds = new Set();
+    const deletedPaths = [];
+    walkNodeFiles(node, (f) => {
+      if (f.id) deletedIds.add(f.id);
+      if (f.path) deletedPaths.push(f.path);
+    });
+    removeTreeNode(treeAction);
+    deletedPaths.forEach((p) => delete state.assets[p]);
+    if (node.type === "folder") {
+      const prefix = folderSlash(joinPath(treeAction.parentPath, node.name));
+      Object.keys(state.assets).forEach((p) => { if (p.startsWith(prefix)) delete state.assets[p]; });
+      if (state.selectedFolder && state.selectedFolder.startsWith(prefix)) state.selectedFolder = "";
+    }
+    state.openTabs = state.openTabs.filter((id) => !deletedIds.has(id));
+    const activeDeleted = deletedIds.has(state.activeId);
+    closeTreeDelete();
+    renderTree();
+    if (activeDeleted) {
+      const next = firstFile();
+      if (next) openFile(next.id);
+      else clearEditorSelection();
+    } else {
+      renderTabs();
+      renderOutline();
+    }
+    persist();
+    toast(`Eliminato “${node.name}”`);
+  }
+
   function renderTree() {
     const root = $("tree");
     root.innerHTML = "";
     const build = (nodes, depth, parentPath) => {
       nodes.forEach((n) => {
         if (n.type === "folder") {
+          const curPath = joinPath(parentPath, n.name);
           const el = document.createElement("div");
           el.className = `node indent-${depth}`;
-          el.innerHTML = `<span class="tw">${n.open ? "▾" : "▸"}</span><span class="fi fold">▤</span><span class="nm">${n.name}</span>`;
+          el.innerHTML = `<span class="tw">${n.open ? "▾" : "▸"}</span><span class="fi fold">▤</span><span class="nm">${esc(n.name)}</span>` +
+            `<span class="node-tools">` +
+              `<button class="node-act" type="button" data-act="rename" title="Rinomina">✎</button>` +
+              `<button class="node-act danger" type="button" data-act="delete" title="Elimina">✕</button>` +
+            `</span>`;
           el.addEventListener("click", () => {
             n.open = !n.open;
-            state.selectedFolder = n.name + "/";
+            state.selectedFolder = folderSlash(curPath);
             renderTree(); markFolder(n.name + "/");
           });
+          el.querySelector('[data-act="rename"]').addEventListener("click", (e) => { e.stopPropagation(); openTreeRename(n, nodes, parentPath); });
+          el.querySelector('[data-act="delete"]').addEventListener("click", (e) => { e.stopPropagation(); openTreeDelete(n, nodes, parentPath); });
           root.appendChild(el);
-          if (n.open) build(n.children, depth + 1, n.name + "/");
+          if (n.open) build(n.children, depth + 1, curPath);
         } else {
+          if (!n.path) n.path = joinPath(parentPath, n.name);
           const el = document.createElement("div");
           el.className = `node indent-${depth}` + (n.id === state.activeId ? " active" : "");
           el.dataset.id = n.id;
-          el.innerHTML = `<span class="tw"></span>${fileIcon(n.kind)}<span class="nm">${n.name}</span>` +
-            (n.kind === "img" ? `<span class="tag">img</span>` : "");
+          el.innerHTML = `<span class="tw"></span>${fileIcon(n.kind)}<span class="nm">${esc(n.name)}</span>` +
+            (n.kind === "img" ? `<span class="tag">img</span>` : "") +
+            `<span class="node-tools">` +
+              `<button class="node-act" type="button" data-act="rename" title="Rinomina">✎</button>` +
+              `<button class="node-act danger" type="button" data-act="delete" title="Elimina">✕</button>` +
+            `</span>`;
           el.addEventListener("click", () => openFile(n.id));
+          el.querySelector('[data-act="rename"]').addEventListener("click", (e) => { e.stopPropagation(); openTreeRename(n, nodes, parentPath); });
+          el.querySelector('[data-act="delete"]').addEventListener("click", (e) => { e.stopPropagation(); openTreeDelete(n, nodes, parentPath); });
           root.appendChild(el);
         }
       });
@@ -377,8 +579,28 @@
   /* ---------------- attach ---------------- */
   function folderOptions() {
     const opts = [`<option value="">/ (radice)</option>`];
-    project.nodes.forEach((n) => { if (n.type === "folder") opts.push(`<option value="${n.name}/"${state.selectedFolder === n.name + "/" ? " selected" : ""}>${n.name}/</option>`); });
+    const add = (nodes, parentPath) => {
+      (nodes || []).forEach((n) => {
+        if (n.type !== "folder") return;
+        const rel = folderSlash(joinPath(parentPath, n.name));
+        opts.push(`<option value="${esc(rel)}"${state.selectedFolder === rel ? " selected" : ""}>${esc(rel)}</option>`);
+        add(n.children, rel);
+      });
+    };
+    add(project.nodes, "");
     return opts.join("");
+  }
+  function folderChildrenByPath(folderPath) {
+    if (!folderPath) return project.nodes;
+    const parts = folderPath.replace(/\/+$/, "").split("/").filter(Boolean);
+    let nodes = project.nodes;
+    for (const part of parts) {
+      const folder = nodes.find((n) => n.type === "folder" && n.name === part);
+      if (!folder) return project.nodes;
+      folder.open = true;
+      nodes = folder.children || (folder.children = []);
+    }
+    return nodes;
   }
   function openAttach() {
     $("attachDest").innerHTML = folderOptions();
@@ -416,8 +638,7 @@
     const path = dest + name;
     state.assets[path] = af.data;
     // add to tree
-    let folder = project.nodes;
-    if (dest) { const fn = project.nodes.find((n) => n.type === "folder" && n.name + "/" === dest); if (fn) { fn.open = true; folder = fn.children; } }
+    let folder = folderChildrenByPath(dest);
     folder.push({ type: "file", id: "img_" + Date.now(), name, kind: "img", path, data: af.data });
     renderTree();
     // insert includegraphics
@@ -541,10 +762,11 @@
     $("btnOpen").addEventListener("click", () => { const i = document.createElement("input"); i.type = "file"; i.accept = ".tex,.bib,.txt"; i.onchange = () => i.files[0] && openExternal(i.files[0]); i.click(); });
     $("btnAttach").addEventListener("click", openAttach);
     $("dlBtn").addEventListener("click", downloadPdf);
-    $("btnSettings").addEventListener("click", () => { renderFontList(); $("texPath").value = state.texPath; updateBinResolved(); $("settingsModal").classList.add("on"); });
+    $("btnSettings").addEventListener("click", () => { renderFontList(); updateTexPathControl(); $("settingsModal").classList.add("on"); });
 
     // latex binaries path (in Impostazioni → Compilazione)
     $("texPath").addEventListener("input", function () {
+      if (state.texPathLocked) return;
       state.texPath = this.value.trim();
       updateBinResolved();
       saveLayout();
@@ -611,6 +833,30 @@
     }));
     document.querySelectorAll(".scrim").forEach((s) => s.addEventListener("click", (e) => { if (e.target === s) s.classList.remove("on"); }));
     document.addEventListener("keydown", (e) => { if (e.key === "Escape") document.querySelectorAll(".scrim.on").forEach((s) => s.classList.remove("on")); });
+
+    // file tree modals
+    $("treeRenameOk").addEventListener("click", confirmTreeRename);
+    $("treeRenameInput").addEventListener("input", () => {
+      $("treeRenameInput").classList.remove("nomatch");
+      $("treeRenameHint").textContent = "Usa un nome senza separatori di cartella.";
+    });
+    $("treeRenameInput").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); confirmTreeRename(); }
+      else if (e.key === "Escape") { e.preventDefault(); closeTreeRename(); }
+    });
+    $("treeDeleteOk").addEventListener("click", confirmTreeDelete);
+    document.querySelectorAll("[data-tree-close]").forEach((b) => b.addEventListener("click", () => {
+      closeTreeRename();
+      closeTreeDelete();
+    }));
+    ["treeRenameModal", "treeDeleteModal"].forEach((id) => {
+      const modal = $(id);
+      modal.addEventListener("click", (e) => {
+        if (e.target !== modal) return;
+        if (id === "treeRenameModal") closeTreeRename();
+        else closeTreeDelete();
+      });
+    });
 
     // attach modal
     $("attachDrop").addEventListener("click", () => $("attachInput").click());
@@ -702,8 +948,7 @@
     if (typeof L.autoIndent === "boolean") state.autoIndent = L.autoIndent;
     $("autoIndent").classList.toggle("on", state.autoIndent);
     if (typeof L.texPath === "string") state.texPath = L.texPath;
-    $("texPath").value = state.texPath;
-    updateBinResolved();
+    updateTexPathControl();
   }
   function saveLayout() {
     const body = document.querySelector(".body");
@@ -713,7 +958,7 @@
       pvW: Math.round(parseFloat(cs.getPropertyValue("--pv-w")) || 600),
       sideCollapsed: body.classList.contains("side-collapsed"),
       autoIndent: state.autoIndent,
-      texPath: state.texPath,
+      texPath: state.texPathLocked ? "" : state.texPath,
     };
     try { localStorage.setItem(LS_LAYOUT, JSON.stringify(out)); } catch (e) {}
   }
@@ -894,6 +1139,7 @@
 
   /* ---------------- boot ---------------- */
   loadLayout();
+  loadRuntimeConfig();
   renderFontList();
   updateZoomLabel();
   wire();

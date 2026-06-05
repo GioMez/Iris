@@ -6,6 +6,8 @@ ENV NODE_ENV=production
 ENV PORT=3000
 ENV DATA_DIR=/app/data/projects
 ENV PUBLIC_DIR=/app/public
+ENV TEX_BIN_PATH=
+ENV TEX_PATH_LOCKED=false
 
 COPY package*.json ./
 RUN npm ci --omit=dev
