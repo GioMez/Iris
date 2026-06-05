@@ -52,6 +52,7 @@
     return kind === "tex" ? '<span class="fi tex">◆</span>'
       : kind === "img" ? '<span class="fi img">▣</span>'
       : kind === "bib" ? '<span class="fi bib">≣</span>'
+      : kind === "artifact" ? '<span class="fi">◦</span>'
       : '<span class="fi">▢</span>';
   }
 
@@ -256,6 +257,7 @@
   function openFile(id) {
     const f = findFile(id);
     if (!f) return;
+    if (f.generated || f.readOnly) { toast("File generato disponibile nella cartella output/", "err"); return; }
     if (f.kind === "img") { previewImage(f); markTree(id); return; }
     state.activeId = id;
     if (!state.openTabs.includes(id)) state.openTabs.push(id);
@@ -290,7 +292,7 @@
   }
   function firstFile() {
     let found = null;
-    walk(project.nodes, (f) => { if (!found && f.kind !== "img") found = f; });
+    walk(project.nodes, (f) => { if (!found && !f.generated && f.kind !== "img") found = f; });
     if (!found) walk(project.nodes, (f) => { if (!found) found = f; });
     return found;
   }
@@ -328,6 +330,7 @@
   let treeAction = null;
 
   function openTreeRename(node, parent, parentPath) {
+    if (node.readOnly || node.generated) { toast("Gli output generati non si modificano dall'albero", "err"); return; }
     treeAction = { node, parent, parentPath };
     const isFolder = node.type === "folder";
     $("treeRenameTitle").textContent = isFolder ? "Rinomina cartella" : "Rinomina file";
@@ -387,6 +390,7 @@
   }
 
   function openTreeDelete(node, parent, parentPath) {
+    if (node.readOnly || node.generated) { toast("Gli output generati vengono sovrascritti alla prossima compilazione", "err"); return; }
     treeAction = { node, parent, parentPath };
     const isFolder = node.type === "folder";
     $("treeDeleteTitle").textContent = isFolder ? "Elimina cartella" : "Elimina file";
@@ -441,17 +445,20 @@
           const el = document.createElement("div");
           el.className = `node indent-${depth}`;
           el.innerHTML = `<span class="tw">${n.open ? "▾" : "▸"}</span><span class="fi fold">▤</span><span class="nm">${esc(n.name)}</span>` +
-            `<span class="node-tools">` +
+            (n.generated ? `<span class="tag">output</span>` : "") +
+            (n.readOnly || n.generated ? "" : `<span class="node-tools">` +
               `<button class="node-act" type="button" data-act="rename" title="Rinomina">✎</button>` +
               `<button class="node-act danger" type="button" data-act="delete" title="Elimina">✕</button>` +
-            `</span>`;
+            `</span>`);
           el.addEventListener("click", () => {
             n.open = !n.open;
             state.selectedFolder = folderSlash(curPath);
             renderTree(); markFolder(n.name + "/");
           });
-          el.querySelector('[data-act="rename"]').addEventListener("click", (e) => { e.stopPropagation(); openTreeRename(n, nodes, parentPath); });
-          el.querySelector('[data-act="delete"]').addEventListener("click", (e) => { e.stopPropagation(); openTreeDelete(n, nodes, parentPath); });
+          const rename = el.querySelector('[data-act="rename"]');
+          const del = el.querySelector('[data-act="delete"]');
+          if (rename) rename.addEventListener("click", (e) => { e.stopPropagation(); openTreeRename(n, nodes, parentPath); });
+          if (del) del.addEventListener("click", (e) => { e.stopPropagation(); openTreeDelete(n, nodes, parentPath); });
           root.appendChild(el);
           if (n.open) build(n.children, depth + 1, curPath);
         } else {
@@ -460,14 +467,16 @@
           el.className = `node indent-${depth}` + (n.id === state.activeId ? " active" : "");
           el.dataset.id = n.id;
           el.innerHTML = `<span class="tw"></span>${fileIcon(n.kind)}<span class="nm">${esc(n.name)}</span>` +
-            (n.kind === "img" ? `<span class="tag">img</span>` : "") +
-            `<span class="node-tools">` +
+            (n.generated ? `<span class="tag">gen</span>` : (n.kind === "img" ? `<span class="tag">img</span>` : "")) +
+            (n.readOnly || n.generated ? "" : `<span class="node-tools">` +
               `<button class="node-act" type="button" data-act="rename" title="Rinomina">✎</button>` +
               `<button class="node-act danger" type="button" data-act="delete" title="Elimina">✕</button>` +
-            `</span>`;
+            `</span>`);
           el.addEventListener("click", () => openFile(n.id));
-          el.querySelector('[data-act="rename"]').addEventListener("click", (e) => { e.stopPropagation(); openTreeRename(n, nodes, parentPath); });
-          el.querySelector('[data-act="delete"]').addEventListener("click", (e) => { e.stopPropagation(); openTreeDelete(n, nodes, parentPath); });
+          const rename = el.querySelector('[data-act="rename"]');
+          const del = el.querySelector('[data-act="delete"]');
+          if (rename) rename.addEventListener("click", (e) => { e.stopPropagation(); openTreeRename(n, nodes, parentPath); });
+          if (del) del.addEventListener("click", (e) => { e.stopPropagation(); openTreeDelete(n, nodes, parentPath); });
           root.appendChild(el);
         }
       });
@@ -768,11 +777,17 @@
     if (/\.(tex|txt)$/i.test(name)) return "tex";
     return "file";
   }
+  function uploadNameWithExtension(name, originalName) {
+    const cleaned = (name || originalName || "").trim();
+    const ext = (originalName || "").match(/(\.[A-Za-z0-9]{1,12})$/);
+    if (!cleaned || !ext || /\.[A-Za-z0-9]{1,12}$/.test(cleaned)) return cleaned;
+    return cleaned + ext[1];
+  }
   function doUpload() {
     const af = state.attachFile;
     if (!af) return;
     const dest = $("attachDest").value;
-    const name = ($("attachRename").value || af.name).trim();
+    const name = uploadNameWithExtension($("attachRename").value, af.name);
     const path = dest + name;
     state.assets[path] = af.data;
     // add to tree
@@ -780,11 +795,6 @@
     const kind = attachKind(name, af.isImg);
     folder.push({ type: "file", id: "file_" + Date.now(), name, kind, path, data: af.data });
     renderTree();
-    // insert includegraphics
-    if (af.isImg && $("attachInsert").classList.contains("on")) {
-      const f = findFile(state.activeId);
-      if (f && f.kind === "tex") insertAtCursor(`\\includegraphics[width=0.7\\linewidth]{${path}}`);
-    }
     persist();
     $("attachModal").classList.remove("on");
     toast(`“${name}” caricato in ${dest || "/"}`);

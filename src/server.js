@@ -300,6 +300,7 @@ function countFiles(data) {
   const walk = (nodes) => {
     if (!Array.isArray(nodes)) return;
     nodes.forEach((x) => {
+      if (x.generated) return;
       if (x.type === "folder") walk(x.children);
       else n += 1;
     });
@@ -364,6 +365,36 @@ function fileIsFontPath(filePath) {
   return /\.(ttf|otf|woff2?)$/i.test(filePath || "");
 }
 
+function fileKindForPath(filePath) {
+  if (/\.tex$/i.test(filePath)) return "tex";
+  if (/\.bib$/i.test(filePath)) return "bib";
+  if (/\.(png|jpe?g|gif|webp|svg)$/i.test(filePath)) return "img";
+  if (/\.(pdf|aux|bbl|bcf|blg|idx|ilg|ind|log|out|toc|run\.xml|fls|fdb_latexmk)$/i.test(filePath)) return "artifact";
+  return "file";
+}
+
+function fileIsTextPath(filePath) {
+  return /\.(tex|bib|txt|sty|cls|md|log|aux|bbl|blg|idx|ilg|ind|out|toc|xml|bcf|fls|fdb_latexmk)$/i.test(filePath || "");
+}
+
+function generatedIdFor(relPath) {
+  return "gen_" + crypto.createHash("sha1").update(relPath).digest("hex").slice(0, 12);
+}
+
+function isIgnoredProjectFsEntry(name) {
+  return name === ".webtex" || name === ".DS_Store" || name === "Thumbs.db" || name === "desktop.ini";
+}
+
+function stripGeneratedNodes(nodes, isRoot = true) {
+  if (!Array.isArray(nodes)) return [];
+  return nodes
+    .filter((node) => !node.generated && !node.readOnly && !(isRoot && node.name === "output"))
+    .map((node) => {
+      if (node.type === "folder") node.children = stripGeneratedNodes(node.children, false);
+      return node;
+    });
+}
+
 function stripFilePayloads(data) {
   const meta = clonePlain(data);
   const strip = (nodes) => {
@@ -376,7 +407,10 @@ function stripFilePayloads(data) {
       }
     });
   };
-  if (meta.project) strip(meta.project.nodes);
+  if (meta.project) {
+    meta.project.nodes = stripGeneratedNodes(meta.project.nodes);
+    strip(meta.project.nodes);
+  }
   if (Array.isArray(meta.fonts)) meta.fonts.forEach((font) => delete font.data);
   meta.assets = {};
   return meta;
@@ -387,6 +421,7 @@ async function ensureProjectDirs(storagePath, data) {
   const walk = (nodes, parentPath = "") => {
     if (!Array.isArray(nodes)) return;
     nodes.forEach((node) => {
+      if (node.generated) return;
       if (node.type === "folder") {
         const rel = safeRelPath(path.posix.join(parentPath, node.name || ""));
         dirs.add(rel);
@@ -405,6 +440,7 @@ async function writeProjectNodes(storagePath, data) {
   const walk = async (nodes, parentPath = "") => {
     if (!Array.isArray(nodes)) return;
     for (const node of nodes) {
+      if (node.generated) continue;
       if (node.type === "folder") {
         const rel = safeRelPath(path.posix.join(parentPath, node.name || ""));
         await walk(node.children, rel);
@@ -460,6 +496,109 @@ async function pruneProjectFiles(storagePath, expectedFiles) {
   await walkDir(storagePath);
 }
 
+async function buildFsNode(storagePath, relPath, entry, generated) {
+  const abs = path.join(storagePath, relPath);
+  if (entry.isDirectory()) {
+    const children = await scanFsTree(storagePath, relPath, generated);
+    return {
+      type: "folder",
+      name: entry.name,
+      open: false,
+      ...(generated ? { generated: true, readOnly: true } : {}),
+      children,
+    };
+  }
+  const kind = fileKindForPath(relPath);
+  const node = {
+    type: "file",
+    id: generated ? generatedIdFor(relPath) : "fs_" + generatedIdFor(relPath),
+    name: entry.name,
+    kind,
+    path: relPath,
+    ...(generated ? { generated: true, readOnly: true } : {}),
+  };
+  if (!generated) {
+    if (fileIsTextPath(relPath)) node.content = await fs.readFile(abs, "utf8").catch(() => "");
+    else if (fileIsBinaryNode(node)) {
+      const buf = await fs.readFile(abs).catch(() => null);
+      if (buf) node.data = `data:${mimeForProjectFile(relPath)};base64,${buf.toString("base64")}`;
+    }
+  }
+  return node;
+}
+
+async function scanFsTree(storagePath, relBase = "", generated = false) {
+  const absBase = path.join(storagePath, relBase);
+  const entries = await fs.readdir(absBase, { withFileTypes: true }).catch(() => []);
+  const nodes = [];
+  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+    if (isIgnoredProjectFsEntry(entry.name)) continue;
+    if (!relBase && entry.name === "output") {
+      nodes.push(await buildFsNode(storagePath, "output", entry, true));
+      continue;
+    }
+    const rel = relBase ? path.posix.join(relBase, entry.name) : entry.name;
+    nodes.push(await buildFsNode(storagePath, rel, entry, generated));
+  }
+  return nodes;
+}
+
+async function syncNodesWithFilesystem(storagePath, data) {
+  if (!data.project) data.project = { nodes: [] };
+  data.project.nodes = stripGeneratedNodes(data.project.nodes);
+
+  const merge = async (nodes, relBase = "") => {
+    const absBase = path.join(storagePath, relBase);
+    const entries = await fs.readdir(absBase, { withFileTypes: true }).catch(() => []);
+    const visibleEntries = entries.filter((entry) => !isIgnoredProjectFsEntry(entry.name) && (relBase || entry.name !== "output"));
+    const entryByName = new Map(visibleEntries.map((entry) => [entry.name, entry]));
+    const synced = [];
+
+    for (const node of nodes || []) {
+      const entry = entryByName.get(node.name);
+      if (!entry) continue;
+      const rel = relBase ? path.posix.join(relBase, entry.name) : entry.name;
+      if (entry.isDirectory()) {
+        if (node.type === "folder") {
+          node.children = await merge(node.children || [], rel);
+          synced.push(node);
+        } else {
+          synced.push(await buildFsNode(storagePath, rel, entry, false));
+        }
+      } else if (node.type === "folder") {
+        synced.push(await buildFsNode(storagePath, rel, entry, false));
+      } else {
+        const hydrated = await buildFsNode(storagePath, rel, entry, false);
+        synced.push({
+          ...hydrated,
+          ...node,
+          kind: hydrated.kind,
+          path: hydrated.path,
+          content: hydrated.content,
+          data: hydrated.data,
+        });
+      }
+    }
+
+    const known = new Set(synced.map((node) => node.name));
+    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      if (isIgnoredProjectFsEntry(entry.name)) continue;
+      if (!relBase && entry.name === "output") continue;
+      if (known.has(entry.name)) continue;
+      const rel = relBase ? path.posix.join(relBase, entry.name) : entry.name;
+      synced.push(await buildFsNode(storagePath, rel, entry, false));
+    }
+    return synced;
+  };
+
+  data.project.nodes = await merge(data.project.nodes, "");
+  const outputStat = await fs.stat(path.join(storagePath, "output")).catch(() => null);
+  if (outputStat && outputStat.isDirectory()) {
+    const fakeEntry = { name: "output", isDirectory: () => true };
+    data.project.nodes.push(await buildFsNode(storagePath, "output", fakeEntry, true));
+  }
+}
+
 async function readProjectFile(storagePath) {
   const metaFile = path.join(storagePath, ".webtex", "project.json");
   const legacyFile = path.join(storagePath, "project.json");
@@ -503,6 +642,7 @@ async function readProjectFile(storagePath) {
     }
   };
   await hydrate(data.project.nodes);
+  await syncNodesWithFilesystem(storagePath, data);
   if (Array.isArray(data.fonts)) {
     for (const font of data.fonts) {
       if (!font || !font.path) continue;
@@ -821,11 +961,20 @@ function sanitizeCompileProfileForStorage(profile) {
   };
 }
 
+function kpathseaSearchPath(...dirs) {
+  const cleanDirs = dirs
+    .filter(Boolean)
+    .map((dir) => String(dir).replace(/[\/\\]+$/, "") + path.sep + path.sep);
+  return cleanDirs.join(path.delimiter) + path.delimiter;
+}
+
 function runCompileStep({ step, texPath, cwd, fontDir, texmfVar }) {
   return new Promise((resolve) => {
     const command = compileCommand(step.tool, texPath);
     const args = step.args;
     const envPath = texPath ? `${texPath}${path.delimiter}${process.env.PATH || ""}` : process.env.PATH || "";
+    const outputDir = path.join(cwd, "output");
+    const projectSearchPath = kpathseaSearchPath(cwd, outputDir);
     const startedAt = Date.now();
     let log = `$ ${command} ${args.join(" ")}\n`;
     let timedOut = false;
@@ -838,6 +987,10 @@ function runCompileStep({ step, texPath, cwd, fontDir, texmfVar }) {
         TMPDIR: "/tmp",
         OSFONTDIR: fontDir || "",
         TEXMFVAR: texmfVar || "",
+        TEXINPUTS: projectSearchPath,
+        LUAINPUTS: projectSearchPath,
+        BIBINPUTS: projectSearchPath,
+        BSTINPUTS: projectSearchPath,
         max_print_line: "1000",
         openin_any: "p",
         openout_any: "p",
