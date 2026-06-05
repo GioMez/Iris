@@ -2,6 +2,15 @@
 
 Frontend statico + backend minimale per login e gestione progetti.
 
+## Struttura
+
+```text
+public/   frontend servito al browser
+src/      backend Node
+db/       schema SQL e, in futuro, migration
+data/     dati progetto locali, ignorati da git
+```
+
 ## Avvio sviluppo
 
 1. Installa le dipendenze:
@@ -38,6 +47,16 @@ npm start
 ```
 
 Apri `http://localhost:3000`.
+
+## Avvio con Docker Compose
+
+Per avviare webapp e database insieme:
+
+```sh
+docker compose up --build
+```
+
+La webapp espone `http://localhost:3000`. I dati MariaDB e i progetti sono salvati in volumi Docker.
 
 ## Account iniziali
 

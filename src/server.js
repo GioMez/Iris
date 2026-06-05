@@ -16,6 +16,7 @@ const DB_PASSWORD = process.env.DB_PASSWORD || "webtex";
 const DB_NAME = process.env.DB_NAME || "webtex";
 const DB_CONNECT_TIMEOUT = Number(process.env.DB_CONNECT_TIMEOUT_MS || 5000);
 const DATA_DIR = path.resolve(process.env.DATA_DIR || "./data/projects");
+const PUBLIC_DIR = path.resolve(process.env.PUBLIC_DIR || "./public");
 const SECRET = process.env.WEBTEX_SECRET || "webtex-dev-secret-change-me";
 const COOKIE_SECURE = String(process.env.COOKIE_SECURE || "false") === "true";
 const MAX_BODY = Number(process.env.MAX_BODY_MB || 25) * 1024 * 1024;
@@ -450,9 +451,8 @@ async function handleApi(req, res, url) {
 async function serveStatic(req, res, url) {
   let pathname = decodeURIComponent(url.pathname);
   if (pathname === "/") pathname = "/WebTeX.html";
-  const root = process.cwd();
-  const filePath = path.resolve(root, `.${pathname}`);
-  if (!filePath.startsWith(root + path.sep)) return text(res, 403, "Forbidden");
+  const filePath = path.resolve(PUBLIC_DIR, `.${pathname}`);
+  if (!filePath.startsWith(PUBLIC_DIR + path.sep)) return text(res, 403, "Forbidden");
   const stat = await fs.stat(filePath).catch(() => null);
   if (!stat || !stat.isFile()) return text(res, 404, "Not found");
   const ext = path.extname(filePath).toLowerCase();
@@ -482,6 +482,7 @@ initDb()
   .then(() => {
     http.createServer(handle).listen(PORT, () => {
       console.log(`WebTeX listening on http://localhost:${PORT}`);
+      console.log(`Static files dir: ${PUBLIC_DIR}`);
       console.log(`Projects data dir: ${DATA_DIR}`);
     });
   })

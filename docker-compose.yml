@@ -1,4 +1,26 @@
 services:
+  webapp:
+    build: .
+    container_name: webtex-webapp
+    restart: unless-stopped
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    environment:
+      PORT: 3000
+      WEBTEX_SECRET: change-this-secret-in-production
+      DB_HOST: mariadb
+      DB_PORT: 3306
+      DB_USER: webtex
+      DB_PASSWORD: webtex
+      DB_NAME: webtex
+      DATA_DIR: /app/data/projects
+      COOKIE_SECURE: "false"
+    ports:
+      - "3000:3000"
+    volumes:
+      - project-data:/app/data
+
   mariadb:
     image: mariadb:11.4
     container_name: webtex-mariadb
@@ -12,6 +34,12 @@ services:
       - "3306:3306"
     volumes:
       - mariadb-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mariadb-admin", "ping", "-h", "127.0.0.1", "-uwebtex", "-pwebtex"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
 
 volumes:
   mariadb-data:
+  project-data:
