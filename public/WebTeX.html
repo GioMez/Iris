@@ -261,11 +261,11 @@
       </div>
       <div class="set-pane" data-setpane="compile" style="display:none">
         <h4>Compilazione</h4>
-        <p class="desc">Indica dove WebTeX deve cercare i binari della tua distribuzione LaTeX. Lascia vuoto per usare il <code>PATH</code> di sistema.</p>
+        <p class="desc">Indica dove WebTeX deve cercare i binari della tua distribuzione LaTeX. Il campo e' opzionale: se resta vuoto viene usato il <code>PATH</code> del backend.</p>
         <div class="field">
           <span class="label">Percorso dei binari LaTeX</span>
-          <input class="input" id="texPath" placeholder="/usr/local/texlive/2024/bin/x86_64-linux" spellcheck="false" autocomplete="off">
-          <div class="hint" id="texPathHint">↳ la cartella che contiene gli eseguibili <b style="color:var(--s-cmd);margin:0 3px">pdflatex</b> <b style="color:var(--s-cmd);margin-right:3px">xelatex</b> <b style="color:var(--s-cmd)">lualatex</b>.</div>
+          <input class="input" id="texPath" placeholder="opzionale, es. /opt/homebrew/bin" spellcheck="false" autocomplete="off">
+          <div class="hint" id="texPathHint">↳ se vuoto usa il <b style="color:var(--s-cmd);margin:0 3px">PATH</b> del backend; compila con eseguibili come <b style="color:var(--s-cmd);margin:0 3px">pdflatex</b> <b style="color:var(--s-cmd);margin-right:3px">xelatex</b> <b style="color:var(--s-cmd)">lualatex</b>.</div>
         </div>
         <div class="binresolve">
           <span class="label">Comando richiesto al backend</span>

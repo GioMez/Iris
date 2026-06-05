@@ -212,7 +212,7 @@
     input.disabled = state.texPathLocked;
     hint.innerHTML = state.texPathLocked
       ? `↳ configurato dal deployment Docker Compose; modifica il mapping nel file <b style="color:var(--s-cmd);margin:0 3px">docker-compose.yml</b>.`
-      : `↳ la cartella che contiene gli eseguibili <b style="color:var(--s-cmd);margin:0 3px">pdflatex</b> <b style="color:var(--s-cmd);margin-right:3px">xelatex</b> <b style="color:var(--s-cmd)">lualatex</b>.`;
+      : `↳ se vuoto usa il <b style="color:var(--s-cmd);margin:0 3px">PATH</b> del backend; in alternativa indica la cartella degli eseguibili, es. <b style="color:var(--s-cmd);margin:0 3px">/opt/homebrew/bin</b>.`;
     updateCompileCommandPreview();
   }
   async function loadRuntimeConfig() {
