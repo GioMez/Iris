@@ -1,0 +1,16 @@
+{
+  "name": "webtex",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "mariadb": "^3.4.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

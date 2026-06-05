@@ -1,0 +1,17 @@
+services:
+  mariadb:
+    image: mariadb:11.4
+    container_name: webtex-mariadb
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: webtex-root
+      MARIADB_DATABASE: webtex
+      MARIADB_USER: webtex
+      MARIADB_PASSWORD: webtex
+    ports:
+      - "3306:3306"
+    volumes:
+      - mariadb-data:/var/lib/mysql
+
+volumes:
+  mariadb-data:

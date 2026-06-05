@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WebTeX</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.cdnfonts.com/css/cmu-serif" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" integrity="sha384-n8MVd4RsNIU0tAv4ct0nTaAbDJwPJzDEaqSD1odI+WdtXRGWt2kTvGFasHpSy3SV" crossorigin="anonymous">
+<link rel="stylesheet" href="webtex.css">
+</head>
+<body>
+<div class="app">
+
+  <!-- ===================== TOPBAR ===================== -->
+  <div class="topbar">
+    <button class="tbtn icononly" id="btnSidebar" title="Mostra/nascondi pannello laterale"><span class="ic">▤</span></button>
+    <div class="logo">
+      <div class="mark">Tx</div>
+      <div><b>WebTeX</b> <span class="v">v0.1</span></div>
+    </div>
+    <div class="tbar-scroll">
+      <div class="tsep"></div>
+      <button class="tbtn" id="btnCloseProject" title="Chiudi il progetto e torna all'elenco"><span class="ic">‹</span>Progetti</button>
+      <div class="projchip" id="projChip"><span class="pdot">◆</span><span id="projChipName">—</span></div>
+      <div class="tsep"></div>
+      <button class="tbtn" id="btnNew"><span class="ic">＋</span>Nuovo</button>
+      <button class="tbtn" id="btnOpen"><span class="ic">▢</span>Apri</button>
+      <button class="tbtn" id="btnSave"><span class="ic">⤓</span>Salva</button>
+      <button class="tbtn" id="btnAttach"><span class="ic">⊕</span>Allega</button>
+    </div>
+    <div class="tbar-right">
+      <button class="userchip" id="userChip" title="Account">
+        <span class="avatar" id="userAvatar">–</span>
+        <span class="uname" id="userName">–</span>
+        <span class="chev">▾</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- ===================== BODY ===================== -->
+  <div class="body">
+
+    <!-- sidebar -->
+    <aside class="pane side">
+      <div class="side-tabs">
+        <button class="side-tab on" data-side="files">▤ File</button>
+        <button class="side-tab" data-side="outline">☰ Struttura</button>
+      </div>
+      <div class="side-scroll">
+        <div data-panel="files">
+          <div class="side-head">Progetto
+            <span class="act">
+              <button class="iconbtn" id="newFileBtn" title="Nuovo file">＋</button>
+            </span>
+          </div>
+          <div class="tree" id="tree"></div>
+          <div class="dropzone" id="sideDrop">
+            <b>⤓ Trascina immagini qui</b>
+            nella cartella selezionata, oppure <span class="lk">sfoglia…</span>
+          </div>
+        </div>
+        <div data-panel="outline" style="display:none">
+          <div class="side-head">Struttura documento</div>
+          <div class="outline" id="outline"></div>
+        </div>
+      </div>
+    </aside>
+
+    <div class="resizer" id="rz1" title="Trascina per ridimensionare"></div>
+
+    <!-- editor -->
+    <section class="pane edpane">
+      <div class="tabbar" id="ftabs"></div>
+      <div class="editor">
+        <div class="findbar" id="findBar">
+          <div class="findrow">
+            <span class="findic">⌕</span>
+            <input class="findinput" id="findInput" placeholder="Trova" spellcheck="false" autocomplete="off">
+            <span class="findcount" id="findCount"></span>
+            <button class="findbtn" id="findPrev" title="Precedente (⇧⏎)">‹</button>
+            <button class="findbtn" id="findNext" title="Successivo (⏎)">›</button>
+            <button class="findbtn toggle" id="findCase" title="Maiuscole/minuscole">Aa</button>
+            <button class="findbtn" id="findClose" title="Chiudi (Esc)">✕</button>
+          </div>
+          <div class="findrow">
+            <span class="findic">⇄</span>
+            <input class="findinput" id="replaceInput" placeholder="Sostituisci con…" spellcheck="false" autocomplete="off">
+            <button class="findbtn txt" id="replaceOne">Sostituisci</button>
+            <button class="findbtn txt" id="replaceAll">Tutti</button>
+          </div>
+        </div>
+        <div class="gutter" id="gutter"></div>
+        <div class="code-wrap" id="codeWrap">
+          <div class="cur-hl" id="curHl" style="display:none"></div>
+          <pre class="code-layer" id="codeLayer" aria-hidden="true"></pre>
+          <textarea class="code-area" id="codeArea" spellcheck="false" autocomplete="off" autocapitalize="off" wrap="off"></textarea>
+        </div>
+      </div>
+    </section>
+
+    <div class="resizer" id="rz2" title="Trascina per ridimensionare"></div>
+
+    <!-- preview -->
+    <section class="pane pvpane">
+      <div class="pvbar">
+        <div class="seg" id="pvSeg">
+          <button data-view="preview" class="on">▣ <span class="lbl">Anteprima</span></button>
+          <button data-view="log">≣ <span class="lbl">Log</span></button>
+        </div>
+        <div class="spring"></div>
+        <div class="pchip">
+          <button class="pgbtn" id="pgPrev">‹</button>
+          <span class="val"><span id="pgCur">–</span> / <span id="pgTot">–</span></span>
+          <button class="pgbtn" id="pgNext">›</button>
+        </div>
+        <div class="pchip zoom">
+          <button class="zbtn" id="zOut">−</button>
+          <span class="val" id="zVal">100%</span>
+          <button class="zbtn" id="zIn">+</button>
+        </div>
+        <button class="mini fit on" id="fitBtn" title="Adatta alla larghezza">Adatta</button>
+        <button class="mini" id="dlBtn">⤓ PDF</button>
+      </div>
+      <div class="pv-stage" id="pvStage">
+        <div class="pv-empty" id="pvEmpty">
+          <div class="big">▣</div>
+          Premi <b>Compila</b> per generare l'anteprima del PDF.
+        </div>
+        <div class="pv-pages" id="pvPages"></div>
+        <div class="logview" id="logView"></div>
+        <div class="compiling" id="compiling">
+          <div class="spinner"></div>
+          <div id="compileMsg">Compilazione in corso…</div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- ===================== STATUSBAR ===================== -->
+  <div class="statusbar">
+    <div class="sb-info">
+      <span class="st accent"><span class="dotok" id="stDot"></span><span id="stState">pronto</span></span>
+      <span class="st" id="stCursor">Ln 1, Col 1</span>
+      <span class="st">Spazi: 2</span>
+      <span class="st">UTF-8</span>
+      <span class="st">LaTeX</span>
+      <div class="spring"></div>
+      <span class="st" id="stMath"></span>
+      <span class="st warn btnlike" id="stWarn" style="display:none"></span>
+      <span class="st err btnlike" id="stErr" style="display:none"></span>
+      <span class="st" id="stTime">non ancora compilato</span>
+    </div>
+    <div class="sb-actions">
+      <button class="sb-btn" id="btnFormat"><span class="ic">✦</span>Format</button>
+      <button class="sb-btn" id="btnFind"><span class="ic">⌕</span>Trova</button>
+      <div class="sb-divider"></div>
+      <button class="sb-engine" id="engineBtn" title="Motore di compilazione">motore <b id="engineName">pdflatex</b><span class="chev">▴</span></button>
+      <button class="sb-compile" id="btnCompile"><span class="ic">▶</span>Compila</button>
+      <button class="sb-icon" id="btnSettings" title="Impostazioni"><span class="ic">⚙</span></button>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== ENGINE MENU ===================== -->
+<div class="menu" id="engineMenu">
+  <div class="mi" data-engine="pdflatex">pdflatex</div>
+  <div class="mi" data-engine="xelatex">xelatex</div>
+  <div class="mi" data-engine="lualatex">lualatex</div>
+</div>
+
+<!-- ===================== USER MENU ===================== -->
+<div class="menu" id="userMenu">
+  <div class="umeta">
+    <span class="avatar" id="umAvatar">–</span>
+    <div>
+      <div class="umname" id="umName">–</div>
+      <div class="umemail" id="umEmail">–</div>
+    </div>
+  </div>
+  <div class="msep"></div>
+  <div class="mi danger" id="miLogout"><span class="ic">→</span> Disconnetti</div>
+</div>
+
+<!-- ===================== ATTACH MODAL ===================== -->
+<div class="scrim" id="attachModal">
+  <div class="modal">
+    <div class="m-head">
+      <h3>Allega file</h3><span class="sub">immagini, PDF, dati…</span>
+      <button class="m-x" data-close>✕</button>
+    </div>
+    <div class="m-body">
+      <div class="field">
+        <span class="label">File</span>
+        <div class="bigdrop" id="attachDrop">
+          <div class="ic">⤓</div>
+          <b>Trascina un file qui</b> oppure clicca per sfogliare
+        </div>
+        <div class="filerow" id="attachPicked" style="display:none">
+          <img class="thumb" id="attachThumb" alt="">
+          <span id="attachName">—</span>
+          <span class="meta" id="attachMeta"></span>
+          <span class="rm" id="attachClear">✕</span>
+        </div>
+      </div>
+      <div class="field">
+        <span class="label">Cartella di destinazione</span>
+        <select class="select" id="attachDest"></select>
+        <div class="hint">↳ le immagini di solito vanno in <b style="color:var(--green);margin:0 3px">figure/</b></div>
+      </div>
+      <div class="field">
+        <span class="label">Nome file</span>
+        <input class="input" id="attachRename" placeholder="nome-file.png">
+      </div>
+      <label class="checkrow"><span class="switch-wrap on" id="attachInsert" style="pointer-events:none"><span class="sw"></span></span> Inserisci <code style="font-family:'IBM Plex Mono';color:var(--s-cmd)">\includegraphics</code> nel punto del cursore</label>
+    </div>
+    <div class="m-foot">
+      <button class="btn" data-close>Annulla</button>
+      <button class="btn cta" id="attachUpload" disabled>⤓ Carica</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== SETTINGS MODAL ===================== -->
+<div class="scrim" id="settingsModal">
+  <div class="modal wide">
+    <div class="m-head">
+      <h3>Impostazioni</h3>
+      <button class="m-x" data-close>✕</button>
+    </div>
+    <div class="set-grid">
+      <nav class="set-nav">
+        <div class="item on" data-set="fonts">🅰 Font</div>
+        <div class="item" data-set="editor">Editor</div>
+        <div class="item soon" data-set="general">Generale <span class="badge">PRESTO</span></div>
+        <div class="item" data-set="compile">Compilazione</div>
+      </nav>
+      <div class="set-pane" data-setpane="fonts">
+        <h4>Font personalizzati</h4>
+        <p class="desc">Carica un font da usare nei tuoi documenti compilati. Formati: .ttf · .otf · .woff · .woff2</p>
+        <div class="bigdrop" id="fontDrop">
+          <div class="ic">🅰</div>
+          <b>Trascina un font qui</b> oppure clicca per sfogliare
+        </div>
+        <div style="margin:18px 0 8px" class="label">Font caricati</div>
+        <div id="fontList"></div>
+        <div class="label" style="margin-top:18px">Anteprima documento</div>
+        <div class="fontprev" id="fontPrev">The quick brown fox — Relazione di Laboratorio — 0123456789</div>
+      </div>
+      <div class="set-pane" data-setpane="editor" style="display:none">
+        <h4>Editor</h4>
+        <p class="desc">Preferenze di scrittura e formattazione del codice LaTeX.</p>
+        <div class="set-row">
+          <div class="set-row-txt">
+            <div class="set-row-title">Auto-indent</div>
+            <div class="set-row-sub">Mantieni il rientro corrente e indenta automaticamente all'interno degli ambienti quando vai a capo.</div>
+          </div>
+          <div class="switch-wrap on" id="autoIndent"><span class="sw"></span></div>
+        </div>
+      </div>
+      <div class="set-pane" data-setpane="compile" style="display:none">
+        <h4>Compilazione</h4>
+        <p class="desc">Indica dove WebTeX deve cercare i binari della tua distribuzione LaTeX. Lascia vuoto per usare il <code>PATH</code> di sistema.</p>
+        <div class="field">
+          <span class="label">Percorso dei binari LaTeX</span>
+          <input class="input" id="texPath" placeholder="/usr/local/texlive/2024/bin/x86_64-linux" spellcheck="false" autocomplete="off">
+          <div class="hint">↳ la cartella che contiene gli eseguibili <b style="color:var(--s-cmd);margin:0 3px">pdflatex</b> <b style="color:var(--s-cmd);margin-right:3px">xelatex</b> <b style="color:var(--s-cmd)">lualatex</b>.</div>
+        </div>
+        <div class="binresolve">
+          <span class="label">Eseguibile risolto · motore attivo</span>
+          <code class="binpath" id="binResolved">pdflatex</code>
+        </div>
+      </div>
+    </div>
+    <div class="m-foot">
+      <button class="btn" data-close>Chiudi</button>
+      <button class="btn cta" data-close>Fatto</button>
+    </div>
+  </div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+
+<!-- ===================== LOGOUT CONFIRM ===================== -->
+<div class="scrim" id="logoutModal">
+  <div class="modal narrow">
+    <div class="m-head">
+      <h3>Disconnessione</h3>
+      <button class="m-x" data-close>✕</button>
+    </div>
+    <div class="m-body">
+      <p class="confirm-txt">Vuoi uscire da <b>WebTeX</b>? Le modifiche non salvate nell'editor andranno perse.</p>
+    </div>
+    <div class="m-foot">
+      <button class="btn" data-close>Annulla</button>
+      <button class="btn danger" id="logoutConfirm">Disconnetti</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== PROJECT MODALS ===================== -->
+<div class="scrim" id="projModal">
+  <div class="modal narrow">
+    <div class="m-head">
+      <h3 id="projModalTitle">Nuovo progetto</h3>
+      <button class="m-x" data-close>✕</button>
+    </div>
+    <div class="m-body">
+      <div class="field">
+        <span class="label">Nome del progetto</span>
+        <input class="input" id="projNameInput" placeholder="es. Tesi di laurea" spellcheck="false" autocomplete="off" maxlength="80">
+        <div class="hint" id="projModalHint">Verrà creato con un file main.tex iniziale.</div>
+      </div>
+    </div>
+    <div class="m-foot">
+      <button class="btn" data-close>Annulla</button>
+      <button class="btn cta" id="projModalOk">Crea progetto</button>
+    </div>
+  </div>
+</div>
+
+<div class="scrim" id="projDelModal">
+  <div class="modal narrow">
+    <div class="m-head">
+      <h3>Elimina progetto</h3>
+      <button class="m-x" data-close>✕</button>
+    </div>
+    <div class="m-body">
+      <p class="confirm-txt">Vuoi eliminare <b id="projDelName">questo progetto</b>? Tutti i suoi file e le sue bibliografie verranno rimossi. L'azione non è reversibile.</p>
+    </div>
+    <div class="m-foot">
+      <button class="btn" data-close>Annulla</button>
+      <button class="btn danger" id="projDelOk">Elimina progetto</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== PROJECT CHOOSER ===================== -->
+<div class="picker-screen" id="pickerScreen">
+  <div class="picker-wrap">
+    <header class="picker-top">
+      <div class="login-brand">
+        <div class="mark">Tx</div>
+        <div><b>WebTeX</b> <span class="v">v0.1</span></div>
+      </div>
+      <div class="picker-user">
+        <span class="avatar" id="pkAvatar">–</span>
+        <div class="picker-user-txt">
+          <div class="pu-name" id="pkName">–</div>
+          <div class="pu-email" id="pkEmail">–</div>
+        </div>
+        <button class="tbtn" id="pkLogout" title="Disconnetti"><span class="ic">→</span>Esci</button>
+      </div>
+    </header>
+
+    <div class="picker-head">
+      <div>
+        <h1 class="picker-title">I tuoi progetti</h1>
+        <p class="picker-sub">Ogni progetto è autonomo, con i suoi file e le sue bibliografie. <span id="pkCount" class="pk-count"></span></p>
+      </div>
+      <button class="btn cta" id="pkNew"><span class="ic">＋</span> Nuovo progetto</button>
+    </div>
+
+    <div class="picker-grid" id="pkGrid"></div>
+
+    <div class="picker-empty" id="pkEmpty" style="display:none">
+      <div class="pe-mark">◆</div>
+      <div class="pe-title">Nessun progetto</div>
+      <div class="pe-sub">Crea il tuo primo progetto per iniziare a scrivere in LaTeX.</div>
+      <button class="btn cta" id="pkNewEmpty"><span class="ic">＋</span> Nuovo progetto</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== LOGIN SCREEN ===================== -->
+<div class="login-screen" id="loginScreen">
+  <form class="login-card" id="loginCard" autocomplete="on">
+    <div class="login-brand">
+      <div class="mark">Tx</div>
+      <div><b>WebTeX</b> <span class="v">v0.1</span></div>
+    </div>
+    <h1 class="login-title">Accedi al tuo spazio</h1>
+    <p class="login-sub">Inserisci le tue credenziali per continuare</p>
+
+    <div class="login-error" id="loginError">Credenziali non valide.</div>
+
+    <div class="lfield">
+      <span class="label">Nome utente o email</span>
+      <input class="linput" id="loginUser" name="username" autocomplete="username" placeholder="es. m.rossi" spellcheck="false">
+    </div>
+    <div class="lfield">
+      <span class="label">Password</span>
+      <div class="pwwrap">
+        <input class="linput" id="loginPass" name="password" type="password" autocomplete="current-password" placeholder="••••••••">
+        <button class="pwtoggle" id="pwToggle" type="button" tabindex="-1">mostra</button>
+      </div>
+    </div>
+
+    <button class="btn cta full" id="loginBtn" type="submit"><span class="ic">➜</span> Accedi</button>
+
+    <div class="login-divider">oppure continua con</div>
+
+    <div class="sso-grid">
+      <button class="ssobtn" type="button" data-sso="google"><span class="pmark">G</span> Google Workspace <span class="arr">›</span></button>
+      <button class="ssobtn" type="button" data-sso="microsoft"><span class="pmark">M</span> Microsoft 365 <span class="arr">›</span></button>
+      <button class="ssobtn" type="button" data-sso="saml"><span class="pmark sso">✷</span> SSO aziendale (SAML) <span class="arr">›</span></button>
+    </div>
+
+    <p class="login-foot">Accesso riservato. Gli account sono gestiti dall'amministratore.<br><span class="demo">Demo — utente <code>rossi</code> · password <code>webtex</code></span></p>
+  </form>
+</div>
+
+<!-- hidden inputs -->
+<input type="file" id="attachInput" accept="image/*,application/pdf,.csv,.dat" style="display:none">
+<input type="file" id="fontInput" accept=".ttf,.otf,.woff,.woff2" style="display:none">
+
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" integrity="sha384-XjKyOOlGwcjNTAIQHIpgOno0Hl1YQqzUOEleOLALmuqehneUG+vnGctmUb0ZY0l8" crossorigin="anonymous"></script>
+<script src="wt-latex.js"></script>
+<script src="wt-render.js"></script>
+<script src="wt-app.js"></script>
+<script src="wt-projects.js"></script>
+<script src="wt-auth.js"></script>
+</body>
+</html>

@@ -1,0 +1,734 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WebTeX · Wireframe</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Caveat:wght@500;600;700&family=Patrick+Hand&family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#f4f1ea;
+  --paper2:#ece8de;
+  --ink:#2b2b2b;
+  --ink2:#5c5850;
+  --line:#3a3a3a;
+  --fill:#e7e3d8;
+  --fill2:#dcd7c9;
+  --accent:#1f8a7a;          /* teal marker */
+  --accent-soft:#bfe3dc;
+  --hi:#ffe27a;              /* highlighter */
+  --dark:#23262d;            /* dark editor */
+  --dark2:#1c1f25;
+  --shadow:3px 4px 0 rgba(43,43,43,.16);
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0;background:var(--paper);color:var(--ink);
+  font-family:'Patrick Hand',system-ui,sans-serif;
+  font-size:15px;line-height:1.35;
+  background-image:radial-gradient(rgba(43,43,43,.04) 1px,transparent 1px);
+  background-size:22px 22px;
+  display:flex;flex-direction:column;overflow:hidden;
+}
+/* ---------- hand-drawn primitives ---------- */
+.sk{border:2.4px solid var(--line);border-radius:255px 14px 235px 14px/14px 235px 14px 255px;}
+.sk2{border:2.4px solid var(--line);border-radius:14px 235px 14px 255px/235px 14px 255px 14px;}
+.sk-s{border:2px solid var(--line);border-radius:18px 8px 20px 8px/8px 20px 8px 18px;}
+.muted{color:var(--ink2)}
+.cap{font-family:'Caveat',cursive}
+
+/* ---------- viewer chrome ---------- */
+.chrome{
+  flex:0 0 auto;display:flex;align-items:center;gap:18px;flex-wrap:wrap;
+  padding:10px 18px;border-bottom:2.4px dashed var(--line);
+  background:linear-gradient(0deg,var(--paper),var(--paper2));
+}
+.brand{display:flex;align-items:baseline;gap:9px}
+.brand b{font-family:'Caveat';font-size:30px;font-weight:700;letter-spacing:.5px}
+.brand .tag{font-family:'Caveat';font-size:18px;color:var(--accent);
+  border:2px solid var(--accent);border-radius:14px 6px 16px 6px/6px 16px 6px 14px;padding:0 9px;transform:rotate(-2deg)}
+.tabs{display:flex;gap:10px}
+.tab{font-family:'Patrick Hand';font-size:15px;cursor:pointer;background:#fff;white-space:nowrap;
+  border:2.2px solid var(--line);border-radius:16px 7px 18px 7px/7px 18px 7px 16px;
+  padding:6px 14px;box-shadow:var(--shadow);transition:transform .08s}
+.tab:hover{transform:translateY(-1px)}
+.tab .k{font-weight:700}
+.tab[data-on="1"]{background:var(--ink);color:var(--paper)}
+.spacer{flex:1 1 auto}
+.tweaks{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+.tw{display:flex;align-items:center;gap:7px;font-size:14px}
+.seg{display:flex;border:2px solid var(--line);border-radius:16px 8px 16px 8px/8px 16px 8px 16px;overflow:hidden}
+.seg button{font-family:'Patrick Hand';font-size:13.5px;border:0;background:#fff;cursor:pointer;padding:4px 10px;color:var(--ink)}
+.seg button[data-on="1"]{background:var(--accent);color:#fff}
+.caption{flex:0 0 100%;font-family:'Caveat';font-size:18px;color:var(--ink2);padding-top:2px}
+.caption b{color:var(--ink)}
+
+/* ---------- stage ---------- */
+.stage{flex:1 1 auto;position:relative;overflow:hidden}
+.variation{position:absolute;inset:0;padding:16px;display:none}
+.variation[data-on="1"]{display:block}
+
+/* ---------- generic panes ---------- */
+.pane{background:#fff;box-shadow:var(--shadow);display:flex;flex-direction:column;min-height:0;min-width:0;overflow:hidden}
+.pane-h{flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:7px 11px;border-bottom:2px dashed var(--line);
+  font-size:13.5px;letter-spacing:.3px;background:var(--paper2)}
+.pane-h .dot{width:9px;height:9px;border:2px solid var(--line);border-radius:50%}
+.pane-b{flex:1 1 auto;min-height:0;overflow:hidden;position:relative}
+.scroll{position:absolute;inset:0;overflow:auto;padding:10px 12px}
+
+/* ---------- toolbar ---------- */
+.toolbar{display:flex;align-items:center;gap:9px;flex-wrap:wrap;padding:8px 11px;background:var(--paper2);border-bottom:2px dashed var(--line)}
+.btn{font-family:'Patrick Hand';font-size:14px;cursor:pointer;background:#fff;color:var(--ink);
+  border:2px solid var(--line);border-radius:13px 7px 15px 7px/7px 15px 7px 13px;padding:5px 11px;
+  display:inline-flex;align-items:center;gap:6px;box-shadow:2px 2px 0 rgba(43,43,43,.12)}
+.btn .g{font-size:13px}
+.btn-cta{background:var(--accent);color:#fff;border-color:var(--accent)}
+.btn-q{padding:5px 9px}
+.div{width:0;height:22px;border-left:2px dotted var(--line);margin:0 2px}
+.sel{font-family:'Patrick Hand';font-size:13.5px;background:#fff;border:2px solid var(--line);
+  border-radius:13px 7px 15px 7px/7px 15px 7px 13px;padding:5px 9px;display:inline-flex;align-items:center;gap:7px}
+.tgl{display:inline-flex;align-items:center;gap:7px;font-size:13.5px}
+.switch{width:34px;height:18px;border:2px solid var(--line);border-radius:12px;position:relative;background:#fff}
+.switch::after{content:"";position:absolute;top:1px;left:1px;width:12px;height:12px;border-radius:50%;background:var(--ink)}
+.switch.on{background:var(--accent-soft)}
+.switch.on::after{left:auto;right:1px;background:var(--accent)}
+
+/* ---------- file explorer ---------- */
+.tree{font-size:14px}
+.row{display:flex;align-items:center;gap:7px;padding:3px 5px;border-radius:7px;white-space:nowrap}
+.row:hover{background:var(--fill)}
+.row.sel{background:var(--accent-soft)}
+.row .ic{width:16px;text-align:center;color:var(--ink2)}
+.row.tex .ic{color:var(--accent)}
+.indent{padding-left:16px}
+.indent2{padding-left:32px}
+.drop{margin:9px 4px 4px;border:2px dashed var(--accent);border-radius:14px 7px 16px 7px/7px 16px 7px 14px;
+  padding:10px;text-align:center;color:var(--accent);font-family:'Caveat';font-size:16px;background:rgba(31,138,122,.06)}
+.exp-tabs{display:flex;gap:6px;margin-bottom:8px}
+.chip{font-size:12.5px;border:2px solid var(--line);border-radius:11px 6px 13px 6px/6px 13px 6px 11px;padding:2px 9px;background:#fff;cursor:pointer;white-space:nowrap}
+.chip[data-on="1"]{background:var(--ink);color:var(--paper)}
+
+/* ---------- outline ---------- */
+.ol{font-size:14px}
+.ol .s{padding:3px 4px;border-left:2px solid var(--fill2);margin-left:3px;padding-left:9px}
+.ol .s.h1{font-weight:700}
+.ol .s.h2{margin-left:14px;color:var(--ink2)}
+
+/* ---------- editor ---------- */
+.editor{position:absolute;inset:0;display:flex;background:var(--dark);font-family:'Space Mono',monospace;font-size:13px;line-height:1.62}
+.editor.light{background:#fbfaf6}
+.gutter{flex:0 0 auto;padding:10px 8px 10px 10px;text-align:right;color:#5b6373;background:var(--dark2);user-select:none;white-space:pre;min-width:34px}
+.editor.light .gutter{background:#efece4;color:#a39e92}
+.code{flex:1 1 auto;padding:10px 12px;color:#c9d1d9;overflow:auto;white-space:pre}
+.editor.light .code{color:#2b2b2b}
+.code .cmd{color:#4fd1c5}
+.code .arg{color:#e0af68}
+.code .brc{color:#7a8290}
+.code .mth{color:#9ece6a}
+.code .com{color:#6b7280;font-style:italic}
+.editor.light .code .cmd{color:#0f766e}
+.editor.light .code .arg{color:#b45309}
+.editor.light .code .brc{color:#9a948a}
+.editor.light .code .mth{color:#15803d}
+.editor.light .code .com{color:#9ca3af}
+.caret{display:inline-block;width:2px;height:15px;background:var(--accent);vertical-align:-3px;animation:bl 1s steps(1) infinite}
+@keyframes bl{50%{opacity:0}}
+.curline{display:block;background:rgba(31,138,122,.12);margin:0 -12px;padding:0 12px}
+
+/* ---------- status bar ---------- */
+.status{flex:0 0 auto;display:flex;align-items:center;gap:14px;padding:5px 12px;font-size:13px;
+  background:var(--ink);color:var(--paper);font-family:'Space Mono',monospace}
+.status .err{color:#ffb4a8}
+.status .sp{flex:1}
+
+/* ---------- pdf ---------- */
+.pdfbar{display:flex;align-items:center;gap:8px;padding:6px 10px;border-bottom:2px dashed var(--line);background:var(--paper2);font-size:12.5px;flex-wrap:nowrap;overflow:hidden}
+.pdfbar .chip{white-space:nowrap}
+.pdfbar .pg span{white-space:nowrap}
+.pdfbar .pg{display:flex;align-items:center;gap:5px}
+.pbtn{border:2px solid var(--line);background:#fff;border-radius:9px;width:24px;height:24px;cursor:pointer;font-family:'Space Mono';line-height:1}
+.pdf-stage{position:absolute;inset:0;overflow:auto;background:repeating-linear-gradient(45deg,#e9e6dd 0 9px,#efece4 9px 18px);padding:18px;display:flex;justify-content:center}
+.page{width:min(420px,86%);aspect-ratio:1/1.41;background:#fff;box-shadow:0 4px 0 rgba(43,43,43,.18);border:1.5px solid #cfcabd;padding:30px 30px;flex:0 0 auto}
+.ptitle{height:18px;width:70%;background:var(--ink);margin:6px auto 4px;border-radius:3px}
+.psub{height:9px;width:40%;background:#bdb8ab;margin:0 auto 20px;border-radius:3px}
+.ph{height:11px;width:42%;background:#3a3a3a;border-radius:3px;margin:18px 0 9px}
+.pl{height:7px;background:#d8d3c6;border-radius:3px;margin:6px 0}
+.pimg{height:96px;border:2px dashed #b9b3a5;border-radius:6px;display:flex;align-items:center;justify-content:center;color:#a39e92;font-family:'Space Mono';font-size:11px;margin:14px 0}
+.peq{height:34px;background:#f1eee6;border:1.5px solid #ddd8cb;border-radius:5px;margin:12px 18px;display:flex;align-items:center;justify-content:center;color:#8a857a;font-family:'Space Mono';font-size:12px}
+
+/* ---------- log ---------- */
+.log{font-family:'Space Mono',monospace;font-size:12.5px;color:#444}
+.log .l-err{color:#c2410c}
+.log .l-warn{color:#a16207}
+.log .l-ok{color:#15803d}
+.logbar{display:flex;gap:8px;align-items:center;padding:5px 10px;border-bottom:2px dashed var(--line);background:var(--paper2)}
+.badge{font-size:12px;border:2px solid var(--line);border-radius:9px;padding:1px 8px;background:#fff}
+.badge.e{border-color:#c2410c;color:#c2410c}
+
+/* ---------- modals ---------- */
+.backdrop{position:absolute;inset:0;background:rgba(43,43,43,.34);z-index:30;display:none;align-items:center;justify-content:center;padding:24px}
+.backdrop.on{display:flex}
+.modal{background:var(--paper);box-shadow:7px 9px 0 rgba(43,43,43,.22);width:min(540px,94%);max-height:92%;display:flex;flex-direction:column;overflow:hidden;
+  background-image:radial-gradient(rgba(43,43,43,.045) 1px,transparent 1px);background-size:20px 20px}
+.modal-h{flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;padding:12px 17px;border-bottom:2.4px dashed var(--line);background:var(--paper2)}
+.modal-h b{font-family:'Caveat';font-size:25px;font-weight:700}
+.modal-h .chip{cursor:pointer}
+.modal-b{flex:1 1 auto;padding:17px;overflow:auto}
+.modal-f{flex:0 0 auto;display:flex;justify-content:flex-end;gap:11px;padding:13px 17px;border-top:2.4px dashed var(--line);background:var(--paper2)}
+.field{margin-bottom:16px}
+.lbl{display:block;font-size:12px;letter-spacing:.7px;color:var(--ink2);margin-bottom:6px}
+.dz-lg{border:2px dashed var(--accent);border-radius:16px 8px 18px 8px/8px 18px 8px 16px;padding:16px;text-align:center;
+  color:var(--accent);font-family:'Caveat';font-size:18px;background:rgba(31,138,122,.06);display:flex;flex-direction:column;gap:7px;align-items:center}
+.filechip{margin-top:11px;display:flex;align-items:center;gap:9px;font-size:13.5px;border:2px solid var(--line);
+  border-radius:11px 6px 13px 6px/6px 13px 6px 11px;padding:6px 11px;background:#fff;width:fit-content;font-family:'Space Mono'}
+.selbox{font-family:'Patrick Hand';font-size:14px;background:#fff;border:2px solid var(--line);border-radius:13px 7px 15px 7px/7px 15px 7px 13px;padding:8px 12px;display:flex;align-items:center;gap:8px}
+.inp{font-family:'Space Mono';font-size:13px;background:#fff;border:2px solid var(--line);border-radius:13px 7px 15px 7px/7px 15px 7px 13px;padding:8px 12px;color:var(--ink2)}
+.hint{font-size:14.5px;color:var(--accent);margin-top:6px}
+.set-wrap{flex:1 1 auto;display:flex;min-height:0;overflow:hidden}
+.set-nav{flex:0 0 152px;border-right:2px dashed var(--line);padding:14px;background:var(--paper2)}
+.set-item{padding:7px 10px;border-radius:10px 6px 12px 6px/6px 12px 6px 10px;margin-bottom:4px;cursor:pointer;font-size:14px}
+.set-item.on{background:var(--accent-soft);font-weight:700}
+.set-content{flex:1 1 auto;padding:17px;overflow:auto}
+.font-row{display:flex;align-items:center;gap:9px;font-size:14px;border:2px solid var(--line);border-radius:11px 6px 13px 6px/6px 13px 6px 11px;padding:7px 11px;margin-bottom:7px;background:#fff;font-family:'Space Mono';font-size:12.5px}
+.font-row .badge{margin-left:auto}
+.font-prev{margin-top:13px;border:2px solid var(--fill2);border-radius:8px;padding:13px 14px;font-size:19px;background:#fff;color:var(--ink)}
+.browse-link{color:var(--accent);text-decoration:underline;cursor:pointer}
+
+/* ---------- annotations ---------- */
+.annot{position:absolute;font-family:'Caveat';font-size:17px;color:#176657;z-index:6;max-width:170px;line-height:1.1;
+  pointer-events:none;background:#fffdf3;border:2px solid var(--accent);
+  border-radius:14px 7px 16px 7px/7px 16px 7px 14px;padding:6px 11px;box-shadow:3px 3px 0 rgba(31,138,122,.22)}
+.annot .u{box-shadow:inset 0 -8px 0 var(--hi)}
+.annot.r{transform:rotate(1.5deg)}
+.annot.l{transform:rotate(-2deg)}
+.arrow{stroke:var(--accent);stroke-width:2.2;fill:none}
+
+/* ---------- variation A grid ---------- */
+.vA{display:grid;grid-template-columns:248px 1fr 1fr;grid-template-rows:auto 1fr auto;gap:13px;height:100%;
+  grid-template-areas:"tb tb tb" "side ed pdf" "st st st"}
+.vA .toolwrap{grid-area:tb}.vA .side{grid-area:side}.vA .ed{grid-area:ed}.vA .pdf{grid-area:pdf}.vA .stw{grid-area:st}
+
+/* ---------- variation B grid ---------- */
+.vB{display:grid;grid-template-columns:1fr 1fr;grid-template-rows:auto 1fr;gap:13px;height:100%;
+  grid-template-areas:"top top" "ed pdf"}
+.vB .topbar{grid-area:top}.vB .ed{grid-area:ed}.vB .pdf{grid-area:pdf}
+.filetabs{display:flex;align-items:center;gap:7px;padding:6px 10px;background:var(--paper2);border-bottom:2px dashed var(--line);flex-wrap:wrap}
+.ftab{font-size:13.5px;border:2px solid var(--line);border-radius:11px 11px 4px 4px;padding:4px 11px;background:#fff;display:flex;gap:7px;align-items:center}
+.ftab[data-on="1"]{background:#fff;border-bottom-color:#fff;font-weight:700;position:relative;top:2px}
+.ftab .x{color:var(--ink2)}
+.drawer{position:absolute;top:0;left:0;bottom:0;width:230px;background:#fff;box-shadow:6px 0 14px rgba(43,43,43,.18);
+  border-right:2.4px solid var(--line);z-index:5;display:flex;flex-direction:column}
+.drawer-h{display:flex;align-items:center;justify-content:space-between;padding:8px 11px;border-bottom:2px dashed var(--line);background:var(--paper2);font-size:13.5px}
+.float-ol{position:absolute;top:46px;right:14px;width:190px;background:#fff;box-shadow:var(--shadow);border:2.2px solid var(--line);
+  border-radius:14px 8px 16px 8px/8px 16px 8px 14px;z-index:5}
+.collapsed-log{position:absolute;left:0;right:0;bottom:0;display:flex;align-items:center;gap:10px;
+  padding:6px 12px;background:var(--ink);color:var(--paper);font-family:'Space Mono';font-size:12.5px}
+
+/* ---------- variation C grid ---------- */
+.vC{display:grid;grid-template-columns:54px 210px 1fr 1fr;grid-template-rows:auto 1fr 150px auto;gap:11px;height:100%;
+  grid-template-areas:"act top top top" "act panel ed pdf" "act panel log log" "act st st st"}
+.vC .act{grid-area:act}.vC .topbar{grid-area:top}.vC .panel{grid-area:panel}.vC .ed{grid-area:ed}.vC .pdf{grid-area:pdf}.vC .log{grid-area:log}.vC .stw{grid-area:st}
+.actbar{display:flex;flex-direction:column;align-items:center;gap:6px;padding:10px 6px;background:var(--ink);box-shadow:var(--shadow)}
+.aicon{width:38px;height:38px;display:flex;align-items:center;justify-content:center;color:var(--paper);font-size:18px;
+  border-radius:11px 6px 13px 6px/6px 13px 6px 11px;border:2px solid transparent}
+.aicon[data-on="1"]{background:var(--paper);color:var(--ink)}
+.aicon:not([data-on]):hover{border-color:#6b6b6b}
+.logtabs{display:flex;gap:7px}
+
+@media (max-width:1080px){
+  .caption{font-size:16px}
+  .vA{grid-template-columns:210px 1fr 1fr}
+  .vC{grid-template-columns:50px 180px 1fr 1fr}
+}
+</style>
+</head>
+<body>
+
+<!-- ============ VIEWER CHROME ============ -->
+<div class="chrome">
+  <div class="brand"><b>WebTeX</b><span class="tag">wireframe</span></div>
+  <div class="tabs">
+    <div class="tab" data-var="A" data-on="1"><span class="k">A.</span> Tre colonne</div>
+    <div class="tab" data-var="B"><span class="k">B.</span> Minimale</div>
+    <div class="tab" data-var="C"><span class="k">C.</span> IDE</div>
+  </div>
+  <div class="spacer"></div>
+  <div class="tweaks">
+    <div class="tw">tema editor
+      <div class="seg" id="seg-theme">
+        <button data-v="dark" data-on="1">scuro</button>
+        <button data-v="light">chiaro</button>
+      </div>
+    </div>
+    <div class="tw">lato PDF
+      <div class="seg" id="seg-side">
+        <button data-v="right" data-on="1">destra</button>
+        <button data-v="left">sinistra</button>
+      </div>
+    </div>
+    <div class="tw">note
+      <div class="switch on" id="sw-annot"></div>
+    </div>
+    <div class="tw">modali
+      <span class="chip" id="prev-attach">Allega</span>
+      <span class="chip" id="prev-set">Impostazioni</span>
+    </div>
+  </div>
+  <div class="caption" id="caption"></div>
+</div>
+
+<!-- ============ STAGE ============ -->
+<div class="stage" id="stage">
+
+  <!-- ===================== VARIATION A ===================== -->
+  <div class="variation" data-var="A" data-on="1">
+    <div class="vA">
+      <!-- toolbar -->
+      <div class="toolwrap pane sk" style="overflow:visible">
+        <div class="toolbar" style="border-bottom:0;border-radius:inherit">
+          <span class="btn"><span class="g">＋</span>Nuovo</span>
+          <span class="btn"><span class="g">▢</span>Apri</span>
+          <span class="btn"><span class="g">⤓</span>Salva</span>
+          <span class="btn" id="a-attach"><span class="g">⊕</span>Allega</span>
+          <span class="div"></span>
+          <span class="sel">motore: <b>pdflatex</b> ▾</span>
+          <span class="btn btn-cta"><span class="g">▶</span>Compila</span>
+          <span class="btn"><span class="g">⤓</span>Scarica PDF</span>
+          <span class="div"></span>
+          <span class="btn"><span class="g">✦</span>Format</span>
+          <span class="tgl"><span class="switch on"></span>Auto-indent</span>
+          <span style="flex:1"></span>
+          <span class="btn btn-q" id="a-settings" title="Impostazioni">⚙</span>
+        </div>
+      </div>
+
+      <!-- sidebar -->
+      <div class="side pane sk2">
+        <div class="pane-h"><span class="dot"></span>ESPLORA</div>
+        <div class="pane-b"><div class="scroll">
+          <div class="exp-tabs">
+            <span class="chip" data-on="1">File</span>
+            <span class="chip">Struttura</span>
+          </div>
+          <div class="tree" data-mount="tree"></div>
+        </div></div>
+      </div>
+
+      <!-- editor -->
+      <div class="ed pane sk" style="position:relative">
+        <div class="pane-h"><span class="dot"></span>main.tex<span style="flex:1"></span><span class="muted" style="font-size:12px">modificato •</span></div>
+        <div class="pane-b"><div class="editor" data-mount="editor"></div></div>
+      </div>
+
+      <!-- pdf -->
+      <div class="pdf pane sk2">
+        <div class="pane-h"><span class="dot"></span>ANTEPRIMA PDF</div>
+        <div class="pdfbar" data-mount="pdfbar"></div>
+        <div class="pane-b"><div class="pdf-stage" data-mount="pdf"></div></div>
+      </div>
+
+      <!-- status -->
+      <div class="stw pane sk" style="padding:0">
+        <div class="status" style="border-radius:inherit">
+          <span>Ln 13, Col 9</span><span>UTF-8</span><span>LF</span><span>LaTeX</span>
+          <span class="sp"></span>
+          <span class="err">✗ 1 errore</span><span style="color:#ffe27a">⚠ 2 warning</span><span>compilato 14:02</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- annotations A -->
+    <div class="annot-layer" data-annot>
+      <div class="annot l" style="top:128px;left:33%;max-width:165px"><span class="u">syntax highlight</span> di comandi, math, commenti</div>
+      <div class="annot r" style="bottom:96px;left:14px;max-width:150px">cartelle + immagini allegate, drag &amp; drop</div>
+      <div class="annot r" style="bottom:54px;right:36%;max-width:130px">log errori nella status bar</div>
+    </div>
+
+    <!-- ===== MODAL: allega file ===== -->
+    <div class="backdrop" id="attach-bd">
+      <div class="modal sk">
+        <div class="modal-h"><b>Allega file al progetto</b><span class="chip" data-close>× chiudi</span></div>
+        <div class="modal-b">
+          <div class="field">
+            <span class="lbl">FILE</span>
+            <div class="dz-lg">
+              <div>⤓ trascina un file qui</div>
+              <div class="muted" style="font-family:'Patrick Hand';font-size:13px">oppure</div>
+              <span class="btn"><span class="g">▢</span> Sfoglia sul computer…</span>
+            </div>
+            <div class="filechip">▣ grafico-risultati.png — 248 KB <span class="muted" style="cursor:pointer">×</span></div>
+          </div>
+          <div class="field">
+            <span class="lbl">CARTELLA DI DESTINAZIONE</span>
+            <div class="selbox">▾ figure/</div>
+            <div class="hint cap">le immagini di solito vanno in figure/</div>
+          </div>
+          <div class="field" style="margin-bottom:4px">
+            <span class="lbl">NOME FILE (opzionale)</span>
+            <div class="inp">grafico-risultati.png</div>
+          </div>
+        </div>
+        <div class="modal-f"><span class="btn" data-close>Annulla</span><span class="btn btn-cta"><span class="g">⤓</span> Carica</span></div>
+      </div>
+    </div>
+
+    <!-- ===== MODAL: impostazioni ===== -->
+    <div class="backdrop" id="set-bd">
+      <div class="modal sk" style="width:min(640px,94%)">
+        <div class="modal-h"><b>Impostazioni</b><span class="chip" data-close>× chiudi</span></div>
+        <div class="set-wrap">
+          <div class="set-nav">
+            <div class="set-item on">Font</div>
+            <div class="set-item muted">Generale</div>
+            <div class="set-item muted">Editor</div>
+            <div class="set-item muted">Compilazione</div>
+            <div class="hint cap" style="margin-top:10px;font-size:13.5px">altre sezioni in arrivo</div>
+          </div>
+          <div class="set-content">
+            <span class="lbl">FONT PERSONALIZZATI</span>
+            <div class="muted" style="font-size:13px;margin-bottom:11px">Carica un font da usare nei progetti · .ttf · .otf · .woff</div>
+            <div class="dz-lg">⤓ trascina i font qui <span style="font-family:'Patrick Hand';font-size:13px">· oppure</span> <span class="btn"><span class="g">▢</span> Sfoglia…</span></div>
+            <span class="lbl" style="margin-top:16px">CARICATI</span>
+            <div class="font-row">◆ EBGaramond-Regular.otf <span class="badge">attivo</span> <span class="muted" style="cursor:pointer">×</span></div>
+            <div class="font-row">◆ FiraCode-Regular.ttf <span class="chip" style="margin-left:auto">usa nel progetto</span> <span class="muted" style="cursor:pointer">×</span></div>
+            <div class="font-prev">Anteprima &mdash; The quick brown fox 0123 &mdash; <span style="font-family:'Space Mono'">\LaTeX</span></div>
+          </div>
+        </div>
+        <div class="modal-f"><span class="btn" data-close>Annulla</span><span class="btn btn-cta">Salva</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== VARIATION B ===================== -->
+  <div class="variation" data-var="B">
+    <div class="vB">
+      <!-- top -->
+      <div class="topbar pane sk" style="overflow:visible">
+        <div class="filetabs" style="border-radius:inherit;border-bottom:0">
+          <span class="btn btn-q" id="b-open"><span class="g">☰</span></span>
+          <span class="ftab" data-on="1">main.tex <span class="x">×</span></span>
+          <span class="ftab">intro.tex <span class="x">×</span></span>
+          <span class="ftab muted">＋</span>
+          <span style="flex:1"></span>
+          <span class="sel">xelatex ▾</span>
+          <span class="btn"><span class="g">✦</span>Format</span>
+          <span class="btn"><span class="g">⤓</span>Salva</span>
+          <span class="btn btn-cta"><span class="g">▶</span>Compila</span>
+          <span class="btn"><span class="g">⤓</span>PDF</span>
+        </div>
+      </div>
+
+      <!-- editor with drawer + floating outline + collapsed log -->
+      <div class="ed pane sk2" style="position:relative">
+        <div class="pane-h"><span class="dot"></span>main.tex<span style="flex:1"></span>
+          <span class="chip" id="b-ol-btn">⌄ Struttura</span></div>
+        <div class="pane-b"><div class="editor" data-mount="editor"></div></div>
+
+        <!-- collapsed log strip -->
+        <div class="collapsed-log">▴ Log compilazione — <span style="color:#ffb4a8">1 errore</span>, 2 warning <span style="flex:1"></span><span class="muted" style="color:#cfcabd">clic per espandere</span></div>
+
+        <!-- floating outline -->
+        <div class="float-ol" id="b-ol">
+          <div class="pane-h" style="background:#fff;border-bottom:2px dashed var(--line)">STRUTTURA</div>
+          <div style="padding:8px 10px"><div class="ol" data-mount="outline"></div></div>
+        </div>
+
+        <!-- file drawer -->
+        <div class="drawer" id="b-drawer" style="display:none">
+          <div class="drawer-h">ESPLORA FILE <span class="chip" id="b-close">× chiudi</span></div>
+          <div style="flex:1;overflow:auto;padding:10px"><div class="tree" data-mount="tree"></div></div>
+        </div>
+      </div>
+
+      <!-- pdf -->
+      <div class="pdf pane sk">
+        <div class="pdfbar" data-mount="pdfbar"></div>
+        <div class="pane-b"><div class="pdf-stage" data-mount="pdf"></div></div>
+        <div class="status" style="font-size:12px"><span>Ln 13, Col 9</span><span class="sp"></span><span>fit width</span></div>
+      </div>
+    </div>
+
+    <div class="annot-layer" data-annot>
+      <div class="annot r" style="top:60px;left:120px;max-width:160px">tab dei file aperti, <span class="u">explorer a cassetto</span></div>
+      <div class="annot l" style="bottom:64px;left:30px;max-width:170px">log a scomparsa: <br>poco rumore, espandi al bisogno</div>
+      <div class="annot r" style="top:96px;right:50%;max-width:140px">struttura come pannello fluttuante</div>
+    </div>
+  </div>
+
+  <!-- ===================== VARIATION C ===================== -->
+  <div class="variation" data-var="C">
+    <div class="vC">
+      <!-- activity bar -->
+      <div class="act actbar sk" style="border-radius:18px">
+        <div class="aicon" data-on="1" title="File">▤</div>
+        <div class="aicon" title="Struttura">☰</div>
+        <div class="aicon" title="Media">◧</div>
+        <div class="aicon" title="Cerca">⌕</div>
+        <div style="flex:1"></div>
+        <div class="aicon" title="Impostazioni">⚙</div>
+      </div>
+
+      <!-- top -->
+      <div class="topbar pane sk" style="overflow:visible">
+        <div class="toolbar" style="border-radius:inherit;border-bottom:0">
+          <span class="btn"><span class="g">＋</span>Nuovo</span>
+          <span class="btn"><span class="g">▢</span>Apri</span>
+          <span class="btn"><span class="g">⤓</span>Salva</span>
+          <span class="div"></span>
+          <span class="sel">motore: <b>pdflatex</b> ▾</span>
+          <span class="tgl"><span class="switch on"></span>Auto-indent</span>
+          <span class="btn"><span class="g">✦</span>Format</span>
+          <span style="flex:1"></span>
+          <span class="btn btn-cta"><span class="g">▶</span>Compila</span>
+          <span class="btn"><span class="g">⤓</span>Scarica PDF</span>
+        </div>
+      </div>
+
+      <!-- panel (files) -->
+      <div class="panel pane sk2">
+        <div class="pane-h"><span class="dot"></span>FILE</div>
+        <div class="pane-b"><div class="scroll"><div class="tree" data-mount="tree"></div></div></div>
+      </div>
+
+      <!-- editor -->
+      <div class="ed pane sk" style="position:relative">
+        <div class="pane-h"><span class="dot"></span>main.tex</div>
+        <div class="pane-b"><div class="editor" data-mount="editor"></div></div>
+      </div>
+
+      <!-- pdf -->
+      <div class="pdf pane sk2">
+        <div class="pdfbar" data-mount="pdfbar"></div>
+        <div class="pane-b"><div class="pdf-stage" data-mount="pdf"></div></div>
+      </div>
+
+      <!-- log full width -->
+      <div class="log pane sk" style="position:relative">
+        <div class="logbar">
+          <div class="logtabs">
+            <span class="chip" data-on="1">Output</span>
+            <span class="chip">Problemi <span class="badge e">3</span></span>
+            <span class="chip">Console</span>
+          </div>
+          <span style="flex:1"></span>
+          <span class="muted" style="font-size:12px">pdflatex · 1.8s</span>
+        </div>
+        <div class="pane-b"><div class="scroll"><div class="log" data-mount="log"></div></div></div>
+      </div>
+
+      <!-- status -->
+      <div class="stw pane sk" style="padding:0">
+        <div class="status" style="border-radius:inherit">
+          <span>Ln 13, Col 9</span><span>Spazi: 2</span><span>UTF-8</span><span>LaTeX</span>
+          <span class="sp"></span><span class="err">✗ 1</span><span style="color:#ffe27a">⚠ 2</span><span>main.tex</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="annot-layer" data-annot>
+      <div class="annot l" style="top:118px;left:62px;max-width:150px"><span class="u">activity bar</span>: File / Struttura / Media</div>
+      <div class="annot r" style="bottom:150px;left:46%;max-width:150px">log &amp; problemi a tutta larghezza</div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+/* ---------------- shared content builders ---------------- */
+function buildEditor(){
+  const L=[];
+  const line=(parts)=>parts;
+  const rows=[
+    [['cmd','\\documentclass'],['brc','['],['arg','11pt'],['brc',']{'],['arg','article'],['brc','}']],
+    [['cmd','\\usepackage'],['brc','{'],['arg','graphicx'],['brc','}']],
+    [['cmd','\\usepackage'],['brc','{'],['arg','amsmath'],['brc','}']],
+    [],
+    [['cmd','\\title'],['brc','{'],['txt','Relazione di Laboratorio'],['brc','}']],
+    [['cmd','\\author'],['brc','{'],['txt','M. Rossi'],['brc','}']],
+    [],
+    [['cmd','\\begin'],['brc','{'],['arg','document'],['brc','}']],
+    [['cmd','  \\maketitle']],
+    [],
+    [['cmd','  \\section'],['brc','{'],['txt','Introduzione'],['brc','}']],
+    [['txt','  Studiamo '],['mth','$E = mc^2$'],['txt',' e le sue']],
+    [['txt','  implicazioni. '],['com','% TODO: citare']],
+    [['cmd','  \\includegraphics'],['brc','['],['arg','width=.6\\linewidth'],['brc',']{'],['arg','figure/plot.png'],['brc','}']],
+    [],
+    [['cmd','  \\section'],['brc','{'],['txt','Metodo'],['brc','}']],
+    [['cmd','  \\begin'],['brc','{'],['arg','equation'],['brc','}']],
+    [['mth','    \\int_0^1 x^2 \\, dx = \\tfrac{1}{3}']],
+    [['cmd','  \\end'],['brc','{'],['arg','equation'],['brc','}']],
+    [['cmd','\\end'],['brc','{'],['arg','document'],['brc','}']],
+  ];
+  const cur=12; // current line (0-based -> shows line 13)
+  let gutter='',code='';
+  rows.forEach((r,i)=>{
+    gutter+=(i+1)+'\n';
+    let inner=r.map(([c,t])=>`<span class="${c}">${esc(t)}</span>`).join('');
+    if(i===cur){ inner = inner.replace('</span>',' <span class="caret"></span></span>') ; code+=`<span class="curline">${inner||' '}</span>\n`; }
+    else code+=(inner||' ')+'\n';
+  });
+  return `<div class="gutter">${gutter}</div><div class="code">${code}</div>`;
+}
+function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+
+function buildTree(){
+  return `
+  <div class="row"><span class="ic">▾</span><b>relazione/</b></div>
+  <div class="row tex sel indent"><span class="ic">◆</span>main.tex</div>
+  <div class="row indent"><span class="ic">▾</span>capitoli/</div>
+  <div class="row tex indent2"><span class="ic">◆</span>intro.tex</div>
+  <div class="row tex indent2"><span class="ic">◆</span>metodo.tex</div>
+  <div class="row indent"><span class="ic">▾</span>figure/</div>
+  <div class="row indent2"><span class="ic">▣</span>plot.png</div>
+  <div class="row indent2"><span class="ic">▣</span>logo.png</div>
+  <div class="row indent"><span class="ic">▾</span>bib/</div>
+  <div class="row indent2"><span class="ic">≣</span>refs.bib</div>
+  <div class="drop">⤓ trascina immagini / file qui<br><span style="font-size:13px">nella cartella selezionata, oppure <span class="browse-link">sfoglia…</span></span></div>`;
+}
+function buildOutline(){
+  return `
+  <div class="s h1">1 · Introduzione</div>
+  <div class="s h2">figura: plot.png</div>
+  <div class="s h1">2 · Metodo</div>
+  <div class="s h2">eq. (1)</div>
+  <div class="s h1">3 · Risultati</div>
+  <div class="s h1">4 · Conclusioni</div>`;
+}
+function buildPdfbar(){
+  return `<div class="pg"><button class="pbtn">‹</button><span>pag. <b>1</b> / 4</span><button class="pbtn">›</button></div>
+  <span class="div"></span>
+  <div class="pg"><button class="pbtn">–</button><span>100%</span><button class="pbtn">+</button></div>
+  <span class="chip" data-on="1">adatta larghezza</span>
+  <span style="flex:1"></span>
+  <span class="chip">Anteprima</span><span class="chip">Log</span>`;
+}
+function buildPdf(){
+  return `<div class="page">
+    <div class="ptitle"></div><div class="psub"></div>
+    <div class="ph"></div>
+    <div class="pl" style="width:96%"></div><div class="pl" style="width:91%"></div>
+    <div class="pl" style="width:97%"></div><div class="pl" style="width:60%"></div>
+    <div class="pimg">[ figure/plot.png ]</div>
+    <div class="ph" style="width:30%"></div>
+    <div class="pl" style="width:94%"></div><div class="pl" style="width:88%"></div>
+    <div class="peq">∫₀¹ x² dx = 1/3   (1)</div>
+    <div class="pl" style="width:80%"></div>
+  </div>`;
+}
+function buildLog(){
+  return `<div class="l-ok">› pdflatex main.tex …</div>
+  <div>This is pdfTeX, Version 3.141592653</div>
+  <div>(./main.tex  LaTeX2e &lt;2024-06-01&gt;)</div>
+  <div class="l-warn">! Warning: Overfull \\hbox (3.2pt) in paragraph at line 12.</div>
+  <div class="l-warn">! Warning: Font shape undefined, using default at line 5.</div>
+  <div class="l-err">! Undefined control sequence  \\inculde  → riga 14</div>
+  <div class="l-err">  l.14  \\inculde{figure/plot.png}</div>
+  <div class="l-ok">› Output: main.pdf (4 pagine) — 1 errore, 2 warning</div>`;
+}
+
+/* ---------------- mount ---------------- */
+const builders={editor:buildEditor,tree:buildTree,outline:buildOutline,pdfbar:buildPdfbar,pdf:buildPdf,log:buildLog};
+document.querySelectorAll('[data-mount]').forEach(el=>{
+  const fn=builders[el.getAttribute('data-mount')];
+  if(fn) el.innerHTML=fn();
+});
+
+/* ---------------- captions ---------------- */
+const captions={
+  A:'<b>A · Tre colonne.</b> Tutto sempre visibile: explorer, editor e PDF affiancati. La via più chiara — il classico.',
+  B:'<b>B · Minimale.</b> Solo Editor | PDF. Explorer a cassetto, log a scomparsa, struttura fluttuante. Massima pulizia.',
+  C:'<b>C · IDE.</b> Activity bar a icone + pannello + editor + PDF, con log/problemi a tutta larghezza sotto. Più potente.'
+};
+function setCaption(v){document.getElementById('caption').innerHTML=captions[v];}
+
+/* ---------------- variation tabs ---------------- */
+let curVar='A';
+document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>{
+  curVar=t.getAttribute('data-var');
+  document.querySelectorAll('.tab').forEach(x=>x.setAttribute('data-on',x===t?'1':'0'));
+  document.querySelectorAll('.variation').forEach(x=>x.setAttribute('data-on',x.getAttribute('data-var')===curVar?'1':'0'));
+  setCaption(curVar);
+}));
+setCaption('A');
+
+/* ---------------- tweak: editor theme ---------------- */
+function applyTheme(v){
+  document.querySelectorAll('.editor').forEach(e=>e.classList.toggle('light',v==='light'));
+}
+document.getElementById('seg-theme').addEventListener('click',e=>{
+  const b=e.target.closest('button'); if(!b)return;
+  [...e.currentTarget.children].forEach(x=>x.setAttribute('data-on',x===b?'1':'0'));
+  applyTheme(b.getAttribute('data-v'));
+});
+
+/* ---------------- tweak: pdf side ---------------- */
+function applySide(v){
+  // swap editor/pdf order in A and C grids by toggling a class
+  document.querySelectorAll('.vA,.vB,.vC').forEach(g=>g.classList.toggle('pdf-left',v==='left'));
+}
+const styleSwap=document.createElement('style');
+styleSwap.textContent=`
+.pdf-left.vA{grid-template-areas:"tb tb tb" "side pdf ed" "st st st"}
+.pdf-left.vB{grid-template-areas:"top top" "pdf ed"}
+.pdf-left.vC{grid-template-areas:"act top top top" "act panel pdf ed" "act panel log log" "act st st st"}`;
+document.head.appendChild(styleSwap);
+document.getElementById('seg-side').addEventListener('click',e=>{
+  const b=e.target.closest('button'); if(!b)return;
+  [...e.currentTarget.children].forEach(x=>x.setAttribute('data-on',x===b?'1':'0'));
+  applySide(b.getAttribute('data-v'));
+});
+
+/* ---------------- tweak: annotations ---------------- */
+document.getElementById('sw-annot').addEventListener('click',function(){
+  this.classList.toggle('on');
+  const show=this.classList.contains('on');
+  document.querySelectorAll('[data-annot]').forEach(a=>a.style.display=show?'block':'none');
+});
+
+/* ---------------- variation B interactions ---------------- */
+document.getElementById('b-open').addEventListener('click',()=>{
+  document.getElementById('b-drawer').style.display='flex';
+});
+document.getElementById('b-close').addEventListener('click',()=>{
+  document.getElementById('b-drawer').style.display='none';
+});
+let olOpen=true;
+document.getElementById('b-ol-btn').addEventListener('click',()=>{
+  olOpen=!olOpen;
+  document.getElementById('b-ol').style.display=olOpen?'block':'none';
+});
+
+/* ---------------- modals (variation A) ---------------- */
+function gotoA(){
+  curVar='A';
+  document.querySelectorAll('.tab').forEach(x=>x.setAttribute('data-on',x.getAttribute('data-var')==='A'?'1':'0'));
+  document.querySelectorAll('.variation').forEach(x=>x.setAttribute('data-on',x.getAttribute('data-var')==='A'?'1':'0'));
+  setCaption('A');
+}
+function openModal(id){ gotoA(); document.getElementById(id).classList.add('on'); }
+function closeModals(){ document.querySelectorAll('.backdrop').forEach(b=>b.classList.remove('on')); }
+document.getElementById('a-attach').addEventListener('click',()=>openModal('attach-bd'));
+document.getElementById('a-settings').addEventListener('click',()=>openModal('set-bd'));
+document.getElementById('prev-attach').addEventListener('click',()=>openModal('attach-bd'));
+document.getElementById('prev-set').addEventListener('click',()=>openModal('set-bd'));
+document.addEventListener('click',e=>{
+  if(e.target.closest('.browse-link')) openModal('attach-bd');
+  if(e.target.closest('[data-close]')) closeModals();
+  if(e.target.classList && e.target.classList.contains('backdrop')) closeModals();
+});
+document.addEventListener('keydown',e=>{ if(e.key==='Escape') closeModals(); });
+</script>
+
+<template id="__bundler_thumbnail">
+<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+<rect width="100" height="100" fill="#1f8a7a"/>
+<rect x="30" y="30" width="40" height="40" rx="4" fill="#f4f1ea"/>
+<text x="50" y="58" font-family="monospace" font-size="20" fill="#1f8a7a" text-anchor="middle">Tx</text>
+</svg>
+</template>
+</body>
+</html>
