@@ -184,6 +184,31 @@
     }
   }
 
+  async function compileCurrent(data, options) {
+    if (!currentId) throw new Error("Nessun progetto aperto.");
+    data = data && typeof data === "object" ? data : (window.WTApp ? window.WTApp.serialize() : {});
+    const now = Date.now();
+    data.updatedAt = now;
+    cache.set(currentId, data);
+    const m = metaOf(currentId);
+    if (m) {
+      m.name = (data.project && data.project.name) || m.name;
+      m.updatedAt = now;
+      m.fileCount = countFiles(data);
+    }
+    const out = await api(`/api/projects/${currentId}/compile`, {
+      method: "POST",
+      body: JSON.stringify({
+        name: m ? m.name : data.project.name,
+        data,
+        engine: options && options.engine,
+        mainPath: options && options.mainPath,
+        texPath: options && options.texPath,
+      }),
+    });
+    return out;
+  }
+
   /* ---------------- create / rename / delete ---------------- */
   async function createProject(name) {
     const now = Date.now();
@@ -317,7 +342,7 @@
     document.documentElement.classList.remove("wt-inproject");
   }
 
-  window.WTProjects = { showPicker, openProject, closeCurrent, persistCurrent, renderPicker, onLogout };
+  window.WTProjects = { showPicker, openProject, closeCurrent, persistCurrent, compileCurrent, renderPicker, onLogout };
 
   /* ---------------- wiring ---------------- */
   function wire() {

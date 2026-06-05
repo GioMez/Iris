@@ -3,6 +3,7 @@ const fsSync = require("node:fs");
 const fs = require("node:fs/promises");
 const path = require("node:path");
 const crypto = require("node:crypto");
+const { spawn } = require("node:child_process");
 const { URL } = require("node:url");
 const mariadb = require("mariadb");
 
@@ -22,6 +23,9 @@ const TEX_PATH_LOCKED = String(process.env.TEX_PATH_LOCKED || "false") === "true
 const SECRET = process.env.WEBTEX_SECRET || "webtex-dev-secret-change-me";
 const COOKIE_SECURE = String(process.env.COOKIE_SECURE || "false") === "true";
 const MAX_BODY = Number(process.env.MAX_BODY_MB || 25) * 1024 * 1024;
+const COMPILE_TIMEOUT_MS = Number(process.env.COMPILE_TIMEOUT_MS || 30000);
+const COMPILE_LOG_LIMIT = Number(process.env.COMPILE_LOG_LIMIT || 1024 * 1024);
+const LATEX_ENGINES = new Set(["pdflatex", "xelatex", "lualatex", "xetex"]);
 
 let pool;
 
@@ -344,11 +348,19 @@ function mimeForProjectFile(filePath) {
   if (ext === ".webp") return "image/webp";
   if (ext === ".svg") return "image/svg+xml";
   if (ext === ".pdf") return "application/pdf";
+  if (ext === ".ttf") return "font/ttf";
+  if (ext === ".otf") return "font/otf";
+  if (ext === ".woff") return "font/woff";
+  if (ext === ".woff2") return "font/woff2";
   return "application/octet-stream";
 }
 
 function fileIsBinaryNode(node) {
   return node.kind === "img" || node.data || /\.(png|jpe?g|gif|webp|svg|pdf)$/i.test(node.name || node.path || "");
+}
+
+function fileIsFontPath(filePath) {
+  return /\.(ttf|otf|woff2?)$/i.test(filePath || "");
 }
 
 function stripFilePayloads(data) {
@@ -364,6 +376,7 @@ function stripFilePayloads(data) {
     });
   };
   if (meta.project) strip(meta.project.nodes);
+  if (Array.isArray(meta.fonts)) meta.fonts.forEach((font) => delete font.data);
   meta.assets = {};
   return meta;
 }
@@ -381,6 +394,7 @@ async function ensureProjectDirs(storagePath, data) {
     });
   };
   if (data.project) walk(data.project.nodes);
+  if (Array.isArray(data.fonts) && data.fonts.length) dirs.add("fonts");
   for (const rel of dirs) await fs.mkdir(path.join(storagePath, rel), { recursive: true });
 }
 
@@ -409,6 +423,20 @@ async function writeProjectNodes(storagePath, data) {
   };
   if (data.project) await walk(data.project.nodes);
   return expectedFiles;
+}
+
+async function writeProjectFonts(storagePath, data, expectedFiles) {
+  if (!Array.isArray(data.fonts)) return;
+  for (const font of data.fonts) {
+    if (!font || !font.path) continue;
+    const rel = safeRelPath(font.path);
+    if (!rel.startsWith("fonts/") || !fileIsFontPath(rel)) continue;
+    expectedFiles.add(rel);
+    if (!font.data) continue;
+    const abs = path.join(storagePath, rel);
+    await fs.mkdir(path.dirname(abs), { recursive: true });
+    await fs.writeFile(abs, dataUrlToBuffer(font.data));
+  }
 }
 
 async function pruneProjectFiles(storagePath, expectedFiles) {
@@ -473,6 +501,15 @@ async function readProjectFile(storagePath) {
     }
   };
   await hydrate(data.project.nodes);
+  if (Array.isArray(data.fonts)) {
+    for (const font of data.fonts) {
+      if (!font || !font.path) continue;
+      const rel = safeRelPath(font.path);
+      if (!fileIsFontPath(rel)) continue;
+      const buf = await fs.readFile(path.join(storagePath, rel)).catch(() => null);
+      if (buf) font.data = `data:${mimeForProjectFile(rel)};base64,${buf.toString("base64")}`;
+    }
+  }
   return data;
 }
 
@@ -480,6 +517,7 @@ async function writeProjectFile(storagePath, data) {
   await fs.mkdir(storagePath, { recursive: true });
   await ensureProjectDirs(storagePath, data);
   const expectedFiles = await writeProjectNodes(storagePath, data);
+  await writeProjectFonts(storagePath, data, expectedFiles);
   await pruneProjectFiles(storagePath, expectedFiles);
   const webtexDir = path.join(storagePath, ".webtex");
   await fs.mkdir(webtexDir, { recursive: true });
@@ -581,6 +619,175 @@ async function deleteProject(req, res, user, id) {
   json(res, 200, { ok: true });
 }
 
+function walkProjectFiles(nodes, fn) {
+  if (!Array.isArray(nodes)) return;
+  nodes.forEach((node) => {
+    if (node.type === "folder") walkProjectFiles(node.children, fn);
+    else fn(node);
+  });
+}
+
+function findCompileFile(data, requestedPath) {
+  let requested = null;
+  let firstTex = null;
+  let main = null;
+  walkProjectFiles(data.project && data.project.nodes, (file) => {
+    if (file.path === requestedPath) requested = file;
+    if (!firstTex && file.kind === "tex") firstTex = file;
+    if (!main && file.kind === "tex" && /\\documentclass/.test(file.content || "")) main = file;
+  });
+  const picked = requested || main || firstTex;
+  if (!picked || picked.kind !== "tex") {
+    const err = new Error("Nessun file .tex compilabile nel progetto");
+    err.status = 400;
+    throw err;
+  }
+  return picked;
+}
+
+function compileCommand(engine, texPath) {
+  if (!LATEX_ENGINES.has(engine)) {
+    const err = new Error("Motore LaTeX non supportato");
+    err.status = 400;
+    throw err;
+  }
+  const base = String(texPath || "").trim();
+  return base ? path.join(base, engine) : engine;
+}
+
+function pdfNameFor(texPath) {
+  return path.basename(texPath).replace(/\.[^.]+$/, ".pdf");
+}
+
+function parseCompileLog(log) {
+  const warnings = [];
+  const errors = [];
+  const lines = String(log || "").split(/\r?\n/);
+  lines.forEach((line) => {
+    if (/warning/i.test(line)) warnings.push(line.trim());
+    if (/^! /.test(line) || /:[0-9]+:/.test(line) || /Emergency stop|impossibile avviare|not found|ENOENT/i.test(line)) errors.push(line.trim());
+  });
+  return {
+    warnings: warnings.slice(0, 80),
+    errors: errors.slice(0, 80),
+  };
+}
+
+function refreshFontCache(fontDir) {
+  return new Promise((resolve) => {
+    if (!fontDir || !fsSync.existsSync(fontDir)) return resolve("");
+    const startedAt = Date.now();
+    let log = `$ fc-cache -f ${fontDir}\n`;
+    const child = spawn("fc-cache", ["-f", fontDir], { shell: false });
+    const timer = setTimeout(() => child.kill("SIGTERM"), 10000);
+    child.stdout.on("data", (chunk) => { log += chunk.toString("utf8"); });
+    child.stderr.on("data", (chunk) => { log += chunk.toString("utf8"); });
+    child.on("error", (err) => { log += `WebTeX: fc-cache non disponibile: ${err.message}\n`; });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      log += `WebTeX: cache font terminata in ${Date.now() - startedAt}ms (exit ${code}).\n`;
+      resolve(log);
+    });
+  });
+}
+
+function runLatex({ engine, texPath, cwd, mainPath, fontDir, texmfVar, preLog }) {
+  return new Promise((resolve) => {
+    const command = compileCommand(engine, texPath);
+    const args = ["-interaction=nonstopmode", "-halt-on-error", "-file-line-error", "-no-shell-escape", mainPath];
+    const envPath = texPath ? `${texPath}${path.delimiter}${process.env.PATH || ""}` : process.env.PATH || "";
+    const startedAt = Date.now();
+    let log = `${preLog || ""}$ ${command} ${args.join(" ")}\n`;
+    let timedOut = false;
+    let done = false;
+    const child = spawn(command, args, {
+      cwd,
+      env: {
+        PATH: envPath,
+        HOME: "/tmp",
+        TMPDIR: "/tmp",
+        OSFONTDIR: fontDir || "",
+        TEXMFVAR: texmfVar || "",
+        max_print_line: "1000",
+        openin_any: "p",
+        openout_any: "p",
+      },
+      shell: false,
+    });
+    const append = (chunk) => {
+      if (log.length >= COMPILE_LOG_LIMIT) return;
+      log += chunk.toString("utf8").slice(0, COMPILE_LOG_LIMIT - log.length);
+    };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+      setTimeout(() => { if (!done) child.kill("SIGKILL"); }, 1500);
+    }, COMPILE_TIMEOUT_MS);
+    child.stdout.on("data", append);
+    child.stderr.on("data", append);
+    child.on("error", (err) => append(`\nWebTeX: impossibile avviare ${command}: ${err.message}\n`));
+    child.on("close", (code, signal) => {
+      done = true;
+      clearTimeout(timer);
+      const durationMs = Date.now() - startedAt;
+      if (timedOut) append(`\nWebTeX: compilazione interrotta dopo ${COMPILE_TIMEOUT_MS}ms.\n`);
+      else if (signal) append(`\nWebTeX: processo terminato con segnale ${signal}.\n`);
+      const parsed = parseCompileLog(log);
+      resolve({ code, signal, timedOut, durationMs, log, ...parsed });
+    });
+  });
+}
+
+async function compileProject(req, res, user, id) {
+  const body = await readBody(req);
+  const row = await projectForUser(id, user.sub);
+  const name = body.name == null ? row.name : cleanName(body.name);
+  const data = body.data && typeof body.data === "object" ? body.data : await readProjectFile(row.storage_path);
+  data.project = data.project && Array.isArray(data.project.nodes) ? data.project : { nodes: [] };
+  data.project.name = name;
+  data.createdAt = toMillis(row.created_at);
+  data.updatedAt = Date.now();
+  await writeProjectFile(row.storage_path, data);
+  await pool.query("UPDATE projects SET name = ?, updated_at = CURRENT_TIMESTAMP(3) WHERE id = ? AND user_id = ?", [name, id, user.sub]);
+
+  const engine = String(body.engine || data.engine || "pdflatex").trim();
+  const texPath = TEX_PATH_LOCKED ? TEX_BIN_PATH : String(body.texPath || TEX_BIN_PATH || "").trim();
+  const main = findCompileFile(data, body.mainPath);
+  const mainPath = safeRelPath(main.path);
+  const outputName = pdfNameFor(mainPath);
+  const outputPath = path.join(row.storage_path, outputName);
+  await fs.rm(outputPath, { force: true }).catch(() => {});
+
+  const fontDir = path.join(row.storage_path, "fonts");
+  const texmfVar = path.join(row.storage_path, ".webtex", "texmf-var");
+  await fs.mkdir(texmfVar, { recursive: true });
+  const preLog = /^(xelatex|lualatex)$/i.test(engine) ? await refreshFontCache(fontDir) : "";
+  const result = await runLatex({ engine, texPath, cwd: row.storage_path, mainPath, fontDir, texmfVar, preLog });
+  let pdfBase64 = null;
+  let pdfSize = 0;
+  try {
+    const pdf = await fs.readFile(outputPath);
+    pdfBase64 = pdf.toString("base64");
+    pdfSize = pdf.length;
+  } catch {}
+  const success = result.code === 0 && !!pdfBase64;
+  json(res, 200, {
+    success,
+    engine,
+    mainPath,
+    pdfName: outputName,
+    pdfBase64,
+    pdfSize,
+    durationMs: result.durationMs,
+    exitCode: result.code,
+    signal: result.signal,
+    timedOut: result.timedOut,
+    log: result.log,
+    warnings: result.warnings,
+    errors: result.errors,
+  });
+}
+
 async function handleApi(req, res, url) {
   if (req.method === "GET" && url.pathname === "/api/config") {
     return json(res, 200, {
@@ -622,6 +829,9 @@ async function handleApi(req, res, url) {
 
   if (req.method === "GET" && url.pathname === "/api/projects") return listProjects(req, res, user);
   if (req.method === "POST" && url.pathname === "/api/projects") return createProject(req, res, user);
+
+  const compileMatch = url.pathname.match(/^\/api\/projects\/([a-f0-9]{32})\/compile$/);
+  if (compileMatch && req.method === "POST") return compileProject(req, res, user, compileMatch[1]);
 
   const match = url.pathname.match(/^\/api\/projects\/([a-f0-9]{32})$/);
   if (match) {

@@ -17,6 +17,7 @@ services:
       DATA_DIR: /app/data/projects
       TEX_BIN_PATH: /usr/local/texlive/bin/x86_64-linux
       TEX_PATH_LOCKED: "true"
+      COMPILE_TIMEOUT_MS: 30000
       COOKIE_SECURE: "false"
     ports:
       - "3000:3000"
@@ -25,9 +26,16 @@ services:
       # Quando la compilazione backend usera' LaTeX reale, monta qui i binari
       # o una distribuzione TeX Live compatibile con il container.
       # - ./texlive/bin:/usr/local/texlive/bin/x86_64-linux:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
 
   mariadb:
-    image: mariadb:11.4
+    image: mariadb:11.4.10-noble
     container_name: webtex-mariadb
     restart: unless-stopped
     environment:

@@ -25,6 +25,9 @@
     appliedFont: null,
     selectedFolder: "",   // for attach destination
     lastRender: null,     // {html, math}
+    pdfDataUrl: null,
+    pdfBlobUrl: null,
+    pdfName: "",
     pages: [],
     curPage: 1,
     untitledN: 0,
@@ -496,6 +499,20 @@
   }
 
   /* ---------------- compile ---------------- */
+  function projectSnapshot() {
+    const f = findFile(state.activeId);
+    if (f && (f.kind === "tex" || f.kind === "bib")) f.content = area.value;
+    return {
+      project: { name: project.name, nodes: project.nodes },
+      assets: state.assets,
+      engine: state.engine,
+      fonts: state.fonts,
+      appliedFont: state.appliedFont,
+      activeId: state.activeId,
+      openTabs: state.openTabs.slice(),
+      untitledN: state.untitledN,
+    };
+  }
   function docFileForCompile() {
     const f = findFile(state.activeId);
     if (f && f.kind === "tex" && /\\begin\s*\{document\}/.test(f.content)) return f;
@@ -503,7 +520,7 @@
     walk(project.nodes, (x) => { if (!main && x.kind === "tex" && /\\documentclass/.test(x.content)) main = x; });
     return main || f;
   }
-  function compile() {
+  async function compile() {
     const f = docFileForCompile();
     if (!f) { toast("Nessun documento da compilare", "err"); return; }
     setView("preview");
@@ -511,44 +528,61 @@
     $("compileMsg").textContent = `${state.engine} ${f.name}…`;
     $("stState").textContent = "compilazione…";
     $("stDot").className = "dotok";
+    $("btnCompile").disabled = true;
     const t0 = performance.now();
-    setTimeout(() => {
-      const res = WTRender.compile(f.content, { assets: state.assets });
-      state.lastRender = { html: res.html, math: res.math };
-      try { layoutPages(); } catch (e) { console.error(e); }
-      const ms = ((performance.now() - t0) / 1000 + 0.4).toFixed(1);
+    try {
+      if (!window.WTProjects || !window.WTProjects.compileCurrent) throw new Error("Backend progetti non disponibile.");
+      const res = await window.WTProjects.compileCurrent(projectSnapshot(), {
+        engine: state.engine,
+        mainPath: f.path,
+        texPath: state.texPath,
+      });
+      const ms = ((res.durationMs || (performance.now() - t0)) / 1000).toFixed(1);
       buildLog(f, res, ms);
-      updateStatus(res, ms);
+      updateCompileStatus(res, ms);
+      if (res.pdfBase64) renderPdf(res);
+      else {
+        $("pvEmpty").style.display = "";
+        $("pvPages").innerHTML = "";
+        state.pages = [];
+        $("pgTot").textContent = "–";
+        $("pgCur").textContent = "–";
+        setView("log");
+      }
+    } catch (err) {
+      const ms = ((performance.now() - t0) / 1000).toFixed(1);
+      const res = { success: false, log: `WebTeX: ${err.message || "compilazione non riuscita"}`, warnings: [], errors: [err.message || "Errore di compilazione"] };
+      buildLog(f, res, ms);
+      updateCompileStatus(res, ms);
+      setView("log");
+      toast("Compilazione non riuscita", "err");
+    } finally {
       $("compiling").classList.remove("on");
-    }, 620);
+      $("btnCompile").disabled = false;
+    }
   }
   function buildLog(f, res, ms) {
-    const L = [];
-    const add = (cls, txt) => L.push(`<div class="log-l ${cls || ""}">${txt}</div>`);
-    add("cmd", `$ ${state.engine} ${f.path}`);
-    add("dim", `This is ${state.engine}, Version 3.141592653 (WebTeX)`);
-    add("", `(./${f.path}  LaTeX2e &lt;2024-06-01&gt;`);
-    add("dim", `Document Class: article 2024/01/01 v1.4 Standard LaTeX`);
-    res.warnings.forEach((w) => add("warn", `! Warning: ${w.msg}${w.line ? ` (riga ${w.line})` : ""}`));
-    if (res.errors.length) {
-      res.errors.forEach((er) => {
-        add("err", `! LaTeX Error: ${er.msg}.`);
-        add("dim", `l.${er.line}`);
-      });
-      add("err", `\n! Compilazione fallita con ${res.errors.length} error${res.errors.length > 1 ? "i" : "e"}.`);
-    } else {
-      add("dim", `Output written on ${f.name.replace(/\.tex$/, ".pdf")} (${state.pages.length} pagine).`);
-      add("ok", `\n✓ Compilazione completata in ${ms}s — ${state.pages.length} pagine, ${res.warnings.length} warning.`);
-    }
-    $("logView").innerHTML = L.join("");
+    const cls = res.success ? "ok" : "err";
+    const summary = res.success
+      ? `\n✓ Compilazione completata in ${ms}s — ${res.pdfName || f.name.replace(/\.tex$/, ".pdf")}${res.pdfSize ? ` · ${(res.pdfSize / 1024).toFixed(0)} KB` : ""}.`
+      : `\n! Compilazione fallita in ${ms}s${res.timedOut ? " · timeout" : ""}.`;
+    const raw = `${res.log || ""}${summary}`;
+    $("logView").innerHTML = raw.split(/\r?\n/).map((line) => {
+      const rowClass = /^!|error|fatal|failed|fallita/i.test(line) ? "err"
+        : /warning|overfull|underfull/i.test(line) ? "warn"
+        : line.startsWith("$") || line.startsWith("✓") ? cls
+        : "";
+      return `<div class="log-l ${rowClass}">${esc(line || " ")}</div>`;
+    }).join("");
   }
-  function updateStatus(res, ms) {
-    const errN = res.errors.length, warnN = res.warnings.length;
+  function updateCompileStatus(res, ms) {
+    const errN = (res.errors || []).length || (res.success ? 0 : 1);
+    const warnN = (res.warnings || []).length;
     $("stTime").textContent = `compilato ${new Date().toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" })} · ${ms}s`;
-    $("stMath").textContent = res.math.length ? `${res.math.length} formule` : "";
+    $("stMath").textContent = res.pdfSize ? `PDF ${(res.pdfSize / 1024).toFixed(0)} KB` : "";
     const we = $("stWarn"), ee = $("stErr");
     if (warnN) { we.style.display = ""; we.textContent = `⚠ ${warnN} warning`; } else we.style.display = "none";
-    if (errN) {
+    if (!res.success || errN) {
       ee.style.display = ""; ee.textContent = `✗ ${errN} error${errN > 1 ? "i" : "e"}`;
       $("stState").textContent = "errori"; $("stDot").className = "doterr";
       $("stState").parentElement.classList.remove("accent"); $("stState").parentElement.classList.add("err");
@@ -557,6 +591,22 @@
       $("stState").textContent = "pronto"; $("stDot").className = "dotok";
       $("stState").parentElement.classList.add("accent"); $("stState").parentElement.classList.remove("err");
     }
+  }
+  function renderPdf(res) {
+    if (state.pdfBlobUrl) URL.revokeObjectURL(state.pdfBlobUrl);
+    const bin = atob(res.pdfBase64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const blob = new Blob([bytes], { type: "application/pdf" });
+    state.pdfBlobUrl = URL.createObjectURL(blob);
+    state.pdfDataUrl = `data:application/pdf;base64,${res.pdfBase64}`;
+    state.pdfName = res.pdfName || "output.pdf";
+    $("pvEmpty").style.display = "none";
+    $("pvPages").innerHTML = `<div class="pdf-frame"><embed src="${state.pdfBlobUrl}" type="application/pdf"></div>`;
+    state.pages = [];
+    $("pgTot").textContent = "PDF";
+    $("pgCur").textContent = "1";
+    updateZoomLabel();
   }
 
   /* ---------------- view toggle ---------------- */
@@ -630,6 +680,12 @@
     };
     reader.readAsDataURL(file);
   }
+  function attachKind(name, isImg) {
+    if (isImg) return "img";
+    if (/\.bib$/i.test(name)) return "bib";
+    if (/\.(tex|txt)$/i.test(name)) return "tex";
+    return "file";
+  }
   function doUpload() {
     const af = state.attachFile;
     if (!af) return;
@@ -639,10 +695,11 @@
     state.assets[path] = af.data;
     // add to tree
     let folder = folderChildrenByPath(dest);
-    folder.push({ type: "file", id: "img_" + Date.now(), name, kind: "img", path, data: af.data });
+    const kind = attachKind(name, af.isImg);
+    folder.push({ type: "file", id: "file_" + Date.now(), name, kind, path, data: af.data });
     renderTree();
     // insert includegraphics
-    if ($("attachInsert").classList.contains("on")) {
+    if (af.isImg && $("attachInsert").classList.contains("on")) {
       const f = findFile(state.activeId);
       if (f && f.kind === "tex") insertAtCursor(`\\includegraphics[width=0.7\\linewidth]{${path}}`);
     }
@@ -658,16 +715,46 @@
     const reader = new FileReader();
     reader.onload = async () => {
       try {
-        const ff = new FontFace(fam, reader.result);
+        const dataUrl = reader.result;
+        const path = uniqueFontPath(file.name);
+        const ff = new FontFace(fam, `url(${dataUrl})`);
         await ff.load();
         document.fonts.add(ff);
-        state.fonts.push({ family: fam, name: file.name });
+        const prev = state.fonts.findIndex((x) => x.name.toLowerCase() === file.name.toLowerCase());
+        const font = { family: fam, name: file.name, path, data: dataUrl };
+        if (prev >= 0) state.fonts.splice(prev, 1, font);
+        else state.fonts.push(font);
         renderFontList();
         applyFont(fam);
+        persist();
         toast(`Font “${file.name}” caricato`);
       } catch (e) { toast("Impossibile caricare il font", "err"); }
     };
-    reader.readAsArrayBuffer(file);
+    reader.readAsDataURL(file);
+  }
+  function uniqueFontPath(name) {
+    const clean = String(name || "font.ttf").replace(/[\/\\]/g, "-");
+    let candidate = "fonts/" + clean;
+    let n = 1;
+    const taken = () => state.fonts.some((f) => f.path === candidate);
+    while (taken()) {
+      const dot = clean.lastIndexOf(".");
+      candidate = "fonts/" + (dot > 0 ? `${clean.slice(0, dot)}-${n}${clean.slice(dot)}` : `${clean}-${n}`);
+      n++;
+    }
+    return candidate;
+  }
+  async function registerProjectFont(font) {
+    if (!font || !font.family || !font.data) return false;
+    try {
+      const ff = new FontFace(font.family, `url(${font.data})`);
+      await ff.load();
+      document.fonts.add(ff);
+      return true;
+    } catch (e) {
+      console.warn("Font non caricabile", font.name, e);
+      return false;
+    }
   }
   function renderFontList() {
     const box = $("fontList");
@@ -678,46 +765,33 @@
       el.className = "fontcard";
       const active = state.appliedFont === fo.family;
       el.innerHTML = `<div class="glyph" style="font-family:'${fo.family}'">Ag</div>
-        <div><div class="nm" style="font-family:'${fo.family}'">${fo.name}</div><div class="fm">${fo.family}</div></div>
+        <div><div class="nm" style="font-family:'${fo.family}'">${esc(fo.name)}</div><div class="fm">${esc(fo.path || fo.family)}</div></div>
         <div class="use"><button class="pill${active ? " active" : ""}">${active ? "✓ in uso" : "usa nel progetto"}</button></div>`;
       el.querySelector(".pill").addEventListener("click", () => applyFont(active ? null : fo.family));
       box.appendChild(el);
     });
   }
-  function applyFont(fam) {
+  function applyFont(fam, save) {
+    if (save == null) save = true;
     state.appliedFont = fam;
     if (fam) document.documentElement.style.setProperty("--proj-font", `'${fam}', 'CMU Serif', Georgia, serif`);
     else document.documentElement.style.removeProperty("--proj-font");
     renderFontList();
+    if (save) persist();
   }
 
-  /* ---------------- download (print to PDF) ---------------- */
+  /* ---------------- download compiled PDF ---------------- */
   function downloadPdf() {
-    if (!state.pages.length) { toast("Compila prima di scaricare", "err"); return; }
-    toast("Apro la finestra di stampa → Salva come PDF");
-    const w = window.open("", "_blank");
-    if (!w) { toast("Popup bloccato dal browser", "err"); return; }
-    const pagesHTML = state.pages.map((p) => {
-      const c = p.cloneNode(true);
-      const pn = c.querySelector(".pagenum"); if (pn) pn.remove();
-      return `<div class="sheet">${c.innerHTML}</div>`;
-    }).join("");
-    const katexCss = `<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">`;
-    const font = state.appliedFont ? `'${state.appliedFont}', ` : "";
-    w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${project.name}.pdf</title>${katexCss}
-      <style>
-        @page{size:A4;margin:18mm}
-        body{margin:0;font-family:${font}'CMU Serif',Georgia,serif;color:#111;font-size:11pt;line-height:1.5}
-        .sheet{page-break-after:always}
-        .doc-title{text-align:center;font-size:1.9em;font-weight:700;margin:.3em 0}
-        .doc-auth,.doc-date{text-align:center}.doc-date{color:#444;margin-bottom:1.6em}
-        h2{font-size:1.35em}h3{font-size:1.12em}p{text-align:justify}
-        .figbox{border:1px dashed #bbb;aspect-ratio:16/10;display:grid;place-items:center;color:#999;max-width:72%;margin:1em auto}
-        img.fig{max-width:78%;display:block;margin:1em auto}.cap{text-align:center;font-size:.85em;color:#555}
-        .tt{font-family:monospace}.eqn{text-align:center;margin:1em 0}
-      </style></head><body>${pagesHTML}</body></html>`);
-    w.document.close();
-    setTimeout(() => { try { w.focus(); w.print(); } catch (e) {} }, 500);
+    if (!state.pdfBlobUrl) {
+      toast("Compila prima di scaricare il PDF", "err");
+      return;
+    }
+    const a = document.createElement("a");
+    a.href = state.pdfBlobUrl;
+    a.download = state.pdfName || `${project.name || "documento"}.pdf`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
   }
 
   /* ---------------- new / open / save ---------------- */
@@ -1077,12 +1151,6 @@
     toast(`${n} occorrenz${n > 1 ? "e sostituite" : "a sostituita"}`);
   }
 
-  /* ---------------- first compile (after KaTeX is ready) ---------------- */
-  function firstCompile() {
-    if (window.katex) compile();
-    else setTimeout(firstCompile, 120);
-  }
-
   /* ---------------- WTApp: bridge used by the projects layer ---------------- */
   window.WTApp = {
     // Load a project's data into the editor and render everything.
@@ -1093,8 +1161,12 @@
       // rebuild image assets from the tree if not stored separately
       walk(project.nodes, (f) => { if (f.kind === "img" && f.data && f.path && !state.assets[f.path]) state.assets[f.path] = f.data; });
       state.engine = data.engine || "pdflatex";
-      state.appliedFont = null; applyFont(null);
-      state.lastRender = null; state.pages = []; state.curPage = 1;
+      state.fonts = Array.isArray(data.fonts) ? data.fonts : [];
+      state.fonts.forEach((font) => registerProjectFont(font).then(() => renderFontList()));
+      applyFont(data.appliedFont || null, false);
+      if (state.pdfBlobUrl) URL.revokeObjectURL(state.pdfBlobUrl);
+      state.lastRender = null; state.pdfDataUrl = null; state.pdfBlobUrl = null; state.pdfName = "";
+      state.pages = []; state.curPage = 1;
       state.untitledN = data.untitledN || 0;
       state.zoom = 1; state.fit = true; state.view = "preview";
       $("engineName").textContent = state.engine;
@@ -1119,20 +1191,10 @@
       if (active) openFile(active);
       else { area.value = ""; paint(); renderOutline(); }
       updateZoomLabel();
-      setTimeout(firstCompile, 140);
     },
     // Snapshot the active project for persistence.
     serialize() {
-      const f = findFile(state.activeId);
-      if (f && (f.kind === "tex" || f.kind === "bib")) f.content = area.value;
-      return {
-        project: { name: project.name, nodes: project.nodes },
-        assets: state.assets,
-        engine: state.engine,
-        activeId: state.activeId,
-        openTabs: state.openTabs.slice(),
-        untitledN: state.untitledN,
-      };
+      return projectSnapshot();
     },
     setName(name) { project.name = name; },
   };
