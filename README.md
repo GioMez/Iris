@@ -71,6 +71,8 @@ Quando `TEX_PATH_LOCKED` e' `true`, il campo nei settings resta visibile ma non 
 
 Il pulsante `Compila` salva il progetto, lancia il motore selezionato lato backend e mostra il PDF prodotto nel pannello di anteprima. Il log reale del processo viene riportato nel tab `Log`, mentre la barra in basso mostra durata, warning/errori e dimensione del PDF.
 
+Gli artefatti di compilazione vengono scritti nella cartella `output/` del progetto e possono essere sovrascritti a ogni compilazione. La pipeline e' configurabile dai settings con preset per compilazione rapida, BibTeX, Biber, indice o step personalizzati. Gli step custom sono strutturati come tool in allowlist piu' argomenti, senza shell libera; sono disponibili le variabili `[engine]`, `[main]`, `[jobname]` e `[pdf]`.
+
 Variabili utili:
 
 ```env

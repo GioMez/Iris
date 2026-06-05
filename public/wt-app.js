@@ -15,6 +15,7 @@
     activeId: "main",
     openTabs: ["main"],
     engine: "pdflatex",
+    compileProfile: { mode: "quick", steps: [{ tool: "[engine]", args: ["[main]"] }] },
     texPath: "",          // directory of the LaTeX binaries (empty = system PATH)
     texPathLocked: false,
     autoIndent: true,
@@ -115,13 +116,92 @@
   function schedulePersist() { clearTimeout(persistT); persistT = setTimeout(persist, 400); }
 
   /* ---------------- LaTeX binaries path ---------------- */
-  function joinBin(dir, name) {
-    if (!dir) return name;
-    return dir.replace(/[\/\\]+$/, "") + "/" + name;
+  function compileCommandPreview() {
+    const engine = state.engine || "pdflatex";
+    if (!state.texPath) return engine + " (dal PATH del backend)";
+    return state.texPath.replace(/[\/\\]+$/, "") + "/" + engine;
   }
-  function updateBinResolved() {
-    const el = $("binResolved");
-    if (el) el.textContent = joinBin(state.texPath, state.engine);
+  function updateCompileCommandPreview() {
+    const el = $("compileCommandPreview");
+    if (el) el.textContent = compileCommandPreview();
+  }
+  function presetCompileProfile(mode) {
+    const presets = {
+      quick: { mode: "quick", steps: [{ tool: "[engine]", args: ["[main]"] }] },
+      bibtex: { mode: "bibtex", steps: [
+        { tool: "[engine]", args: ["[main]"] },
+        { tool: "bibtex", args: ["output/[jobname]"] },
+        { tool: "[engine]", args: ["[main]"] },
+        { tool: "[engine]", args: ["[main]"] },
+      ] },
+      biber: { mode: "biber", steps: [
+        { tool: "[engine]", args: ["[main]"] },
+        { tool: "biber", args: ["--input-directory=output", "--output-directory=output", "[jobname]"] },
+        { tool: "[engine]", args: ["[main]"] },
+        { tool: "[engine]", args: ["[main]"] },
+      ] },
+      index: { mode: "index", steps: [
+        { tool: "[engine]", args: ["[main]"] },
+        { tool: "makeindex", args: ["-o", "output/[jobname].ind", "output/[jobname].idx"] },
+        { tool: "[engine]", args: ["[main]"] },
+      ] },
+    };
+    return JSON.parse(JSON.stringify(presets[mode] || presets.quick));
+  }
+  function normalizeCompileProfile(profile) {
+    if (!profile || typeof profile !== "object") return presetCompileProfile("quick");
+    const steps = Array.isArray(profile.steps) && profile.steps.length ? profile.steps : presetCompileProfile(profile.mode || "quick").steps;
+    return {
+      mode: profile.mode || "quick",
+      steps: steps.slice(0, 12).map((s) => ({
+        tool: s.tool || "[engine]",
+        args: Array.isArray(s.args) ? s.args.map(String) : String(s.args || "[main]").split(/\s+/).filter(Boolean),
+      })),
+    };
+  }
+  function renderCompileProfile() {
+    const preset = $("compilePreset");
+    const box = $("compileSteps");
+    const add = $("compileAddStep");
+    if (!preset || !box || !add) return;
+    const profile = normalizeCompileProfile(state.compileProfile);
+    state.compileProfile = profile;
+    preset.value = profile.mode || "quick";
+    const custom = profile.mode === "custom";
+    box.innerHTML = "";
+    profile.steps.forEach((step, idx) => {
+      const row = document.createElement("div");
+      row.className = "compile-step";
+      row.innerHTML = `<select class="select" data-step-tool>
+          <option value="[engine]">motore scelto</option>
+          <option value="pdflatex">pdflatex</option>
+          <option value="xelatex">xelatex</option>
+          <option value="lualatex">lualatex</option>
+          <option value="xetex">xetex</option>
+          <option value="bibtex">bibtex</option>
+          <option value="biber">biber</option>
+          <option value="makeindex">makeindex</option>
+        </select>
+        <input class="input" data-step-args spellcheck="false" autocomplete="off">
+        <button class="node-act danger" type="button" data-step-del title="Elimina step">✕</button>`;
+      row.querySelector("[data-step-tool]").value = step.tool;
+      row.querySelector("[data-step-args]").value = (step.args || []).join(" ");
+      row.querySelectorAll("select,input,button").forEach((el) => { el.disabled = !custom; });
+      row.querySelector("[data-step-tool]").addEventListener("change", (e) => { step.tool = e.target.value; saveCompileProfile(); });
+      row.querySelector("[data-step-args]").addEventListener("input", (e) => { step.args = e.target.value.trim().split(/\s+/).filter(Boolean); saveCompileProfile(); });
+      row.querySelector("[data-step-del]").addEventListener("click", () => {
+        state.compileProfile.steps.splice(idx, 1);
+        if (!state.compileProfile.steps.length) state.compileProfile.steps.push({ tool: "[engine]", args: ["[main]"] });
+        saveCompileProfile();
+        renderCompileProfile();
+      });
+      box.appendChild(row);
+    });
+    add.disabled = !custom;
+  }
+  function saveCompileProfile() {
+    state.compileProfile = normalizeCompileProfile(state.compileProfile);
+    persist();
   }
   function updateTexPathControl() {
     const input = $("texPath");
@@ -132,7 +212,7 @@
     hint.innerHTML = state.texPathLocked
       ? `↳ configurato dal deployment Docker Compose; modifica il mapping nel file <b style="color:var(--s-cmd);margin:0 3px">docker-compose.yml</b>.`
       : `↳ la cartella che contiene gli eseguibili <b style="color:var(--s-cmd);margin:0 3px">pdflatex</b> <b style="color:var(--s-cmd);margin-right:3px">xelatex</b> <b style="color:var(--s-cmd)">lualatex</b>.`;
-    updateBinResolved();
+    updateCompileCommandPreview();
   }
   async function loadRuntimeConfig() {
     try {
@@ -506,6 +586,7 @@
       project: { name: project.name, nodes: project.nodes },
       assets: state.assets,
       engine: state.engine,
+      compileProfile: state.compileProfile,
       fonts: state.fonts,
       appliedFont: state.appliedFont,
       activeId: state.activeId,
@@ -536,6 +617,7 @@
         engine: state.engine,
         mainPath: f.path,
         texPath: state.texPath,
+        compileProfile: state.compileProfile,
       });
       const ms = ((res.durationMs || (performance.now() - t0)) / 1000).toFixed(1);
       buildLog(f, res, ms);
@@ -600,7 +682,7 @@
     const blob = new Blob([bytes], { type: "application/pdf" });
     state.pdfBlobUrl = URL.createObjectURL(blob);
     state.pdfDataUrl = `data:application/pdf;base64,${res.pdfBase64}`;
-    state.pdfName = res.pdfName || "output.pdf";
+    state.pdfName = (res.pdfName || "output.pdf").split("/").pop();
     $("pvEmpty").style.display = "none";
     $("pvPages").innerHTML = `<div class="pdf-frame"><embed src="${state.pdfBlobUrl}" type="application/pdf"></div>`;
     state.pages = [];
@@ -836,14 +918,28 @@
     $("btnOpen").addEventListener("click", () => { const i = document.createElement("input"); i.type = "file"; i.accept = ".tex,.bib,.txt"; i.onchange = () => i.files[0] && openExternal(i.files[0]); i.click(); });
     $("btnAttach").addEventListener("click", openAttach);
     $("dlBtn").addEventListener("click", downloadPdf);
-    $("btnSettings").addEventListener("click", () => { renderFontList(); updateTexPathControl(); $("settingsModal").classList.add("on"); });
+    $("btnSettings").addEventListener("click", () => { renderFontList(); updateTexPathControl(); renderCompileProfile(); $("settingsModal").classList.add("on"); });
 
     // latex binaries path (in Impostazioni → Compilazione)
     $("texPath").addEventListener("input", function () {
       if (state.texPathLocked) return;
       state.texPath = this.value.trim();
-      updateBinResolved();
+      updateCompileCommandPreview();
       saveLayout();
+    });
+    $("compilePreset").addEventListener("change", function () {
+      state.compileProfile = this.value === "custom"
+        ? { mode: "custom", steps: normalizeCompileProfile(state.compileProfile).steps }
+        : presetCompileProfile(this.value);
+      saveCompileProfile();
+      renderCompileProfile();
+    });
+    $("compileAddStep").addEventListener("click", () => {
+      state.compileProfile = normalizeCompileProfile(state.compileProfile);
+      state.compileProfile.mode = "custom";
+      state.compileProfile.steps.push({ tool: "[engine]", args: ["[main]"] });
+      saveCompileProfile();
+      renderCompileProfile();
     });
 
     // auto-indent (in Impostazioni → Editor)
@@ -877,7 +973,7 @@
       em.querySelectorAll(".mi").forEach((m) => m.classList.toggle("on", m.dataset.engine === state.engine));
     });
     em.querySelectorAll(".mi").forEach((m) => m.addEventListener("click", () => {
-      state.engine = m.dataset.engine; $("engineName").textContent = state.engine; em.classList.remove("on"); updateBinResolved(); persist();
+      state.engine = m.dataset.engine; $("engineName").textContent = state.engine; em.classList.remove("on"); updateCompileCommandPreview(); persist();
     }));
     document.addEventListener("click", () => em.classList.remove("on"));
 
@@ -1161,6 +1257,7 @@
       // rebuild image assets from the tree if not stored separately
       walk(project.nodes, (f) => { if (f.kind === "img" && f.data && f.path && !state.assets[f.path]) state.assets[f.path] = f.data; });
       state.engine = data.engine || "pdflatex";
+      state.compileProfile = normalizeCompileProfile(data.compileProfile);
       state.fonts = Array.isArray(data.fonts) ? data.fonts : [];
       state.fonts.forEach((font) => registerProjectFont(font).then(() => renderFontList()));
       applyFont(data.appliedFont || null, false);
@@ -1203,6 +1300,7 @@
   loadLayout();
   loadRuntimeConfig();
   renderFontList();
+  renderCompileProfile();
   updateZoomLabel();
   wire();
 })();

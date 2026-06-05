@@ -363,6 +363,9 @@ button{font-family:inherit;color:inherit}
 .binpath{display:block;margin-top:8px;font-family:'IBM Plex Mono';font-size:12.5px;color:var(--green);
   background:var(--panel-2);border:1px solid var(--border);border-radius:9px;padding:11px 13px;
   overflow-x:auto;white-space:nowrap}
+.compile-step{display:grid;grid-template-columns:132px minmax(0,1fr) 28px;gap:8px;align-items:center;margin-bottom:8px}
+.compile-step .select,.compile-step .input{height:34px}
+.compile-step .node-act{display:grid;background:#ffffff08}
 .set-row{display:flex;align-items:flex-start;gap:18px;padding:14px 15px;border:1px solid var(--border);border-radius:11px;background:#ffffff05}
 .set-row+.set-row{margin-top:10px}
 .set-row-txt{flex:1;min-width:0}

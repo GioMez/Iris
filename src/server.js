@@ -26,6 +26,7 @@ const MAX_BODY = Number(process.env.MAX_BODY_MB || 25) * 1024 * 1024;
 const COMPILE_TIMEOUT_MS = Number(process.env.COMPILE_TIMEOUT_MS || 30000);
 const COMPILE_LOG_LIMIT = Number(process.env.COMPILE_LOG_LIMIT || 1024 * 1024);
 const LATEX_ENGINES = new Set(["pdflatex", "xelatex", "lualatex", "xetex"]);
+const COMPILE_TOOLS = new Set(["pdflatex", "xelatex", "lualatex", "xetex", "bibtex", "biber", "makeindex"]);
 
 let pool;
 
@@ -444,6 +445,7 @@ async function pruneProjectFiles(storagePath, expectedFiles) {
     const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
     for (const entry of entries) {
       if (entry.name === ".webtex") continue;
+      if (!relBase && entry.name === "output") continue;
       const rel = relBase ? path.posix.join(relBase, entry.name) : entry.name;
       const abs = path.join(dir, entry.name);
       if (entry.isDirectory()) {
@@ -602,6 +604,7 @@ async function updateProject(req, res, user, id) {
   else data = await readProjectFile(row.storage_path);
   data.project = data.project && Array.isArray(data.project.nodes) ? data.project : { nodes: [] };
   data.project.name = name;
+  if (body.compileProfile && typeof body.compileProfile === "object") data.compileProfile = sanitizeCompileProfileForStorage(body.compileProfile);
   data.createdAt = toMillis(row.created_at);
   data.updatedAt = Date.now();
   await writeProjectFile(row.storage_path, data);
@@ -645,14 +648,19 @@ function findCompileFile(data, requestedPath) {
   return picked;
 }
 
-function compileCommand(engine, texPath) {
-  if (!LATEX_ENGINES.has(engine)) {
-    const err = new Error("Motore LaTeX non supportato");
+function resolveCompileTool(tool, engine) {
+  const resolved = tool === "[engine]" ? engine : String(tool || "").trim();
+  if (!COMPILE_TOOLS.has(resolved)) {
+    const err = new Error("Tool di compilazione non supportato");
     err.status = 400;
     throw err;
   }
+  return resolved;
+}
+
+function compileCommand(tool, texPath) {
   const base = String(texPath || "").trim();
-  return base ? path.join(base, engine) : engine;
+  return base ? path.join(base, tool) : tool;
 }
 
 function pdfNameFor(texPath) {
@@ -691,13 +699,135 @@ function refreshFontCache(fontDir) {
   });
 }
 
-function runLatex({ engine, texPath, cwd, mainPath, fontDir, texmfVar, preLog }) {
+function defaultCompileProfile(engine) {
+  return {
+    mode: "quick",
+    steps: [
+      { tool: "[engine]", args: ["[main]"] },
+    ],
+  };
+}
+
+function presetCompileProfile(mode) {
+  if (mode === "bibtex") {
+    return {
+      mode,
+      steps: [
+        { tool: "[engine]", args: ["[main]"] },
+        { tool: "bibtex", args: ["output/[jobname]"] },
+        { tool: "[engine]", args: ["[main]"] },
+        { tool: "[engine]", args: ["[main]"] },
+      ],
+    };
+  }
+  if (mode === "biber") {
+    return {
+      mode,
+      steps: [
+        { tool: "[engine]", args: ["[main]"] },
+        { tool: "biber", args: ["--input-directory=output", "--output-directory=output", "[jobname]"] },
+        { tool: "[engine]", args: ["[main]"] },
+        { tool: "[engine]", args: ["[main]"] },
+      ],
+    };
+  }
+  if (mode === "index") {
+    return {
+      mode,
+      steps: [
+        { tool: "[engine]", args: ["[main]"] },
+        { tool: "makeindex", args: ["-o", "output/[jobname].ind", "output/[jobname].idx"] },
+        { tool: "[engine]", args: ["[main]"] },
+      ],
+    };
+  }
+  return defaultCompileProfile();
+}
+
+function compileVariables(mainPath) {
+  const jobname = path.basename(mainPath).replace(/\.[^.]+$/, "");
+  return {
+    main: mainPath,
+    jobname,
+    pdf: `output/${jobname}.pdf`,
+  };
+}
+
+function expandCompileArg(arg, vars, engine) {
+  const out = String(arg || "")
+    .replaceAll("[engine]", engine)
+    .replaceAll("[main]", vars.main)
+    .replaceAll("[jobname]", vars.jobname)
+    .replaceAll("[pdf]", vars.pdf);
+  if (!out || out.includes("\0") || out.length > 500) {
+    const err = new Error("Parametro di compilazione non valido");
+    err.status = 400;
+    throw err;
+  }
+  return out;
+}
+
+function normalizeCompileProfile(profile, engine, mainPath) {
+  const requested = profile && typeof profile === "object" ? profile : defaultCompileProfile(engine);
+  const source = requested.mode && requested.mode !== "custom" ? presetCompileProfile(requested.mode) : requested;
+  const steps = Array.isArray(source.steps) ? source.steps : defaultCompileProfile(engine).steps;
+  const vars = compileVariables(mainPath);
+  return {
+    mode: source.mode || "quick",
+    steps: steps.slice(0, 12).map((step) => {
+      const tool = resolveCompileTool(step.tool, engine);
+      const rawArgs = Array.isArray(step.args) ? step.args : [];
+      let args = rawArgs.map((arg) => expandCompileArg(arg, vars, engine));
+      if (LATEX_ENGINES.has(tool)) {
+        args = [
+          "-interaction=nonstopmode",
+          "-halt-on-error",
+          "-file-line-error",
+          "-no-shell-escape",
+          "-output-directory=output",
+          ...args.filter((arg) => !arg.startsWith("-output-directory")),
+        ];
+      }
+      return { tool, args };
+    }),
+  };
+}
+
+function sanitizeCompileProfileForStorage(profile) {
+  if (!profile || typeof profile !== "object") return { mode: "quick" };
+  const mode = String(profile.mode || "quick");
+  if (mode !== "custom") {
+    return { mode: ["quick", "bibtex", "biber", "index"].includes(mode) ? mode : "quick" };
+  }
+  const steps = Array.isArray(profile.steps) ? profile.steps : [];
+  return {
+    mode: "custom",
+    steps: steps.slice(0, 12).map((step) => {
+      const tool = step.tool === "[engine]" ? "[engine]" : resolveCompileTool(step.tool, "pdflatex");
+      const args = Array.isArray(step.args) ? step.args : String(step.args || "").split(/\s+/).filter(Boolean);
+      return {
+        tool,
+        args: args.slice(0, 20).map((arg) => {
+          const out = String(arg || "");
+          if (!out || out.includes("\0") || out.length > 500) {
+            const err = new Error("Parametro di compilazione non valido");
+            err.status = 400;
+            throw err;
+          }
+          return out;
+        }),
+      };
+    }).filter((step) => step.args.length),
+  };
+}
+
+function runCompileStep({ step, texPath, cwd, fontDir, texmfVar }) {
   return new Promise((resolve) => {
-    const command = compileCommand(engine, texPath);
-    const args = ["-interaction=nonstopmode", "-halt-on-error", "-file-line-error", "-no-shell-escape", mainPath];
+    const command = compileCommand(step.tool, texPath);
+    const args = step.args;
     const envPath = texPath ? `${texPath}${path.delimiter}${process.env.PATH || ""}` : process.env.PATH || "";
     const startedAt = Date.now();
-    let log = `${preLog || ""}$ ${command} ${args.join(" ")}\n`;
+    let log = `$ ${command} ${args.join(" ")}\n`;
     let timedOut = false;
     let done = false;
     const child = spawn(command, args, {
@@ -738,6 +868,38 @@ function runLatex({ engine, texPath, cwd, mainPath, fontDir, texmfVar, preLog })
   });
 }
 
+async function runCompilePipeline({ profile, texPath, cwd, fontDir, texmfVar, preLog }) {
+  const startedAt = Date.now();
+  let log = preLog || "";
+  let warnings = [];
+  let errors = [];
+  let exitCode = 0;
+  let signal = null;
+  let timedOut = false;
+  for (let i = 0; i < profile.steps.length; i++) {
+    const step = profile.steps[i];
+    log += `\n===== WebTeX step ${i + 1}/${profile.steps.length}: ${step.tool} =====\n`;
+    const res = await runCompileStep({ step, texPath, cwd, fontDir, texmfVar });
+    log += res.log;
+    warnings = warnings.concat(res.warnings || []);
+    errors = errors.concat(res.errors || []);
+    exitCode = res.code;
+    signal = res.signal;
+    timedOut = res.timedOut;
+    if (res.code !== 0 || res.signal || res.timedOut) break;
+  }
+  const parsed = parseCompileLog(log);
+  return {
+    code: exitCode,
+    signal,
+    timedOut,
+    durationMs: Date.now() - startedAt,
+    log,
+    warnings: Array.from(new Set(warnings.concat(parsed.warnings))).slice(0, 80),
+    errors: Array.from(new Set(errors.concat(parsed.errors))).slice(0, 80),
+  };
+}
+
 async function compileProject(req, res, user, id) {
   const body = await readBody(req);
   const row = await projectForUser(id, user.sub);
@@ -745,24 +907,28 @@ async function compileProject(req, res, user, id) {
   const data = body.data && typeof body.data === "object" ? body.data : await readProjectFile(row.storage_path);
   data.project = data.project && Array.isArray(data.project.nodes) ? data.project : { nodes: [] };
   data.project.name = name;
+  const engine = String(body.engine || data.engine || "pdflatex").trim();
+  const texPath = TEX_PATH_LOCKED ? TEX_BIN_PATH : String(body.texPath || TEX_BIN_PATH || "").trim();
+  const main = findCompileFile(data, body.mainPath);
+  const mainPath = safeRelPath(main.path);
+  const storedCompileProfile = sanitizeCompileProfileForStorage(body.compileProfile || data.compileProfile);
+  const compileProfile = normalizeCompileProfile(storedCompileProfile, engine, mainPath);
+  data.compileProfile = storedCompileProfile;
   data.createdAt = toMillis(row.created_at);
   data.updatedAt = Date.now();
   await writeProjectFile(row.storage_path, data);
   await pool.query("UPDATE projects SET name = ?, updated_at = CURRENT_TIMESTAMP(3) WHERE id = ? AND user_id = ?", [name, id, user.sub]);
 
-  const engine = String(body.engine || data.engine || "pdflatex").trim();
-  const texPath = TEX_PATH_LOCKED ? TEX_BIN_PATH : String(body.texPath || TEX_BIN_PATH || "").trim();
-  const main = findCompileFile(data, body.mainPath);
-  const mainPath = safeRelPath(main.path);
   const outputName = pdfNameFor(mainPath);
-  const outputPath = path.join(row.storage_path, outputName);
+  const outputDir = path.join(row.storage_path, "output");
+  await fs.mkdir(outputDir, { recursive: true });
+  const outputPath = path.join(outputDir, outputName);
   await fs.rm(outputPath, { force: true }).catch(() => {});
-
   const fontDir = path.join(row.storage_path, "fonts");
   const texmfVar = path.join(row.storage_path, ".webtex", "texmf-var");
   await fs.mkdir(texmfVar, { recursive: true });
   const preLog = /^(xelatex|lualatex)$/i.test(engine) ? await refreshFontCache(fontDir) : "";
-  const result = await runLatex({ engine, texPath, cwd: row.storage_path, mainPath, fontDir, texmfVar, preLog });
+  const result = await runCompilePipeline({ profile: compileProfile, texPath, cwd: row.storage_path, fontDir, texmfVar, preLog });
   let pdfBase64 = null;
   let pdfSize = 0;
   try {
@@ -775,9 +941,11 @@ async function compileProject(req, res, user, id) {
     success,
     engine,
     mainPath,
-    pdfName: outputName,
+    outputDir: "output",
+    pdfName: `output/${outputName}`,
     pdfBase64,
     pdfSize,
+    compileProfile,
     durationMs: result.durationMs,
     exitCode: result.code,
     signal: result.signal,

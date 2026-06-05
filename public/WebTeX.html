@@ -269,9 +269,22 @@
           <div class="hint" id="texPathHint">↳ la cartella che contiene gli eseguibili <b style="color:var(--s-cmd);margin:0 3px">pdflatex</b> <b style="color:var(--s-cmd);margin-right:3px">xelatex</b> <b style="color:var(--s-cmd)">lualatex</b>.</div>
         </div>
         <div class="binresolve">
-          <span class="label">Eseguibile risolto · motore attivo</span>
-          <code class="binpath" id="binResolved">pdflatex</code>
+          <span class="label">Comando richiesto al backend</span>
+          <code class="binpath" id="compileCommandPreview">pdflatex</code>
         </div>
+        <div class="field" style="margin-top:18px">
+          <span class="label">Pipeline di compilazione</span>
+          <select class="select" id="compilePreset">
+            <option value="quick">Rapida</option>
+            <option value="bibtex">Bibliografia BibTeX</option>
+            <option value="biber">Bibliografia Biber</option>
+            <option value="index">Indice</option>
+            <option value="custom">Personalizzata</option>
+          </select>
+          <div class="hint">↳ gli output vengono sovrascritti nella cartella <b style="color:var(--s-cmd);margin:0 3px">output/</b> del progetto.</div>
+        </div>
+        <div id="compileSteps"></div>
+        <button class="btn sm" type="button" id="compileAddStep">＋ Step</button>
       </div>
     </div>
     <div class="m-foot">

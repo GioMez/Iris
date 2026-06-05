@@ -204,6 +204,7 @@
         engine: options && options.engine,
         mainPath: options && options.mainPath,
         texPath: options && options.texPath,
+        compileProfile: options && options.compileProfile,
       }),
     });
     return out;
