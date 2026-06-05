@@ -92,6 +92,20 @@ Prime protezioni attive:
 
 Nota: la compilazione LaTeX resta una superficie sensibile. Il passo successivo consigliato e' isolare la compilazione in un worker/container dedicato, senza accesso a codice applicativo, variabili DB o volume completo dei progetti.
 
+## Password locali
+
+Il login user/password usa Argon2id.
+
+Parametri opzionali:
+
+```env
+ARGON2_MEMORY_COST=65536
+ARGON2_TIME_COST=3
+ARGON2_PARALLELISM=1
+```
+
+`ARGON2_MEMORY_COST` e' espresso in KiB. Questi parametri riguardano solo il login locale; l'SSO potra' affiancarlo senza riusare gli hash password.
+
 ## Account iniziali
 
 Alla prima partenza, se la tabella utenti e' vuota, il backend crea:

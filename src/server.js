@@ -5,6 +5,7 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const { spawn } = require("node:child_process");
 const { URL } = require("node:url");
+const argon2 = require("argon2");
 const mariadb = require("mariadb");
 
 loadDotEnv(path.resolve(".env"));
@@ -25,6 +26,9 @@ const COOKIE_SECURE = String(process.env.COOKIE_SECURE || "false") === "true";
 const MAX_BODY = Number(process.env.MAX_BODY_MB || 25) * 1024 * 1024;
 const COMPILE_TIMEOUT_MS = Number(process.env.COMPILE_TIMEOUT_MS || 30000);
 const COMPILE_LOG_LIMIT = Number(process.env.COMPILE_LOG_LIMIT || 1024 * 1024);
+const ARGON2_MEMORY_COST = positiveIntEnv("ARGON2_MEMORY_COST", 65536);
+const ARGON2_TIME_COST = positiveIntEnv("ARGON2_TIME_COST", 3);
+const ARGON2_PARALLELISM = positiveIntEnv("ARGON2_PARALLELISM", 1);
 const LATEX_ENGINES = new Set(["pdflatex", "xelatex", "lualatex", "xetex"]);
 const COMPILE_TOOLS = new Set(["pdflatex", "xelatex", "lualatex", "xetex", "bibtex", "biber", "makeindex"]);
 
@@ -59,6 +63,11 @@ function loadDotEnv(file) {
     }
     if (key && process.env[key] == null) process.env[key] = value;
   }
+}
+
+function positiveIntEnv(name, fallback) {
+  const value = Number(process.env[name]);
+  return Number.isInteger(value) && value > 0 ? value : fallback;
 }
 
 function json(res, status, data, headers = {}) {
@@ -139,18 +148,29 @@ function publicUser(rowOrToken) {
   };
 }
 
-function hashPassword(password, salt = crypto.randomBytes(16).toString("base64url")) {
-  const key = crypto.scryptSync(password, salt, 64).toString("base64url");
-  return `scrypt$${salt}$${key}`;
+const ARGON2_OPTIONS = {
+  type: argon2.argon2id,
+  memoryCost: ARGON2_MEMORY_COST,
+  timeCost: ARGON2_TIME_COST,
+  parallelism: ARGON2_PARALLELISM,
+};
+
+async function hashPassword(password) {
+  return argon2.hash(password, ARGON2_OPTIONS);
 }
 
-function verifyPassword(password, stored) {
-  const [kind, salt, key] = String(stored || "").split("$");
-  if (kind !== "scrypt" || !salt || !key) return false;
-  const check = hashPassword(password, salt).split("$")[2];
-  const a = Buffer.from(key);
-  const b = Buffer.from(check);
-  return a.length === b.length && crypto.timingSafeEqual(a, b);
+async function verifyPassword(password, stored) {
+  const hash = String(stored || "");
+  if (!hash.startsWith("$argon2")) return { valid: false, needsRehash: false };
+  try {
+    const valid = await argon2.verify(hash, password);
+    return {
+      valid,
+      needsRehash: valid && argon2.needsRehash(hash, ARGON2_OPTIONS),
+    };
+  } catch {
+    return { valid: false, needsRehash: false };
+  }
 }
 
 function safeDbName(name) {
@@ -225,7 +245,7 @@ async function seedUsers() {
   for (const [username, email, name, password] of users) {
     await pool.query(
       "INSERT INTO users (username, email, display_name, password_hash) VALUES (?, ?, ?, ?)",
-      [username, email, name, hashPassword(password)]
+      [username, email, name, await hashPassword(password)]
     );
   }
 }
@@ -1129,8 +1149,14 @@ async function handleApi(req, res, url) {
       [login, login]
     );
     const user = rows[0];
-    if (!user || !verifyPassword(password, user.password_hash)) {
+    const passwordCheck = user ? await verifyPassword(password, user.password_hash) : { valid: false, needsRehash: false };
+    if (!user || !passwordCheck.valid) {
       return json(res, 401, { error: "Credenziali non valide. Riprova." });
+    }
+    if (passwordCheck.needsRehash) {
+      const passwordHash = await hashPassword(password);
+      await pool.query("UPDATE users SET password_hash = ? WHERE id = ?", [passwordHash, user.id]);
+      user.password_hash = passwordHash;
     }
     return json(res, 200, { user: publicUser(user) }, {
       "set-cookie": cookie("webtex_session", makeToken(user), { maxAge: 60 * 60 * 24 * 7 }),

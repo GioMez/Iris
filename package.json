@@ -9,6 +9,7 @@
     "dev": "node src/server.js"
   },
   "dependencies": {
+    "argon2": "0.44.0",
     "mariadb": "3.5.2"
   },
   "engines": {
