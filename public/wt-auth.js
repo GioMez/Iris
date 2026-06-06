@@ -4,6 +4,7 @@
 (function () {
   const $ = (id) => document.getElementById(id);
   let ssoEnabled = false;
+  let currentUser = null;
 
   async function api(path, options) {
     const res = await fetch(path, {
@@ -25,6 +26,7 @@
     String(name || "").split(/\s+/).filter(Boolean).map((s) => s[0]).slice(0, 2).join("").toUpperCase() || "–";
 
   function applyUserUI(u) {
+    currentUser = u;
     const ini = initials(u.name);
     $("userAvatar").textContent = ini;
     $("userName").textContent = u.name;
@@ -35,6 +37,8 @@
     if (pa) pa.textContent = ini;
     if (pn) pn.textContent = u.name;
     if (pe) pe.textContent = u.email;
+    const pwd = $("miPassword");
+    if (pwd) pwd.style.display = u.canChangePassword ? "" : "none";
   }
 
   function showApp(u) {
@@ -49,6 +53,7 @@
     if (window.WTProjects) window.WTProjects.onLogout();
     document.documentElement.classList.remove("wt-authed");
     document.documentElement.classList.remove("wt-inproject");
+    currentUser = null;
     const app = document.querySelector(".app");
     if (app) app.inert = true;
     $("loginUser").value = "";
@@ -67,6 +72,27 @@
     card.classList.add("shake");
   }
   const hideError = () => { $("loginError").style.display = "none"; };
+
+  function passwordError(msg) {
+    const e = $("passwordError");
+    e.textContent = msg;
+    e.style.display = "flex";
+  }
+  function hidePasswordError() {
+    $("passwordError").style.display = "none";
+    $("passwordHint").textContent = "";
+  }
+  function closePasswordModal() {
+    $("passwordModal").classList.remove("on");
+    ["passwordCurrent", "passwordNew", "passwordConfirm"].forEach((id) => { $(id).value = ""; });
+    hidePasswordError();
+  }
+  function openPasswordModal() {
+    if (!currentUser || !currentUser.canChangePassword) return;
+    hidePasswordError();
+    $("passwordModal").classList.add("on");
+    setTimeout(() => $("passwordCurrent").focus(), 50);
+  }
 
   async function doLogin() {
     const username = $("loginUser").value.trim();
@@ -124,6 +150,43 @@
     showLogin();
   }
 
+  async function changePassword() {
+    const currentPassword = $("passwordCurrent").value;
+    const newPassword = $("passwordNew").value;
+    const confirmPassword = $("passwordConfirm").value;
+    if (!currentPassword || !newPassword || !confirmPassword) {
+      passwordError("Compila tutti i campi.");
+      return;
+    }
+    if (newPassword.length < 10) {
+      passwordError("La nuova password deve contenere almeno 10 caratteri.");
+      $("passwordNew").focus();
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      passwordError("La conferma non coincide con la nuova password.");
+      $("passwordConfirm").focus();
+      return;
+    }
+    const btn = $("passwordSave");
+    btn.disabled = true;
+    btn.classList.add("loading");
+    try {
+      const { user } = await api("/api/auth/password", {
+        method: "POST",
+        body: JSON.stringify({ currentPassword, newPassword }),
+      });
+      if (user) applyUserUI(user);
+      $("passwordHint").textContent = "Password aggiornata.";
+      setTimeout(closePasswordModal, 650);
+    } catch (err) {
+      passwordError(err.message || "Impossibile aggiornare la password.");
+    } finally {
+      btn.disabled = false;
+      btn.classList.remove("loading");
+    }
+  }
+
   function wire() {
     $("loginCard").addEventListener("submit", (e) => { e.preventDefault(); doLogin(); });
     $("loginUser").addEventListener("input", hideError);
@@ -148,6 +211,10 @@
     um.addEventListener("click", (e) => e.stopPropagation());
     document.addEventListener("click", () => um.classList.remove("on"));
 
+    $("miPassword").addEventListener("click", () => {
+      um.classList.remove("on");
+      openPasswordModal();
+    });
     $("miLogout").addEventListener("click", () => {
       um.classList.remove("on");
       $("logoutModal").classList.add("on");
@@ -158,6 +225,18 @@
     });
     document.querySelectorAll("#logoutModal [data-close]").forEach((b) =>
       b.addEventListener("click", () => $("logoutModal").classList.remove("on"))
+    );
+    $("passwordSave").addEventListener("click", changePassword);
+    ["passwordCurrent", "passwordNew", "passwordConfirm"].forEach((id) => {
+      $(id).addEventListener("input", hidePasswordError);
+      $(id).addEventListener("keydown", (e) => {
+        if (e.key === "Enter") { e.preventDefault(); changePassword(); }
+        if (e.key === "Escape") { e.preventDefault(); closePasswordModal(); }
+      });
+    });
+    $("passwordModal").addEventListener("click", (e) => { if (e.target === $("passwordModal")) closePasswordModal(); });
+    document.querySelectorAll("#passwordModal [data-close]").forEach((b) =>
+      b.addEventListener("click", closePasswordModal)
     );
   }
 

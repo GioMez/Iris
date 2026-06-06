@@ -45,6 +45,7 @@ const COMPILE_TOOLS = new Set(["pdflatex", "xelatex", "lualatex", "xetex", "bibt
 
 let pool;
 let oauthDiscoveryCache = null;
+let initialAdminCredentials = null;
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -148,13 +149,14 @@ function verifySignedJson(token) {
   }
 }
 
-function makeToken(user) {
+function makeToken(user, authMethod = "local") {
   const payload = {
     sub: String(user.id),
     username: user.username,
     name: user.display_name,
     email: user.email,
     role: user.role || "user",
+    authMethod,
     iat: Math.floor(Date.now() / 1000),
     exp: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 7,
   };
@@ -174,6 +176,8 @@ function publicUser(rowOrToken) {
     name: rowOrToken.display_name || rowOrToken.name,
     email: rowOrToken.email,
     role: rowOrToken.role || "user",
+    authMethod: rowOrToken.authMethod || rowOrToken.auth_method || "local",
+    canChangePassword: (rowOrToken.authMethod || rowOrToken.auth_method || "local") === "local",
   };
 }
 
@@ -418,16 +422,12 @@ async function initDb() {
 async function seedUsers() {
   const rows = await pool.query("SELECT COUNT(*) AS n FROM users");
   if (Number(rows[0].n) > 0) return;
-  const users = [
-    ["rossi", "m.rossi@unibo.it", "Marco Rossi", "admin", "webtex"],
-    ["demo", "demo@webtex.app", "Utente Demo", "user", "demo"],
-  ];
-  for (const [username, email, name, role, password] of users) {
-    await pool.query(
-      "INSERT INTO users (username, email, display_name, role, password_hash) VALUES (?, ?, ?, ?, ?)",
-      [username, email, name, role, await hashPassword(password)]
-    );
-  }
+  const password = crypto.randomBytes(18).toString("base64url");
+  await pool.query(
+    "INSERT INTO users (username, email, display_name, role, password_hash) VALUES (?, ?, ?, 'admin', ?)",
+    ["admin", "admin@webtex.local", "WebTeX Admin", await hashPassword(password)]
+  );
+  initialAdminCredentials = { username: "admin", password };
 }
 
 async function readBody(req) {
@@ -1357,7 +1357,7 @@ async function handleApi(req, res, url) {
       return redirect(res, "/", {
         "set-cookie": [
           clearState,
-          cookie("webtex_session", makeToken(user), { maxAge: 60 * 60 * 24 * 7 }),
+          cookie("webtex_session", makeToken(user, "sso"), { maxAge: 60 * 60 * 24 * 7 }),
         ],
       });
     } catch (err) {
@@ -1389,7 +1389,38 @@ async function handleApi(req, res, url) {
       user.password_hash = passwordHash;
     }
     return json(res, 200, { user: publicUser(user) }, {
-      "set-cookie": cookie("webtex_session", makeToken(user), { maxAge: 60 * 60 * 24 * 7 }),
+      "set-cookie": cookie("webtex_session", makeToken(user, "local"), { maxAge: 60 * 60 * 24 * 7 }),
+    });
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/auth/password") {
+    const sessionUser = requireUser(req);
+    if (sessionUser.authMethod !== "local") {
+      return json(res, 403, { error: "La password locale si puo' cambiare solo dopo un login user/password." });
+    }
+    const body = await readBody(req);
+    const currentPassword = String(body.currentPassword || "");
+    const newPassword = String(body.newPassword || "");
+    if (!currentPassword || !newPassword) return json(res, 400, { error: "Inserisci password attuale e nuova password." });
+    if (newPassword.length < 10) return json(res, 400, { error: "La nuova password deve contenere almeno 10 caratteri." });
+    if (currentPassword === newPassword) return json(res, 400, { error: "La nuova password deve essere diversa da quella attuale." });
+
+    const rows = await pool.query(
+      "SELECT id, username, email, display_name, role, password_hash FROM users WHERE id = ? LIMIT 1",
+      [sessionUser.sub]
+    );
+    const user = rows[0];
+    if (!user || !user.password_hash) {
+      return json(res, 403, { error: "Questo account usa SSO e non ha una password locale." });
+    }
+    const passwordCheck = await verifyPassword(currentPassword, user.password_hash);
+    if (!passwordCheck.valid) return json(res, 401, { error: "Password attuale non corretta." });
+
+    const passwordHash = await hashPassword(newPassword);
+    await pool.query("UPDATE users SET password_hash = ? WHERE id = ?", [passwordHash, user.id]);
+    user.password_hash = passwordHash;
+    return json(res, 200, { ok: true, user: publicUser({ ...user, authMethod: "local" }) }, {
+      "set-cookie": cookie("webtex_session", makeToken(user, "local"), { maxAge: 60 * 60 * 24 * 7 }),
     });
   }
 
@@ -1456,6 +1487,16 @@ initDb()
       console.log(`WebTeX listening on http://localhost:${PORT}`);
       console.log(`Static files dir: ${PUBLIC_DIR}`);
       console.log(`Projects data dir: ${DATA_DIR}`);
+      if (initialAdminCredentials) {
+        console.log("");
+        console.log("================================================================");
+        console.log("WebTeX initial admin account created");
+        console.log(`Username: ${initialAdminCredentials.username}`);
+        console.log(`Password: ${initialAdminCredentials.password}`);
+        console.log("Save this password now: it will not be shown again.");
+        console.log("================================================================");
+        console.log("");
+      }
     });
   })
   .catch((err) => {

@@ -449,6 +449,7 @@ button{font-family:inherit;color:inherit}
 .pwtoggle:hover{background:#ffffff10;color:var(--txt-dim)}
 .login-error{display:none;align-items:center;gap:9px;background:rgba(247,118,142,.1);border:1px solid rgba(247,118,142,.32);
   color:var(--danger);font-size:12.5px;padding:9px 12px;border-radius:9px;margin-bottom:16px}
+.login-error.inline{margin-bottom:14px}
 .login-error::before{content:"!";flex:0 0 auto;width:17px;height:17px;border-radius:50%;background:var(--danger);color:#2a0a12;
   font-weight:700;font-size:12px;display:grid;place-items:center}
 .btn.full{width:100%;justify-content:center;height:44px;font-size:14px;position:relative}

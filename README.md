@@ -133,12 +133,19 @@ ARGON2_PARALLELISM=1
 
 ## Account iniziali
 
-Alla prima partenza, se la tabella utenti e' vuota, il backend crea:
+Alla prima partenza, se la tabella `users` e' vuota, il backend crea un solo account locale:
 
-- `rossi` / `webtex`, ruolo `admin`
-- `demo` / `demo`, ruolo `user`
+- username `admin`
+- ruolo `admin`
+- password random generata al momento
 
-Il ruolo `admin` dell'utente seed viene assegnato solo durante il seed iniziale su tabella vuota; non esiste una promotion automatica ricorrente per username o email.
+La password viene stampata una sola volta nei log dopo l'inizializzazione del backend e non viene salvata in chiaro. Se usi Docker Compose in detached mode, recuperala con:
+
+```sh
+docker compose logs webapp | sed -n '/WebTeX initial admin account created/,+5p'
+```
+
+Il seed avviene solo su tabella vuota; non esiste una promotion automatica ricorrente per username o email.
 
 ## Persistenza
 

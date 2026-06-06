@@ -181,6 +181,7 @@
     </div>
   </div>
   <div class="msep"></div>
+  <div class="mi" id="miPassword"><span class="ic">⚿</span> Cambia password</div>
   <div class="mi danger" id="miLogout"><span class="ic">→</span> Disconnetti</div>
 </div>
 
@@ -345,6 +346,37 @@
     <div class="m-foot">
       <button class="btn" data-close>Annulla</button>
       <button class="btn danger" id="logoutConfirm">Disconnetti</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== CHANGE PASSWORD ===================== -->
+<div class="scrim" id="passwordModal">
+  <div class="modal narrow">
+    <div class="m-head">
+      <h3>Cambia password</h3>
+      <button class="m-x" data-close>✕</button>
+    </div>
+    <div class="m-body">
+      <div class="login-error inline" id="passwordError">Password non valida.</div>
+      <div class="field">
+        <span class="label">Password attuale</span>
+        <input class="input" id="passwordCurrent" type="password" autocomplete="current-password">
+      </div>
+      <div class="field">
+        <span class="label">Nuova password</span>
+        <input class="input" id="passwordNew" type="password" autocomplete="new-password">
+        <div class="hint">↳ almeno 10 caratteri.</div>
+      </div>
+      <div class="field">
+        <span class="label">Conferma nuova password</span>
+        <input class="input" id="passwordConfirm" type="password" autocomplete="new-password">
+      </div>
+      <div class="hint" id="passwordHint"></div>
+    </div>
+    <div class="m-foot">
+      <button class="btn" data-close>Annulla</button>
+      <button class="btn cta" id="passwordSave">Salva password</button>
     </div>
   </div>
 </div>
