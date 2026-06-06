@@ -458,6 +458,8 @@ button{font-family:inherit;color:inherit}
 .ssobtn{display:flex;align-items:center;gap:11px;height:42px;padding:0 13px;border-radius:10px;border:1px solid var(--border);
   background:#ffffff05;color:var(--txt);font-size:13.5px;cursor:pointer;transition:.12s;position:relative}
 .ssobtn:hover{background:#ffffff0d;border-color:#3a3d59}
+.ssobtn:disabled{opacity:.55;cursor:not-allowed}
+.ssobtn:disabled:hover{background:#ffffff05;border-color:var(--border)}
 .ssobtn .pmark{width:23px;height:23px;border-radius:6px;display:grid;place-items:center;font-weight:700;font-size:12px;
   font-family:'IBM Plex Mono',monospace;flex:0 0 auto;background:#ffffff10;color:#e8eaf2}
 .ssobtn .pmark.sso{color:var(--accent)}

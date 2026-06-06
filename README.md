@@ -67,6 +67,31 @@ TEX_PATH_LOCKED: "true"
 
 Quando `TEX_PATH_LOCKED` e' `true`, il campo nei settings resta visibile ma non modificabile: il valore va cambiato nel file `docker-compose.yml` o nella configurazione del container.
 
+## SSO OAuth 2.0 / OIDC
+
+WebTeX supporta un login SSO generico OAuth 2.0/OIDC, pensato per Authentik ma non legato a pulsanti provider-specifici. Se `OAUTH_ISSUER_URL` e' impostato, il backend usa la discovery `/.well-known/openid-configuration`.
+
+Variabili principali:
+
+```env
+APP_BASE_URL=http://localhost:3000
+OAUTH_ISSUER_URL=https://auth.example.org/application/o/webtex
+OAUTH_CLIENT_ID=webtex
+OAUTH_CLIENT_SECRET=change-this-client-secret
+OAUTH_REDIRECT_URI=http://localhost:3000/api/auth/sso/callback
+OAUTH_SCOPE=openid email profile
+OAUTH_CLIENT_AUTH_METHOD=client_secret_basic
+OAUTH_AUTO_REGISTER=false
+```
+
+In alternativa alla discovery via issuer puoi impostare direttamente `OAUTH_AUTHORIZATION_URL`, `OAUTH_TOKEN_URL` e `OAUTH_USERINFO_URL`.
+
+Registra in Authentik la callback `APP_BASE_URL/api/auth/sso/callback`, oppure imposta `OAUTH_REDIRECT_URI` esplicitamente se l'app e' dietro reverse proxy.
+
+L'utente OAuth viene collegato alla tabella interna tramite email. Se l'email non esiste, WebTeX crea automaticamente un utente con ruolo `user` solo quando `OAUTH_AUTO_REGISTER=true`; altrimenti l'accesso viene rifiutato e l'utente va creato prima nella tabella interna.
+
+Gli utenti creati via SSO hanno `password_hash=NULL`: non possono accedere dal form user/password finche' non viene impostata una password locale. Gli utenti esistenti mantengono il proprio ruolo.
+
 ## Compilazione LaTeX
 
 Il pulsante `Compila` salva il progetto, lancia il motore selezionato lato backend e mostra il PDF prodotto nel pannello di anteprima. Il log reale del processo viene riportato nel tab `Log`, mentre la barra in basso mostra durata, warning/errori e dimensione del PDF.
@@ -104,14 +129,16 @@ ARGON2_TIME_COST=3
 ARGON2_PARALLELISM=1
 ```
 
-`ARGON2_MEMORY_COST` e' espresso in KiB. Questi parametri riguardano solo il login locale; l'SSO potra' affiancarlo senza riusare gli hash password.
+`ARGON2_MEMORY_COST` e' espresso in KiB. Questi parametri riguardano solo il login locale; gli utenti creati via SSO non hanno password locale.
 
 ## Account iniziali
 
 Alla prima partenza, se la tabella utenti e' vuota, il backend crea:
 
-- `rossi` / `webtex`
-- `demo` / `demo`
+- `rossi` / `webtex`, ruolo `admin`
+- `demo` / `demo`, ruolo `user`
+
+Il ruolo `admin` dell'utente seed viene assegnato solo durante il seed iniziale su tabella vuota; non esiste una promotion automatica ricorrente per username o email.
 
 ## Persistenza
 

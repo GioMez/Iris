@@ -3,6 +3,7 @@
    vive in un cookie HttpOnly firmato dal server. */
 (function () {
   const $ = (id) => document.getElementById(id);
+  let ssoEnabled = false;
 
   async function api(path, options) {
     const res = await fetch(path, {
@@ -90,13 +91,31 @@
     }
   }
 
-  function ssoLogin(provider) {
-    const btn = document.querySelector(`[data-sso="${provider}"]`);
-    if (btn) {
-      btn.classList.remove("loading");
-      btn.blur();
+  async function loadConfig() {
+    try {
+      const cfg = await api("/api/config");
+      ssoEnabled = !!(cfg.auth && cfg.auth.ssoEnabled);
+    } catch (e) {
+      ssoEnabled = false;
     }
-    showError("SSO non ancora collegato. Per ora usa nome utente e password.");
+    const btn = $("ssoLoginBtn");
+    if (btn) {
+      btn.disabled = !ssoEnabled;
+      btn.title = ssoEnabled ? "Accedi con SSO" : "SSO non configurato sul backend";
+    }
+  }
+
+  function ssoLogin() {
+    if (!ssoEnabled) {
+      showError("SSO non configurato. Usa le credenziali locali o aggiorna la configurazione del backend.");
+      return;
+    }
+    const btn = $("ssoLoginBtn");
+    if (btn) {
+      btn.disabled = true;
+      btn.classList.add("loading");
+    }
+    window.location.assign("/api/auth/sso/start");
   }
 
   async function doLogout() {
@@ -116,9 +135,7 @@
       $("pwToggle").textContent = reveal ? "nascondi" : "mostra";
       p.focus();
     });
-    document.querySelectorAll("[data-sso]").forEach((b) =>
-      b.addEventListener("click", () => ssoLogin(b.dataset.sso))
-    );
+    document.querySelectorAll("[data-sso]").forEach((b) => b.addEventListener("click", () => ssoLogin()));
 
     const um = $("userMenu");
     $("userChip").addEventListener("click", (e) => {
@@ -146,11 +163,20 @@
 
   async function boot() {
     wire();
+    await loadConfig();
+    const params = new URLSearchParams(window.location.search);
+    const authError = params.get("auth_error");
+    if (authError) {
+      params.delete("auth_error");
+      const nextQuery = params.toString();
+      history.replaceState(null, "", window.location.pathname + (nextQuery ? `?${nextQuery}` : "") + window.location.hash);
+    }
     try {
       const { user } = await api("/api/auth/session");
       showApp(user);
     } catch (e) {
       showLogin();
+      if (authError === "sso") showError("Accesso SSO non riuscito. Riprova o usa le credenziali locali.");
     }
   }
 

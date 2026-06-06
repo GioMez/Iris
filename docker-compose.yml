@@ -15,10 +15,22 @@ services:
       DB_PASSWORD: webtex
       DB_NAME: webtex
       DATA_DIR: /app/data/projects
+      APP_BASE_URL: http://localhost:3000
       TEX_BIN_PATH: /usr/local/texlive/bin/x86_64-linux
       TEX_PATH_LOCKED: "true"
       COMPILE_TIMEOUT_MS: 30000
       COOKIE_SECURE: "false"
+      # OAuth 2.0 / OIDC SSO, ad esempio Authentik.
+      # OAUTH_ISSUER_URL: https://auth.example.org/application/o/webtex
+      # OAUTH_AUTHORIZATION_URL: https://auth.example.org/application/o/authorize/
+      # OAUTH_TOKEN_URL: https://auth.example.org/application/o/token/
+      # OAUTH_USERINFO_URL: https://auth.example.org/application/o/userinfo/
+      # OAUTH_CLIENT_ID: webtex
+      # OAUTH_CLIENT_SECRET: change-this-client-secret
+      # OAUTH_REDIRECT_URI: http://localhost:3000/api/auth/sso/callback
+      # OAUTH_SCOPE: openid email profile
+      # OAUTH_CLIENT_AUTH_METHOD: client_secret_basic
+      # OAUTH_AUTO_REGISTER: "false"
       # Argon2id password hashing. Memory cost is in KiB.
       # ARGON2_MEMORY_COST: 65536
       # ARGON2_TIME_COST: 3

@@ -29,10 +29,22 @@ const COMPILE_LOG_LIMIT = Number(process.env.COMPILE_LOG_LIMIT || 1024 * 1024);
 const ARGON2_MEMORY_COST = positiveIntEnv("ARGON2_MEMORY_COST", 65536);
 const ARGON2_TIME_COST = positiveIntEnv("ARGON2_TIME_COST", 3);
 const ARGON2_PARALLELISM = positiveIntEnv("ARGON2_PARALLELISM", 1);
+const APP_BASE_URL = String(process.env.APP_BASE_URL || "").replace(/\/+$/, "");
+const OAUTH_ISSUER_URL = String(process.env.OAUTH_ISSUER_URL || "").replace(/\/+$/, "");
+const OAUTH_AUTHORIZATION_URL = process.env.OAUTH_AUTHORIZATION_URL || "";
+const OAUTH_TOKEN_URL = process.env.OAUTH_TOKEN_URL || "";
+const OAUTH_USERINFO_URL = process.env.OAUTH_USERINFO_URL || "";
+const OAUTH_CLIENT_ID = process.env.OAUTH_CLIENT_ID || "";
+const OAUTH_CLIENT_SECRET = process.env.OAUTH_CLIENT_SECRET || "";
+const OAUTH_REDIRECT_URI = process.env.OAUTH_REDIRECT_URI || "";
+const OAUTH_SCOPE = process.env.OAUTH_SCOPE || "openid email profile";
+const OAUTH_CLIENT_AUTH_METHOD = process.env.OAUTH_CLIENT_AUTH_METHOD || "client_secret_basic";
+const OAUTH_AUTO_REGISTER = String(process.env.OAUTH_AUTO_REGISTER || "false") === "true";
 const LATEX_ENGINES = new Set(["pdflatex", "xelatex", "lualatex", "xetex"]);
 const COMPILE_TOOLS = new Set(["pdflatex", "xelatex", "lualatex", "xetex", "bibtex", "biber", "makeindex"]);
 
 let pool;
+let oauthDiscoveryCache = null;
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -89,6 +101,11 @@ function text(res, status, body, headers = {}) {
   res.end(body);
 }
 
+function redirect(res, location, headers = {}) {
+  res.writeHead(303, { location, ...headers });
+  res.end();
+}
+
 function parseCookies(req) {
   const out = {};
   String(req.headers.cookie || "").split(";").forEach((part) => {
@@ -110,33 +127,44 @@ function sign(value) {
   return crypto.createHmac("sha256", SECRET).update(value).digest("base64url");
 }
 
-function makeToken(user) {
-  const payload = {
-    sub: String(user.id),
-    username: user.username,
-    name: user.display_name,
-    email: user.email,
-    iat: Math.floor(Date.now() / 1000),
-    exp: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 7,
-  };
+function signedJson(payload) {
   const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
   return `${body}.${sign(body)}`;
 }
 
-function verifyToken(token) {
+function verifySignedJson(token) {
   if (!token || !token.includes(".")) return null;
-  const [body, sig] = token.split(".");
+  const [body, sig] = String(token).split(".");
   const expected = sign(body);
   const a = Buffer.from(sig || "");
   const b = Buffer.from(expected);
   if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
   try {
     const payload = JSON.parse(Buffer.from(body, "base64url").toString("utf8"));
-    if (!payload.exp || payload.exp < Math.floor(Date.now() / 1000)) return null;
+    if (payload.exp && payload.exp < Math.floor(Date.now() / 1000)) return null;
     return payload;
   } catch {
     return null;
   }
+}
+
+function makeToken(user) {
+  const payload = {
+    sub: String(user.id),
+    username: user.username,
+    name: user.display_name,
+    email: user.email,
+    role: user.role || "user",
+    iat: Math.floor(Date.now() / 1000),
+    exp: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 7,
+  };
+  return signedJson(payload);
+}
+
+function verifyToken(token) {
+  const payload = verifySignedJson(token);
+  if (!payload || !payload.exp) return null;
+  return payload;
 }
 
 function publicUser(rowOrToken) {
@@ -145,6 +173,7 @@ function publicUser(rowOrToken) {
     username: rowOrToken.username,
     name: rowOrToken.display_name || rowOrToken.name,
     email: rowOrToken.email,
+    role: rowOrToken.role || "user",
   };
 }
 
@@ -170,6 +199,154 @@ async function verifyPassword(password, stored) {
     };
   } catch {
     return { valid: false, needsRehash: false };
+  }
+}
+
+function oauthEnabled() {
+  return !!(OAUTH_CLIENT_ID && OAUTH_CLIENT_SECRET && (OAUTH_ISSUER_URL || (OAUTH_AUTHORIZATION_URL && OAUTH_TOKEN_URL && OAUTH_USERINFO_URL)));
+}
+
+function requestBaseUrl(req) {
+  if (APP_BASE_URL) return APP_BASE_URL;
+  const proto = String(req.headers["x-forwarded-proto"] || "http").split(",")[0].trim() || "http";
+  const host = req.headers["x-forwarded-host"] || req.headers.host || `localhost:${PORT}`;
+  return `${proto}://${host}`;
+}
+
+function oauthRedirectUri(req) {
+  return OAUTH_REDIRECT_URI || `${requestBaseUrl(req)}/api/auth/sso/callback`;
+}
+
+async function oauthEndpoints() {
+  if (OAUTH_AUTHORIZATION_URL && OAUTH_TOKEN_URL && OAUTH_USERINFO_URL) {
+    return {
+      authorizationEndpoint: OAUTH_AUTHORIZATION_URL,
+      tokenEndpoint: OAUTH_TOKEN_URL,
+      userinfoEndpoint: OAUTH_USERINFO_URL,
+    };
+  }
+  if (!OAUTH_ISSUER_URL) throw new Error("Configurazione OAuth incompleta");
+  if (oauthDiscoveryCache) return oauthDiscoveryCache;
+  const discoveryUrl = `${OAUTH_ISSUER_URL}/.well-known/openid-configuration`;
+  const res = await fetch(discoveryUrl, { headers: { accept: "application/json" } });
+  if (!res.ok) throw new Error(`Discovery OAuth non riuscita (${res.status})`);
+  const data = await res.json();
+  if (!data.authorization_endpoint || !data.token_endpoint || !data.userinfo_endpoint) {
+    throw new Error("Discovery OAuth priva degli endpoint necessari");
+  }
+  oauthDiscoveryCache = {
+    authorizationEndpoint: data.authorization_endpoint,
+    tokenEndpoint: data.token_endpoint,
+    userinfoEndpoint: data.userinfo_endpoint,
+  };
+  return oauthDiscoveryCache;
+}
+
+function oauthStateToken() {
+  return signedJson({
+    state: crypto.randomBytes(24).toString("base64url"),
+    iat: Math.floor(Date.now() / 1000),
+    exp: Math.floor(Date.now() / 1000) + 10 * 60,
+  });
+}
+
+function timingSafeStringEqual(a, b) {
+  const ba = Buffer.from(String(a || ""));
+  const bb = Buffer.from(String(b || ""));
+  return ba.length === bb.length && crypto.timingSafeEqual(ba, bb);
+}
+
+async function oauthTokenRequest(code, redirectUri) {
+  const endpoints = await oauthEndpoints();
+  const body = new URLSearchParams({
+    grant_type: "authorization_code",
+    code,
+    redirect_uri: redirectUri,
+  });
+  const headers = { "content-type": "application/x-www-form-urlencoded", accept: "application/json" };
+  if (OAUTH_CLIENT_AUTH_METHOD === "client_secret_post") {
+    body.set("client_id", OAUTH_CLIENT_ID);
+    body.set("client_secret", OAUTH_CLIENT_SECRET);
+  } else {
+    headers.authorization = "Basic " + Buffer.from(`${OAUTH_CLIENT_ID}:${OAUTH_CLIENT_SECRET}`).toString("base64");
+  }
+  const res = await fetch(endpoints.tokenEndpoint, { method: "POST", headers, body });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.access_token) throw new Error(data.error_description || data.error || "Scambio token OAuth non riuscito");
+  return data;
+}
+
+async function oauthUserInfo(accessToken) {
+  const endpoints = await oauthEndpoints();
+  const res = await fetch(endpoints.userinfoEndpoint, {
+    headers: { accept: "application/json", authorization: `Bearer ${accessToken}` },
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error_description || data.error || "Lettura profilo OAuth non riuscita");
+  const email = String(data.email || "").trim().toLowerCase();
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw new Error("Il provider SSO non ha restituito un'email valida");
+  return {
+    email,
+    name: String(data.name || data.preferred_username || email).trim(),
+    preferredUsername: String(data.preferred_username || email.split("@")[0]).trim(),
+  };
+}
+
+function cleanUsername(value) {
+  return String(value || "user")
+    .toLowerCase()
+    .replace(/@.*$/, "")
+    .replace(/[^a-z0-9_.-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64) || "user";
+}
+
+async function availableUsername(base) {
+  const clean = cleanUsername(base);
+  for (let i = 0; i < 100; i++) {
+    const candidate = i ? `${clean}-${i + 1}`.slice(0, 80) : clean.slice(0, 80);
+    const rows = await pool.query("SELECT id FROM users WHERE username = ? LIMIT 1", [candidate]);
+    if (!rows.length) return candidate;
+  }
+  return `${clean.slice(0, 48)}-${crypto.randomBytes(4).toString("hex")}`;
+}
+
+async function userFromOAuthProfile(profile) {
+  const rows = await pool.query(
+    "SELECT id, username, email, display_name, role, password_hash FROM users WHERE LOWER(email) = ? LIMIT 1",
+    [profile.email]
+  );
+  if (rows[0]) {
+    const nextName = profile.name || rows[0].display_name;
+    if (nextName && nextName !== rows[0].display_name) {
+      await pool.query("UPDATE users SET display_name = ? WHERE id = ?", [nextName, rows[0].id]);
+      rows[0].display_name = nextName;
+    }
+    return rows[0];
+  }
+  if (!OAUTH_AUTO_REGISTER) {
+    const err = new Error("Utente SSO non autorizzato");
+    err.status = 403;
+    throw err;
+  }
+
+  const username = await availableUsername(profile.preferredUsername || profile.email);
+  const displayName = profile.name || profile.email;
+  try {
+    const result = await pool.query(
+      "INSERT INTO users (username, email, display_name, role, password_hash) VALUES (?, ?, ?, 'user', NULL)",
+      [username, profile.email, displayName]
+    );
+    const id = String(result.insertId);
+    return { id, username, email: profile.email, display_name: displayName, role: "user", password_hash: null };
+  } catch (err) {
+    if (err.code !== "ER_DUP_ENTRY") throw err;
+    const retry = await pool.query(
+      "SELECT id, username, email, display_name, role, password_hash FROM users WHERE LOWER(email) = ? LIMIT 1",
+      [profile.email]
+    );
+    if (retry[0]) return retry[0];
+    throw err;
   }
 }
 
@@ -208,7 +385,8 @@ async function initDb() {
       username VARCHAR(80) NOT NULL,
       email VARCHAR(190) NOT NULL,
       display_name VARCHAR(190) NOT NULL,
-      password_hash VARCHAR(255) NOT NULL,
+      role ENUM('admin','user') NOT NULL DEFAULT 'user',
+      password_hash VARCHAR(255) NULL,
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
       PRIMARY KEY (id),
@@ -216,6 +394,8 @@ async function initDb() {
       UNIQUE KEY uq_users_email (email)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
+  await pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS role ENUM('admin','user') NOT NULL DEFAULT 'user' AFTER display_name");
+  await pool.query("ALTER TABLE users MODIFY password_hash VARCHAR(255) NULL");
   await pool.query(`
     CREATE TABLE IF NOT EXISTS projects (
       id CHAR(32) NOT NULL,
@@ -239,13 +419,13 @@ async function seedUsers() {
   const rows = await pool.query("SELECT COUNT(*) AS n FROM users");
   if (Number(rows[0].n) > 0) return;
   const users = [
-    ["rossi", "m.rossi@unibo.it", "Marco Rossi", "webtex"],
-    ["demo", "demo@webtex.app", "Utente Demo", "demo"],
+    ["rossi", "m.rossi@unibo.it", "Marco Rossi", "admin", "webtex"],
+    ["demo", "demo@webtex.app", "Utente Demo", "user", "demo"],
   ];
-  for (const [username, email, name, password] of users) {
+  for (const [username, email, name, role, password] of users) {
     await pool.query(
-      "INSERT INTO users (username, email, display_name, password_hash) VALUES (?, ?, ?, ?)",
-      [username, email, name, await hashPassword(password)]
+      "INSERT INTO users (username, email, display_name, role, password_hash) VALUES (?, ?, ?, ?, ?)",
+      [username, email, name, role, await hashPassword(password)]
     );
   }
 }
@@ -1136,7 +1316,54 @@ async function handleApi(req, res, url) {
         texPath: TEX_BIN_PATH,
         texPathLocked: TEX_PATH_LOCKED,
       },
+      auth: {
+        ssoEnabled: oauthEnabled(),
+        ssoAutoRegister: OAUTH_AUTO_REGISTER,
+      },
     });
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/auth/sso/start") {
+    if (!oauthEnabled()) return text(res, 503, "SSO non configurato");
+    try {
+      const endpoints = await oauthEndpoints();
+      const state = oauthStateToken();
+      const authUrl = new URL(endpoints.authorizationEndpoint);
+      authUrl.searchParams.set("response_type", "code");
+      authUrl.searchParams.set("client_id", OAUTH_CLIENT_ID);
+      authUrl.searchParams.set("redirect_uri", oauthRedirectUri(req));
+      authUrl.searchParams.set("scope", OAUTH_SCOPE);
+      authUrl.searchParams.set("state", state);
+      return redirect(res, authUrl.toString(), {
+        "set-cookie": cookie("webtex_oauth_state", state, { maxAge: 10 * 60 }),
+      });
+    } catch (err) {
+      return text(res, 503, err.message || "SSO non disponibile");
+    }
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/auth/sso/callback") {
+    const clearState = cookie("webtex_oauth_state", "", { maxAge: 0 });
+    try {
+      const state = url.searchParams.get("state");
+      const code = url.searchParams.get("code");
+      const expectedState = parseCookies(req).webtex_oauth_state;
+      if (!code || !state || !expectedState || !timingSafeStringEqual(state, expectedState) || !verifySignedJson(state)) {
+        throw new Error("Stato OAuth non valido");
+      }
+      const token = await oauthTokenRequest(code, oauthRedirectUri(req));
+      const profile = await oauthUserInfo(token.access_token);
+      const user = await userFromOAuthProfile(profile);
+      return redirect(res, "/", {
+        "set-cookie": [
+          clearState,
+          cookie("webtex_session", makeToken(user), { maxAge: 60 * 60 * 24 * 7 }),
+        ],
+      });
+    } catch (err) {
+      console.error("SSO callback failed", err.message || err);
+      return redirect(res, "/?auth_error=sso", { "set-cookie": clearState });
+    }
   }
 
   if (req.method === "POST" && url.pathname === "/api/auth/login") {
@@ -1145,10 +1372,13 @@ async function handleApi(req, res, url) {
     const password = String(body.password || "");
     if (!login || !password) return json(res, 400, { error: "Inserisci nome utente e password." });
     const rows = await pool.query(
-      "SELECT id, username, email, display_name, password_hash FROM users WHERE LOWER(username) = ? OR LOWER(email) = ? LIMIT 1",
+      "SELECT id, username, email, display_name, role, password_hash FROM users WHERE LOWER(username) = ? OR LOWER(email) = ? LIMIT 1",
       [login, login]
     );
     const user = rows[0];
+    if (user && !user.password_hash) {
+      return json(res, 401, { error: "Questo account usa SSO. Accedi con il pulsante SSO." });
+    }
     const passwordCheck = user ? await verifyPassword(password, user.password_hash) : { valid: false, needsRehash: false };
     if (!user || !passwordCheck.valid) {
       return json(res, 401, { error: "Credenziali non valide. Riprova." });
