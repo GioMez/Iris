@@ -285,6 +285,9 @@
   function hasSiblingNamed(parent, node, name) {
     return parent.some((x) => x !== node && x.name.toLowerCase() === name.toLowerCase());
   }
+  function hasNamed(parent, name) {
+    return (parent || []).some((x) => x.name.toLowerCase() === name.toLowerCase());
+  }
   function walkNodeFiles(node, fn) {
     if (!node) return;
     if (node.type === "folder") (node.children || []).forEach((ch) => walkNodeFiles(ch, fn));
@@ -328,6 +331,115 @@
   }
 
   let treeAction = null;
+  let newItemMode = "file";
+
+  function folderNodeByPath(folderPath) {
+    if (!folderPath) return { nodes: project.nodes, path: "" };
+    const parts = folderPath.replace(/\/+$/, "").split("/").filter(Boolean);
+    let nodes = project.nodes;
+    let pathSoFar = "";
+    for (const part of parts) {
+      const folder = nodes.find((n) => n.type === "folder" && n.name === part);
+      if (!folder || folder.generated || folder.readOnly) return null;
+      folder.open = true;
+      pathSoFar = folderSlash(joinPath(pathSoFar, folder.name));
+      nodes = folder.children || (folder.children = []);
+    }
+    return { nodes, path: pathSoFar };
+  }
+
+  function writableSelectedFolderPath() {
+    return folderNodeByPath(state.selectedFolder) ? state.selectedFolder : "";
+  }
+
+  function newItemDestPath() {
+    const select = $("newItemDest");
+    const value = select ? select.value : "";
+    return folderNodeByPath(value) ? value : "";
+  }
+
+  function updateNewItemHint() {
+    const dest = folderNodeByPath(newItemDestPath()) || { path: "" };
+    $("newItemHint").textContent = `Creato in ${dest.path || "/ (radice)"}. Usa un nome senza separatori di cartella.`;
+  }
+
+  function uniqueName(parent, base, ext) {
+    let i = 1;
+    let name = ext ? `${base}${ext}` : base;
+    while (hasNamed(parent, name)) {
+      i += 1;
+      name = ext ? `${base}-${i}${ext}` : `${base}-${i}`;
+    }
+    return name;
+  }
+
+  function setNewItemMode(mode) {
+    newItemMode = mode === "folder" ? "folder" : "file";
+    document.querySelectorAll("[data-new-type]").forEach((b) => b.classList.toggle("on", b.dataset.newType === newItemMode));
+    const dest = folderNodeByPath(newItemDestPath()) || { nodes: project.nodes, path: "" };
+    const isFolder = newItemMode === "folder";
+    $("newItemLabel").textContent = isFolder ? "Nome cartella" : "Nome file";
+    $("newItemInput").value = isFolder
+      ? uniqueName(dest.nodes, "nuova-cartella", "")
+      : uniqueName(dest.nodes, `senza-nome-${state.untitledN + 1}`, ".tex");
+    updateNewItemHint();
+    $("newItemInput").classList.remove("nomatch");
+  }
+
+  function openNewItem(mode) {
+    const destPath = writableSelectedFolderPath();
+    $("newItemDest").innerHTML = folderOptions(destPath);
+    $("newItemDest").value = destPath;
+    setNewItemMode(mode);
+    $("treeNewModal").classList.add("on");
+    setTimeout(() => { const i = $("newItemInput"); i.focus(); i.select(); }, 40);
+  }
+
+  function closeNewItem() {
+    $("treeNewModal").classList.remove("on");
+  }
+
+  function confirmNewItem() {
+    const input = $("newItemInput");
+    const hint = $("newItemHint");
+    const destPath = newItemDestPath();
+    const dest = folderNodeByPath(destPath) || { nodes: project.nodes, path: "" };
+    let name = input.value.trim();
+    if (newItemMode === "file" && name && !/\.[A-Za-z0-9]{1,12}$/.test(name)) name += ".tex";
+    if (!validTreeName(name)) {
+      input.classList.add("nomatch");
+      hint.textContent = "Il nome non puo' essere vuoto e non puo' contenere / o \\.";
+      input.focus();
+      return;
+    }
+    if (hasNamed(dest.nodes, name)) {
+      input.classList.add("nomatch");
+      hint.textContent = "Esiste gia' un elemento con questo nome nella cartella scelta.";
+      input.focus();
+      return;
+    }
+
+    if (newItemMode === "folder") {
+      dest.nodes.push({ type: "folder", name, open: true, children: [] });
+      state.selectedFolder = folderSlash(joinPath(dest.path, name));
+      closeNewItem();
+      renderTree();
+      persist();
+      toast(`Creata cartella ${name}`);
+      return;
+    }
+
+    state.untitledN++;
+    const id = "untitled_" + state.untitledN;
+    const filePath = joinPath(dest.path, name);
+    const kind = inferKind(name, "tex");
+    dest.nodes.push({ type: "file", id, name, kind, path: filePath, content: NEWDOC });
+    closeNewItem();
+    renderTree();
+    openFile(id);
+    persist();
+    toast(`Creato ${filePath}`);
+  }
 
   function openTreeRename(node, parent, parentPath) {
     if (node.readOnly || node.generated) { toast("Gli output generati non si modificano dall'albero", "err"); return; }
@@ -452,7 +564,7 @@
             `</span>`);
           el.addEventListener("click", () => {
             n.open = !n.open;
-            state.selectedFolder = folderSlash(curPath);
+            if (!n.readOnly && !n.generated) state.selectedFolder = folderSlash(curPath);
             renderTree(); markFolder(n.name + "/");
           });
           const rename = el.querySelector('[data-act="rename"]');
@@ -472,7 +584,10 @@
               `<button class="node-act" type="button" data-act="rename" title="Rinomina">✎</button>` +
               `<button class="node-act danger" type="button" data-act="delete" title="Elimina">✕</button>` +
             `</span>`);
-          el.addEventListener("click", () => openFile(n.id));
+          el.addEventListener("click", () => {
+            state.selectedFolder = folderSlash(parentPath);
+            openFile(n.id);
+          });
           const rename = el.querySelector('[data-act="rename"]');
           const del = el.querySelector('[data-act="delete"]');
           if (rename) rename.addEventListener("click", (e) => { e.stopPropagation(); openTreeRename(n, nodes, parentPath); });
@@ -718,13 +833,14 @@
   }
 
   /* ---------------- attach ---------------- */
-  function folderOptions() {
+  function folderOptions(selectedPath = state.selectedFolder) {
     const opts = [`<option value="">/ (radice)</option>`];
     const add = (nodes, parentPath) => {
       (nodes || []).forEach((n) => {
         if (n.type !== "folder") return;
+        if (n.generated || n.readOnly) return;
         const rel = folderSlash(joinPath(parentPath, n.name));
-        opts.push(`<option value="${esc(rel)}"${state.selectedFolder === rel ? " selected" : ""}>${esc(rel)}</option>`);
+        opts.push(`<option value="${esc(rel)}"${selectedPath === rel ? " selected" : ""}>${esc(rel)}</option>`);
         add(n.children, rel);
       });
     };
@@ -732,16 +848,8 @@
     return opts.join("");
   }
   function folderChildrenByPath(folderPath) {
-    if (!folderPath) return project.nodes;
-    const parts = folderPath.replace(/\/+$/, "").split("/").filter(Boolean);
-    let nodes = project.nodes;
-    for (const part of parts) {
-      const folder = nodes.find((n) => n.type === "folder" && n.name === part);
-      if (!folder) return project.nodes;
-      folder.open = true;
-      nodes = folder.children || (folder.children = []);
-    }
-    return nodes;
+    const folder = folderNodeByPath(folderPath);
+    return folder ? folder.nodes : project.nodes;
   }
   function openAttach() {
     $("attachDest").innerHTML = folderOptions();
@@ -889,14 +997,7 @@
   /* ---------------- new / open / save ---------------- */
   const NEWDOC = `\\documentclass[11pt]{article}\n\\usepackage[utf8]{inputenc}\n\n\\title{Nuovo documento}\n\\author{}\n\\date{\\today}\n\n\\begin{document}\n\\maketitle\n\n\\section{}\n\n\\end{document}`;
   function newFile() {
-    state.untitledN++;
-    const id = "untitled_" + state.untitledN;
-    const name = `senza-nome-${state.untitledN}.tex`;
-    project.nodes.push({ type: "file", id, name, kind: "tex", path: name, content: NEWDOC });
-    renderTree();
-    openFile(id);
-    persist();
-    toast(`Creato ${name}`);
+    openNewItem("file");
   }
   function openExternal(file) {
     const reader = new FileReader();
@@ -1015,6 +1116,17 @@
     document.addEventListener("keydown", (e) => { if (e.key === "Escape") document.querySelectorAll(".scrim.on").forEach((s) => s.classList.remove("on")); });
 
     // file tree modals
+    document.querySelectorAll("[data-new-type]").forEach((b) => b.addEventListener("click", () => setNewItemMode(b.dataset.newType)));
+    $("treeNewOk").addEventListener("click", confirmNewItem);
+    $("newItemDest").addEventListener("change", () => setNewItemMode(newItemMode));
+    $("newItemInput").addEventListener("input", () => {
+      $("newItemInput").classList.remove("nomatch");
+      updateNewItemHint();
+    });
+    $("newItemInput").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); confirmNewItem(); }
+      else if (e.key === "Escape") { e.preventDefault(); closeNewItem(); }
+    });
     $("treeRenameOk").addEventListener("click", confirmTreeRename);
     $("treeRenameInput").addEventListener("input", () => {
       $("treeRenameInput").classList.remove("nomatch");
@@ -1026,14 +1138,16 @@
     });
     $("treeDeleteOk").addEventListener("click", confirmTreeDelete);
     document.querySelectorAll("[data-tree-close]").forEach((b) => b.addEventListener("click", () => {
+      closeNewItem();
       closeTreeRename();
       closeTreeDelete();
     }));
-    ["treeRenameModal", "treeDeleteModal"].forEach((id) => {
+    ["treeNewModal", "treeRenameModal", "treeDeleteModal"].forEach((id) => {
       const modal = $(id);
       modal.addEventListener("click", (e) => {
         if (e.target !== modal) return;
-        if (id === "treeRenameModal") closeTreeRename();
+        if (id === "treeNewModal") closeNewItem();
+        else if (id === "treeRenameModal") closeTreeRename();
         else closeTreeDelete();
       });
     });

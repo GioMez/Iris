@@ -53,7 +53,7 @@
         <div data-panel="files">
           <div class="side-head">Progetto
             <span class="act">
-              <button class="iconbtn" id="newFileBtn" title="Nuovo file">＋</button>
+              <button class="iconbtn" id="newFileBtn" title="Nuovo file o cartella">＋</button>
             </span>
           </div>
           <div class="tree" id="tree"></div>
@@ -297,6 +297,37 @@
 <div class="toasts" id="toasts"></div>
 
 <!-- ===================== FILE TREE MODALS ===================== -->
+<div class="scrim" id="treeNewModal">
+  <div class="modal narrow">
+    <div class="m-head">
+      <h3>Nuovo elemento</h3>
+      <button class="m-x" data-tree-close>✕</button>
+    </div>
+    <div class="m-body">
+      <div class="field">
+        <span class="label">Tipo</span>
+        <div class="typepick" id="newItemType">
+          <button class="typepick-btn on" type="button" data-new-type="file">File .tex</button>
+          <button class="typepick-btn" type="button" data-new-type="folder">Cartella</button>
+        </div>
+      </div>
+      <div class="field">
+        <span class="label">Crea in</span>
+        <select class="select" id="newItemDest"></select>
+      </div>
+      <div class="field">
+        <span class="label" id="newItemLabel">Nome file</span>
+        <input class="input" id="newItemInput" spellcheck="false" autocomplete="off" maxlength="120">
+        <div class="hint" id="newItemHint">Scegli la cartella di destinazione.</div>
+      </div>
+    </div>
+    <div class="m-foot">
+      <button class="btn" data-tree-close>Annulla</button>
+      <button class="btn cta" id="treeNewOk">Crea</button>
+    </div>
+  </div>
+</div>
+
 <div class="scrim" id="treeRenameModal">
   <div class="modal narrow">
     <div class="m-head">
