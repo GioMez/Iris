@@ -1,4 +1,4 @@
-FROM node:22.22.2-alpine3.22
+FROM node:24.18.0-alpine3.23
 
 WORKDIR /app
 
@@ -11,7 +11,7 @@ ENV TEX_PATH_LOCKED=false
 ENV COMPILE_TIMEOUT_MS=30000
 
 COPY package*.json ./
-RUN npm ci --omit=dev
+RUN npm ci --omit=dev --omit=optional
 
 COPY src ./src
 COPY public ./public

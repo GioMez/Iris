@@ -13,7 +13,7 @@ data/     dati progetto locali, ignorati da git
 
 ## Avvio sviluppo
 
-1. Installa le dipendenze:
+1. Installa Node.js 24 LTS, quindi le dipendenze:
 
 ```sh
 npm install
@@ -34,11 +34,15 @@ GRANT ALL PRIVILEGES ON webtex.* TO 'webtex'@'localhost';
 FLUSH PRIVILEGES;
 ```
 
-3. Copia la configurazione e cambia il secret:
+3. Copia la configurazione e genera un secret di sessione:
 
 ```sh
 cp .env.example .env
+openssl rand -hex 32
 ```
+
+Incolla il valore generato in `WEBTEX_SECRET` dentro `.env`. Il backend rifiuta
+di avviarsi se il secret manca o usa uno dei valori predefiniti noti.
 
 4. Avvia il backend:
 
@@ -53,6 +57,7 @@ Apri `http://localhost:3000`.
 Per avviare webapp e database insieme:
 
 ```sh
+export WEBTEX_SECRET="$(openssl rand -hex 32)"
 docker compose up --build
 ```
 
@@ -94,7 +99,7 @@ Gli utenti creati via SSO hanno `password_hash=NULL`: non possono accedere dal f
 
 ## Compilazione LaTeX
 
-Il pulsante `Compila` salva il progetto, lancia il motore selezionato lato backend e mostra il PDF prodotto nel pannello di anteprima. Il log reale del processo viene riportato nel tab `Log`, mentre la barra in basso mostra durata, warning/errori e dimensione del PDF.
+Il pulsante `Compila` salva il progetto, lancia il motore selezionato lato backend e mostra il PDF prodotto nel pannello di anteprima. Il viewer PDF.js locale offre scorrimento continuo, zoom, adattamento alla larghezza e navigazione tra le pagine. Il log reale del processo viene riportato nel tab `Log`, mentre la barra in basso mostra durata, warning/errori e dimensione del PDF.
 
 Gli artefatti di compilazione vengono scritti nella cartella `output/` del progetto e possono essere sovrascritti a ogni compilazione. La pipeline e' configurabile dai settings con preset per compilazione rapida, BibTeX, Biber, indice o step personalizzati. Gli step custom sono strutturati come tool in allowlist piu' argomenti, senza shell libera; sono disponibili le variabili `[engine]`, `[main]`, `[jobname]` e `[pdf]`.
 
@@ -112,7 +117,7 @@ Prime protezioni attive:
 - Per XeLaTeX/LuaLaTeX WebTeX espone la cartella `fonts/` del progetto via `OSFONTDIR`, usa una cache TeX per-progetto in `.webtex/texmf-var` e prova ad aggiornare `fc-cache` prima della compilazione, se disponibile.
 - L'ambiente del processo di compilazione non eredita le credenziali del backend.
 - Il container webapp gira come utente non-root.
-- Le immagini Docker sono pinnate a tag specifici (`node:22.22.2-alpine3.22`, `mariadb:11.4.10-noble`) invece di tag floating.
+- Le immagini Docker sono pinnate a tag specifici (`node:24.18.0-alpine3.23`, `mariadb:11.4.10-noble`) invece di tag floating.
 - Nel Compose la webapp usa `read_only`, `tmpfs` su `/tmp`, `cap_drop: ALL` e `no-new-privileges`.
 
 Nota: la compilazione LaTeX resta una superficie sensibile. Il passo successivo consigliato e' isolare la compilazione in un worker/container dedicato, senza accesso a codice applicativo, variabili DB o volume completo dei progetti.

@@ -8,7 +8,7 @@ services:
         condition: service_healthy
     environment:
       PORT: 3000
-      WEBTEX_SECRET: change-this-secret-in-production
+      WEBTEX_SECRET: ${WEBTEX_SECRET:?Imposta WEBTEX_SECRET con un valore casuale sicuro}
       DB_HOST: mariadb
       DB_PORT: 3306
       DB_USER: webtex

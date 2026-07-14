@@ -10,9 +10,10 @@
   },
   "dependencies": {
     "argon2": "0.44.0",
-    "mariadb": "3.5.2"
+    "mariadb": "3.5.2",
+    "pdfjs-dist": "6.1.200"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=24"
   }
 }

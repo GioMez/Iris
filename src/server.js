@@ -21,7 +21,7 @@ const DATA_DIR = path.resolve(process.env.DATA_DIR || "./data/projects");
 const PUBLIC_DIR = path.resolve(process.env.PUBLIC_DIR || "./public");
 const TEX_BIN_PATH = process.env.TEX_BIN_PATH || "";
 const TEX_PATH_LOCKED = String(process.env.TEX_PATH_LOCKED || "false") === "true";
-const SECRET = process.env.WEBTEX_SECRET || "webtex-dev-secret-change-me";
+const SECRET = sessionSecret(process.env.WEBTEX_SECRET);
 const COOKIE_SECURE = String(process.env.COOKIE_SECURE || "false") === "true";
 const MAX_BODY = Number(process.env.MAX_BODY_MB || 25) * 1024 * 1024;
 const COMPILE_TIMEOUT_MS = Number(process.env.COMPILE_TIMEOUT_MS || 30000);
@@ -42,6 +42,7 @@ const OAUTH_CLIENT_AUTH_METHOD = process.env.OAUTH_CLIENT_AUTH_METHOD || "client
 const OAUTH_AUTO_REGISTER = String(process.env.OAUTH_AUTO_REGISTER || "false") === "true";
 const LATEX_ENGINES = new Set(["pdflatex", "xelatex", "lualatex", "xetex"]);
 const COMPILE_TOOLS = new Set(["pdflatex", "xelatex", "lualatex", "xetex", "bibtex", "biber", "makeindex"]);
+const PDFJS_BUILD_DIR = path.join(path.dirname(require.resolve("pdfjs-dist/package.json")), "build");
 
 let pool;
 let oauthDiscoveryCache = null;
@@ -51,6 +52,7 @@ const MIME = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
   ".js": "application/javascript; charset=utf-8",
+  ".mjs": "application/javascript; charset=utf-8",
   ".json": "application/json; charset=utf-8",
   ".svg": "image/svg+xml",
   ".png": "image/png",
@@ -81,6 +83,18 @@ function loadDotEnv(file) {
 function positiveIntEnv(name, fallback) {
   const value = Number(process.env[name]);
   return Number.isInteger(value) && value > 0 ? value : fallback;
+}
+
+function sessionSecret(value) {
+  const secret = String(value || "").trim();
+  const insecure = new Set([
+    "webtex-dev-secret-change-me",
+    "change-this-secret-in-production",
+  ]);
+  if (!secret || insecure.has(secret)) {
+    throw new Error("WEBTEX_SECRET deve essere impostato con un valore sicuro e non predefinito");
+  }
+  return secret;
 }
 
 function json(res, status, data, headers = {}) {
@@ -855,6 +869,11 @@ async function readProjectFile(storagePath) {
   return data;
 }
 
+async function readProjectManifest(storagePath) {
+  const metaFile = path.join(storagePath, ".webtex", "project.json");
+  return JSON.parse(await fs.readFile(metaFile, "utf8"));
+}
+
 async function writeProjectFile(storagePath, data) {
   await fs.mkdir(storagePath, { recursive: true });
   await ensureProjectDirs(storagePath, data);
@@ -888,18 +907,17 @@ async function listProjects(req, res, user) {
     "SELECT id, name, storage_path, created_at, updated_at FROM projects WHERE user_id = ? ORDER BY updated_at DESC",
     [user.sub]
   );
-  const projects = [];
-  for (const row of rows) {
+  const projects = await Promise.all(rows.map(async (row) => {
     let fileCount = 0;
-    try { fileCount = countFiles(await readProjectFile(row.storage_path)); } catch {}
-    projects.push({
+    try { fileCount = countFiles(await readProjectManifest(row.storage_path)); } catch {}
+    return {
       id: row.id,
       name: row.name,
       createdAt: toMillis(row.created_at),
       updatedAt: toMillis(row.updated_at),
       fileCount,
-    });
-  }
+    };
+  }));
   json(res, 200, { projects });
 }
 
@@ -1454,8 +1472,11 @@ async function handleApi(req, res, url) {
 async function serveStatic(req, res, url) {
   let pathname = decodeURIComponent(url.pathname);
   if (pathname === "/") pathname = "/WebTeX.html";
-  const filePath = path.resolve(PUBLIC_DIR, `.${pathname}`);
-  if (!filePath.startsWith(PUBLIC_DIR + path.sep)) return text(res, 403, "Forbidden");
+  const pdfjsFile = pathname.match(/^\/vendor\/pdfjs\/(pdf(?:\.worker)?\.min\.mjs)$/);
+  const root = pdfjsFile ? PDFJS_BUILD_DIR : PUBLIC_DIR;
+  const relativePath = pdfjsFile ? pdfjsFile[1] : `.${pathname}`;
+  const filePath = path.resolve(root, relativePath);
+  if (!filePath.startsWith(root + path.sep)) return text(res, 403, "Forbidden");
   const stat = await fs.stat(filePath).catch(() => null);
   if (!stat || !stat.isFile()) return text(res, 404, "Not found");
   const ext = path.extname(filePath).toLowerCase();
