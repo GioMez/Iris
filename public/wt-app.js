@@ -20,9 +20,14 @@
     activeId: "main",
     openTabs: ["main"],
     engine: "pdflatex",
+    projectType: "latex",
     compileProfile: { mode: "quick", steps: [{ tool: "[engine]", args: ["[main]"] }] },
     texPath: "",          // directory of the LaTeX binaries (empty = system PATH)
     texPathLocked: false,
+    lilypondPath: "",     // directory of the LilyPond binary (empty = system PATH)
+    lilypondPathLocked: false,
+    lilypondArgs: "",
+    lilypondFormat: "pdf",
     autoIndent: true,
     zoom: 1, fit: true,
     view: "preview",
@@ -42,6 +47,7 @@
     curPage: 1,
     untitledN: 0,
     attachFile: null,
+    compiledArtifacts: [],
   };
 
   /* ---------------- persistence (delegated to the projects layer) ---------------- */
@@ -52,6 +58,31 @@
     nodes.forEach((n) => { if (n.type === "folder") walk(n.children, fn); else fn(n); });
   }
   function findFile(id) { let r = null; walk(project.nodes, (f) => { if (f.id === id) r = f; }); return r; }
+  function inferProjectType(data) {
+    if (data && (data.projectType === "latex" || data.projectType === "lilypond")) return data.projectType;
+    let tex = 0, ly = 0;
+    walk(project.nodes, (file) => {
+      if (/\.ly$/i.test(file.path || file.name || "")) ly += 1;
+      if (/\.tex$/i.test(file.path || file.name || "")) tex += 1;
+    });
+    return ly > 0 && tex === 0 ? "lilypond" : "latex";
+  }
+
+  function updateProjectTypeUi() {
+    const lilypond = isLilyPondProject();
+    state.engine = lilypond ? "lilypond" : (state.engine === "lilypond" ? "pdflatex" : state.engine);
+    $("engineName").textContent = state.engine;
+    $("stLanguage").textContent = lilypond ? "LilyPond" : "LaTeX";
+    $("engineBtn").title = lilypond ? "Compilatore LilyPond" : "Motore di compilazione LaTeX";
+    $("engineBtn").disabled = lilypond;
+    $("btnFormat").title = lilypond ? "Formatta il sorgente LilyPond" : "Formatta il sorgente LaTeX";
+    document.querySelectorAll("#engineMenu .mi").forEach((item) => {
+      item.style.display = lilypond ? (item.dataset.engine === "lilypond" ? "" : "none") : (item.dataset.engine === "lilypond" ? "none" : "");
+    });
+    const newFileButton = document.querySelector('[data-new-type="file"]');
+    if (newFileButton) newFileButton.textContent = lilypond ? "File .ly" : "File .tex";
+    updateTexPathControl();
+  }
 
   /* ---------------- elements ---------------- */
   const area = $("codeArea"), layer = $("codeLayer"), gutter = $("gutter"), codeWrap = $("codeWrap");
@@ -60,6 +91,7 @@
   /* ---------------- editor ---------------- */
   function fileIcon(kind) {
     return kind === "tex" ? '<span class="fi tex">◆</span>'
+      : kind === "ly" ? '<span class="fi tex">♪</span>'
       : kind === "img" ? '<span class="fi img">▣</span>'
       : kind === "bib" ? '<span class="fi bib">≣</span>'
       : kind === "artifact" ? '<span class="fi">◦</span>'
@@ -68,7 +100,9 @@
 
   function paint() {
     const v = area.value;
-    layer.innerHTML = WTLatex.highlight(v) + "\n";
+    const active = findFile(state.activeId);
+    const syntax = active && active.kind === "ly" ? WTLilyPond : WTLatex;
+    layer.innerHTML = syntax.highlight(v) + "\n";
     const lines = v.split("\n").length;
     const cur = curLine();
     let g = "";
@@ -153,7 +187,9 @@
       insertAtCursor("  ");
     } else if (e.key === "Enter" && state.autoIndent) {
       e.preventDefault();
-      insertAtCursor(WTLatex.indentOnEnter(area.value, area.selectionStart));
+      const f = findFile(state.activeId);
+      const syntax = f && f.kind === "ly" ? WTLilyPond : WTLatex;
+      insertAtCursor(syntax.indentOnEnter(area.value, area.selectionStart));
     }
     scheduleScrollSync();
   });
@@ -184,17 +220,25 @@
   let persistT;
   function schedulePersist() { clearTimeout(persistT); persistT = setTimeout(persist, 400); }
 
-  /* ---------------- LaTeX binaries path ---------------- */
+  /* ---------------- compiler binaries path ---------------- */
+  function isLilyPondProject() { return state.projectType === "lilypond"; }
+  function currentCompilerPath() { return isLilyPondProject() ? state.lilypondPath : state.texPath; }
+  function currentCompilerPathLocked() { return isLilyPondProject() ? state.lilypondPathLocked : state.texPathLocked; }
   function compileCommandPreview() {
-    const engine = state.engine || "pdflatex";
-    if (!state.texPath) return engine + " (dal PATH del backend)";
-    return state.texPath.replace(/[\/\\]+$/, "") + "/" + engine;
+    const engine = isLilyPondProject() ? "lilypond" : (state.engine || "pdflatex");
+    const compilerPath = currentCompilerPath();
+    const command = compilerPath ? compilerPath.replace(/[\/\\]+$/, "") + "/" + engine : engine;
+    if (isLilyPondProject()) {
+      return [command, `--${state.lilypondFormat}`, "--output=output/<nome>", state.lilypondArgs.trim(), "file.ly"].filter(Boolean).join(" ");
+    }
+    return compilerPath ? command : command + " (dal PATH del backend)";
   }
   function updateCompileCommandPreview() {
     const el = $("compileCommandPreview");
     if (el) el.textContent = compileCommandPreview();
   }
   function presetCompileProfile(mode) {
+    if (isLilyPondProject()) return { mode: "quick", steps: [{ tool: "[engine]", args: ["[main]"] }] };
     const presets = {
       quick: { mode: "quick", steps: [{ tool: "[engine]", args: ["[main]"] }] },
       bibtex: { mode: "bibtex", steps: [
@@ -219,9 +263,10 @@
   }
   function normalizeCompileProfile(profile) {
     if (!profile || typeof profile !== "object") return presetCompileProfile("quick");
+    if (isLilyPondProject() && profile.mode !== "custom") return presetCompileProfile("quick");
     const steps = Array.isArray(profile.steps) && profile.steps.length ? profile.steps : presetCompileProfile(profile.mode || "quick").steps;
     return {
-      mode: profile.mode || "quick",
+      mode: isLilyPondProject() && profile.mode !== "custom" ? "quick" : (profile.mode || "quick"),
       steps: steps.slice(0, 12).map((s) => ({
         tool: s.tool || "[engine]",
         args: Array.isArray(s.args) ? s.args.map(String) : String(s.args || "[main]").split(/\s+/).filter(Boolean),
@@ -236,6 +281,9 @@
     const profile = normalizeCompileProfile(state.compileProfile);
     state.compileProfile = profile;
     preset.value = profile.mode || "quick";
+    Array.from(preset.options).forEach((option) => {
+      option.hidden = isLilyPondProject() && !["quick", "custom"].includes(option.value);
+    });
     const custom = profile.mode === "custom";
     box.innerHTML = "";
     profile.steps.forEach((step, idx) => {
@@ -243,6 +291,7 @@
       row.className = "compile-step";
       row.innerHTML = `<select class="select" data-step-tool>
           <option value="[engine]">motore scelto</option>
+          <option value="lilypond">lilypond</option>
           <option value="pdflatex">pdflatex</option>
           <option value="xelatex">xelatex</option>
           <option value="lualatex">lualatex</option>
@@ -254,6 +303,10 @@
         <input class="input" data-step-args spellcheck="false" autocomplete="off">
         <button class="node-act danger" type="button" data-step-del title="Elimina step">✕</button>`;
       row.querySelector("[data-step-tool]").value = step.tool;
+      row.querySelectorAll("[data-step-tool] option").forEach((option) => {
+        if (option.value === "[engine]") return;
+        option.hidden = isLilyPondProject() ? option.value !== "lilypond" : option.value === "lilypond";
+      });
       row.querySelector("[data-step-args]").value = (step.args || []).join(" ");
       row.querySelectorAll("select,input,button").forEach((el) => { el.disabled = !custom; });
       row.querySelector("[data-step-tool]").addEventListener("change", (e) => { step.tool = e.target.value; saveCompileProfile(); });
@@ -276,11 +329,23 @@
     const input = $("texPath");
     const hint = $("texPathHint");
     if (!input || !hint) return;
-    input.value = state.texPath;
-    input.disabled = state.texPathLocked;
-    hint.innerHTML = state.texPathLocked
+    const lilypond = isLilyPondProject();
+    const compilerPath = currentCompilerPath();
+    const locked = currentCompilerPathLocked();
+    input.value = compilerPath;
+    input.disabled = locked;
+    $("projectTypeLabel").textContent = lilypond ? "LilyPond (.ly)" : "LaTeX (.tex)";
+    $("compilerPathLabel").textContent = lilypond ? "Percorso dei binari LilyPond" : "Percorso dei binari LaTeX";
+    $("compileSettingsDesc").innerHTML = lilypond
+      ? "Il progetto contiene sorgenti musicali <code>.ly</code>: WebTeX invocherà <code>lilypond</code> e produrrà il PDF in <code>output/</code>."
+      : "Il progetto contiene sorgenti <code>.tex</code>: scegli il motore e la pipeline LaTeX da invocare.";
+    $("lilypondArgsField").style.display = lilypond ? "" : "none";
+    $("lilypondArgs").value = state.lilypondArgs;
+    $("lilypondFormatField").style.display = lilypond ? "" : "none";
+    $("lilypondFormat").value = state.lilypondFormat;
+    hint.innerHTML = locked
       ? `↳ configurato dal deployment Docker Compose; modifica il mapping nel file <b style="color:var(--s-cmd);margin:0 3px">docker-compose.yml</b>.`
-      : `↳ se vuoto usa il <b style="color:var(--s-cmd);margin:0 3px">PATH</b> del backend; in alternativa indica la cartella degli eseguibili, es. <b style="color:var(--s-cmd);margin:0 3px">/opt/homebrew/bin</b>.`;
+      : `↳ se vuoto usa il <b style="color:var(--s-cmd);margin:0 3px">PATH</b> del backend; in alternativa indica la cartella che contiene <b style="color:var(--s-cmd);margin:0 3px">${lilypond ? "lilypond" : "pdflatex"}</b>.`;
     updateCompileCommandPreview();
   }
   async function loadRuntimeConfig() {
@@ -291,6 +356,8 @@
       const compile = cfg.compile || {};
       state.texPathLocked = !!compile.texPathLocked;
       if (state.texPathLocked) state.texPath = compile.texPath || "";
+      state.lilypondPathLocked = !!compile.lilypondPathLocked;
+      if (state.lilypondPathLocked) state.lilypondPath = compile.lilypondPath || "";
       updateTexPathControl();
     } catch (e) {}
   }
@@ -347,6 +414,7 @@
   function inferKind(name, prev) {
     if (prev === "img") return "img";
     if (/\.bib$/i.test(name)) return "bib";
+    if (/\.ly$/i.test(name)) return "ly";
     if (/\.(tex|txt)$/i.test(name)) return "tex";
     return prev || "tex";
   }
@@ -450,6 +518,9 @@
     $("newItemInput").value = isFolder
       ? uniqueName(dest.nodes, "nuova-cartella", "")
       : uniqueName(dest.nodes, `senza-nome-${state.untitledN + 1}`, ".tex");
+    if (!isFolder && isLilyPondProject()) {
+      $("newItemInput").value = uniqueName(dest.nodes, `senza-nome-${state.untitledN + 1}`, ".ly");
+    }
     updateNewItemHint();
     $("newItemInput").classList.remove("nomatch");
   }
@@ -473,7 +544,7 @@
     const destPath = newItemDestPath();
     const dest = folderNodeByPath(destPath) || { nodes: project.nodes, path: "" };
     let name = input.value.trim();
-    if (newItemMode === "file" && name && !/\.[A-Za-z0-9]{1,12}$/.test(name)) name += ".tex";
+    if (newItemMode === "file" && name && !/\.[A-Za-z0-9]{1,12}$/.test(name)) name += isLilyPondProject() ? ".ly" : ".tex";
     if (!validTreeName(name)) {
       input.classList.add("nomatch");
       hint.textContent = "Il nome non puo' essere vuoto e non puo' contenere / o \\.";
@@ -500,8 +571,8 @@
     state.untitledN++;
     const id = "untitled_" + state.untitledN;
     const filePath = joinPath(dest.path, name);
-    const kind = inferKind(name, "tex");
-    dest.nodes.push({ type: "file", id, name, kind, path: filePath, content: NEWDOC });
+    const kind = inferKind(name, isLilyPondProject() ? "ly" : "tex");
+    dest.nodes.push({ type: "file", id, name, kind, path: filePath, content: kind === "ly" ? NEWLY : NEWDOC });
     closeNewItem();
     renderTree();
     openFile(id);
@@ -675,22 +746,22 @@
   function renderOutline() {
     const f = findFile(state.activeId);
     const box = $("outline");
-    if (!f || f.kind !== "tex") { box.innerHTML = `<div class="ol-empty">Nessuna struttura</div>`; return; }
-    const items = WTLatex.outline(f.content);
-    if (!items.length) { box.innerHTML = `<div class="ol-empty">Nessuna sezione nel documento</div>`; return; }
+    if (!f || (f.kind !== "tex" && f.kind !== "ly")) { box.innerHTML = `<div class="ol-empty">Nessuna struttura</div>`; return; }
+    const items = (f.kind === "ly" ? WTLilyPond : WTLatex).outline(f.content);
+    if (!items.length) { box.innerHTML = `<div class="ol-empty">Nessuna struttura nel documento</div>`; return; }
     box.innerHTML = "";
     items.forEach((it) => {
       const el = document.createElement("div");
       el.className = "ol-item" + (it.level === 2 ? " lvl2" : "");
       el.innerHTML = `<span class="num">${it.num}</span><span>${it.title}</span>`;
-      el.addEventListener("click", () => gotoSection(it.title));
+      el.addEventListener("click", () => gotoSection(it));
       box.appendChild(el);
     });
   }
-  function gotoSection(title) {
-    const idx = area.value.indexOf("{" + title + "}");
+  function gotoSection(item) {
+    const idx = Number.isInteger(item.offset) ? item.offset : area.value.indexOf("{" + item.title + "}");
     if (idx < 0) return;
-    const start = area.value.lastIndexOf("\\", idx);
+    const start = Number.isInteger(item.offset) ? idx : area.value.lastIndexOf("\\", idx);
     area.focus();
     area.selectionStart = area.selectionEnd = start;
     const ln = area.value.slice(0, start).split("\n").length;
@@ -795,12 +866,15 @@
   /* ---------------- compile ---------------- */
   function projectSnapshot() {
     const f = findFile(state.activeId);
-    if (f && (f.kind === "tex" || f.kind === "bib")) f.content = area.value;
+    if (f && (f.kind === "tex" || f.kind === "ly" || f.kind === "bib")) f.content = area.value;
     return {
       project: { name: project.name, nodes: project.nodes },
+      projectType: state.projectType,
       assets: state.assets,
       engine: state.engine,
       compileProfile: state.compileProfile,
+      lilypondArgs: state.lilypondArgs,
+      lilypondFormat: state.lilypondFormat,
       fonts: state.fonts,
       appliedFont: state.appliedFont,
       activeId: state.activeId,
@@ -810,6 +884,15 @@
   }
   function docFileForCompile() {
     const f = findFile(state.activeId);
+    if (isLilyPondProject()) {
+      if (f && f.kind === "ly" && /\\score\b/.test(f.content || "")) return f;
+      let score = null, first = null;
+      walk(project.nodes, (x) => {
+        if (!first && x.kind === "ly") first = x;
+        if (!score && x.kind === "ly" && /\\score\b/.test(x.content || "")) score = x;
+      });
+      return score || first;
+    }
     if (f && f.kind === "tex" && /\\begin\s*\{document\}/.test(f.content)) return f;
     let main = null;
     walk(project.nodes, (x) => { if (!main && x.kind === "tex" && /\\documentclass/.test(x.content)) main = x; });
@@ -831,12 +914,16 @@
         engine: state.engine,
         mainPath: f.path,
         texPath: state.texPath,
+        lilypondPath: state.lilypondPath,
+        lilypondArgs: state.lilypondArgs,
+        lilypondFormat: state.lilypondFormat,
         compileProfile: state.compileProfile,
       });
       const ms = ((res.durationMs || (performance.now() - t0)) / 1000).toFixed(1);
       buildLog(f, res, ms);
       updateCompileStatus(res, ms);
-      if (res.pdfBase64) await renderPdf(res);
+      if (res.success && Array.isArray(res.artifacts) && res.artifacts.length) await renderCompiledOutput(res);
+      else if (res.pdfBase64) await renderPdf(res);
       else {
         $("pvEmpty").style.display = "";
         $("pvPages").innerHTML = "";
@@ -859,8 +946,11 @@
   }
   function buildLog(f, res, ms) {
     const cls = res.success ? "ok" : "err";
+    const artifacts = Array.isArray(res.artifacts) ? res.artifacts : [];
+    const totalSize = artifacts.reduce((sum, artifact) => sum + (artifact.size || 0), 0) || res.pdfSize || 0;
+    const outputLabel = res.outputName || res.pdfName || f.name.replace(/\.(tex|ly)$/, `.${res.outputFormat || "pdf"}`);
     const summary = res.success
-      ? `\n✓ Compilazione completata in ${ms}s — ${res.pdfName || f.name.replace(/\.tex$/, ".pdf")}${res.pdfSize ? ` · ${(res.pdfSize / 1024).toFixed(0)} KB` : ""}.`
+      ? `\n✓ Compilazione completata in ${ms}s — ${outputLabel}${artifacts.length > 1 ? ` · ${artifacts.length} artefatti` : ""}${totalSize ? ` · ${(totalSize / 1024).toFixed(0)} KB` : ""}.`
       : `\n! Compilazione fallita in ${ms}s${res.timedOut ? " · timeout" : ""}.`;
     const raw = `${res.log || ""}${summary}`;
     $("logView").innerHTML = raw.split(/\r?\n/).map((line) => {
@@ -874,8 +964,11 @@
   function updateCompileStatus(res, ms) {
     const errN = (res.errors || []).length || (res.success ? 0 : 1);
     const warnN = (res.warnings || []).length;
+    const artifacts = Array.isArray(res.artifacts) ? res.artifacts : [];
+    const totalSize = artifacts.reduce((sum, artifact) => sum + (artifact.size || 0), 0) || res.pdfSize || 0;
+    const format = String(res.outputFormat || (res.pdfSize ? "pdf" : "")).toUpperCase();
     $("stTime").textContent = `compilato ${new Date().toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" })} · ${ms}s`;
-    $("stMath").textContent = res.pdfSize ? `PDF ${(res.pdfSize / 1024).toFixed(0)} KB` : "";
+    $("stMath").textContent = totalSize ? `${format || "Output"} ${(totalSize / 1024).toFixed(0)} KB${artifacts.length > 1 ? ` · ${artifacts.length} file` : ""}` : "";
     const we = $("stWarn"), ee = $("stErr");
     if (warnN) { we.style.display = ""; we.textContent = `⚠ ${warnN} warning`; } else we.style.display = "none";
     if (!res.success || errN) {
@@ -888,17 +981,82 @@
       $("stState").parentElement.classList.add("accent"); $("stState").parentElement.classList.remove("err");
     }
   }
+  function artifactBytes(base64) {
+    const bin = atob(base64 || "");
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return bytes;
+  }
+  function clearCompiledArtifacts() {
+    const urls = new Set(state.compiledArtifacts.map((artifact) => artifact.blobUrl).filter(Boolean));
+    if (state.pdfBlobUrl) urls.add(state.pdfBlobUrl);
+    urls.forEach((url) => URL.revokeObjectURL(url));
+    state.compiledArtifacts = [];
+    state.pdfBlobUrl = null;
+    state.pdfName = "";
+    $("dlBtn").textContent = "⤓ Output";
+  }
+  function prepareCompiledArtifacts(res) {
+    clearCompiledArtifacts();
+    state.compiledArtifacts = (res.artifacts || []).map((artifact) => {
+      const { base64, ...metadata } = artifact;
+      const bytes = artifactBytes(base64);
+      const blob = new Blob([bytes], { type: metadata.mimeType || "application/octet-stream" });
+      return {
+        ...metadata,
+        bytes,
+        fileName: String(artifact.name || "output").split("/").pop(),
+        blobUrl: URL.createObjectURL(blob),
+      };
+    });
+    const format = String(res.outputFormat || "output").toUpperCase();
+    $("dlBtn").textContent = `⤓ ${state.compiledArtifacts.length > 1 ? `${state.compiledArtifacts.length} ` : ""}${format}`;
+    return state.compiledArtifacts;
+  }
+  async function renderCompiledOutput(res) {
+    const format = String(res.outputFormat || "pdf").toLowerCase();
+    if (format === "pdf") return renderPdf(res);
+    const loadGeneration = ++state.pdfLoadGeneration;
+    await releasePdfDocument();
+    if (loadGeneration !== state.pdfLoadGeneration) return;
+    const artifacts = prepareCompiledArtifacts(res);
+    state.pages = [];
+    state.curPage = 1;
+    $("pvPages").innerHTML = "";
+    if (format === "png" || format === "svg") {
+      artifacts.forEach((artifact) => {
+        const page = document.createElement("div");
+        page.className = "image-preview";
+        page.style.width = `${previewWidth()}px`;
+        const img = document.createElement("img");
+        img.src = artifact.blobUrl;
+        img.alt = artifact.fileName;
+        page.appendChild(img);
+        $("pvPages").appendChild(page);
+        state.pages.push(page);
+      });
+      $("pvEmpty").style.display = "none";
+      $("pgTot").textContent = state.pages.length || "–";
+      $("pgCur").textContent = state.pages.length ? "1" : "–";
+    } else {
+      $("pvEmpty").innerHTML = `<div class="big">✓</div>${artifacts.length} file ${esc(format.toUpperCase())} generat${artifacts.length === 1 ? "o" : "i"}.<br>Usa <b>Scarica</b> o apri la cartella <b>output/</b>.`;
+      $("pvEmpty").style.display = "";
+      $("pgTot").textContent = "–";
+      $("pgCur").textContent = "–";
+    }
+    setView("preview");
+  }
   async function renderPdf(res) {
     const loadGeneration = ++state.pdfLoadGeneration;
     await releasePdfDocument();
     if (loadGeneration !== state.pdfLoadGeneration) return;
-    if (state.pdfBlobUrl) URL.revokeObjectURL(state.pdfBlobUrl);
-    const bin = atob(res.pdfBase64);
-    const bytes = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    const blob = new Blob([bytes], { type: "application/pdf" });
-    state.pdfBlobUrl = URL.createObjectURL(blob);
-    state.pdfName = (res.pdfName || "output.pdf").split("/").pop();
+    const artifacts = Array.isArray(res.artifacts) && res.artifacts.length
+      ? prepareCompiledArtifacts(res)
+      : prepareCompiledArtifacts({ outputFormat: "pdf", artifacts: [{ name: res.pdfName || "output.pdf", base64: res.pdfBase64, size: res.pdfSize, mimeType: "application/pdf" }] });
+    const primary = artifacts[0];
+    const bytes = primary.bytes;
+    state.pdfBlobUrl = primary.blobUrl;
+    state.pdfName = primary.fileName;
     const pdfjs = await pdfjsReady;
     const loadingTask = pdfjs.getDocument({ data: bytes });
     state.pdfLoadingTask = loadingTask;
@@ -980,6 +1138,7 @@
   function attachKind(name, isImg) {
     if (isImg) return "img";
     if (/\.bib$/i.test(name)) return "bib";
+    if (/\.ly$/i.test(name)) return "ly";
     if (/\.(tex|txt)$/i.test(name)) return "tex";
     return "file";
   }
@@ -1078,22 +1237,27 @@
     if (save) persist();
   }
 
-  /* ---------------- download compiled PDF ---------------- */
+  /* ---------------- download compiled output ---------------- */
   function downloadPdf() {
-    if (!state.pdfBlobUrl) {
-      toast("Compila prima di scaricare il PDF", "err");
+    if (!state.compiledArtifacts.length) {
+      toast("Compila prima di scaricare l'output", "err");
       return;
     }
-    const a = document.createElement("a");
-    a.href = state.pdfBlobUrl;
-    a.download = state.pdfName || `${project.name || "documento"}.pdf`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
+    state.compiledArtifacts.forEach((artifact, index) => {
+      setTimeout(() => {
+        const a = document.createElement("a");
+        a.href = artifact.blobUrl;
+        a.download = artifact.fileName;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      }, index * 120);
+    });
   }
 
   /* ---------------- new / open / save ---------------- */
   const NEWDOC = `\\documentclass[11pt]{article}\n\\usepackage[utf8]{inputenc}\n\n\\title{Nuovo documento}\n\\author{}\n\\date{\\today}\n\n\\begin{document}\n\\maketitle\n\n\\section{}\n\n\\end{document}`;
+  const NEWLY = `\\version "2.24.0"\n\n\\score {\n  \\relative c' {\n    \\key c \\major\n    \\time 4/4\n    c4 d e f | g1 \\bar "|."\n  }\n  \\layout { }\n}`;
   function newFile() {
     openNewItem("file");
   }
@@ -1101,7 +1265,8 @@
     const reader = new FileReader();
     reader.onload = () => {
       const id = "open_" + Date.now();
-      project.nodes.push({ type: "file", id, name: file.name, kind: file.name.endsWith(".bib") ? "bib" : "tex", path: file.name, content: reader.result });
+      const kind = inferKind(file.name, isLilyPondProject() ? "ly" : "tex");
+      project.nodes.push({ type: "file", id, name: file.name, kind, path: file.name, content: reader.result });
       renderTree(); openFile(id); persist(); toast(`Aperto ${file.name}`);
     };
     reader.readAsText(file);
@@ -1113,9 +1278,9 @@
     $("btnCompile").addEventListener("click", compile);
     $("btnFormat").addEventListener("click", () => {
       const f = findFile(state.activeId);
-      if (!f || f.kind !== "tex") return;
+      if (!f || (f.kind !== "tex" && f.kind !== "ly")) return;
       const pos = area.selectionStart;
-      area.value = WTLatex.format(area.value);
+      area.value = (f.kind === "ly" ? WTLilyPond : WTLatex).format(area.value);
       f.content = area.value;
       area.selectionStart = area.selectionEnd = Math.min(pos, area.value.length);
       paint(); schedulePersist();
@@ -1124,17 +1289,28 @@
     $("btnSave").addEventListener("click", () => { persist(); toast("Documento salvato"); });
     $("btnNew").addEventListener("click", newFile);
     $("newFileBtn").addEventListener("click", newFile);
-    $("btnOpen").addEventListener("click", () => { const i = document.createElement("input"); i.type = "file"; i.accept = ".tex,.bib,.txt"; i.onchange = () => i.files[0] && openExternal(i.files[0]); i.click(); });
+    $("btnOpen").addEventListener("click", () => { const i = document.createElement("input"); i.type = "file"; i.accept = ".tex,.ly,.ily,.bib,.txt"; i.onchange = () => i.files[0] && openExternal(i.files[0]); i.click(); });
     $("btnAttach").addEventListener("click", openAttach);
     $("dlBtn").addEventListener("click", downloadPdf);
     $("btnSettings").addEventListener("click", () => { renderFontList(); updateTexPathControl(); renderCompileProfile(); $("settingsModal").classList.add("on"); });
 
     // latex binaries path (in Impostazioni → Compilazione)
     $("texPath").addEventListener("input", function () {
-      if (state.texPathLocked) return;
-      state.texPath = this.value.trim();
+      if (currentCompilerPathLocked()) return;
+      if (isLilyPondProject()) state.lilypondPath = this.value.trim();
+      else state.texPath = this.value.trim();
       updateCompileCommandPreview();
       saveLayout();
+    });
+    $("lilypondArgs").addEventListener("input", function () {
+      state.lilypondArgs = this.value;
+      updateCompileCommandPreview();
+      schedulePersist();
+    });
+    $("lilypondFormat").addEventListener("change", function () {
+      state.lilypondFormat = this.value;
+      updateCompileCommandPreview();
+      persist();
     });
     $("compilePreset").addEventListener("change", function () {
       state.compileProfile = this.value === "custom"
@@ -1348,6 +1524,7 @@
     if (typeof L.autoIndent === "boolean") state.autoIndent = L.autoIndent;
     $("autoIndent").classList.toggle("on", state.autoIndent);
     if (typeof L.texPath === "string") state.texPath = L.texPath;
+    if (typeof L.lilypondPath === "string") state.lilypondPath = L.lilypondPath;
     updateTexPathControl();
   }
   function saveLayout() {
@@ -1359,6 +1536,7 @@
       sideCollapsed: body.classList.contains("side-collapsed"),
       autoIndent: state.autoIndent,
       texPath: state.texPathLocked ? "" : state.texPath,
+      lilypondPath: state.lilypondPathLocked ? "" : state.lilypondPath,
     };
     try { localStorage.setItem(LS_LAYOUT, JSON.stringify(out)); } catch (e) {}
   }
@@ -1483,27 +1661,33 @@
     load(data) {
       data = data || {};
       project = (data.project && data.project.nodes) ? data.project : { name: data.name || "", nodes: [] };
+      state.projectType = inferProjectType(data);
       state.assets = data.assets || {};
       // rebuild image assets from the tree if not stored separately
       walk(project.nodes, (f) => { if (f.kind === "img" && f.data && f.path && !state.assets[f.path]) state.assets[f.path] = f.data; });
-      state.engine = data.engine || "pdflatex";
+      state.engine = state.projectType === "lilypond" ? "lilypond" : (data.engine || "pdflatex");
+      state.lilypondArgs = state.projectType === "lilypond" ? String(data.lilypondArgs || "") : "";
+      state.lilypondFormat = state.projectType === "lilypond" && ["pdf", "png", "svg", "ps", "eps"].includes(data.lilypondFormat)
+        ? data.lilypondFormat
+        : "pdf";
       state.compileProfile = normalizeCompileProfile(data.compileProfile);
       state.fonts = Array.isArray(data.fonts) ? data.fonts : [];
       state.fonts.forEach((font) => registerProjectFont(font).then(() => renderFontList()));
       applyFont(data.appliedFont || null, false);
-      if (state.pdfBlobUrl) URL.revokeObjectURL(state.pdfBlobUrl);
       state.pdfLoadGeneration += 1;
       void releasePdfDocument();
-      state.pdfBlobUrl = null; state.pdfName = "";
+      clearCompiledArtifacts();
       state.pages = []; state.curPage = 1;
       state.untitledN = data.untitledN || 0;
       state.zoom = 1; state.effectiveZoom = 1; state.fit = true; state.view = "preview";
-      $("engineName").textContent = state.engine;
+      updateProjectTypeUi();
 
       // resolve open tabs + active file
       let tabs = Array.isArray(data.openTabs) ? data.openTabs.filter((id) => findFile(id)) : [];
       let active = (data.activeId && findFile(data.activeId)) ? data.activeId : null;
-      if (!active) walk(project.nodes, (f) => { if (!active && f.kind === "tex") active = f.id; });
+      if (!active) walk(project.nodes, (f) => {
+        if (!active && f.kind === (isLilyPondProject() ? "ly" : "tex")) active = f.id;
+      });
       if (active && !tabs.includes(active)) tabs.unshift(active);
       state.openTabs = tabs;
       state.activeId = active;
@@ -1512,6 +1696,7 @@
       renderTabs();
       // reset preview / status
       $("pvPages").innerHTML = ""; $("logView").innerHTML = "";
+      $("pvEmpty").innerHTML = `<div class="big">▣</div>Premi <b>Compila</b> per generare l'output.`;
       $("pvEmpty").style.display = ""; $("pgTot").textContent = "–"; $("pgCur").textContent = "–";
       $("stTime").textContent = "non ancora compilato";
       $("stWarn").style.display = "none"; $("stErr").style.display = "none"; $("stMath").textContent = "";

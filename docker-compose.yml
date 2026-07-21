@@ -18,6 +18,8 @@ services:
       APP_BASE_URL: http://localhost:3000
       TEX_BIN_PATH: /usr/local/texlive/bin/x86_64-linux
       TEX_PATH_LOCKED: "true"
+      LILYPOND_BIN_PATH: /usr/bin
+      LILYPOND_PATH_LOCKED: "true"
       COMPILE_TIMEOUT_MS: 30000
       COOKIE_SECURE: "false"
       # OAuth 2.0 / OIDC SSO, ad esempio Authentik.
@@ -39,9 +41,9 @@ services:
       - "3000:3000"
     volumes:
       - project-data:/app/data
-      # Quando la compilazione backend usera' LaTeX reale, monta qui i binari
-      # o una distribuzione TeX Live compatibile con il container.
+      # Monta qui distribuzioni LaTeX e LilyPond compatibili con il container.
       # - ./texlive/bin:/usr/local/texlive/bin/x86_64-linux:ro
+      # - ./lilypond/bin/lilypond:/usr/bin/lilypond:ro
     read_only: true
     tmpfs:
       - /tmp

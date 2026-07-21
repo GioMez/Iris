@@ -21,6 +21,8 @@ const DATA_DIR = path.resolve(process.env.DATA_DIR || "./data/projects");
 const PUBLIC_DIR = path.resolve(process.env.PUBLIC_DIR || "./public");
 const TEX_BIN_PATH = process.env.TEX_BIN_PATH || "";
 const TEX_PATH_LOCKED = String(process.env.TEX_PATH_LOCKED || "false") === "true";
+const LILYPOND_BIN_PATH = process.env.LILYPOND_BIN_PATH || "";
+const LILYPOND_PATH_LOCKED = String(process.env.LILYPOND_PATH_LOCKED || "false") === "true";
 const SECRET = sessionSecret(process.env.WEBTEX_SECRET);
 const COOKIE_SECURE = String(process.env.COOKIE_SECURE || "false") === "true";
 const MAX_BODY = Number(process.env.MAX_BODY_MB || 25) * 1024 * 1024;
@@ -41,7 +43,9 @@ const OAUTH_SCOPE = process.env.OAUTH_SCOPE || "openid email profile";
 const OAUTH_CLIENT_AUTH_METHOD = process.env.OAUTH_CLIENT_AUTH_METHOD || "client_secret_basic";
 const OAUTH_AUTO_REGISTER = String(process.env.OAUTH_AUTO_REGISTER || "false") === "true";
 const LATEX_ENGINES = new Set(["pdflatex", "xelatex", "lualatex", "xetex"]);
-const COMPILE_TOOLS = new Set(["pdflatex", "xelatex", "lualatex", "xetex", "bibtex", "biber", "makeindex"]);
+const LATEX_COMPILE_TOOLS = new Set(["pdflatex", "xelatex", "lualatex", "xetex", "bibtex", "biber", "makeindex"]);
+const LILYPOND_COMPILE_TOOLS = new Set(["lilypond"]);
+const LILYPOND_OUTPUT_FORMATS = new Set(["pdf", "png", "svg", "ps", "eps"]);
 const PDFJS_BUILD_DIR = path.join(path.dirname(require.resolve("pdfjs-dist/package.json")), "build");
 
 let pool;
@@ -581,14 +585,15 @@ function fileIsFontPath(filePath) {
 
 function fileKindForPath(filePath) {
   if (/\.tex$/i.test(filePath)) return "tex";
+  if (/\.ly$/i.test(filePath)) return "ly";
   if (/\.bib$/i.test(filePath)) return "bib";
   if (/\.(png|jpe?g|gif|webp|svg)$/i.test(filePath)) return "img";
-  if (/\.(pdf|aux|bbl|bcf|blg|idx|ilg|ind|log|out|toc|run\.xml|fls|fdb_latexmk)$/i.test(filePath)) return "artifact";
+  if (/\.(pdf|ps|eps|aux|bbl|bcf|blg|idx|ilg|ind|log|out|toc|run\.xml|fls|fdb_latexmk)$/i.test(filePath)) return "artifact";
   return "file";
 }
 
 function fileIsTextPath(filePath) {
-  return /\.(tex|bib|txt|sty|cls|md|log|aux|bbl|blg|idx|ilg|ind|out|toc|xml|bcf|fls|fdb_latexmk)$/i.test(filePath || "");
+  return /\.(tex|ly|ily|bib|txt|sty|cls|md|log|aux|bbl|blg|idx|ilg|ind|out|toc|xml|bcf|fls|fdb_latexmk)$/i.test(filePath || "");
 }
 
 function generatedIdFor(relPath) {
@@ -857,6 +862,7 @@ async function readProjectFile(storagePath) {
   };
   await hydrate(data.project.nodes);
   await syncNodesWithFilesystem(storagePath, data);
+  data.projectType = inferProjectType(data);
   if (Array.isArray(data.fonts)) {
     for (const font of data.fonts) {
       if (!font || !font.path) continue;
@@ -909,13 +915,19 @@ async function listProjects(req, res, user) {
   );
   const projects = await Promise.all(rows.map(async (row) => {
     let fileCount = 0;
-    try { fileCount = countFiles(await readProjectManifest(row.storage_path)); } catch {}
+    let projectType = "latex";
+    try {
+      const manifest = await readProjectManifest(row.storage_path);
+      fileCount = countFiles(manifest);
+      projectType = inferProjectType(manifest);
+    } catch {}
     return {
       id: row.id,
       name: row.name,
       createdAt: toMillis(row.created_at),
       updatedAt: toMillis(row.updated_at),
       fileCount,
+      projectType,
     };
   }));
   json(res, 200, { projects });
@@ -940,6 +952,9 @@ async function createProject(req, res, user) {
   const data = body.data && typeof body.data === "object" ? body.data : {};
   data.project = data.project && Array.isArray(data.project.nodes) ? data.project : { nodes: [] };
   data.project.name = name;
+  data.projectType = inferProjectType(data);
+  data.lilypondArgs = data.projectType === "lilypond" ? sanitizeLilypondArgsForStorage(data.lilypondArgs) : "";
+  data.lilypondFormat = data.projectType === "lilypond" ? normalizeLilypondFormat(data.lilypondFormat) : "pdf";
   data.createdAt = now;
   data.updatedAt = now;
   await writeProjectFile(storagePath, data);
@@ -948,7 +963,7 @@ async function createProject(req, res, user) {
     [id, user.sub, name, storagePath]
   );
   json(res, 201, {
-    project: { id, name, createdAt: now, updatedAt: now, fileCount: countFiles(data) },
+    project: { id, name, projectType: data.projectType, createdAt: now, updatedAt: now, fileCount: countFiles(data) },
     data: { id, ...data },
   });
 }
@@ -962,13 +977,18 @@ async function updateProject(req, res, user, id) {
   else data = await readProjectFile(row.storage_path);
   data.project = data.project && Array.isArray(data.project.nodes) ? data.project : { nodes: [] };
   data.project.name = name;
-  if (body.compileProfile && typeof body.compileProfile === "object") data.compileProfile = sanitizeCompileProfileForStorage(body.compileProfile);
+  data.projectType = inferProjectType(data);
+  data.lilypondArgs = data.projectType === "lilypond" ? sanitizeLilypondArgsForStorage(data.lilypondArgs) : "";
+  data.lilypondFormat = data.projectType === "lilypond" ? normalizeLilypondFormat(data.lilypondFormat) : "pdf";
+  if (body.compileProfile && typeof body.compileProfile === "object") {
+    data.compileProfile = sanitizeCompileProfileForStorage(body.compileProfile, data.projectType);
+  }
   data.createdAt = toMillis(row.created_at);
   data.updatedAt = Date.now();
   await writeProjectFile(row.storage_path, data);
   await pool.query("UPDATE projects SET name = ?, updated_at = CURRENT_TIMESTAMP(3) WHERE id = ? AND user_id = ?", [name, id, user.sub]);
   json(res, 200, {
-    project: { id, name, createdAt: data.createdAt, updatedAt: data.updatedAt, fileCount: countFiles(data) },
+    project: { id, name, projectType: data.projectType, createdAt: data.createdAt, updatedAt: data.updatedAt, fileCount: countFiles(data) },
     data: { id, ...data },
   });
 }
@@ -988,27 +1008,49 @@ function walkProjectFiles(nodes, fn) {
   });
 }
 
-function findCompileFile(data, requestedPath) {
-  let requested = null;
-  let firstTex = null;
-  let main = null;
-  walkProjectFiles(data.project && data.project.nodes, (file) => {
-    if (file.path === requestedPath) requested = file;
-    if (!firstTex && file.kind === "tex") firstTex = file;
-    if (!main && file.kind === "tex" && /\\documentclass/.test(file.content || "")) main = file;
+function normalizedProjectType(value) {
+  return value === "lilypond" ? "lilypond" : value === "latex" ? "latex" : null;
+}
+
+function inferProjectType(data) {
+  const stored = normalizedProjectType(data && data.projectType);
+  if (stored) return stored;
+  let texFiles = 0;
+  let lilypondFiles = 0;
+  walkProjectFiles(data && data.project && data.project.nodes, (file) => {
+    const kind = fileKindForPath(file.path || file.name || "");
+    if (kind === "tex") texFiles += 1;
+    if (kind === "ly") lilypondFiles += 1;
   });
-  const picked = requested || main || firstTex;
-  if (!picked || picked.kind !== "tex") {
-    const err = new Error("Nessun file .tex compilabile nel progetto");
+  return lilypondFiles > 0 && texFiles === 0 ? "lilypond" : "latex";
+}
+
+function findCompileFile(data, requestedPath, projectType = inferProjectType(data)) {
+  let requested = null;
+  let firstSource = null;
+  let main = null;
+  const expectedKind = projectType === "lilypond" ? "ly" : "tex";
+  walkProjectFiles(data.project && data.project.nodes, (file) => {
+    const kind = fileKindForPath(file.path || file.name || "");
+    if (file.path === requestedPath && kind === expectedKind) requested = file;
+    if (!firstSource && kind === expectedKind) firstSource = file;
+    if (!main && kind === "tex" && /\\documentclass/.test(file.content || "")) main = file;
+    if (!main && kind === "ly" && /\\score\b/.test(file.content || "")) main = file;
+  });
+  const picked = requested || main || firstSource;
+  if (!picked || fileKindForPath(picked.path || picked.name || "") !== expectedKind) {
+    const ext = projectType === "lilypond" ? ".ly" : ".tex";
+    const err = new Error(`Nessun file ${ext} compilabile nel progetto`);
     err.status = 400;
     throw err;
   }
   return picked;
 }
 
-function resolveCompileTool(tool, engine) {
+function resolveCompileTool(tool, engine, projectType = "latex") {
   const resolved = tool === "[engine]" ? engine : String(tool || "").trim();
-  if (!COMPILE_TOOLS.has(resolved)) {
+  const allowedTools = projectType === "lilypond" ? LILYPOND_COMPILE_TOOLS : LATEX_COMPILE_TOOLS;
+  if (!allowedTools.has(resolved)) {
     const err = new Error("Tool di compilazione non supportato");
     err.status = 400;
     throw err;
@@ -1016,13 +1058,9 @@ function resolveCompileTool(tool, engine) {
   return resolved;
 }
 
-function compileCommand(tool, texPath) {
-  const base = String(texPath || "").trim();
+function compileCommand(tool, binPath) {
+  const base = String(binPath || "").trim();
   return base ? path.join(base, tool) : tool;
-}
-
-function pdfNameFor(texPath) {
-  return path.basename(texPath).replace(/\.[^.]+$/, ".pdf");
 }
 
 function parseCompileLog(log) {
@@ -1057,7 +1095,7 @@ function refreshFontCache(fontDir) {
   });
 }
 
-function defaultCompileProfile(engine) {
+function defaultCompileProfile(projectType = "latex") {
   return {
     mode: "quick",
     steps: [
@@ -1066,7 +1104,8 @@ function defaultCompileProfile(engine) {
   };
 }
 
-function presetCompileProfile(mode) {
+function presetCompileProfile(mode, projectType = "latex") {
+  if (projectType === "lilypond") return defaultCompileProfile("lilypond");
   if (mode === "bibtex") {
     return {
       mode,
@@ -1099,7 +1138,7 @@ function presetCompileProfile(mode) {
       ],
     };
   }
-  return defaultCompileProfile();
+  return defaultCompileProfile("latex");
 }
 
 function compileVariables(mainPath) {
@@ -1125,15 +1164,117 @@ function expandCompileArg(arg, vars, engine) {
   return out;
 }
 
-function normalizeCompileProfile(profile, engine, mainPath) {
-  const requested = profile && typeof profile === "object" ? profile : defaultCompileProfile(engine);
-  const source = requested.mode && requested.mode !== "custom" ? presetCompileProfile(requested.mode) : requested;
-  const steps = Array.isArray(source.steps) ? source.steps : defaultCompileProfile(engine).steps;
+function parseCompileArguments(value) {
+  const input = String(value || "").trim();
+  if (!input) return [];
+  if (input.length > 2000 || input.includes("\0")) {
+    const err = new Error("Parametri LilyPond non validi");
+    err.status = 400;
+    throw err;
+  }
+  const args = [];
+  let current = "";
+  let quote = null;
+  let escaped = false;
+  let started = false;
+  const push = () => {
+    if (!started || !current || current.length > 500 || args.length >= 40) {
+      const err = new Error("Parametri LilyPond non validi");
+      err.status = 400;
+      throw err;
+    }
+    args.push(current);
+    current = "";
+    started = false;
+  };
+  for (const char of input) {
+    if (escaped) {
+      current += char;
+      escaped = false;
+      started = true;
+      continue;
+    }
+    if (char === "\\" && quote !== "'") {
+      escaped = true;
+      started = true;
+      continue;
+    }
+    if (quote) {
+      if (char === quote) quote = null;
+      else current += char;
+      started = true;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      started = true;
+      continue;
+    }
+    if (/\s/.test(char)) {
+      if (started) push();
+      continue;
+    }
+    current += char;
+    started = true;
+  }
+  if (quote || escaped) {
+    const err = new Error("Virgolette o escape non terminati nei parametri LilyPond");
+    err.status = 400;
+    throw err;
+  }
+  if (started) push();
+  return args;
+}
+
+function sanitizeLilypondArgsForStorage(value) {
+  const input = String(value || "").trim();
+  if (input.length > 2000 || input.includes("\0")) {
+    const err = new Error("Parametri LilyPond non validi");
+    err.status = 400;
+    throw err;
+  }
+  return input;
+}
+
+function normalizeLilypondFormat(value) {
+  const format = String(value || "pdf").trim().toLowerCase();
+  if (!LILYPOND_OUTPUT_FORMATS.has(format)) {
+    const err = new Error("Formato di output LilyPond non supportato");
+    err.status = 400;
+    throw err;
+  }
+  return format;
+}
+
+function lilypondArgs(args, vars, additionalArgs = [], outputFormat = "pdf") {
+  const format = normalizeLilypondFormat(outputFormat);
+  const stripOutputOptions = (requested) => {
+    const clean = [];
+    for (let i = 0; i < requested.length; i++) {
+      const arg = requested[i];
+      if (arg === "-o" || arg === "--output") { i += 1; continue; }
+      if (arg.startsWith("--output=") || (/^-o.+/.test(arg) && arg !== "-o")) continue;
+      if (arg === "-f" || arg === "--format") { i += 1; continue; }
+      if (/^-f.+/.test(arg) || arg.startsWith("--format=")) continue;
+      if (arg === "-E") continue;
+      if (/^--(pdf|png|svg|ps|eps)$/.test(arg)) continue;
+      clean.push(arg);
+    }
+    return clean;
+  };
+  const clean = [...stripOutputOptions(additionalArgs), ...stripOutputOptions(args)];
+  return [`--${format}`, `--output=output/${vars.jobname}`, ...clean];
+}
+
+function normalizeCompileProfile(profile, engine, mainPath, projectType = "latex", additionalArgs = [], outputFormat = "pdf") {
+  const requested = profile && typeof profile === "object" ? profile : defaultCompileProfile(projectType);
+  const source = requested.mode && requested.mode !== "custom" ? presetCompileProfile(requested.mode, projectType) : requested;
+  const steps = Array.isArray(source.steps) ? source.steps : defaultCompileProfile(projectType).steps;
   const vars = compileVariables(mainPath);
   return {
     mode: source.mode || "quick",
     steps: steps.slice(0, 12).map((step) => {
-      const tool = resolveCompileTool(step.tool, engine);
+      const tool = resolveCompileTool(step.tool, engine, projectType);
       const rawArgs = Array.isArray(step.args) ? step.args : [];
       let args = rawArgs.map((arg) => expandCompileArg(arg, vars, engine));
       if (LATEX_ENGINES.has(tool)) {
@@ -1146,22 +1287,25 @@ function normalizeCompileProfile(profile, engine, mainPath) {
           ...args.filter((arg) => !arg.startsWith("-output-directory")),
         ];
       }
+      if (tool === "lilypond") args = lilypondArgs(args, vars, additionalArgs, outputFormat);
       return { tool, args };
     }),
   };
 }
 
-function sanitizeCompileProfileForStorage(profile) {
+function sanitizeCompileProfileForStorage(profile, projectType = "latex") {
   if (!profile || typeof profile !== "object") return { mode: "quick" };
   const mode = String(profile.mode || "quick");
   if (mode !== "custom") {
-    return { mode: ["quick", "bibtex", "biber", "index"].includes(mode) ? mode : "quick" };
+    const modes = projectType === "lilypond" ? ["quick"] : ["quick", "bibtex", "biber", "index"];
+    return { mode: modes.includes(mode) ? mode : "quick" };
   }
   const steps = Array.isArray(profile.steps) ? profile.steps : [];
   return {
     mode: "custom",
     steps: steps.slice(0, 12).map((step) => {
-      const tool = step.tool === "[engine]" ? "[engine]" : resolveCompileTool(step.tool, "pdflatex");
+      const fallbackEngine = projectType === "lilypond" ? "lilypond" : "pdflatex";
+      const tool = step.tool === "[engine]" ? "[engine]" : resolveCompileTool(step.tool, fallbackEngine, projectType);
       const args = Array.isArray(step.args) ? step.args : String(step.args || "").split(/\s+/).filter(Boolean);
       return {
         tool,
@@ -1186,11 +1330,11 @@ function kpathseaSearchPath(...dirs) {
   return cleanDirs.join(path.delimiter) + path.delimiter;
 }
 
-function runCompileStep({ step, texPath, cwd, fontDir, texmfVar }) {
+function runCompileStep({ step, binPath, cwd, fontDir, texmfVar }) {
   return new Promise((resolve) => {
-    const command = compileCommand(step.tool, texPath);
+    const command = compileCommand(step.tool, binPath);
     const args = step.args;
-    const envPath = texPath ? `${texPath}${path.delimiter}${process.env.PATH || ""}` : process.env.PATH || "";
+    const envPath = binPath ? `${binPath}${path.delimiter}${process.env.PATH || ""}` : process.env.PATH || "";
     const outputDir = path.join(cwd, "output");
     const projectSearchPath = kpathseaSearchPath(cwd, outputDir);
     const startedAt = Date.now();
@@ -1239,7 +1383,7 @@ function runCompileStep({ step, texPath, cwd, fontDir, texmfVar }) {
   });
 }
 
-async function runCompilePipeline({ profile, texPath, cwd, fontDir, texmfVar, preLog }) {
+async function runCompilePipeline({ profile, binPath, cwd, fontDir, texmfVar, preLog }) {
   const startedAt = Date.now();
   let log = preLog || "";
   let warnings = [];
@@ -1250,7 +1394,7 @@ async function runCompilePipeline({ profile, texPath, cwd, fontDir, texmfVar, pr
   for (let i = 0; i < profile.steps.length; i++) {
     const step = profile.steps[i];
     log += `\n===== WebTeX step ${i + 1}/${profile.steps.length}: ${step.tool} =====\n`;
-    const res = await runCompileStep({ step, texPath, cwd, fontDir, texmfVar });
+    const res = await runCompileStep({ step, binPath, cwd, fontDir, texmfVar });
     log += res.log;
     warnings = warnings.concat(res.warnings || []);
     errors = errors.concat(res.errors || []);
@@ -1271,6 +1415,50 @@ async function runCompilePipeline({ profile, texPath, cwd, fontDir, texmfVar, pr
   };
 }
 
+function artifactMimeType(format) {
+  if (format === "pdf") return "application/pdf";
+  if (format === "png") return "image/png";
+  if (format === "svg") return "image/svg+xml";
+  return "application/postscript";
+}
+
+function compileArtifactNameMatches(fileName, jobname, format) {
+  if (!fileName.startsWith(jobname) || !fileName.toLowerCase().endsWith(`.${format}`)) return false;
+  const boundary = fileName[jobname.length];
+  return boundary === "." || boundary === "-";
+}
+
+async function removePriorCompileArtifacts(outputDir, jobname, format) {
+  const entries = await fs.readdir(outputDir, { withFileTypes: true }).catch(() => []);
+  await Promise.all(entries
+    .filter((entry) => entry.isFile() && compileArtifactNameMatches(entry.name, jobname, format))
+    .map((entry) => fs.rm(path.join(outputDir, entry.name), { force: true })));
+}
+
+async function readCompileArtifacts(outputDir, jobname, format) {
+  const entries = await fs.readdir(outputDir, { withFileTypes: true }).catch(() => []);
+  const names = entries
+    .filter((entry) => entry.isFile() && compileArtifactNameMatches(entry.name, jobname, format))
+    .map((entry) => entry.name)
+    .sort((a, b) => {
+      const exact = `${jobname}.${format}`;
+      if (a === exact) return -1;
+      if (b === exact) return 1;
+      return a.localeCompare(b, undefined, { numeric: true });
+    });
+  const artifacts = [];
+  for (const name of names) {
+    const content = await fs.readFile(path.join(outputDir, name));
+    artifacts.push({
+      name: `output/${name}`,
+      base64: content.toString("base64"),
+      size: content.length,
+      mimeType: artifactMimeType(format),
+    });
+  }
+  return artifacts;
+}
+
 async function compileProject(req, res, user, id) {
   const body = await readBody(req);
   const row = await projectForUser(id, user.sub);
@@ -1278,45 +1466,66 @@ async function compileProject(req, res, user, id) {
   const data = body.data && typeof body.data === "object" ? body.data : await readProjectFile(row.storage_path);
   data.project = data.project && Array.isArray(data.project.nodes) ? data.project : { nodes: [] };
   data.project.name = name;
-  const engine = String(body.engine || data.engine || "pdflatex").trim();
-  const texPath = TEX_PATH_LOCKED ? TEX_BIN_PATH : String(body.texPath || TEX_BIN_PATH || "").trim();
-  const main = findCompileFile(data, body.mainPath);
+  const projectType = inferProjectType(data);
+  data.projectType = projectType;
+  const engine = projectType === "lilypond" ? "lilypond" : String(body.engine || data.engine || "pdflatex").trim();
+  if (projectType === "latex" && !LATEX_ENGINES.has(engine)) {
+    const err = new Error("Motore LaTeX non supportato");
+    err.status = 400;
+    throw err;
+  }
+  const binPath = projectType === "lilypond"
+    ? (LILYPOND_PATH_LOCKED ? LILYPOND_BIN_PATH : String(body.lilypondPath || LILYPOND_BIN_PATH || "").trim())
+    : (TEX_PATH_LOCKED ? TEX_BIN_PATH : String(body.texPath || TEX_BIN_PATH || "").trim());
+  const main = findCompileFile(data, body.mainPath, projectType);
   const mainPath = safeRelPath(main.path);
-  const storedCompileProfile = sanitizeCompileProfileForStorage(body.compileProfile || data.compileProfile);
-  const compileProfile = normalizeCompileProfile(storedCompileProfile, engine, mainPath);
+  const storedLilypondArgs = projectType === "lilypond"
+    ? sanitizeLilypondArgsForStorage(body.lilypondArgs ?? data.lilypondArgs)
+    : "";
+  const outputFormat = projectType === "lilypond"
+    ? normalizeLilypondFormat(body.lilypondFormat ?? data.lilypondFormat)
+    : "pdf";
+  const additionalArgs = parseCompileArguments(storedLilypondArgs);
+  const storedCompileProfile = sanitizeCompileProfileForStorage(body.compileProfile || data.compileProfile, projectType);
+  const compileProfile = normalizeCompileProfile(storedCompileProfile, engine, mainPath, projectType, additionalArgs, outputFormat);
   data.compileProfile = storedCompileProfile;
+  data.lilypondArgs = storedLilypondArgs;
+  data.lilypondFormat = outputFormat;
   data.createdAt = toMillis(row.created_at);
   data.updatedAt = Date.now();
   await writeProjectFile(row.storage_path, data);
   await pool.query("UPDATE projects SET name = ?, updated_at = CURRENT_TIMESTAMP(3) WHERE id = ? AND user_id = ?", [name, id, user.sub]);
 
-  const outputName = pdfNameFor(mainPath);
+  const jobname = path.basename(mainPath).replace(/\.[^.]+$/, "");
+  const outputName = `${jobname}.${outputFormat}`;
   const outputDir = path.join(row.storage_path, "output");
   await fs.mkdir(outputDir, { recursive: true });
-  const outputPath = path.join(outputDir, outputName);
-  await fs.rm(outputPath, { force: true }).catch(() => {});
+  const formatsToClean = projectType === "lilypond" ? Array.from(LILYPOND_OUTPUT_FORMATS) : ["pdf"];
+  await Promise.all(formatsToClean.map((format) => removePriorCompileArtifacts(outputDir, jobname, format)));
   const fontDir = path.join(row.storage_path, "fonts");
   const texmfVar = path.join(row.storage_path, ".webtex", "texmf-var");
   await fs.mkdir(texmfVar, { recursive: true });
   const preLog = /^(xelatex|lualatex)$/i.test(engine) ? await refreshFontCache(fontDir) : "";
-  const result = await runCompilePipeline({ profile: compileProfile, texPath, cwd: row.storage_path, fontDir, texmfVar, preLog });
-  let pdfBase64 = null;
-  let pdfSize = 0;
-  try {
-    const pdf = await fs.readFile(outputPath);
-    pdfBase64 = pdf.toString("base64");
-    pdfSize = pdf.length;
-  } catch {}
-  const success = result.code === 0 && !!pdfBase64;
+  const result = await runCompilePipeline({ profile: compileProfile, binPath, cwd: row.storage_path, fontDir, texmfVar, preLog });
+  const artifacts = await readCompileArtifacts(outputDir, jobname, outputFormat);
+  const primaryArtifact = artifacts[0] || null;
+  const pdfArtifact = outputFormat === "pdf" ? primaryArtifact : null;
+  const success = result.code === 0 && artifacts.length > 0;
   json(res, 200, {
     success,
+    projectType,
     engine,
     mainPath,
     outputDir: "output",
-    pdfName: `output/${outputName}`,
-    pdfBase64,
-    pdfSize,
+    outputFormat,
+    outputName: primaryArtifact ? primaryArtifact.name : `output/${outputName}`,
+    artifacts,
+    artifactCount: artifacts.length,
+    pdfName: pdfArtifact ? pdfArtifact.name : null,
+    pdfBase64: pdfArtifact ? pdfArtifact.base64 : null,
+    pdfSize: pdfArtifact ? pdfArtifact.size : 0,
     compileProfile,
+    lilypondArgs: storedLilypondArgs,
     durationMs: result.durationMs,
     exitCode: result.code,
     signal: result.signal,
@@ -1333,6 +1542,8 @@ async function handleApi(req, res, url) {
       compile: {
         texPath: TEX_BIN_PATH,
         texPathLocked: TEX_PATH_LOCKED,
+        lilypondPath: LILYPOND_BIN_PATH,
+        lilypondPathLocked: LILYPOND_PATH_LOCKED,
       },
       auth: {
         ssoEnabled: oauthEnabled(),
@@ -1502,7 +1713,7 @@ async function handle(req, res) {
   }
 }
 
-initDb()
+if (require.main === module) initDb()
   .then(() => {
     http.createServer(handle).listen(PORT, () => {
       console.log(`WebTeX listening on http://localhost:${PORT}`);
@@ -1525,3 +1736,16 @@ initDb()
     console.error(err);
     process.exit(1);
   });
+
+module.exports = {
+  fileKindForPath,
+  inferProjectType,
+  findCompileFile,
+  normalizeCompileProfile,
+  sanitizeCompileProfileForStorage,
+  parseCompileArguments,
+  sanitizeLilypondArgsForStorage,
+  normalizeLilypondFormat,
+  readCompileArtifacts,
+  runCompilePipeline,
+};

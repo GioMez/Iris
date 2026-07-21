@@ -140,10 +140,10 @@
     while ((m = re.exec(src))) {
       if (m[1] === "subsection") {
         ss++;
-        res.push({ level: 2, num: s + "." + ss, title: m[2] });
+        res.push({ level: 2, num: s + "." + ss, title: m[2], offset: m.index });
       } else {
         s++; ss = 0;
-        res.push({ level: 1, num: "" + s, title: m[2] });
+        res.push({ level: 1, num: "" + s, title: m[2], offset: m.index });
       }
     }
     return res;

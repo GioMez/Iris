@@ -29,7 +29,29 @@
   }
 
   /* ---------------- blank content ---------------- */
-  function blankNodes(name) {
+  function blankNodes(name, projectType) {
+    if (projectType === "lilypond") {
+      const title = String(name || "Nuova partitura").replace(/["\\]/g, "");
+      const tpl = `\\version "2.24.0"
+
+\\header {
+  title = "${title}"
+  composer = ""
+}
+
+\\score {
+  \\relative c' {
+    \\key c \\major
+    \\time 4/4
+    c4 d e f | g1 \\bar "|."
+  }
+  \\layout { }
+  \\midi { }
+}`;
+      return [
+        { type: "file", id: "main", name: "main.ly", kind: "ly", path: "main.ly", content: tpl },
+      ];
+    }
     const tpl = `\\documentclass[11pt]{article}
 \\usepackage[utf8]{inputenc}
 \\usepackage{amsmath}
@@ -117,7 +139,7 @@
             `<span class="pcard-icon">◆</span>` +
             `<span class="pcard-text">` +
               `<span class="pcard-name">${esc(m.name)}</span>` +
-              `<span class="pcard-meta">${nfiles} file · modificato ${fmtTime(m.updatedAt)}</span>` +
+              `<span class="pcard-meta">${m.projectType === "lilypond" ? "LilyPond" : "LaTeX"} · ${nfiles} file · modificato ${fmtTime(m.updatedAt)}</span>` +
             `</span>` +
             `<span class="pcard-go">Apri ›</span>` +
           `</button>` +
@@ -171,6 +193,7 @@
       m.name = (data.project && data.project.name) || m.name;
       m.updatedAt = now;
       m.fileCount = countFiles(data);
+      m.projectType = data.projectType || m.projectType || "latex";
     }
     try {
       const out = await api(`/api/projects/${currentId}`, {
@@ -195,6 +218,7 @@
       m.name = (data.project && data.project.name) || m.name;
       m.updatedAt = now;
       m.fileCount = countFiles(data);
+      m.projectType = data.projectType || m.projectType || "latex";
     }
     const out = await api(`/api/projects/${currentId}/compile`, {
       method: "POST",
@@ -204,6 +228,9 @@
         engine: options && options.engine,
         mainPath: options && options.mainPath,
         texPath: options && options.texPath,
+        lilypondPath: options && options.lilypondPath,
+        lilypondArgs: options && options.lilypondArgs,
+        lilypondFormat: options && options.lilypondFormat,
         compileProfile: options && options.compileProfile,
       }),
     });
@@ -211,11 +238,17 @@
   }
 
   /* ---------------- create / rename / delete ---------------- */
-  async function createProject(name) {
+  async function createProject(name, projectType) {
     const now = Date.now();
+    projectType = projectType === "lilypond" ? "lilypond" : "latex";
     const data = {
-      project: { name, nodes: blankNodes(name) },
-      engine: "pdflatex", activeId: "main", openTabs: ["main"], assets: {},
+      project: { name, nodes: blankNodes(name, projectType) },
+      projectType,
+      engine: projectType === "lilypond" ? "lilypond" : "pdflatex",
+      compileProfile: { mode: "quick" },
+      lilypondArgs: "",
+      lilypondFormat: "pdf",
+      activeId: "main", openTabs: ["main"], assets: {},
       createdAt: now, updatedAt: now,
     };
     const out = await api("/api/projects", {
@@ -263,6 +296,8 @@
     $("projModalTitle").textContent = "Nuovo progetto";
     $("projModalOk").textContent = "Crea progetto";
     $("projModalHint").textContent = "Verrà creato con un file main.tex iniziale.";
+    $("projTypeField").style.display = "";
+    $("projTypeSelect").value = "latex";
     $("projNameInput").value = "";
     $("projNameInput").classList.remove("nomatch");
     openModal("projModal");
@@ -274,6 +309,7 @@
     $("projModalTitle").textContent = "Rinomina progetto";
     $("projModalOk").textContent = "Salva";
     $("projModalHint").textContent = "Il nome aiuta a riconoscere il progetto nell'elenco.";
+    $("projTypeField").style.display = "none";
     $("projNameInput").value = m ? m.name : "";
     $("projNameInput").classList.remove("nomatch");
     openModal("projModal");
@@ -291,7 +327,7 @@
     ok.classList.add("loading");
     try {
       if (projMode === "new") {
-        const id = await createProject(name);
+        const id = await createProject(name, $("projTypeSelect").value);
         closeModal("projModal");
         await renderPicker();
         await openProject(id);
@@ -358,6 +394,11 @@
 
     $("projModalOk").addEventListener("click", () => confirmProjModal());
     $("projNameInput").addEventListener("input", () => $("projNameInput").classList.remove("nomatch"));
+    $("projTypeSelect").addEventListener("change", function () {
+      $("projModalHint").textContent = this.value === "lilypond"
+        ? "Verrà creato con un file main.ly testuale iniziale."
+        : "Verrà creato con un file main.tex iniziale.";
+    });
     $("projNameInput").addEventListener("keydown", (e) => {
       if (e.key === "Enter") { e.preventDefault(); confirmProjModal(); }
       else if (e.key === "Escape") { e.preventDefault(); closeModal("projModal"); }

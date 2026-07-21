@@ -72,6 +72,8 @@ TEX_PATH_LOCKED: "true"
 
 Quando `TEX_PATH_LOCKED` e' `true`, il campo nei settings resta visibile ma non modificabile: il valore va cambiato nel file `docker-compose.yml` o nella configurazione del container.
 
+Per LilyPond sono disponibili le variabili equivalenti `LILYPOND_BIN_PATH` e `LILYPOND_PATH_LOCKED`. L'immagine applicativa non include le distribuzioni di compilazione: i binari compatibili vanno montati nel container oppure forniti in un'immagine derivata.
+
 ## SSO OAuth 2.0 / OIDC
 
 WebTeX supporta un login SSO generico OAuth 2.0/OIDC, pensato per Authentik ma non legato a pulsanti provider-specifici. Se `OAUTH_ISSUER_URL` e' impostato, il backend usa la discovery `/.well-known/openid-configuration`.
@@ -121,6 +123,23 @@ Prime protezioni attive:
 - Nel Compose la webapp usa `read_only`, `tmpfs` su `/tmp`, `cap_drop: ALL` e `no-new-privileges`.
 
 Nota: la compilazione LaTeX resta una superficie sensibile. Il passo successivo consigliato e' isolare la compilazione in un worker/container dedicato, senza accesso a codice applicativo, variabili DB o volume completo dei progetti.
+
+## Compilazione LilyPond
+
+WebTeX gestisce anche progetti musicali testuali LilyPond. In fase di creazione puoi scegliere `Partitura LilyPond`; i progetti esistenti privi di tipo vengono riconosciuti come LilyPond quando contengono file `.ly` e nessun `.tex`.
+
+Per un progetto musicale l'interfaccia usa `main.ly`, mostra solo il compilatore `lilypond` e propone una pipeline coerente. Dalle impostazioni si puo' scegliere il formato di stampa tra PDF, PNG, SVG, PS ed EPS; PNG, SVG e documenti con più blocchi possono generare più artefatti, tutti raccolti nella cartella `output/`. Il viewer mostra PDF, PNG e SVG, mentre PS ed EPS restano scaricabili e visibili nell'albero dei file.
+
+Il campo `Parametri LilyPond` permette inoltre di aggiungere opzioni tra l'eseguibile e il sorgente; i valori tra virgolette vengono mantenuti come un singolo argomento. Il backend invoca LilyPond senza shell e forza formato e destinazione scelti nelle impostazioni, ignorando eventuali override `-o`, `--output`, `-f` o `--format` presenti nei parametri liberi.
+
+Variabili utili:
+
+```env
+LILYPOND_BIN_PATH=/usr/bin
+LILYPOND_PATH_LOCKED=true
+```
+
+Anche i sorgenti LilyPond non fidati devono essere compilati in un worker/container isolato: LilyPond incorpora Guile e la compilazione va considerata esecuzione di input non fidato.
 
 ## Password locali
 

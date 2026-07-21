@@ -121,12 +121,12 @@
           <button class="zbtn" id="zIn">+</button>
         </div>
         <button class="mini fit on" id="fitBtn" title="Adatta alla larghezza">Adatta</button>
-        <button class="mini" id="dlBtn">⤓ PDF</button>
+        <button class="mini" id="dlBtn">⤓ Output</button>
       </div>
       <div class="pv-stage" id="pvStage">
         <div class="pv-empty" id="pvEmpty">
           <div class="big">▣</div>
-          Premi <b>Compila</b> per generare l'anteprima del PDF.
+          Premi <b>Compila</b> per generare l'output.
         </div>
         <div class="pv-pages" id="pvPages"></div>
         <div class="logview" id="logView"></div>
@@ -145,7 +145,7 @@
       <span class="st" id="stCursor">Ln 1, Col 1</span>
       <span class="st">Spazi: 2</span>
       <span class="st">UTF-8</span>
-      <span class="st">LaTeX</span>
+      <span class="st" id="stLanguage">LaTeX</span>
       <div class="spring"></div>
       <span class="st" id="stMath"></span>
       <span class="st warn btnlike" id="stWarn" style="display:none"></span>
@@ -168,6 +168,7 @@
   <div class="mi" data-engine="pdflatex">pdflatex</div>
   <div class="mi" data-engine="xelatex">xelatex</div>
   <div class="mi" data-engine="lualatex">lualatex</div>
+  <div class="mi" data-engine="lilypond">lilypond</div>
 </div>
 
 <!-- ===================== USER MENU ===================== -->
@@ -261,11 +262,31 @@
       </div>
       <div class="set-pane" data-setpane="compile" style="display:none">
         <h4>Compilazione</h4>
-        <p class="desc">Indica dove WebTeX deve cercare i binari della tua distribuzione LaTeX. Il campo e' opzionale: se resta vuoto viene usato il <code>PATH</code> del backend.</p>
+        <p class="desc" id="compileSettingsDesc">Indica dove WebTeX deve cercare i binari del compilatore. Il campo e' opzionale: se resta vuoto viene usato il <code>PATH</code> del backend.</p>
+        <div class="binresolve">
+          <span class="label">Tipo progetto riconosciuto</span>
+          <code class="binpath" id="projectTypeLabel">LaTeX</code>
+        </div>
         <div class="field">
-          <span class="label">Percorso dei binari LaTeX</span>
+          <span class="label" id="compilerPathLabel">Percorso dei binari LaTeX</span>
           <input class="input" id="texPath" placeholder="opzionale, es. /opt/homebrew/bin" spellcheck="false" autocomplete="off">
           <div class="hint" id="texPathHint">↳ se vuoto usa il <b style="color:var(--s-cmd);margin:0 3px">PATH</b> del backend; compila con eseguibili come <b style="color:var(--s-cmd);margin:0 3px">pdflatex</b> <b style="color:var(--s-cmd);margin-right:3px">xelatex</b> <b style="color:var(--s-cmd)">lualatex</b>.</div>
+        </div>
+        <div class="field" id="lilypondArgsField" style="display:none">
+          <span class="label">Parametri LilyPond</span>
+          <input class="input" id="lilypondArgs" placeholder='es. --loglevel=WARNING -I "include musicali"' spellcheck="false" autocomplete="off" maxlength="2000">
+          <div class="hint">↳ inseriti tra <b style="color:var(--s-cmd);margin:0 3px">lilypond</b> e il file <b style="color:var(--s-cmd);margin:0 3px">.ly</b>; sono supportiti valori tra virgolette. La destinazione resta gestita da WebTeX.</div>
+        </div>
+        <div class="field" id="lilypondFormatField" style="display:none">
+          <span class="label">Formato di output LilyPond</span>
+          <select class="select" id="lilypondFormat">
+            <option value="pdf">PDF — documento impaginato</option>
+            <option value="png">PNG — un'immagine per pagina</option>
+            <option value="svg">SVG — un'immagine vettoriale per pagina</option>
+            <option value="ps">PS — PostScript</option>
+            <option value="eps">EPS — Encapsulated PostScript</option>
+          </select>
+          <div class="hint">↳ PNG, SVG e partiture con più blocchi possono produrre più artefatti nella cartella <b style="color:var(--s-cmd);margin:0 3px">output/</b>.</div>
         </div>
         <div class="binresolve">
           <span class="label">Comando richiesto al backend</span>
@@ -424,6 +445,13 @@
         <input class="input" id="projNameInput" placeholder="es. Tesi di laurea" spellcheck="false" autocomplete="off" maxlength="80">
         <div class="hint" id="projModalHint">Verrà creato con un file main.tex iniziale.</div>
       </div>
+      <div class="field" id="projTypeField">
+        <span class="label">Tipo di progetto</span>
+        <select class="select" id="projTypeSelect">
+          <option value="latex">Documento LaTeX</option>
+          <option value="lilypond">Partitura LilyPond</option>
+        </select>
+      </div>
     </div>
     <div class="m-foot">
       <button class="btn" data-close>Annulla</button>
@@ -526,6 +554,7 @@
 <input type="file" id="fontInput" accept=".ttf,.otf,.woff,.woff2" style="display:none">
 
 <script src="wt-latex.js"></script>
+<script src="wt-lilypond.js"></script>
 <script src="wt-app.js"></script>
 <script src="wt-projects.js"></script>
 <script src="wt-auth.js"></script>
