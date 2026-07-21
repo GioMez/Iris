@@ -31,7 +31,7 @@
       <button class="tbtn" id="btnAttach"><span class="ic" data-icon="paperclip"></span>Allega</button>
     </div>
     <div class="tbar-right">
-      <button class="userchip" id="userChip" title="Account">
+      <button class="userchip" id="userChip" title="Account" aria-haspopup="menu" aria-expanded="false" aria-controls="userMenu">
         <span class="avatar" id="userAvatar">–</span>
         <span class="uname" id="userName">–</span>
         <span class="chev" data-icon="chevron-down"></span>
@@ -55,11 +55,11 @@
               <button class="iconbtn" id="newFileBtn" title="Nuovo file o cartella" aria-label="Nuovo file o cartella"><span data-icon="plus"></span></button>
             </span>
           </div>
-          <div class="tree" id="tree"></div>
-          <div class="dropzone" id="sideDrop">
+          <div class="tree" id="tree" role="tree"></div>
+          <button class="dropzone" id="sideDrop" type="button">
             <b><span data-icon="upload"></span>Trascina immagini qui</b>
             nella cartella selezionata, oppure <span class="lk">sfoglia…</span>
-          </div>
+          </button>
         </div>
         <div data-panel="outline" style="display:none">
           <div class="side-head">Struttura documento</div>
@@ -72,7 +72,7 @@
 
     <!-- editor -->
     <section class="pane edpane">
-      <div class="tabbar" id="ftabs"></div>
+      <div class="tabbar" id="ftabs" role="tablist"></div>
       <div class="editor">
         <div class="findbar" id="findBar">
           <div class="findrow">
@@ -148,15 +148,15 @@
       <span class="st" id="stLanguage">LaTeX</span>
       <div class="spring"></div>
       <span class="st" id="stMath"></span>
-      <span class="st warn btnlike" id="stWarn" style="display:none"></span>
-      <span class="st err btnlike" id="stErr" style="display:none"></span>
+      <button class="st warn btnlike" id="stWarn" type="button" style="display:none"></button>
+      <button class="st err btnlike" id="stErr" type="button" style="display:none"></button>
       <span class="st" id="stTime">non ancora compilato</span>
     </div>
     <div class="sb-actions">
       <button class="sb-btn" id="btnFormat"><span class="ic" data-icon="align-left-2"></span>Format</button>
       <button class="sb-btn" id="btnFind"><span class="ic" data-icon="search"></span>Trova</button>
       <div class="sb-divider"></div>
-      <button class="sb-engine" id="engineBtn" title="Motore di compilazione">motore <b id="engineName">pdflatex</b><span class="chev" data-icon="chevron-up"></span></button>
+      <button class="sb-engine" id="engineBtn" title="Motore di compilazione" aria-haspopup="menu" aria-expanded="false" aria-controls="engineMenu">motore <b id="engineName">pdflatex</b><span class="chev" data-icon="chevron-up"></span></button>
       <button class="sb-compile" id="btnCompile"><span class="ic" data-icon="player-play"></span>Compila</button>
       <button class="sb-icon" id="btnSettings" title="Impostazioni" aria-label="Impostazioni"><span class="ic" data-icon="settings"></span></button>
     </div>
@@ -164,15 +164,15 @@
 </div>
 
 <!-- ===================== ENGINE MENU ===================== -->
-<div class="menu" id="engineMenu">
-  <div class="mi" data-engine="pdflatex">pdflatex</div>
-  <div class="mi" data-engine="xelatex">xelatex</div>
-  <div class="mi" data-engine="lualatex">lualatex</div>
-  <div class="mi" data-engine="lilypond">lilypond</div>
+<div class="menu" id="engineMenu" role="menu">
+  <button class="mi" type="button" role="menuitem" data-engine="pdflatex">pdflatex</button>
+  <button class="mi" type="button" role="menuitem" data-engine="xelatex">xelatex</button>
+  <button class="mi" type="button" role="menuitem" data-engine="lualatex">lualatex</button>
+  <button class="mi" type="button" role="menuitem" data-engine="lilypond">lilypond</button>
 </div>
 
 <!-- ===================== USER MENU ===================== -->
-<div class="menu" id="userMenu">
+<div class="menu" id="userMenu" role="menu">
   <div class="umeta">
     <span class="avatar" id="umAvatar">–</span>
     <div>
@@ -181,8 +181,8 @@
     </div>
   </div>
   <div class="msep"></div>
-  <div class="mi" id="miPassword"><span class="ic" data-icon="key"></span>Cambia password</div>
-  <div class="mi danger" id="miLogout"><span class="ic" data-icon="logout"></span>Disconnetti</div>
+  <button class="mi" id="miPassword" type="button" role="menuitem"><span class="ic" data-icon="key"></span>Cambia password</button>
+  <button class="mi danger" id="miLogout" type="button" role="menuitem"><span class="ic" data-icon="logout"></span>Disconnetti</button>
 </div>
 
 <!-- ===================== ATTACH MODAL ===================== -->
@@ -195,10 +195,10 @@
     <div class="m-body">
       <div class="field">
         <span class="label">File</span>
-        <div class="bigdrop" id="attachDrop">
-          <div class="ic" data-icon="upload"></div>
+        <button class="bigdrop" id="attachDrop" type="button">
+          <span class="ic" data-icon="upload"></span>
           <b>Trascina un file qui</b> oppure clicca per sfogliare
-        </div>
+        </button>
         <div class="filerow" id="attachPicked" style="display:none">
           <img class="thumb" id="attachThumb" alt="">
           <span id="attachName">—</span>
@@ -240,10 +240,10 @@
       <div class="set-pane" data-setpane="fonts">
         <h4>Font personalizzati</h4>
         <p class="desc">Carica un font da usare nei tuoi documenti compilati. Formati: .ttf · .otf · .woff · .woff2</p>
-        <div class="bigdrop" id="fontDrop">
-          <div class="ic" data-icon="typography"></div>
+        <button class="bigdrop" id="fontDrop" type="button">
+          <span class="ic" data-icon="typography"></span>
           <b>Trascina un font qui</b> oppure clicca per sfogliare
-        </div>
+        </button>
         <div style="margin:18px 0 8px" class="label">Font caricati</div>
         <div id="fontList"></div>
         <div class="label" style="margin-top:18px">Anteprima documento</div>
@@ -257,7 +257,7 @@
             <div class="set-row-title">Auto-indent</div>
             <div class="set-row-sub">Mantieni il rientro corrente e indenta automaticamente all'interno degli ambienti quando vai a capo.</div>
           </div>
-          <div class="switch-wrap on" id="autoIndent"><span class="sw"></span></div>
+          <button class="switch-wrap on" id="autoIndent" type="button" role="switch" aria-checked="true" aria-label="Auto-indent"><span class="sw"></span></button>
         </div>
       </div>
       <div class="set-pane" data-setpane="compile" style="display:none">
@@ -533,7 +533,7 @@
       <span class="label">Password</span>
       <div class="pwwrap">
         <input class="linput" id="loginPass" name="password" type="password" autocomplete="current-password" placeholder="••••••••">
-        <button class="pwtoggle" id="pwToggle" type="button" tabindex="-1">mostra</button>
+        <button class="pwtoggle" id="pwToggle" type="button">mostra</button>
       </div>
     </div>
 

@@ -207,16 +207,19 @@
       um.style.left = Math.max(8, r.right - 232) + "px";
       um.style.top = r.bottom + 6 + "px";
       um.classList.toggle("on");
+      $("userChip").setAttribute("aria-expanded", um.classList.contains("on") ? "true" : "false");
     });
     um.addEventListener("click", (e) => e.stopPropagation());
-    document.addEventListener("click", () => um.classList.remove("on"));
+    document.addEventListener("click", () => { um.classList.remove("on"); $("userChip").setAttribute("aria-expanded", "false"); });
 
     $("miPassword").addEventListener("click", () => {
       um.classList.remove("on");
+      $("userChip").setAttribute("aria-expanded", "false");
       openPasswordModal();
     });
     $("miLogout").addEventListener("click", () => {
       um.classList.remove("on");
+      $("userChip").setAttribute("aria-expanded", "false");
       $("logoutModal").classList.add("on");
     });
     $("logoutConfirm").addEventListener("click", async () => {

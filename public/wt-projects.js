@@ -142,7 +142,6 @@
               `<span class="pcard-name">${esc(m.name)}</span>` +
               `<span class="pcard-meta">${m.projectType === "lilypond" ? "LilyPond" : "LaTeX"} · ${nfiles} file · modificato ${fmtTime(m.updatedAt)}</span>` +
             `</span>` +
-            `<span class="pcard-go">Apri ${ti("arrow-right")}</span>` +
           `</button>` +
           `<div class="pcard-tools">` +
             `<button class="pcard-ic" type="button" data-act="rename" title="Rinomina" aria-label="Rinomina ${esc(m.name)}">${ti("edit")}</button>` +

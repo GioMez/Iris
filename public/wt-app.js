@@ -4,6 +4,11 @@
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   const ti = (name, className = "", label = "") => window.WTIcons.icon(name, className, label);
+  const activateOnKeyboard = (element, action) => element.addEventListener("keydown", (event) => {
+    if (event.target !== element || (event.key !== "Enter" && event.key !== " ")) return;
+    event.preventDefault();
+    action();
+  });
   const LINE_H = 21;
   const PDF_CSS_UNITS = 96 / 72;
   const pdfjsReady = import("/vendor/pdfjs/pdf.min.mjs").then((pdfjs) => {
@@ -376,11 +381,15 @@
       const f = findFile(id); if (!f) return;
       const t = document.createElement("div");
       t.className = "ftab" + (id === state.activeId ? " on" : "");
-      t.innerHTML = `${fileIcon(f.kind)}<span>${esc(f.name)}</span><span class="x" data-x aria-label="Chiudi ${esc(f.name)}">${ti("x")}</span>`;
+      t.setAttribute("role", "tab");
+      t.setAttribute("aria-selected", id === state.activeId ? "true" : "false");
+      t.tabIndex = 0;
+      t.innerHTML = `${fileIcon(f.kind)}<span>${esc(f.name)}</span><button class="x" type="button" data-x aria-label="Chiudi ${esc(f.name)}">${ti("x")}</button>`;
       t.addEventListener("click", (e) => {
         if (e.target.closest("[data-x]")) { closeTab(id); return; }
         openFile(id);
       });
+      activateOnKeyboard(t, () => openFile(id));
       bar.appendChild(t);
     });
   }
@@ -700,18 +709,25 @@
         if (n.type === "folder") {
           const curPath = joinPath(parentPath, n.name);
           const el = document.createElement("div");
-          el.className = `node indent-${depth}`;
+          const folderPath = folderSlash(curPath);
+          el.className = `node indent-${depth}` + (state.selectedFolder === folderPath ? " folder-selected" : "");
+          el.dataset.folderPath = folderPath;
+          el.setAttribute("role", "treeitem");
+          el.setAttribute("aria-expanded", n.open ? "true" : "false");
+          el.tabIndex = 0;
           el.innerHTML = `<span class="tw">${ti(n.open ? "chevron-down" : "chevron-right")}</span><span class="fi fold">${ti(n.open ? "folder-open" : "folder")}</span><span class="nm">${esc(n.name)}</span>` +
             (n.generated ? `<span class="tag">output</span>` : "") +
             (n.readOnly || n.generated ? "" : `<span class="node-tools">` +
               `<button class="node-act" type="button" data-act="rename" title="Rinomina" aria-label="Rinomina ${esc(n.name)}">${ti("edit")}</button>` +
               `<button class="node-act danger" type="button" data-act="delete" title="Elimina" aria-label="Elimina ${esc(n.name)}">${ti("trash")}</button>` +
             `</span>`);
-          el.addEventListener("click", () => {
+          const selectFolder = () => {
             n.open = !n.open;
-            if (!n.readOnly && !n.generated) state.selectedFolder = folderSlash(curPath);
+            if (!n.readOnly && !n.generated) state.selectedFolder = folderPath;
             renderTree(); markFolder(n.name + "/");
-          });
+          };
+          el.addEventListener("click", selectFolder);
+          activateOnKeyboard(el, selectFolder);
           const rename = el.querySelector('[data-act="rename"]');
           const del = el.querySelector('[data-act="delete"]');
           if (rename) rename.addEventListener("click", (e) => { e.stopPropagation(); openTreeRename(n, nodes, parentPath); });
@@ -723,16 +739,21 @@
           const el = document.createElement("div");
           el.className = `node indent-${depth}` + (n.id === state.activeId ? " active" : "");
           el.dataset.id = n.id;
+          el.setAttribute("role", "treeitem");
+          el.setAttribute("aria-selected", n.id === state.activeId ? "true" : "false");
+          el.tabIndex = 0;
           el.innerHTML = `<span class="tw"></span>${fileIcon(n.kind)}<span class="nm">${esc(n.name)}</span>` +
             (n.generated ? `<span class="tag">gen</span>` : (n.kind === "img" ? `<span class="tag">img</span>` : "")) +
             (n.readOnly || n.generated ? "" : `<span class="node-tools">` +
               `<button class="node-act" type="button" data-act="rename" title="Rinomina" aria-label="Rinomina ${esc(n.name)}">${ti("edit")}</button>` +
               `<button class="node-act danger" type="button" data-act="delete" title="Elimina" aria-label="Elimina ${esc(n.name)}">${ti("trash")}</button>` +
             `</span>`);
-          el.addEventListener("click", () => {
+          const selectFile = () => {
             state.selectedFolder = folderSlash(parentPath);
             openFile(n.id);
-          });
+          };
+          el.addEventListener("click", selectFile);
+          activateOnKeyboard(el, selectFile);
           const rename = el.querySelector('[data-act="rename"]');
           const del = el.querySelector('[data-act="delete"]');
           if (rename) rename.addEventListener("click", (e) => { e.stopPropagation(); openTreeRename(n, nodes, parentPath); });
@@ -744,7 +765,12 @@
     build(project.nodes, 0, "");
   }
   function markTree(id) {
-    document.querySelectorAll("#tree .node").forEach((el) => el.classList.toggle("active", el.dataset.id === id));
+    document.querySelectorAll("#tree .node").forEach((el) => {
+      const active = el.dataset.id === id;
+      el.classList.toggle("active", active);
+      el.classList.toggle("folder-selected", !!el.dataset.folderPath && el.dataset.folderPath === state.selectedFolder);
+      if (el.dataset.id) el.setAttribute("aria-selected", active ? "true" : "false");
+    });
   }
   function markFolder() {}
 
@@ -759,8 +785,11 @@
     items.forEach((it) => {
       const el = document.createElement("div");
       el.className = "ol-item" + (it.level === 2 ? " lvl2" : "");
+      el.setAttribute("role", "button");
+      el.tabIndex = 0;
       el.innerHTML = `<span class="num">${it.num}</span><span>${it.title}</span>`;
       el.addEventListener("click", () => gotoSection(it));
+      activateOnKeyboard(el, () => gotoSection(it));
       box.appendChild(el);
     });
   }
@@ -1337,6 +1366,7 @@
     $("autoIndent").addEventListener("click", function () {
       state.autoIndent = !state.autoIndent;
       this.classList.toggle("on", state.autoIndent);
+      this.setAttribute("aria-checked", state.autoIndent ? "true" : "false");
       saveLayout();
     });
 
@@ -1356,6 +1386,7 @@
       e.stopPropagation();
       const r = $("engineBtn").getBoundingClientRect();
       em.classList.toggle("on");
+      $("engineBtn").setAttribute("aria-expanded", em.classList.contains("on") ? "true" : "false");
       if (em.classList.contains("on")) {
         // statusbar sits at the bottom: open the menu upward
         em.style.left = r.left + "px";
@@ -1364,9 +1395,9 @@
       em.querySelectorAll(".mi").forEach((m) => m.classList.toggle("on", m.dataset.engine === state.engine));
     });
     em.querySelectorAll(".mi").forEach((m) => m.addEventListener("click", () => {
-      state.engine = m.dataset.engine; $("engineName").textContent = state.engine; em.classList.remove("on"); updateCompileCommandPreview(); persist();
+      state.engine = m.dataset.engine; $("engineName").textContent = state.engine; em.classList.remove("on"); $("engineBtn").setAttribute("aria-expanded", "false"); updateCompileCommandPreview(); persist();
     }));
-    document.addEventListener("click", () => em.classList.remove("on"));
+    document.addEventListener("click", () => { em.classList.remove("on"); $("engineBtn").setAttribute("aria-expanded", "false"); });
 
     // side tabs
     document.querySelectorAll(".side-tab").forEach((t) => t.addEventListener("click", () => {
@@ -1529,6 +1560,7 @@
     $("btnSidebar").classList.toggle("on", body.classList.contains("side-collapsed"));
     if (typeof L.autoIndent === "boolean") state.autoIndent = L.autoIndent;
     $("autoIndent").classList.toggle("on", state.autoIndent);
+    $("autoIndent").setAttribute("aria-checked", state.autoIndent ? "true" : "false");
     if (typeof L.texPath === "string") state.texPath = L.texPath;
     if (typeof L.lilypondPath === "string") state.lilypondPath = L.lilypondPath;
     updateTexPathControl();
