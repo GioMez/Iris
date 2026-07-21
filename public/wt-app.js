@@ -408,7 +408,9 @@
     const f = findFile(id);
     if (!f) return;
     if (f.generated || f.readOnly) { toast("File generato disponibile nella cartella output/", "err"); return; }
-    if (f.kind === "img") { previewImage(f); markTree(id); return; }
+    closeResponsiveSidebar();
+    if (f.kind === "img") { setWorkspaceView("preview"); previewImage(f); markTree(id); return; }
+    setWorkspaceView("editor");
     state.activeId = id;
     if (!state.openTabs.includes(id)) state.openTabs.push(id);
     area.value = f.content || "";
@@ -936,6 +938,7 @@
   async function compile() {
     const f = docFileForCompile();
     if (!f) { toast("Nessun documento da compilare", "err"); return; }
+    setWorkspaceView("preview");
     setView("preview");
     $("compiling").classList.add("on");
     $("compileMsg").textContent = `${state.engine} ${f.name}…`;
@@ -1029,7 +1032,8 @@
     state.compiledArtifacts = [];
     state.pdfBlobUrl = null;
     state.pdfName = "";
-    $("dlBtn").innerHTML = `${ti("download")}<span class="dl-label">Output</span>`;
+    $("dlBtn").classList.remove("output-ready");
+    $("dlBtn").innerHTML = `${ti("download", "ic")}<span class="dl-label workflow-label">Output</span>`;
   }
   function prepareCompiledArtifacts(res) {
     clearCompiledArtifacts();
@@ -1045,7 +1049,8 @@
       };
     });
     const format = String(res.outputFormat || "output").toUpperCase();
-    $("dlBtn").innerHTML = `${ti("download")}<span class="dl-label">${state.compiledArtifacts.length > 1 ? `${state.compiledArtifacts.length} ` : ""}${format}</span>`;
+    $("dlBtn").classList.add("output-ready");
+    $("dlBtn").innerHTML = `${ti("download", "ic")}<span class="dl-label workflow-label">${state.compiledArtifacts.length > 1 ? `${state.compiledArtifacts.length} ` : ""}${format}</span>`;
     return state.compiledArtifacts;
   }
   async function renderCompiledOutput(res) {
@@ -1109,9 +1114,25 @@
   /* ---------------- view toggle ---------------- */
   function setView(v) {
     state.view = v;
-    $("pvSeg").querySelectorAll("button").forEach((b) => b.classList.toggle("on", b.dataset.view === v));
+    $("pvSeg").querySelectorAll("button").forEach((b) => {
+      const selected = b.dataset.view === v;
+      b.classList.toggle("on", selected);
+      b.setAttribute("aria-pressed", selected ? "true" : "false");
+    });
     $("logView").classList.toggle("on", v === "log");
     $("pvStage").classList.toggle("hide-pages", v === "log");
+  }
+
+  function setWorkspaceView(view) {
+    const preview = view === "preview";
+    document.querySelector(".body").classList.toggle("workspace-preview", preview);
+    $("workspaceSwitch").querySelectorAll("button").forEach((button) => {
+      const selected = button.dataset.workspace === (preview ? "preview" : "editor");
+      button.classList.toggle("on", selected);
+      button.setAttribute("aria-selected", selected ? "true" : "false");
+      button.tabIndex = selected ? 0 : -1;
+    });
+    if (preview && state.pdfDocument && state.fit) requestPdfLayout();
   }
 
   /* ---------------- toast ---------------- */
@@ -1410,21 +1431,29 @@
 
     // preview controls
     $("pvSeg").querySelectorAll("button").forEach((b) => b.addEventListener("click", () => setView(b.dataset.view)));
+    $("workspaceSwitch").querySelectorAll("button").forEach((button) => button.addEventListener("click", () => setWorkspaceView(button.dataset.workspace)));
     $("zIn").addEventListener("click", () => { state.fit = false; state.zoom = Math.min(2.5, state.zoom + 0.1); requestPdfLayout(); updateZoomLabel(); });
     $("zOut").addEventListener("click", () => { state.fit = false; state.zoom = Math.max(0.4, state.zoom - 0.1); requestPdfLayout(); updateZoomLabel(); });
     $("fitBtn").addEventListener("click", () => { state.fit = !state.fit; requestPdfLayout(); updateZoomLabel(); });
     $("pgPrev").addEventListener("click", () => gotoPage(state.curPage - 1));
     $("pgNext").addEventListener("click", () => gotoPage(state.curPage + 1));
     $("pvStage").addEventListener("scroll", onStageScroll);
-    $("stErr").addEventListener("click", () => setView("log"));
-    $("stWarn").addEventListener("click", () => setView("log"));
+    $("stErr").addEventListener("click", () => { setWorkspaceView("preview"); setView("log"); });
+    $("stWarn").addEventListener("click", () => { setWorkspaceView("preview"); setView("log"); });
 
     // modal close
     document.querySelectorAll("[data-close]").forEach((b) => b.addEventListener("click", () => {
       $("attachModal").classList.remove("on"); $("settingsModal").classList.remove("on");
     }));
     document.querySelectorAll(".scrim").forEach((s) => s.addEventListener("click", (e) => { if (e.target === s) s.classList.remove("on"); }));
-    document.addEventListener("keydown", (e) => { if (e.key === "Escape") document.querySelectorAll(".scrim.on").forEach((s) => s.classList.remove("on")); });
+    document.addEventListener("keydown", (e) => {
+      if (e.key !== "Escape") return;
+      document.querySelectorAll(".scrim.on").forEach((s) => s.classList.remove("on"));
+      if (document.querySelector(".body").classList.contains("drawer-open")) {
+        closeResponsiveSidebar();
+        $("btnSidebar").focus();
+      }
+    });
 
     // file tree modals
     document.querySelectorAll("[data-new-type]").forEach((b) => b.addEventListener("click", () => setNewItemMode(b.dataset.newType)));
@@ -1510,6 +1539,8 @@
     setupResizer($("rz1"), "side");
     setupResizer($("rz2"), "pv");
     $("btnSidebar").addEventListener("click", toggleSidebar);
+    $("sideBackdrop").addEventListener("click", closeResponsiveSidebar);
+    drawerMedia.addEventListener("change", syncResponsiveLayout);
 
     // ---- global shortcuts ----
     document.addEventListener("keydown", (e) => {
@@ -1550,6 +1581,7 @@
 
   /* ---------------- layout: resize + collapse ---------------- */
   const LS_LAYOUT = "webtex_layout";
+  const drawerMedia = window.matchMedia("(max-width: 1180px)");
   function loadLayout() {
     let L = {};
     try { L = JSON.parse(localStorage.getItem(LS_LAYOUT) || "{}") || {}; } catch (e) {}
@@ -1557,7 +1589,7 @@
     if (L.sideW) body.style.setProperty("--side-w", L.sideW + "px");
     if (L.pvW) body.style.setProperty("--pv-w", Math.max(440, L.pvW) + "px");
     if (L.sideCollapsed) body.classList.add("side-collapsed");
-    $("btnSidebar").classList.toggle("on", body.classList.contains("side-collapsed"));
+    syncResponsiveLayout();
     if (typeof L.autoIndent === "boolean") state.autoIndent = L.autoIndent;
     $("autoIndent").classList.toggle("on", state.autoIndent);
     $("autoIndent").setAttribute("aria-checked", state.autoIndent ? "true" : "false");
@@ -1610,10 +1642,30 @@
   }
   function toggleSidebar() {
     const body = document.querySelector(".body");
-    body.classList.toggle("side-collapsed");
-    $("btnSidebar").classList.toggle("on", body.classList.contains("side-collapsed"));
-    saveLayout();
+    if (drawerMedia.matches) body.classList.toggle("drawer-open");
+    else {
+      body.classList.toggle("side-collapsed");
+      saveLayout();
+    }
+    updateSidebarToggle();
     setTimeout(() => { if (state.pdfDocument && state.fit) { requestPdfLayout(); updateZoomLabel(); } }, 200);
+  }
+  function closeResponsiveSidebar() {
+    if (!drawerMedia.matches) return;
+    document.querySelector(".body").classList.remove("drawer-open");
+    updateSidebarToggle();
+  }
+  function updateSidebarToggle() {
+    const body = document.querySelector(".body");
+    const open = drawerMedia.matches ? body.classList.contains("drawer-open") : !body.classList.contains("side-collapsed");
+    $("btnSidebar").classList.toggle("on", open);
+    $("btnSidebar").setAttribute("aria-expanded", open ? "true" : "false");
+  }
+  function syncResponsiveLayout() {
+    const body = document.querySelector(".body");
+    if (!drawerMedia.matches) body.classList.remove("drawer-open");
+    updateSidebarToggle();
+    if (state.pdfDocument && state.fit) requestPdfLayout();
   }
 
   /* ---------------- find / replace ---------------- */
@@ -1718,6 +1770,7 @@
       state.pages = []; state.curPage = 1;
       state.untitledN = data.untitledN || 0;
       state.zoom = 1; state.effectiveZoom = 1; state.fit = true; state.view = "preview";
+      setWorkspaceView("editor");
       updateProjectTypeUi();
 
       // resolve open tabs + active file

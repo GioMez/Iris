@@ -13,6 +13,9 @@
   --txt-mut:#7f89b2;
   --accent:#7dcfff;
   --accent-press:#5ab0e0;
+  --selection:#a9b8ff;
+  --selection-soft:rgba(122,162,247,.14);
+  --selection-line:rgba(122,162,247,.32);
   --green:#9ece6a;
   --danger:#f7768e;
   --warn:#e0af68;
@@ -70,6 +73,7 @@ button{font-family:inherit;color:inherit}
 .body.resizing{transition:none;cursor:col-resize;user-select:none}
 .pane{display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden}
 .col-sep{background:var(--border);width:1px}
+.side-backdrop{display:none}
 
 /* resizer handles */
 .resizer{background:var(--border);position:relative;z-index:8}
@@ -109,6 +113,26 @@ button{font-family:inherit;color:inherit}
 .tbar-scroll>*{flex:0 0 auto}
 .tbar-right{flex:0 0 auto;display:flex;align-items:center;gap:6px;padding-left:4px}
 
+/* The document workflow stays in one predictable place: save → compile → output. */
+.workflow-actions{display:flex;align-items:center;gap:5px;flex:0 0 auto;padding:3px;border:1px solid var(--border);border-radius:10px;background:#ffffff05}
+.workflow-btn,.workflow-compile{height:32px;border-radius:7px;padding:0 10px;border:1px solid transparent;display:inline-flex;align-items:center;justify-content:center;gap:7px;white-space:nowrap;cursor:pointer;font:500 12.5px 'IBM Plex Sans',sans-serif;transition:background .12s,color .12s,border-color .12s}
+.workflow-btn{background:transparent;color:var(--txt-dim)}
+.workflow-btn:hover{background:#ffffff0e;color:var(--txt)}
+.workflow-btn .ic,.workflow-compile .ic{display:inline-flex}
+.workflow-btn .ti,.workflow-compile .ti{width:15px;height:15px}
+.workflow-compile{padding-inline:14px;background:var(--accent);color:#0d1626;font-weight:600}
+.workflow-compile:hover{background:var(--accent-press)}
+.workflow-compile .ti{fill:currentColor;stroke-width:1.6}
+.workflow-compile:disabled{cursor:progress;opacity:.72}
+.workflow-output.output-ready{color:var(--green);background:rgba(158,206,106,.09);border-color:rgba(158,206,106,.24)}
+
+/* Single-pane navigation appears only at the compact editor breakpoint. */
+.workspace-switch{display:none;align-items:center;gap:2px;padding:2px;border:1px solid var(--border);border-radius:9px;background:#ffffff06;flex:0 0 auto}
+.workspace-switch button{height:28px;padding:0 9px;border:0;border-radius:6px;background:transparent;color:var(--txt-mut);display:inline-flex;align-items:center;gap:6px;cursor:pointer;font:500 12px 'IBM Plex Sans',sans-serif}
+.workspace-switch button:hover{color:var(--txt)}
+.workspace-switch button.on{background:var(--selection-soft);box-shadow:inset 0 0 0 1px var(--selection-line);color:var(--selection)}
+.workspace-switch .ti{width:14px;height:14px}
+
 .engine{display:inline-flex;align-items:center;gap:8px;height:32px;padding:0 6px 0 11px;border-radius:8px;
   border:1px solid var(--border);background:#ffffff06;color:var(--txt-dim);font-size:12.5px;cursor:pointer}
 .engine:hover{background:#ffffff0e}
@@ -118,8 +142,8 @@ button{font-family:inherit;color:inherit}
 .switch-wrap{display:inline-flex;align-items:center;gap:8px;border:0;background:transparent;color:var(--txt-dim);font-size:12.5px;padding:0 4px;cursor:pointer;user-select:none}
 .sw{width:34px;height:19px;border-radius:11px;background:#2c2e44;position:relative;transition:.15s;flex:0 0 auto}
 .sw::after{content:"";position:absolute;top:2px;left:2px;width:15px;height:15px;border-radius:50%;background:#8a90b5;transition:.15s}
-.switch-wrap.on .sw{background:rgba(125,207,255,.32)}
-.switch-wrap.on .sw::after{left:17px;background:var(--accent)}
+.switch-wrap.on .sw{background:var(--selection-line)}
+.switch-wrap.on .sw::after{left:17px;background:var(--selection)}
 .switch-wrap.on{color:var(--txt)}
 
 /* ===================== sidebar ===================== */
@@ -142,8 +166,8 @@ button{font-family:inherit;color:inherit}
 .tree{font-size:13px;user-select:none}
 .node{display:flex;align-items:center;gap:7px;height:27px;padding:0 7px;border-radius:6px;cursor:pointer;color:var(--txt-dim);white-space:nowrap;position:relative}
 .node:hover{background:#ffffff0a}
-.node.active{background:rgba(125,207,255,.13);color:var(--txt)}
-.node.folder-selected{background:rgba(125,207,255,.08);color:var(--txt-dim)}
+.node.active{background:var(--selection-soft);color:var(--txt)}
+.node.folder-selected{background:rgba(122,162,247,.08);color:var(--txt-dim)}
 .node.active::before{content:"";position:absolute;left:0;top:4px;bottom:4px;width:2px;border-radius:2px;background:var(--accent)}
 .node .tw{width:14px;display:inline-flex;justify-content:center;color:var(--txt-mut);font-size:10px;flex:0 0 auto}
 .node .fi{width:16px;display:inline-flex;justify-content:center;flex:0 0 auto}
@@ -166,7 +190,7 @@ button{font-family:inherit;color:inherit}
 .typepick{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 .typepick-btn{height:34px;border-radius:8px;border:1px solid var(--border);background:#ffffff06;color:var(--txt-dim);cursor:pointer;font-size:12.5px}
 .typepick-btn:hover{background:#ffffff0d;color:var(--txt)}
-.typepick-btn.on{background:rgba(125,207,255,.14);border-color:rgba(125,207,255,.5);color:var(--accent)}
+.typepick-btn.on{background:var(--selection-soft);border-color:var(--selection-line);color:var(--selection)}
 .children{overflow:hidden}
 .indent-1{padding-left:18px}.indent-2{padding-left:34px}.indent-3{padding-left:50px}
 
@@ -221,7 +245,7 @@ button{font-family:inherit;color:inherit}
 .code-layer{position:absolute;inset:0;right:var(--editor-vscroll);bottom:var(--editor-hscroll);
   pointer-events:none;color:var(--s-text);z-index:1;overflow:hidden}
 .code-area{position:absolute;inset:0;background:transparent;color:transparent;-webkit-text-fill-color:transparent;
-  caret-color:var(--accent);resize:none;outline:none;z-index:2;width:100%;height:100%;overflow:auto}
+  caret-color:var(--accent);resize:none;outline:none;z-index:2;width:100%;height:100%;overflow:auto;overscroll-behavior:none}
 .cur-hl{position:absolute;left:0;right:0;height:var(--editor-line-height);background:#ffffff07;z-index:0;pointer-events:none}
 
 /* syntax token colors */
@@ -244,14 +268,14 @@ button{font-family:inherit;color:inherit}
 .seg{display:flex;background:#ffffff08;border:1px solid var(--border);border-radius:8px;padding:2px;gap:2px}
 .seg button{height:26px;padding:0 12px;border:0;background:transparent;color:var(--txt-mut);font-size:12px;border-radius:6px;cursor:pointer;display:inline-flex;align-items:center;gap:6px}
 .seg button .ti{width:14px;height:14px}
-.seg button.on{background:var(--accent);color:#0d1626;font-weight:600}
+.seg button.on{background:var(--selection-soft);box-shadow:inset 0 0 0 1px var(--selection-line);color:var(--selection);font-weight:600}
 .pchip{height:28px;display:inline-flex;align-items:center;gap:7px;padding:0 4px;border:1px solid var(--border);border-radius:8px;background:#ffffff06;color:var(--txt-dim);font-size:12px}
 .pchip .pgbtn,.zbtn{width:22px;height:22px;border-radius:5px;border:0;background:transparent;color:var(--txt-dim);cursor:pointer;display:grid;place-items:center;font-family:'IBM Plex Mono';font-size:13px}
 .pchip .pgbtn .ti,.zbtn .ti{width:14px;height:14px;stroke-width:2.1}
 .pchip .pgbtn:hover,.zbtn:hover{background:#ffffff14;color:var(--txt)}
 .pchip .val{font-family:'IBM Plex Mono';font-size:11.5px;color:var(--txt);min-width:42px;text-align:center}
 .pchip.zoom .val{min-width:38px}
-.pvbar .mini.fit.on{background:var(--accent);color:#0d1626;border-color:transparent}
+.pvbar .mini.fit.on{background:var(--selection-soft);color:var(--selection);border-color:var(--selection-line)}
 
 /* preview toolbar adapts when the pane is narrow */
 @container (max-width:540px){
@@ -306,7 +330,7 @@ button.st{border:0;background:transparent;font:inherit}
 .st.warn{color:var(--warn)}
 .st.accent{color:var(--accent)}
 
-/* statusbar action cluster (engine + compile + settings) */
+/* statusbar utilities and compiler configuration */
 .sb-actions{flex:0 0 auto;display:flex;align-items:center;gap:6px;padding:0 9px;border-left:1px solid var(--border)}
 .sb-btn{display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 10px;border-radius:7px;
   border:1px solid var(--border);background:#ffffff06;color:var(--txt-dim);font-size:11.5px;cursor:pointer;
@@ -322,11 +346,6 @@ button.st{border:0;background:transparent;font:inherit}
 .sb-engine b{color:var(--txt);font-family:'IBM Plex Mono';font-size:11px}
 .sb-engine .chev{opacity:.6;font-size:10px}
 .sb-engine .chev .ti{width:12px;height:12px}
-.sb-compile{display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 13px;border-radius:7px;border:1px solid transparent;
-  background:var(--accent);color:#0d1626;font-weight:600;font-size:12px;cursor:pointer;font-family:'IBM Plex Sans';white-space:nowrap}
-.sb-compile:hover{background:var(--accent-press)}
-.sb-compile .ic{font-size:10px;display:inline-flex}
-.sb-compile .ic .ti{width:13px;height:13px;fill:currentColor;stroke-width:1.6}
 .sb-icon{width:26px;height:24px;border-radius:7px;border:1px solid var(--border);background:#ffffff06;color:var(--txt-dim);
   cursor:pointer;display:grid;place-items:center;font-size:14px}
 .sb-icon .ti{width:15px;height:15px}
@@ -387,7 +406,7 @@ button.st{border:0;background:transparent;font:inherit}
 .set-nav .item{display:flex;align-items:center;gap:9px;width:100%;height:34px;padding:0 11px;border:0;border-radius:8px;background:transparent;color:var(--txt-mut);font-size:13px;cursor:pointer;text-align:left}
 .set-nav .item>.ti{width:15px;height:15px}
 .set-nav .item:hover{background:#ffffff0a;color:var(--txt-dim)}
-.set-nav .item.on{background:rgba(125,207,255,.13);color:var(--txt)}
+.set-nav .item.on{background:var(--selection-soft);color:var(--selection)}
 .set-nav .item.soon{opacity:.5;cursor:default}
 .set-nav .item .badge{margin-left:auto;font-size:9px;letter-spacing:.5px;color:var(--txt-mut);border:1px solid var(--border);border-radius:5px;padding:1px 5px}
 .set-pane{flex:1;padding:18px 20px;overflow:auto}
@@ -544,7 +563,7 @@ button.st{border:0;background:transparent;font:inherit}
 .findbtn:hover{background:#ffffff10;color:var(--txt)}
 .findbtn.txt{font-family:'IBM Plex Sans';font-size:12px;padding:0 10px}
 .findbtn.toggle{font-size:11.5px}
-.findbtn.toggle.on{background:rgba(125,207,255,.16);color:var(--accent);border-color:rgba(125,207,255,.32)}
+.findbtn.toggle.on{background:var(--selection-soft);color:var(--selection);border-color:var(--selection-line)}
 
 /* ===================== project chip (topbar) ===================== */
 .projchip{display:inline-flex;align-items:center;gap:7px;height:28px;padding:0 11px;border-radius:7px;
@@ -616,4 +635,78 @@ html:not(.wt-inproject) #projChip{display:none}
 @media(max-width:600px){
   .picker-head{flex-direction:column;align-items:stretch}
   .picker-user-txt{display:none}
+}
+
+/* ===================== editor breakpoints ===================== */
+/* Tablet: preserve the editor/preview split and turn the file tree into a drawer. */
+@media(max-width:1180px){
+  .body,.body.side-collapsed{position:relative;grid-template-columns:minmax(320px,1fr) 1px minmax(360px,46vw)}
+  .body>.side{position:absolute;inset:0 auto 0 0;width:min(var(--side-w,262px),320px);z-index:20;
+    transform:translateX(calc(-100% - 12px));transition:transform .18s ease;box-shadow:18px 0 36px -22px rgba(0,0,0,.9)}
+  .body.drawer-open>.side{transform:translateX(0)}
+  .body>#rz1{display:none}
+  .body>.edpane{grid-column:1}
+  .body>#rz2{grid-column:2}
+  .body>.pvpane{grid-column:3}
+  .side-backdrop{position:absolute;inset:0;z-index:19;border:0;background:rgba(8,8,14,.48);cursor:pointer;opacity:0;pointer-events:none;transition:opacity .18s ease}
+  .body.drawer-open>.side-backdrop{display:block;opacity:1;pointer-events:auto}
+  .workflow-btn{width:32px;padding:0}
+  .workflow-btn .workflow-label{display:none}
+  .logo .v{display:none}
+}
+
+/* Compact: editor and output become full-width views selected from the topbar. */
+@media(max-width:820px){
+  .body,.body.side-collapsed{display:block;position:relative}
+  .body>.edpane,.body>.pvpane{position:absolute;inset:0}
+  .body>.pvpane{display:none;border-left:0}
+  .body.workspace-preview>.edpane{display:none}
+  .body.workspace-preview>.pvpane{display:flex}
+  .body>#rz2{display:none}
+  .workspace-switch{display:flex}
+  .topbar{padding-inline:8px}
+  .logo{padding-right:3px;margin-right:0}
+  .logo>div:last-child{display:none}
+  .tbar-right{padding-left:0}
+  .userchip{padding-right:5px}
+  .userchip .uname,.userchip .chev{display:none}
+  .pv-stage{padding:20px}
+  .statusbar{height:36px}
+  #stCursor,.st:nth-child(3),.st:nth-child(4),#stLanguage{display:none}
+  .sb-actions{padding-inline:6px}
+  #btnFormat,#btnFind{width:26px;padding:0;justify-content:center;font-size:0}
+  #btnFormat .ic,#btnFind .ic{font-size:12px}
+}
+
+@media(max-width:680px){
+  .tbar-scroll{display:none}
+  .workflow-actions{gap:3px}
+  .workflow-compile{padding-inline:11px}
+  .workspace-switch button{padding-inline:8px}
+  .sb-info .st:not(:first-child):not(#stTime):not(#stWarn):not(#stErr){display:none}
+  .sb-engine{padding-inline:7px}
+}
+
+@media(max-width:520px){
+  .logo{display:none}
+  .topbar{gap:4px;padding-inline:6px}
+  .workflow-actions{padding:2px}
+  .workflow-btn{width:30px}
+  .workflow-compile{height:30px}
+  .userchip{width:32px;padding:0;justify-content:center}
+  .pvbar{padding-inline:7px}
+  #stTime,.sb-divider{display:none}
+}
+
+@media(max-width:430px){
+  .workspace-switch .workspace-label,.workflow-compile .workflow-label{display:none}
+  .workspace-switch button{width:31px;padding:0;justify-content:center}
+  .workflow-compile{width:30px;padding:0}
+  .sb-engine{font-size:0;gap:4px}
+  .sb-engine b{font-size:10.5px}
+  .sb-engine .chev{font-size:10px}
+}
+
+@media(prefers-reduced-motion:reduce){
+  .body,.body>.side,.side-backdrop{transition:none}
 }

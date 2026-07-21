@@ -15,7 +15,7 @@
 
   <!-- ===================== TOPBAR ===================== -->
   <div class="topbar">
-    <button class="tbtn icononly" id="btnSidebar" title="Mostra/nascondi pannello laterale" aria-label="Mostra o nascondi il pannello laterale"><span class="ic" data-icon="layout-sidebar-left-collapse"></span></button>
+    <button class="tbtn icononly" id="btnSidebar" title="Mostra/nascondi pannello laterale" aria-label="Mostra o nascondi il pannello laterale" aria-controls="projectSidebar" aria-expanded="true"><span class="ic" data-icon="layout-sidebar-left-collapse"></span></button>
     <div class="logo">
       <div class="mark">Tx</div>
       <div><b>WebTeX</b> <span class="v">v0.1</span></div>
@@ -27,8 +27,16 @@
       <div class="tsep"></div>
       <button class="tbtn" id="btnNew"><span class="ic" data-icon="file-plus"></span>Nuovo</button>
       <button class="tbtn" id="btnOpen"><span class="ic" data-icon="folder-open"></span>Apri</button>
-      <button class="tbtn" id="btnSave"><span class="ic" data-icon="device-floppy"></span>Salva</button>
       <button class="tbtn" id="btnAttach"><span class="ic" data-icon="paperclip"></span>Allega</button>
+    </div>
+    <div class="workspace-switch" id="workspaceSwitch" role="tablist" aria-label="Area di lavoro">
+      <button class="on" type="button" role="tab" aria-label="Mostra editor" aria-selected="true" data-workspace="editor"><span data-icon="code"></span><span class="workspace-label">Editor</span></button>
+      <button type="button" role="tab" aria-label="Mostra anteprima" aria-selected="false" data-workspace="preview"><span data-icon="file-type-pdf"></span><span class="workspace-label">Anteprima</span></button>
+    </div>
+    <div class="workflow-actions" aria-label="Flusso del documento">
+      <button class="workflow-btn" id="btnSave" type="button" title="Salva" aria-label="Salva il documento"><span class="ic" data-icon="device-floppy"></span><span class="workflow-label">Salva</span></button>
+      <button class="workflow-compile" id="btnCompile" type="button" title="Compila" aria-label="Compila il progetto"><span class="ic" data-icon="player-play"></span><span class="workflow-label">Compila</span></button>
+      <button class="workflow-btn workflow-output" id="dlBtn" type="button" title="Scarica output" aria-label="Scarica l'output compilato"><span class="ic" data-icon="download"></span><span class="dl-label workflow-label">Output</span></button>
     </div>
     <div class="tbar-right">
       <button class="userchip" id="userChip" title="Account" aria-haspopup="menu" aria-expanded="false" aria-controls="userMenu">
@@ -43,7 +51,7 @@
   <div class="body">
 
     <!-- sidebar -->
-    <aside class="pane side">
+    <aside class="pane side" id="projectSidebar">
       <div class="side-tabs">
         <button class="side-tab on" data-side="files"><span data-icon="files"></span>File</button>
         <button class="side-tab" data-side="outline"><span data-icon="list-tree"></span>Struttura</button>
@@ -67,6 +75,8 @@
         </div>
       </div>
     </aside>
+
+    <button class="side-backdrop" id="sideBackdrop" type="button" aria-label="Chiudi il pannello laterale"></button>
 
     <div class="resizer" id="rz1" title="Trascina per ridimensionare"></div>
 
@@ -121,7 +131,6 @@
           <button class="zbtn" id="zIn" aria-label="Aumenta zoom"><span data-icon="plus"></span></button>
         </div>
         <button class="mini fit on" id="fitBtn" title="Adatta alla larghezza">Adatta</button>
-        <button class="mini" id="dlBtn"><span data-icon="download"></span><span class="dl-label">Output</span></button>
       </div>
       <div class="pv-stage" id="pvStage">
         <div class="pv-empty" id="pvEmpty">
@@ -157,7 +166,6 @@
       <button class="sb-btn" id="btnFind"><span class="ic" data-icon="search"></span>Trova</button>
       <div class="sb-divider"></div>
       <button class="sb-engine" id="engineBtn" title="Motore di compilazione" aria-haspopup="menu" aria-expanded="false" aria-controls="engineMenu">motore <b id="engineName">pdflatex</b><span class="chev" data-icon="chevron-up"></span></button>
-      <button class="sb-compile" id="btnCompile"><span class="ic" data-icon="player-play"></span>Compila</button>
       <button class="sb-icon" id="btnSettings" title="Impostazioni" aria-label="Impostazioni"><span class="ic" data-icon="settings"></span></button>
     </div>
   </div>
