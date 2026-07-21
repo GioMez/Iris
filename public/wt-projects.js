@@ -6,6 +6,7 @@
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const ti = (name, className = "", label = "") => window.WTIcons.icon(name, className, label);
 
   let index = [];
   let currentId = null;
@@ -136,16 +137,16 @@
         card.dataset.id = m.id;
         card.innerHTML =
           `<button class="pcard-open" type="button" title="Apri il progetto">` +
-            `<span class="pcard-icon">◆</span>` +
+            `<span class="pcard-icon${m.projectType === "lilypond" ? " lilypond" : ""}">${ti(m.projectType === "lilypond" ? "music" : "file-code-2")}</span>` +
             `<span class="pcard-text">` +
               `<span class="pcard-name">${esc(m.name)}</span>` +
               `<span class="pcard-meta">${m.projectType === "lilypond" ? "LilyPond" : "LaTeX"} · ${nfiles} file · modificato ${fmtTime(m.updatedAt)}</span>` +
             `</span>` +
-            `<span class="pcard-go">Apri ›</span>` +
+            `<span class="pcard-go">Apri ${ti("arrow-right")}</span>` +
           `</button>` +
           `<div class="pcard-tools">` +
-            `<button class="pcard-ic" type="button" data-act="rename" title="Rinomina">✎</button>` +
-            `<button class="pcard-ic danger" type="button" data-act="delete" title="Elimina">✕</button>` +
+            `<button class="pcard-ic" type="button" data-act="rename" title="Rinomina" aria-label="Rinomina ${esc(m.name)}">${ti("edit")}</button>` +
+            `<button class="pcard-ic danger" type="button" data-act="delete" title="Elimina" aria-label="Elimina ${esc(m.name)}">${ti("trash")}</button>` +
           `</div>`;
         card.querySelector(".pcard-open").addEventListener("click", () => openProject(m.id));
         card.querySelector('[data-act="rename"]').addEventListener("click", (e) => { e.stopPropagation(); askRename(m.id); });

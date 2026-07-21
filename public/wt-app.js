@@ -3,6 +3,7 @@
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const ti = (name, className = "", label = "") => window.WTIcons.icon(name, className, label);
   const LINE_H = 21;
   const PDF_CSS_UNITS = 96 / 72;
   const pdfjsReady = import("/vendor/pdfjs/pdf.min.mjs").then((pdfjs) => {
@@ -70,6 +71,8 @@
 
   function updateProjectTypeUi() {
     const lilypond = isLilyPondProject();
+    const projectIcon = document.querySelector(".projchip .pdot");
+    if (projectIcon) projectIcon.innerHTML = ti(lilypond ? "music" : "file-code-2");
     state.engine = lilypond ? "lilypond" : (state.engine === "lilypond" ? "pdflatex" : state.engine);
     $("engineName").textContent = state.engine;
     $("stLanguage").textContent = lilypond ? "LilyPond" : "LaTeX";
@@ -90,12 +93,15 @@
 
   /* ---------------- editor ---------------- */
   function fileIcon(kind) {
-    return kind === "tex" ? '<span class="fi tex">◆</span>'
-      : kind === "ly" ? '<span class="fi tex">♪</span>'
-      : kind === "img" ? '<span class="fi img">▣</span>'
-      : kind === "bib" ? '<span class="fi bib">≣</span>'
-      : kind === "artifact" ? '<span class="fi">◦</span>'
-      : '<span class="fi">▢</span>';
+    const icons = {
+      tex: ["file-code-2", "tex"],
+      ly: ["music", "ly"],
+      img: ["photo", "img"],
+      bib: ["book-2", "bib"],
+      artifact: ["box", "artifact"],
+    };
+    const [name, tone = ""] = icons[kind] || ["file", ""];
+    return `<span class="fi ${tone}">${ti(name)}</span>`;
   }
 
   function paint() {
@@ -301,7 +307,7 @@
           <option value="makeindex">makeindex</option>
         </select>
         <input class="input" data-step-args spellcheck="false" autocomplete="off">
-        <button class="node-act danger" type="button" data-step-del title="Elimina step">✕</button>`;
+        <button class="node-act danger" type="button" data-step-del title="Elimina step" aria-label="Elimina step">${ti("trash")}</button>`;
       row.querySelector("[data-step-tool]").value = step.tool;
       row.querySelectorAll("[data-step-tool] option").forEach((option) => {
         if (option.value === "[engine]") return;
@@ -344,8 +350,8 @@
     $("lilypondFormatField").style.display = lilypond ? "" : "none";
     $("lilypondFormat").value = state.lilypondFormat;
     hint.innerHTML = locked
-      ? `↳ configurato dal deployment Docker Compose; modifica il mapping nel file <b style="color:var(--s-cmd);margin:0 3px">docker-compose.yml</b>.`
-      : `↳ se vuoto usa il <b style="color:var(--s-cmd);margin:0 3px">PATH</b> del backend; in alternativa indica la cartella che contiene <b style="color:var(--s-cmd);margin:0 3px">${lilypond ? "lilypond" : "pdflatex"}</b>.`;
+      ? `${ti("info-circle", "hint-ti")}configurato dal deployment Docker Compose; modifica il mapping nel file <b style="color:var(--s-cmd);margin:0 3px">docker-compose.yml</b>.`
+      : `${ti("info-circle", "hint-ti")}se vuoto usa il <b style="color:var(--s-cmd);margin:0 3px">PATH</b> del backend; in alternativa indica la cartella che contiene <b style="color:var(--s-cmd);margin:0 3px">${lilypond ? "lilypond" : "pdflatex"}</b>.`;
     updateCompileCommandPreview();
   }
   async function loadRuntimeConfig() {
@@ -370,7 +376,7 @@
       const f = findFile(id); if (!f) return;
       const t = document.createElement("div");
       t.className = "ftab" + (id === state.activeId ? " on" : "");
-      t.innerHTML = `${fileIcon(f.kind)}<span>${f.name}</span><span class="x" data-x>✕</span>`;
+      t.innerHTML = `${fileIcon(f.kind)}<span>${esc(f.name)}</span><span class="x" data-x aria-label="Chiudi ${esc(f.name)}">${ti("x")}</span>`;
       t.addEventListener("click", (e) => {
         if (e.target.closest("[data-x]")) { closeTab(id); return; }
         openFile(id);
@@ -695,11 +701,11 @@
           const curPath = joinPath(parentPath, n.name);
           const el = document.createElement("div");
           el.className = `node indent-${depth}`;
-          el.innerHTML = `<span class="tw">${n.open ? "▾" : "▸"}</span><span class="fi fold">▤</span><span class="nm">${esc(n.name)}</span>` +
+          el.innerHTML = `<span class="tw">${ti(n.open ? "chevron-down" : "chevron-right")}</span><span class="fi fold">${ti(n.open ? "folder-open" : "folder")}</span><span class="nm">${esc(n.name)}</span>` +
             (n.generated ? `<span class="tag">output</span>` : "") +
             (n.readOnly || n.generated ? "" : `<span class="node-tools">` +
-              `<button class="node-act" type="button" data-act="rename" title="Rinomina">✎</button>` +
-              `<button class="node-act danger" type="button" data-act="delete" title="Elimina">✕</button>` +
+              `<button class="node-act" type="button" data-act="rename" title="Rinomina" aria-label="Rinomina ${esc(n.name)}">${ti("edit")}</button>` +
+              `<button class="node-act danger" type="button" data-act="delete" title="Elimina" aria-label="Elimina ${esc(n.name)}">${ti("trash")}</button>` +
             `</span>`);
           el.addEventListener("click", () => {
             n.open = !n.open;
@@ -720,8 +726,8 @@
           el.innerHTML = `<span class="tw"></span>${fileIcon(n.kind)}<span class="nm">${esc(n.name)}</span>` +
             (n.generated ? `<span class="tag">gen</span>` : (n.kind === "img" ? `<span class="tag">img</span>` : "")) +
             (n.readOnly || n.generated ? "" : `<span class="node-tools">` +
-              `<button class="node-act" type="button" data-act="rename" title="Rinomina">✎</button>` +
-              `<button class="node-act danger" type="button" data-act="delete" title="Elimina">✕</button>` +
+              `<button class="node-act" type="button" data-act="rename" title="Rinomina" aria-label="Rinomina ${esc(n.name)}">${ti("edit")}</button>` +
+              `<button class="node-act danger" type="button" data-act="delete" title="Elimina" aria-label="Elimina ${esc(n.name)}">${ti("trash")}</button>` +
             `</span>`);
           el.addEventListener("click", () => {
             state.selectedFolder = folderSlash(parentPath);
@@ -970,9 +976,9 @@
     $("stTime").textContent = `compilato ${new Date().toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" })} · ${ms}s`;
     $("stMath").textContent = totalSize ? `${format || "Output"} ${(totalSize / 1024).toFixed(0)} KB${artifacts.length > 1 ? ` · ${artifacts.length} file` : ""}` : "";
     const we = $("stWarn"), ee = $("stErr");
-    if (warnN) { we.style.display = ""; we.textContent = `⚠ ${warnN} warning`; } else we.style.display = "none";
+    if (warnN) { we.style.display = ""; we.innerHTML = `${ti("alert-triangle")}<span>${warnN} warning</span>`; } else we.style.display = "none";
     if (!res.success || errN) {
-      ee.style.display = ""; ee.textContent = `✗ ${errN} error${errN > 1 ? "i" : "e"}`;
+      ee.style.display = ""; ee.innerHTML = `${ti("circle-x")}<span>${errN} error${errN > 1 ? "i" : "e"}</span>`;
       $("stState").textContent = "errori"; $("stDot").className = "doterr";
       $("stState").parentElement.classList.remove("accent"); $("stState").parentElement.classList.add("err");
     } else {
@@ -994,7 +1000,7 @@
     state.compiledArtifacts = [];
     state.pdfBlobUrl = null;
     state.pdfName = "";
-    $("dlBtn").textContent = "⤓ Output";
+    $("dlBtn").innerHTML = `${ti("download")}<span class="dl-label">Output</span>`;
   }
   function prepareCompiledArtifacts(res) {
     clearCompiledArtifacts();
@@ -1010,7 +1016,7 @@
       };
     });
     const format = String(res.outputFormat || "output").toUpperCase();
-    $("dlBtn").textContent = `⤓ ${state.compiledArtifacts.length > 1 ? `${state.compiledArtifacts.length} ` : ""}${format}`;
+    $("dlBtn").innerHTML = `${ti("download")}<span class="dl-label">${state.compiledArtifacts.length > 1 ? `${state.compiledArtifacts.length} ` : ""}${format}</span>`;
     return state.compiledArtifacts;
   }
   async function renderCompiledOutput(res) {
@@ -1039,7 +1045,7 @@
       $("pgTot").textContent = state.pages.length || "–";
       $("pgCur").textContent = state.pages.length ? "1" : "–";
     } else {
-      $("pvEmpty").innerHTML = `<div class="big">✓</div>${artifacts.length} file ${esc(format.toUpperCase())} generat${artifacts.length === 1 ? "o" : "i"}.<br>Usa <b>Scarica</b> o apri la cartella <b>output/</b>.`;
+      $("pvEmpty").innerHTML = `<div class="big success">${ti("circle-check")}</div>${artifacts.length} file ${esc(format.toUpperCase())} generat${artifacts.length === 1 ? "o" : "i"}.<br>Usa <b>Scarica</b> o apri la cartella <b>output/</b>.`;
       $("pvEmpty").style.display = "";
       $("pgTot").textContent = "–";
       $("pgCur").textContent = "–";
@@ -1083,7 +1089,7 @@
   function toast(msg, type) {
     const t = document.createElement("div");
     t.className = "toast" + (type === "err" ? " err" : "");
-    t.innerHTML = `<span class="ic">${type === "err" ? "✕" : "✓"}</span>${msg}`;
+    t.innerHTML = `<span class="ic">${ti(type === "err" ? "circle-x" : "circle-check")}</span><span>${esc(msg)}</span>`;
     $("toasts").appendChild(t);
     setTimeout(() => { t.style.transition = "opacity .3s"; t.style.opacity = "0"; setTimeout(() => t.remove(), 300); }, 2200);
   }
@@ -1223,7 +1229,7 @@
       const active = state.appliedFont === fo.family;
       el.innerHTML = `<div class="glyph" style="font-family:'${fo.family}'">Ag</div>
         <div><div class="nm" style="font-family:'${fo.family}'">${esc(fo.name)}</div><div class="fm">${esc(fo.path || fo.family)}</div></div>
-        <div class="use"><button class="pill${active ? " active" : ""}">${active ? "✓ in uso" : "usa nel progetto"}</button></div>`;
+        <div class="use"><button class="pill${active ? " active" : ""}">${active ? `${ti("check")}<span>in uso</span>` : "usa nel progetto"}</button></div>`;
       el.querySelector(".pill").addEventListener("click", () => applyFont(active ? null : fo.family));
       box.appendChild(el);
     });
@@ -1696,7 +1702,7 @@
       renderTabs();
       // reset preview / status
       $("pvPages").innerHTML = ""; $("logView").innerHTML = "";
-      $("pvEmpty").innerHTML = `<div class="big">▣</div>Premi <b>Compila</b> per generare l'output.`;
+      $("pvEmpty").innerHTML = `<div class="big">${ti("file-type-pdf")}</div>Premi <b>Compila</b> per generare l'output.`;
       $("pvEmpty").style.display = ""; $("pgTot").textContent = "–"; $("pgCur").textContent = "–";
       $("stTime").textContent = "non ancora compilato";
       $("stWarn").style.display = "none"; $("stErr").style.display = "none"; $("stMath").textContent = "";

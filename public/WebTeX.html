@@ -15,26 +15,26 @@
 
   <!-- ===================== TOPBAR ===================== -->
   <div class="topbar">
-    <button class="tbtn icononly" id="btnSidebar" title="Mostra/nascondi pannello laterale"><span class="ic">▤</span></button>
+    <button class="tbtn icononly" id="btnSidebar" title="Mostra/nascondi pannello laterale" aria-label="Mostra o nascondi il pannello laterale"><span class="ic" data-icon="layout-sidebar-left-collapse"></span></button>
     <div class="logo">
       <div class="mark">Tx</div>
       <div><b>WebTeX</b> <span class="v">v0.1</span></div>
     </div>
     <div class="tbar-scroll">
       <div class="tsep"></div>
-      <button class="tbtn" id="btnCloseProject" title="Chiudi il progetto e torna all'elenco"><span class="ic">‹</span>Progetti</button>
-      <div class="projchip" id="projChip"><span class="pdot">◆</span><span id="projChipName">—</span></div>
+      <button class="tbtn" id="btnCloseProject" title="Chiudi il progetto e torna all'elenco"><span class="ic" data-icon="arrow-left"></span>Progetti</button>
+      <div class="projchip" id="projChip"><span class="pdot" data-icon="file-code-2"></span><span id="projChipName">—</span></div>
       <div class="tsep"></div>
-      <button class="tbtn" id="btnNew"><span class="ic">＋</span>Nuovo</button>
-      <button class="tbtn" id="btnOpen"><span class="ic">▢</span>Apri</button>
-      <button class="tbtn" id="btnSave"><span class="ic">⤓</span>Salva</button>
-      <button class="tbtn" id="btnAttach"><span class="ic">⊕</span>Allega</button>
+      <button class="tbtn" id="btnNew"><span class="ic" data-icon="file-plus"></span>Nuovo</button>
+      <button class="tbtn" id="btnOpen"><span class="ic" data-icon="folder-open"></span>Apri</button>
+      <button class="tbtn" id="btnSave"><span class="ic" data-icon="device-floppy"></span>Salva</button>
+      <button class="tbtn" id="btnAttach"><span class="ic" data-icon="paperclip"></span>Allega</button>
     </div>
     <div class="tbar-right">
       <button class="userchip" id="userChip" title="Account">
         <span class="avatar" id="userAvatar">–</span>
         <span class="uname" id="userName">–</span>
-        <span class="chev">▾</span>
+        <span class="chev" data-icon="chevron-down"></span>
       </button>
     </div>
   </div>
@@ -45,19 +45,19 @@
     <!-- sidebar -->
     <aside class="pane side">
       <div class="side-tabs">
-        <button class="side-tab on" data-side="files">▤ File</button>
-        <button class="side-tab" data-side="outline">☰ Struttura</button>
+        <button class="side-tab on" data-side="files"><span data-icon="files"></span>File</button>
+        <button class="side-tab" data-side="outline"><span data-icon="list-tree"></span>Struttura</button>
       </div>
       <div class="side-scroll">
         <div data-panel="files">
           <div class="side-head">Progetto
             <span class="act">
-              <button class="iconbtn" id="newFileBtn" title="Nuovo file o cartella">＋</button>
+              <button class="iconbtn" id="newFileBtn" title="Nuovo file o cartella" aria-label="Nuovo file o cartella"><span data-icon="plus"></span></button>
             </span>
           </div>
           <div class="tree" id="tree"></div>
           <div class="dropzone" id="sideDrop">
-            <b>⤓ Trascina immagini qui</b>
+            <b><span data-icon="upload"></span>Trascina immagini qui</b>
             nella cartella selezionata, oppure <span class="lk">sfoglia…</span>
           </div>
         </div>
@@ -76,16 +76,16 @@
       <div class="editor">
         <div class="findbar" id="findBar">
           <div class="findrow">
-            <span class="findic">⌕</span>
+            <span class="findic" data-icon="search"></span>
             <input class="findinput" id="findInput" placeholder="Trova" spellcheck="false" autocomplete="off">
             <span class="findcount" id="findCount"></span>
-            <button class="findbtn" id="findPrev" title="Precedente (⇧⏎)">‹</button>
-            <button class="findbtn" id="findNext" title="Successivo (⏎)">›</button>
+            <button class="findbtn" id="findPrev" title="Precedente (⇧⏎)" aria-label="Risultato precedente"><span data-icon="chevron-left"></span></button>
+            <button class="findbtn" id="findNext" title="Successivo (⏎)" aria-label="Risultato successivo"><span data-icon="chevron-right"></span></button>
             <button class="findbtn toggle" id="findCase" title="Maiuscole/minuscole">Aa</button>
-            <button class="findbtn" id="findClose" title="Chiudi (Esc)">✕</button>
+            <button class="findbtn" id="findClose" title="Chiudi (Esc)" aria-label="Chiudi ricerca"><span data-icon="x"></span></button>
           </div>
           <div class="findrow">
-            <span class="findic">⇄</span>
+            <span class="findic" data-icon="replace"></span>
             <input class="findinput" id="replaceInput" placeholder="Sostituisci con…" spellcheck="false" autocomplete="off">
             <button class="findbtn txt" id="replaceOne">Sostituisci</button>
             <button class="findbtn txt" id="replaceAll">Tutti</button>
@@ -106,26 +106,26 @@
     <section class="pane pvpane">
       <div class="pvbar">
         <div class="seg" id="pvSeg">
-          <button data-view="preview" class="on">▣ <span class="lbl">Anteprima</span></button>
-          <button data-view="log">≣ <span class="lbl">Log</span></button>
+          <button data-view="preview" class="on"><span data-icon="file-type-pdf"></span><span class="lbl">Anteprima</span></button>
+          <button data-view="log"><span data-icon="terminal-2"></span><span class="lbl">Log</span></button>
         </div>
         <div class="spring"></div>
         <div class="pchip">
-          <button class="pgbtn" id="pgPrev">‹</button>
+          <button class="pgbtn" id="pgPrev" aria-label="Pagina precedente"><span data-icon="chevron-left"></span></button>
           <span class="val"><span id="pgCur">–</span> / <span id="pgTot">–</span></span>
-          <button class="pgbtn" id="pgNext">›</button>
+          <button class="pgbtn" id="pgNext" aria-label="Pagina successiva"><span data-icon="chevron-right"></span></button>
         </div>
         <div class="pchip zoom">
-          <button class="zbtn" id="zOut">−</button>
+          <button class="zbtn" id="zOut" aria-label="Riduci zoom"><span data-icon="minus"></span></button>
           <span class="val" id="zVal">100%</span>
-          <button class="zbtn" id="zIn">+</button>
+          <button class="zbtn" id="zIn" aria-label="Aumenta zoom"><span data-icon="plus"></span></button>
         </div>
         <button class="mini fit on" id="fitBtn" title="Adatta alla larghezza">Adatta</button>
-        <button class="mini" id="dlBtn">⤓ Output</button>
+        <button class="mini" id="dlBtn"><span data-icon="download"></span><span class="dl-label">Output</span></button>
       </div>
       <div class="pv-stage" id="pvStage">
         <div class="pv-empty" id="pvEmpty">
-          <div class="big">▣</div>
+          <div class="big" data-icon="file-type-pdf"></div>
           Premi <b>Compila</b> per generare l'output.
         </div>
         <div class="pv-pages" id="pvPages"></div>
@@ -153,12 +153,12 @@
       <span class="st" id="stTime">non ancora compilato</span>
     </div>
     <div class="sb-actions">
-      <button class="sb-btn" id="btnFormat"><span class="ic">✦</span>Format</button>
-      <button class="sb-btn" id="btnFind"><span class="ic">⌕</span>Trova</button>
+      <button class="sb-btn" id="btnFormat"><span class="ic" data-icon="align-left-2"></span>Format</button>
+      <button class="sb-btn" id="btnFind"><span class="ic" data-icon="search"></span>Trova</button>
       <div class="sb-divider"></div>
-      <button class="sb-engine" id="engineBtn" title="Motore di compilazione">motore <b id="engineName">pdflatex</b><span class="chev">▴</span></button>
-      <button class="sb-compile" id="btnCompile"><span class="ic">▶</span>Compila</button>
-      <button class="sb-icon" id="btnSettings" title="Impostazioni"><span class="ic">⚙</span></button>
+      <button class="sb-engine" id="engineBtn" title="Motore di compilazione">motore <b id="engineName">pdflatex</b><span class="chev" data-icon="chevron-up"></span></button>
+      <button class="sb-compile" id="btnCompile"><span class="ic" data-icon="player-play"></span>Compila</button>
+      <button class="sb-icon" id="btnSettings" title="Impostazioni" aria-label="Impostazioni"><span class="ic" data-icon="settings"></span></button>
     </div>
   </div>
 </div>
@@ -181,8 +181,8 @@
     </div>
   </div>
   <div class="msep"></div>
-  <div class="mi" id="miPassword"><span class="ic">⚿</span> Cambia password</div>
-  <div class="mi danger" id="miLogout"><span class="ic">→</span> Disconnetti</div>
+  <div class="mi" id="miPassword"><span class="ic" data-icon="key"></span>Cambia password</div>
+  <div class="mi danger" id="miLogout"><span class="ic" data-icon="logout"></span>Disconnetti</div>
 </div>
 
 <!-- ===================== ATTACH MODAL ===================== -->
@@ -190,26 +190,26 @@
   <div class="modal">
     <div class="m-head">
       <h3>Allega file</h3><span class="sub">immagini, PDF, dati…</span>
-      <button class="m-x" data-close>✕</button>
+      <button class="m-x" data-close aria-label="Chiudi"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
       <div class="field">
         <span class="label">File</span>
         <div class="bigdrop" id="attachDrop">
-          <div class="ic">⤓</div>
+          <div class="ic" data-icon="upload"></div>
           <b>Trascina un file qui</b> oppure clicca per sfogliare
         </div>
         <div class="filerow" id="attachPicked" style="display:none">
           <img class="thumb" id="attachThumb" alt="">
           <span id="attachName">—</span>
           <span class="meta" id="attachMeta"></span>
-          <span class="rm" id="attachClear">✕</span>
+          <button class="rm" id="attachClear" type="button" aria-label="Rimuovi file"><span data-icon="x"></span></button>
         </div>
       </div>
       <div class="field">
         <span class="label">Cartella di destinazione</span>
         <select class="select" id="attachDest"></select>
-        <div class="hint">↳ le immagini di solito vanno in <b style="color:var(--green);margin:0 3px">figure/</b></div>
+        <div class="hint"><span data-icon="info-circle"></span>Le immagini di solito vanno in <b style="color:var(--green);margin:0 3px">figure/</b>.</div>
       </div>
       <div class="field">
         <span class="label">Nome file</span>
@@ -218,7 +218,7 @@
     </div>
     <div class="m-foot">
       <button class="btn" data-close>Annulla</button>
-      <button class="btn cta" id="attachUpload" disabled>⤓ Carica</button>
+      <button class="btn cta" id="attachUpload" disabled><span class="ic" data-icon="upload"></span>Carica</button>
     </div>
   </div>
 </div>
@@ -228,20 +228,20 @@
   <div class="modal wide">
     <div class="m-head">
       <h3>Impostazioni</h3>
-      <button class="m-x" data-close>✕</button>
+      <button class="m-x" data-close aria-label="Chiudi"><span data-icon="x"></span></button>
     </div>
     <div class="set-grid">
       <nav class="set-nav">
-        <div class="item on" data-set="fonts">🅰 Font</div>
-        <div class="item" data-set="editor">Editor</div>
-        <div class="item soon" data-set="general">Generale <span class="badge">PRESTO</span></div>
-        <div class="item" data-set="compile">Compilazione</div>
+        <button class="item on" type="button" data-set="fonts"><span data-icon="typography"></span>Font</button>
+        <button class="item" type="button" data-set="editor"><span data-icon="code"></span>Editor</button>
+        <button class="item soon" type="button" data-set="general" disabled><span data-icon="settings-2"></span>Generale <span class="badge">PRESTO</span></button>
+        <button class="item" type="button" data-set="compile"><span data-icon="player-play"></span>Compilazione</button>
       </nav>
       <div class="set-pane" data-setpane="fonts">
         <h4>Font personalizzati</h4>
         <p class="desc">Carica un font da usare nei tuoi documenti compilati. Formati: .ttf · .otf · .woff · .woff2</p>
         <div class="bigdrop" id="fontDrop">
-          <div class="ic">🅰</div>
+          <div class="ic" data-icon="typography"></div>
           <b>Trascina un font qui</b> oppure clicca per sfogliare
         </div>
         <div style="margin:18px 0 8px" class="label">Font caricati</div>
@@ -270,12 +270,12 @@
         <div class="field">
           <span class="label" id="compilerPathLabel">Percorso dei binari LaTeX</span>
           <input class="input" id="texPath" placeholder="opzionale, es. /opt/homebrew/bin" spellcheck="false" autocomplete="off">
-          <div class="hint" id="texPathHint">↳ se vuoto usa il <b style="color:var(--s-cmd);margin:0 3px">PATH</b> del backend; compila con eseguibili come <b style="color:var(--s-cmd);margin:0 3px">pdflatex</b> <b style="color:var(--s-cmd);margin-right:3px">xelatex</b> <b style="color:var(--s-cmd)">lualatex</b>.</div>
+          <div class="hint" id="texPathHint"><span data-icon="info-circle"></span>Se vuoto usa il <b style="color:var(--s-cmd);margin:0 3px">PATH</b> del backend; compila con eseguibili come <b style="color:var(--s-cmd);margin:0 3px">pdflatex</b> <b style="color:var(--s-cmd);margin-right:3px">xelatex</b> <b style="color:var(--s-cmd)">lualatex</b>.</div>
         </div>
         <div class="field" id="lilypondArgsField" style="display:none">
           <span class="label">Parametri LilyPond</span>
           <input class="input" id="lilypondArgs" placeholder='es. --loglevel=WARNING -I "include musicali"' spellcheck="false" autocomplete="off" maxlength="2000">
-          <div class="hint">↳ inseriti tra <b style="color:var(--s-cmd);margin:0 3px">lilypond</b> e il file <b style="color:var(--s-cmd);margin:0 3px">.ly</b>; sono supportiti valori tra virgolette. La destinazione resta gestita da WebTeX.</div>
+          <div class="hint"><span data-icon="info-circle"></span>Inseriti tra <b style="color:var(--s-cmd);margin:0 3px">lilypond</b> e il file <b style="color:var(--s-cmd);margin:0 3px">.ly</b>; sono supportiti valori tra virgolette. La destinazione resta gestita da WebTeX.</div>
         </div>
         <div class="field" id="lilypondFormatField" style="display:none">
           <span class="label">Formato di output LilyPond</span>
@@ -286,7 +286,7 @@
             <option value="ps">PS — PostScript</option>
             <option value="eps">EPS — Encapsulated PostScript</option>
           </select>
-          <div class="hint">↳ PNG, SVG e partiture con più blocchi possono produrre più artefatti nella cartella <b style="color:var(--s-cmd);margin:0 3px">output/</b>.</div>
+          <div class="hint"><span data-icon="info-circle"></span>PNG, SVG e partiture con più blocchi possono produrre più artefatti nella cartella <b style="color:var(--s-cmd);margin:0 3px">output/</b>.</div>
         </div>
         <div class="binresolve">
           <span class="label">Comando richiesto al backend</span>
@@ -301,10 +301,10 @@
             <option value="index">Indice</option>
             <option value="custom">Personalizzata</option>
           </select>
-          <div class="hint">↳ gli output vengono sovrascritti nella cartella <b style="color:var(--s-cmd);margin:0 3px">output/</b> del progetto.</div>
+          <div class="hint"><span data-icon="info-circle"></span>Gli output vengono sovrascritti nella cartella <b style="color:var(--s-cmd);margin:0 3px">output/</b> del progetto.</div>
         </div>
         <div id="compileSteps"></div>
-        <button class="btn sm" type="button" id="compileAddStep">＋ Step</button>
+        <button class="btn sm" type="button" id="compileAddStep"><span class="ic" data-icon="plus"></span>Step</button>
       </div>
     </div>
     <div class="m-foot">
@@ -321,7 +321,7 @@
   <div class="modal narrow">
     <div class="m-head">
       <h3>Nuovo elemento</h3>
-      <button class="m-x" data-tree-close>✕</button>
+      <button class="m-x" data-tree-close aria-label="Chiudi"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
       <div class="field">
@@ -352,7 +352,7 @@
   <div class="modal narrow">
     <div class="m-head">
       <h3 id="treeRenameTitle">Rinomina</h3>
-      <button class="m-x" data-tree-close>✕</button>
+      <button class="m-x" data-tree-close aria-label="Chiudi"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
       <div class="field">
@@ -372,7 +372,7 @@
   <div class="modal narrow">
     <div class="m-head">
       <h3 id="treeDeleteTitle">Elimina</h3>
-      <button class="m-x" data-tree-close>✕</button>
+      <button class="m-x" data-tree-close aria-label="Chiudi"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
       <p class="confirm-txt" id="treeDeleteText">Vuoi eliminare questo elemento? L'azione non è reversibile.</p>
@@ -389,7 +389,7 @@
   <div class="modal narrow">
     <div class="m-head">
       <h3>Disconnessione</h3>
-      <button class="m-x" data-close>✕</button>
+      <button class="m-x" data-close aria-label="Chiudi"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
       <p class="confirm-txt">Vuoi uscire da <b>WebTeX</b>? Le modifiche non salvate nell'editor andranno perse.</p>
@@ -406,7 +406,7 @@
   <div class="modal narrow">
     <div class="m-head">
       <h3>Cambia password</h3>
-      <button class="m-x" data-close>✕</button>
+      <button class="m-x" data-close aria-label="Chiudi"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
       <div class="login-error inline" id="passwordError">Password non valida.</div>
@@ -417,7 +417,7 @@
       <div class="field">
         <span class="label">Nuova password</span>
         <input class="input" id="passwordNew" type="password" autocomplete="new-password">
-        <div class="hint">↳ almeno 10 caratteri.</div>
+        <div class="hint"><span data-icon="info-circle"></span>Almeno 10 caratteri.</div>
       </div>
       <div class="field">
         <span class="label">Conferma nuova password</span>
@@ -437,7 +437,7 @@
   <div class="modal narrow">
     <div class="m-head">
       <h3 id="projModalTitle">Nuovo progetto</h3>
-      <button class="m-x" data-close>✕</button>
+      <button class="m-x" data-close aria-label="Chiudi"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
       <div class="field">
@@ -464,7 +464,7 @@
   <div class="modal narrow">
     <div class="m-head">
       <h3>Elimina progetto</h3>
-      <button class="m-x" data-close>✕</button>
+      <button class="m-x" data-close aria-label="Chiudi"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
       <p class="confirm-txt">Vuoi eliminare <b id="projDelName">questo progetto</b>? Tutti i suoi file e le sue bibliografie verranno rimossi. L'azione non è reversibile.</p>
@@ -490,7 +490,7 @@
           <div class="pu-name" id="pkName">–</div>
           <div class="pu-email" id="pkEmail">–</div>
         </div>
-        <button class="tbtn" id="pkLogout" title="Disconnetti"><span class="ic">→</span>Esci</button>
+        <button class="tbtn" id="pkLogout" title="Disconnetti"><span class="ic" data-icon="logout"></span>Esci</button>
       </div>
     </header>
 
@@ -499,16 +499,16 @@
         <h1 class="picker-title">I tuoi progetti</h1>
         <p class="picker-sub">Ogni progetto è autonomo, con i suoi file e le sue bibliografie. <span id="pkCount" class="pk-count"></span></p>
       </div>
-      <button class="btn cta" id="pkNew"><span class="ic">＋</span> Nuovo progetto</button>
+      <button class="btn cta" id="pkNew"><span class="ic" data-icon="plus"></span>Nuovo progetto</button>
     </div>
 
     <div class="picker-grid" id="pkGrid"></div>
 
     <div class="picker-empty" id="pkEmpty" style="display:none">
-      <div class="pe-mark">◆</div>
+      <div class="pe-mark" data-icon="files"></div>
       <div class="pe-title">Nessun progetto</div>
       <div class="pe-sub">Crea il tuo primo progetto per iniziare a scrivere in LaTeX.</div>
-      <button class="btn cta" id="pkNewEmpty"><span class="ic">＋</span> Nuovo progetto</button>
+      <button class="btn cta" id="pkNewEmpty"><span class="ic" data-icon="plus"></span>Nuovo progetto</button>
     </div>
   </div>
 </div>
@@ -537,12 +537,12 @@
       </div>
     </div>
 
-    <button class="btn cta full" id="loginBtn" type="submit"><span class="ic">➜</span> Accedi</button>
+    <button class="btn cta full" id="loginBtn" type="submit"><span class="ic" data-icon="login"></span>Accedi</button>
 
     <div class="login-divider">oppure continua con</div>
 
     <div class="sso-grid">
-      <button class="ssobtn" id="ssoLoginBtn" type="button" data-sso><span class="pmark sso">✷</span> SSO <span class="arr">›</span></button>
+      <button class="ssobtn" id="ssoLoginBtn" type="button" data-sso><span class="pmark sso" data-icon="shield-lock"></span>SSO<span class="arr" data-icon="arrow-right"></span></button>
     </div>
 
     <p class="login-foot">Accesso riservato. Gli account sono gestiti dall'amministratore.</p>
@@ -553,6 +553,7 @@
 <input type="file" id="attachInput" accept="image/*,application/pdf,.csv,.dat" style="display:none">
 <input type="file" id="fontInput" accept=".ttf,.otf,.woff,.woff2" style="display:none">
 
+<script src="wt-icons.js"></script>
 <script src="wt-latex.js"></script>
 <script src="wt-lilypond.js"></script>
 <script src="wt-app.js"></script>
