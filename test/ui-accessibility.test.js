@@ -68,3 +68,15 @@ test("editor suppresses native boundary bounce without custom motion", () => {
   assert.doesNotMatch(css, /editor-bounce|bounce-push|bounce-return/);
   assert.doesNotMatch(app, /editorBoundaryWheel|boundaryBounceAmount|editorBounceTimer/);
 });
+
+test("word wrap is an opt-in persistent footer control", () => {
+  assert.match(html, /class="sb-wrap" id="btnWrap"[^>]*role="switch"[^>]*aria-checked="false"/);
+  assert.match(html, /id="codeArea"[^>]*wrap="off"/);
+  assert.match(css, /\.editor\.wrap-on \.code-layer,\.editor\.wrap-on \.code-area/);
+  assert.match(css, /\.line-measure \.measure-line/);
+  assert.match(app, /wordWrap:\s*false/);
+  assert.match(app, /area\.setAttribute\("wrap", state\.wordWrap \? "soft" : "off"\)/);
+  assert.match(app, /wordWrap:\s*state\.wordWrap/);
+  assert.match(app, /function sourcePositionTop\(index\)/);
+  assert.match(app, /selectionDirection === "backward" \? area\.selectionStart : area\.selectionEnd/);
+});

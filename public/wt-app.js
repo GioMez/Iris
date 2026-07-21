@@ -35,6 +35,7 @@
     lilypondArgs: "",
     lilypondFormat: "pdf",
     autoIndent: true,
+    wordWrap: false,
     zoom: 1, fit: true,
     view: "preview",
     assets: {},           // path -> dataURL
@@ -94,6 +95,7 @@
 
   /* ---------------- elements ---------------- */
   const area = $("codeArea"), layer = $("codeLayer"), gutter = $("gutter"), codeWrap = $("codeWrap");
+  const lineMeasure = $("lineMeasure");
   const editor = codeWrap.closest(".editor");
 
   /* ---------------- editor ---------------- */
@@ -114,20 +116,63 @@
     const active = findFile(state.activeId);
     const syntax = active && active.kind === "ly" ? WTLilyPond : WTLatex;
     layer.innerHTML = syntax.highlight(v) + "\n";
-    const lines = v.split("\n").length;
-    const cur = curLine();
-    let g = "";
-    for (let i = 1; i <= lines; i++) g += `<div class="gl${i === cur ? " cur" : ""}">${i}</div>`;
-    gutter.innerHTML = g;
     updateEditorViewportInsets();
+    renderGutter(v);
     syncScroll();
     updateCursor();
   }
+  function wrappedLineHeights(lines) {
+    if (!state.wordWrap) {
+      lineMeasure.replaceChildren();
+      return null;
+    }
+    const style = getComputedStyle(area);
+    const contentWidth = Math.max(1, area.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight));
+    lineMeasure.style.width = `${contentWidth}px`;
+    const fragment = document.createDocumentFragment();
+    lines.forEach((line) => {
+      const row = document.createElement("span");
+      row.className = "measure-line";
+      row.textContent = line || "\u200b";
+      fragment.appendChild(row);
+    });
+    lineMeasure.replaceChildren(fragment);
+    return Array.from(lineMeasure.children, (row) => Math.max(LINE_H, row.offsetHeight));
+  }
+  function renderGutter(value = area.value) {
+    const lines = value.split("\n");
+    const heights = wrappedLineHeights(lines);
+    const cur = curLine();
+    let g = "";
+    for (let i = 1; i <= lines.length; i++) {
+      const height = heights ? heights[i - 1] : LINE_H;
+      g += `<div class="gl${i === cur ? " cur" : ""}" style="height:${height}px">${i}</div>`;
+    }
+    gutter.innerHTML = g;
+  }
+  function sourcePositionTop(index) {
+    const before = area.value.slice(0, Math.max(0, index));
+    const lineNumber = before.split("\n").length;
+    const gutterLine = gutter.children[lineNumber - 1];
+    let top = gutterLine ? gutterLine.offsetTop : (lineNumber - 1) * LINE_H;
+    if (!state.wordWrap) return top;
+    const prefix = before.slice(before.lastIndexOf("\n") + 1);
+    const probe = document.createElement("span");
+    probe.className = "measure-line";
+    probe.textContent = prefix || "\u200b";
+    lineMeasure.appendChild(probe);
+    top += Math.max(0, probe.offsetHeight - LINE_H);
+    probe.remove();
+    return top;
+  }
   function curLine() {
-    return area.value.slice(0, area.selectionStart).split("\n").length;
+    return area.value.slice(0, cursorPosition()).split("\n").length;
+  }
+  function cursorPosition() {
+    return area.selectionDirection === "backward" ? area.selectionStart : area.selectionEnd;
   }
   function updateCursor() {
-    const pos = area.selectionStart;
+    const pos = cursorPosition();
     const before = area.value.slice(0, pos);
     const ln = before.split("\n").length;
     const col = pos - before.lastIndexOf("\n");
@@ -147,6 +192,20 @@
     const verticalScrollbar = Math.max(0, area.offsetWidth - area.clientWidth);
     editor.style.setProperty("--editor-hscroll", `${horizontalScrollbar}px`);
     editor.style.setProperty("--editor-vscroll", `${verticalScrollbar}px`);
+  }
+
+  function setWordWrap(enabled, save = false) {
+    state.wordWrap = !!enabled;
+    editor.classList.toggle("wrap-on", state.wordWrap);
+    area.setAttribute("wrap", state.wordWrap ? "soft" : "off");
+    $("btnWrap").classList.toggle("on", state.wordWrap);
+    $("btnWrap").setAttribute("aria-checked", state.wordWrap ? "true" : "false");
+    $("btnWrap").setAttribute("aria-label", `${state.wordWrap ? "Disattiva" : "Attiva"} ritorno a capo automatico`);
+    $("btnWrap").title = `${state.wordWrap ? "Disattiva" : "Attiva"} ritorno a capo automatico`;
+    if (state.wordWrap) area.scrollLeft = 0;
+    paint();
+    scheduleScrollSync();
+    if (save) saveLayout();
   }
 
   let editorSyncFrame = 0;
@@ -185,7 +244,7 @@
     schedulePersist();
   });
   area.addEventListener("scroll", () => { syncScroll(); scheduleScrollSync(); });
-  area.addEventListener("select", scheduleScrollSync);
+  area.addEventListener("select", () => { updateCursor(); scheduleScrollSync(); });
   area.addEventListener("pointerdown", startSelectionDrag);
   document.addEventListener("pointerup", stopSelectionDrag, true);
   document.addEventListener("pointercancel", stopSelectionDrag, true);
@@ -205,11 +264,12 @@
     scheduleScrollSync();
   });
   document.addEventListener("selectionchange", () => {
-    if (document.activeElement === area) scheduleScrollSync();
+    if (document.activeElement === area) { updateCursor(); scheduleScrollSync(); }
   });
   if (window.ResizeObserver) {
     const editorResizeObserver = new ResizeObserver(() => {
       updateEditorViewportInsets();
+      if (state.wordWrap) renderGutter();
       scheduleScrollSync();
     });
     editorResizeObserver.observe(area);
@@ -217,6 +277,7 @@
   if (document.fonts && document.fonts.ready) {
     document.fonts.ready.then(() => {
       updateEditorViewportInsets();
+      if (state.wordWrap) renderGutter();
       scheduleScrollSync();
     });
   }
@@ -801,8 +862,7 @@
     const start = Number.isInteger(item.offset) ? idx : area.value.lastIndexOf("\\", idx);
     area.focus();
     area.selectionStart = area.selectionEnd = start;
-    const ln = area.value.slice(0, start).split("\n").length;
-    area.scrollTop = Math.max(0, (ln - 3) * LINE_H);
+    area.scrollTop = Math.max(0, sourcePositionTop(start) - 2 * LINE_H);
     syncScroll(); updateCursor();
   }
 
@@ -1332,6 +1392,7 @@
   function wire() {
     // topbar
     $("btnCompile").addEventListener("click", compile);
+    $("btnWrap").addEventListener("click", () => setWordWrap(!state.wordWrap, true));
     $("btnFormat").addEventListener("click", () => {
       const f = findFile(state.activeId);
       if (!f || (f.kind !== "tex" && f.kind !== "ly")) return;
@@ -1593,6 +1654,7 @@
     if (typeof L.autoIndent === "boolean") state.autoIndent = L.autoIndent;
     $("autoIndent").classList.toggle("on", state.autoIndent);
     $("autoIndent").setAttribute("aria-checked", state.autoIndent ? "true" : "false");
+    setWordWrap(typeof L.wordWrap === "boolean" ? L.wordWrap : false);
     if (typeof L.texPath === "string") state.texPath = L.texPath;
     if (typeof L.lilypondPath === "string") state.lilypondPath = L.lilypondPath;
     updateTexPathControl();
@@ -1605,6 +1667,7 @@
       pvW: Math.round(parseFloat(cs.getPropertyValue("--pv-w")) || 600),
       sideCollapsed: body.classList.contains("side-collapsed"),
       autoIndent: state.autoIndent,
+      wordWrap: state.wordWrap,
       texPath: state.texPathLocked ? "" : state.texPath,
       lilypondPath: state.lilypondPathLocked ? "" : state.lilypondPath,
     };
@@ -1705,8 +1768,7 @@
     const n = fState.matches.length; if (!n) return;
     const q = $("findInput").value, start = fState.matches[fState.idx];
     area.setSelectionRange(start, start + q.length);
-    const ln = area.value.slice(0, start).split("\n").length;
-    const target = (ln - 1) * LINE_H, view = area.clientHeight;
+    const target = sourcePositionTop(start), view = area.clientHeight;
     if (target < area.scrollTop + 30 || target > area.scrollTop + view - 50)
       area.scrollTop = Math.max(0, target - view / 2);
     syncScroll();
