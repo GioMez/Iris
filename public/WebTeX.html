@@ -219,7 +219,7 @@
       <div class="field">
         <span class="label">Cartella di destinazione</span>
         <select class="select" id="attachDest"></select>
-        <div class="hint"><span data-icon="info-circle"></span>Le immagini di solito vanno in <b style="color:var(--green);margin:0 3px">figure/</b>.</div>
+        <div class="hint"><span data-icon="info-circle"></span>Le immagini di solito vanno in <b style="color:var(--category-image);margin:0 3px">figure/</b>.</div>
       </div>
       <div class="field">
         <span class="label">Nome file</span>
@@ -235,32 +235,34 @@
 
 <!-- ===================== SETTINGS MODAL ===================== -->
 <div class="scrim" id="settingsModal">
-  <div class="modal wide">
+  <div class="modal wide settings-modal" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
     <div class="m-head">
-      <h3>Impostazioni</h3>
-      <button class="m-x" data-close aria-label="Chiudi"><span data-icon="x"></span></button>
+      <h3 id="settingsTitle">Impostazioni</h3>
+      <span class="sub">Preferenze del progetto</span>
     </div>
     <div class="set-grid">
-      <nav class="set-nav">
-        <button class="item on" type="button" data-set="fonts"><span data-icon="typography"></span>Font</button>
-        <button class="item" type="button" data-set="editor"><span data-icon="code"></span>Editor</button>
-        <button class="item soon" type="button" data-set="general" disabled><span data-icon="settings-2"></span>Generale <span class="badge">PRESTO</span></button>
-        <button class="item" type="button" data-set="compile"><span data-icon="player-play"></span>Compilazione</button>
+      <nav class="set-nav" role="tablist" aria-label="Sezioni impostazioni" aria-orientation="vertical">
+        <button class="item on" id="settingsTabFonts" type="button" role="tab" aria-selected="true" aria-controls="settingsPanelFonts" tabindex="0" data-set="fonts"><span data-icon="typography"></span>Font</button>
+        <button class="item" id="settingsTabEditor" type="button" role="tab" aria-selected="false" aria-controls="settingsPanelEditor" tabindex="-1" data-set="editor"><span data-icon="code"></span>Editor</button>
+        <button class="item" id="settingsTabCompile" type="button" role="tab" aria-selected="false" aria-controls="settingsPanelCompile" tabindex="-1" data-set="compile"><span data-icon="terminal-2"></span>Compilazione</button>
       </nav>
-      <div class="set-pane" data-setpane="fonts">
-        <h4>Font personalizzati</h4>
+      <div class="set-content">
+      <button class="set-accordion-trigger" type="button" data-set="fonts" aria-expanded="true" aria-controls="settingsPanelFonts"><span data-icon="typography"></span><span>Font</span><span class="set-chevron" data-icon="chevron-down"></span></button>
+      <section class="set-pane" id="settingsPanelFonts" role="tabpanel" aria-labelledby="settingsTabFonts" tabindex="0" data-setpane="fonts">
+        <h4 class="set-title"><span data-icon="typography"></span>Font personalizzati</h4>
         <p class="desc">Carica un font da usare nei tuoi documenti compilati. Formati: .ttf · .otf · .woff · .woff2</p>
         <button class="bigdrop" id="fontDrop" type="button">
           <span class="ic" data-icon="typography"></span>
-          <b>Trascina un font qui</b> oppure clicca per sfogliare
+          <span class="fontdrop-copy"><b>Trascina un font qui</b> oppure clicca per sfogliare</span>
         </button>
         <div style="margin:18px 0 8px" class="label">Font caricati</div>
         <div id="fontList"></div>
         <div class="label" style="margin-top:18px">Anteprima documento</div>
         <div class="fontprev" id="fontPrev">The quick brown fox — Relazione di Laboratorio — 0123456789</div>
-      </div>
-      <div class="set-pane" data-setpane="editor" style="display:none">
-        <h4>Editor</h4>
+      </section>
+      <button class="set-accordion-trigger" type="button" data-set="editor" aria-expanded="false" aria-controls="settingsPanelEditor"><span data-icon="code"></span><span>Editor</span><span class="set-chevron" data-icon="chevron-down"></span></button>
+      <section class="set-pane" id="settingsPanelEditor" role="tabpanel" aria-labelledby="settingsTabEditor" tabindex="0" data-setpane="editor" hidden>
+        <h4 class="set-title"><span data-icon="code"></span>Editor</h4>
         <p class="desc">Preferenze di scrittura e formattazione del codice LaTeX.</p>
         <div class="set-row">
           <div class="set-row-txt">
@@ -269,10 +271,28 @@
           </div>
           <button class="switch-wrap on" id="autoIndent" type="button" role="switch" aria-checked="true" aria-label="Auto-indent"><span class="sw"></span></button>
         </div>
-      </div>
-      <div class="set-pane" data-setpane="compile" style="display:none">
-        <h4>Compilazione</h4>
-        <p class="desc" id="compileSettingsDesc">Indica dove WebTeX deve cercare i binari del compilatore. Il campo e' opzionale: se resta vuoto viene usato il <code>PATH</code> del backend.</p>
+        <div class="set-row set-row-stack" id="autoSaveSetting">
+          <div class="set-row-head">
+            <div class="set-row-txt">
+              <div class="set-row-title">Autosalvataggio</div>
+              <div class="set-row-sub">Salva automaticamente i documenti modificati dopo un periodo di inattività. È disattivato per impostazione predefinita.</div>
+            </div>
+            <button class="switch-wrap" id="autoSave" type="button" role="switch" aria-checked="false" aria-label="Autosalvataggio" aria-controls="autoSaveDelayGroup"><span class="sw"></span></button>
+          </div>
+          <div class="set-subcontrol" id="autoSaveDelayGroup" aria-disabled="true">
+            <label class="label" for="autoSaveDelay">Intervallo di inattività</label>
+            <div class="number-field">
+              <input class="input" id="autoSaveDelay" type="number" value="600" min="10" max="86400" step="10" inputmode="numeric" disabled>
+              <span>secondi</span>
+            </div>
+            <div class="hint">Per un fallback discreto: 300 secondi corrispondono a 5 minuti, 900 a 15 minuti.</div>
+          </div>
+        </div>
+      </section>
+      <button class="set-accordion-trigger" type="button" data-set="compile" aria-expanded="false" aria-controls="settingsPanelCompile"><span data-icon="terminal-2"></span><span>Compilazione</span><span class="set-chevron" data-icon="chevron-down"></span></button>
+      <section class="set-pane" id="settingsPanelCompile" role="tabpanel" aria-labelledby="settingsTabCompile" tabindex="0" data-setpane="compile" hidden>
+        <h4 class="set-title"><span data-icon="terminal-2"></span>Compilazione</h4>
+        <p class="desc" id="compileSettingsDesc">Indica dove WebTeX deve cercare i binari del compilatore. Il campo è opzionale: se resta vuoto viene usato il <code>PATH</code> del backend.</p>
         <div class="binresolve">
           <span class="label">Tipo progetto riconosciuto</span>
           <code class="binpath" id="projectTypeLabel">LaTeX</code>
@@ -280,12 +300,12 @@
         <div class="field">
           <span class="label" id="compilerPathLabel">Percorso dei binari LaTeX</span>
           <input class="input" id="texPath" placeholder="opzionale, es. /opt/homebrew/bin" spellcheck="false" autocomplete="off">
-          <div class="hint" id="texPathHint"><span data-icon="info-circle"></span>Se vuoto usa il <b style="color:var(--s-cmd);margin:0 3px">PATH</b> del backend; compila con eseguibili come <b style="color:var(--s-cmd);margin:0 3px">pdflatex</b> <b style="color:var(--s-cmd);margin-right:3px">xelatex</b> <b style="color:var(--s-cmd)">lualatex</b>.</div>
+          <div class="hint" id="texPathHint"><span data-icon="info-circle"></span>Se vuoto usa il <b style="color:var(--semantic-info);margin:0 3px">PATH</b> del backend; compila con eseguibili come <b style="color:var(--semantic-info);margin:0 3px">pdflatex</b> <b style="color:var(--semantic-info);margin-right:3px">xelatex</b> <b style="color:var(--semantic-info)">lualatex</b>.</div>
         </div>
         <div class="field" id="lilypondArgsField" style="display:none">
           <span class="label">Parametri LilyPond</span>
           <input class="input" id="lilypondArgs" placeholder='es. --loglevel=WARNING -I "include musicali"' spellcheck="false" autocomplete="off" maxlength="2000">
-          <div class="hint"><span data-icon="info-circle"></span>Inseriti tra <b style="color:var(--s-cmd);margin:0 3px">lilypond</b> e il file <b style="color:var(--s-cmd);margin:0 3px">.ly</b>; sono supportiti valori tra virgolette. La destinazione resta gestita da WebTeX.</div>
+          <div class="hint"><span data-icon="info-circle"></span>Inseriti tra <b style="color:var(--semantic-info);margin:0 3px">lilypond</b> e il file <b style="color:var(--semantic-info);margin:0 3px">.ly</b>; sono supportiti valori tra virgolette. La destinazione resta gestita da WebTeX.</div>
         </div>
         <div class="field" id="lilypondFormatField" style="display:none">
           <span class="label">Formato di output LilyPond</span>
@@ -296,7 +316,7 @@
             <option value="ps">PS — PostScript</option>
             <option value="eps">EPS — Encapsulated PostScript</option>
           </select>
-          <div class="hint"><span data-icon="info-circle"></span>PNG, SVG e partiture con più blocchi possono produrre più artefatti nella cartella <b style="color:var(--s-cmd);margin:0 3px">output/</b>.</div>
+          <div class="hint"><span data-icon="info-circle"></span>PNG, SVG e partiture con più blocchi possono produrre più artefatti nella cartella <b style="color:var(--semantic-info);margin:0 3px">output/</b>.</div>
         </div>
         <div class="binresolve">
           <span class="label">Comando richiesto al backend</span>
@@ -311,15 +331,15 @@
             <option value="index">Indice</option>
             <option value="custom">Personalizzata</option>
           </select>
-          <div class="hint"><span data-icon="info-circle"></span>Gli output vengono sovrascritti nella cartella <b style="color:var(--s-cmd);margin:0 3px">output/</b> del progetto.</div>
+          <div class="hint"><span data-icon="info-circle"></span>Gli output vengono sovrascritti nella cartella <b style="color:var(--semantic-info);margin:0 3px">output/</b> del progetto.</div>
         </div>
         <div id="compileSteps"></div>
         <button class="btn sm" type="button" id="compileAddStep"><span class="ic" data-icon="plus"></span>Step</button>
+      </section>
       </div>
     </div>
     <div class="m-foot">
       <button class="btn" data-close>Chiudi</button>
-      <button class="btn cta" data-close>Fatto</button>
     </div>
   </div>
 </div>

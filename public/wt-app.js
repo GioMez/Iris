@@ -36,6 +36,8 @@
     lilypondFormat: "pdf",
     autoIndent: true,
     wordWrap: false,
+    autoSave: false,
+    autoSaveDelay: 600,
     zoom: 1, fit: true,
     view: "preview",
     assets: {},           // path -> dataURL
@@ -55,11 +57,35 @@
     untitledN: 0,
     attachFile: null,
     compiledArtifacts: [],
+    dirtyFiles: new Map(), // file id -> edit revision not yet persisted
+    editRevision: 0,
   };
 
   /* ---------------- persistence (delegated to the projects layer) ---------------- */
+  let persistQueue = Promise.resolve(true);
   function persist() {
-    if (window.WTProjects) window.WTProjects.persistCurrent();
+    if (!window.WTProjects) return Promise.resolve(false);
+    const operation = async () => {
+      const dirtyAtStart = new Map(state.dirtyFiles);
+      const saved = await window.WTProjects.persistCurrent();
+      if (!saved) return false;
+      let dirtyChanged = false;
+      dirtyAtStart.forEach((revision, id) => {
+        if (state.dirtyFiles.get(id) !== revision) return;
+        state.dirtyFiles.delete(id);
+        dirtyChanged = true;
+      });
+      if (dirtyChanged) {
+        renderTabs();
+        if (!state.dirtyFiles.size) clearTimeout(persistT);
+      }
+      return true;
+    };
+    persistQueue = persistQueue.then(operation, operation);
+    return persistQueue;
+  }
+  function persistWhenDocumentClean() {
+    return state.dirtyFiles.size ? Promise.resolve(false) : persist();
   }
   function walk(nodes, fn) {
     nodes.forEach((n) => { if (n.type === "folder") walk(n.children, fn); else fn(n); });
@@ -208,6 +234,25 @@
     if (save) saveLayout();
   }
 
+  const AUTOSAVE_MIN_SECONDS = 10;
+  const AUTOSAVE_MAX_SECONDS = 86400;
+  function normalizeAutoSaveDelay(value) {
+    const seconds = Number.parseInt(value, 10);
+    if (!Number.isFinite(seconds)) return 600;
+    return Math.max(AUTOSAVE_MIN_SECONDS, Math.min(AUTOSAVE_MAX_SECONDS, seconds));
+  }
+  function updateAutoSaveControls() {
+    const toggle = $("autoSave");
+    const delay = $("autoSaveDelay");
+    const group = $("autoSaveDelayGroup");
+    if (!toggle || !delay || !group) return;
+    toggle.classList.toggle("on", state.autoSave);
+    toggle.setAttribute("aria-checked", state.autoSave ? "true" : "false");
+    delay.disabled = !state.autoSave;
+    delay.value = String(state.autoSaveDelay);
+    group.setAttribute("aria-disabled", state.autoSave ? "false" : "true");
+  }
+
   let editorSyncFrame = 0;
   let editorSyncFramesRemaining = 0;
   let selectionDragActive = false;
@@ -238,7 +283,10 @@
 
   area.addEventListener("input", () => {
     const f = findFile(state.activeId);
-    if (f) f.content = area.value;
+    if (f) {
+      f.content = area.value;
+      markFileDirty(f.id);
+    }
     paint();
     renderOutline();
     schedulePersist();
@@ -285,12 +333,20 @@
     const s = area.selectionStart, e = area.selectionEnd;
     area.value = area.value.slice(0, s) + text + area.value.slice(e);
     area.selectionStart = area.selectionEnd = s + text.length;
-    const f = findFile(state.activeId); if (f) f.content = area.value;
+    const f = findFile(state.activeId);
+    if (f) {
+      f.content = area.value;
+      markFileDirty(f.id);
+    }
     paint(); schedulePersist();
   }
 
   let persistT;
-  function schedulePersist() { clearTimeout(persistT); persistT = setTimeout(persist, 400); }
+  function schedulePersist() {
+    clearTimeout(persistT);
+    if (!state.autoSave || !state.dirtyFiles.size) return;
+    persistT = setTimeout(() => { void persist(); }, state.autoSaveDelay * 1000);
+  }
 
   /* ---------------- compiler binaries path ---------------- */
   function isLilyPondProject() { return state.projectType === "lilypond"; }
@@ -395,7 +451,7 @@
   }
   function saveCompileProfile() {
     state.compileProfile = normalizeCompileProfile(state.compileProfile);
-    persist();
+    void persistWhenDocumentClean();
   }
   function updateTexPathControl() {
     const input = $("texPath");
@@ -416,8 +472,8 @@
     $("lilypondFormatField").style.display = lilypond ? "" : "none";
     $("lilypondFormat").value = state.lilypondFormat;
     hint.innerHTML = locked
-      ? `${ti("info-circle", "hint-ti")}configurato dal deployment Docker Compose; modifica il mapping nel file <b style="color:var(--s-cmd);margin:0 3px">docker-compose.yml</b>.`
-      : `${ti("info-circle", "hint-ti")}se vuoto usa il <b style="color:var(--s-cmd);margin:0 3px">PATH</b> del backend; in alternativa indica la cartella che contiene <b style="color:var(--s-cmd);margin:0 3px">${lilypond ? "lilypond" : "pdflatex"}</b>.`;
+      ? `${ti("info-circle", "hint-ti")}configurato dal deployment Docker Compose; modifica il mapping nel file <b style="color:var(--semantic-info);margin:0 3px">docker-compose.yml</b>.`
+      : `${ti("info-circle", "hint-ti")}se vuoto usa il <b style="color:var(--semantic-info);margin:0 3px">PATH</b> del backend; in alternativa indica la cartella che contiene <b style="color:var(--semantic-info);margin:0 3px">${lilypond ? "lilypond" : "pdflatex"}</b>.`;
     updateCompileCommandPreview();
   }
   async function loadRuntimeConfig() {
@@ -435,17 +491,27 @@
   }
 
   /* ---------------- tabs ---------------- */
+  function markFileDirty(id = state.activeId) {
+    if (!id) return;
+    const wasDirty = state.dirtyFiles.has(id);
+    state.dirtyFiles.set(id, ++state.editRevision);
+    if (!wasDirty) renderTabs();
+  }
+
   function renderTabs() {
     const bar = $("ftabs");
     bar.innerHTML = "";
     state.openTabs.forEach((id) => {
       const f = findFile(id); if (!f) return;
       const t = document.createElement("div");
-      t.className = "ftab" + (id === state.activeId ? " on" : "");
+      const dirty = state.dirtyFiles.has(id);
+      t.className = "ftab" + (id === state.activeId ? " on" : "") + (dirty ? " dirty" : "");
       t.setAttribute("role", "tab");
       t.setAttribute("aria-selected", id === state.activeId ? "true" : "false");
+      t.setAttribute("aria-label", `${f.name}${dirty ? ", modifiche non salvate" : ""}`);
+      t.title = dirty ? `${f.name} — modifiche non salvate` : f.name;
       t.tabIndex = 0;
-      t.innerHTML = `${fileIcon(f.kind)}<span>${esc(f.name)}</span><button class="x" type="button" data-x aria-label="Chiudi ${esc(f.name)}">${ti("x")}</button>`;
+      t.innerHTML = `${fileIcon(f.kind)}<span class="tab-name"><span class="dot" aria-hidden="true"></span><span>${esc(f.name)}</span></span><button class="x" type="button" data-x aria-label="Chiudi ${esc(f.name)}${dirty ? " con modifiche non salvate" : ""}">${ti("x")}</button>`;
       t.addEventListener("click", (e) => {
         if (e.target.closest("[data-x]")) { closeTab(id); return; }
         openFile(id);
@@ -641,7 +707,7 @@
       state.selectedFolder = folderSlash(joinPath(dest.path, name));
       closeNewItem();
       renderTree();
-      persist();
+      void persistWhenDocumentClean();
       toast(`Creata cartella ${name}`);
       return;
     }
@@ -654,7 +720,8 @@
     closeNewItem();
     renderTree();
     openFile(id);
-    persist();
+    markFileDirty(id);
+    schedulePersist();
     toast(`Creato ${filePath}`);
   }
 
@@ -714,7 +781,7 @@
     renderTree();
     renderTabs();
     renderOutline();
-    persist();
+    void persistWhenDocumentClean();
     toast(`Rinominato “${name}”`);
   }
 
@@ -749,6 +816,7 @@
       if (state.selectedFolder && state.selectedFolder.startsWith(prefix)) state.selectedFolder = "";
     }
     state.openTabs = state.openTabs.filter((id) => !deletedIds.has(id));
+    deletedIds.forEach((id) => state.dirtyFiles.delete(id));
     const activeDeleted = deletedIds.has(state.activeId);
     closeTreeDelete();
     renderTree();
@@ -760,7 +828,7 @@
       renderTabs();
       renderOutline();
     }
-    persist();
+    void persistWhenDocumentClean();
     toast(`Eliminato “${node.name}”`);
   }
 
@@ -977,6 +1045,8 @@
       activeId: state.activeId,
       openTabs: state.openTabs.slice(),
       untitledN: state.untitledN,
+      autoSave: state.autoSave,
+      autoSaveDelay: state.autoSaveDelay,
     };
   }
   function docFileForCompile() {
@@ -996,6 +1066,11 @@
     return main || f;
   }
   async function compile() {
+    if (state.dirtyFiles.size) {
+      toast("Salva le modifiche prima di compilare", "err");
+      $("btnSave").focus();
+      return;
+    }
     const f = docFileForCompile();
     if (!f) { toast("Nessun documento da compilare", "err"); return; }
     setWorkspaceView("preview");
@@ -1195,6 +1270,41 @@
     if (preview && state.pdfDocument && state.fit) requestPdfLayout();
   }
 
+  function activateSettingsSection(section, focusTab = false) {
+    const tabs = Array.from(document.querySelectorAll(".set-nav [role=tab]"));
+    tabs.forEach((tab) => {
+      const selected = tab.dataset.set === section;
+      tab.classList.toggle("on", selected);
+      tab.setAttribute("aria-selected", selected ? "true" : "false");
+      tab.tabIndex = selected ? 0 : -1;
+      if (selected && focusTab) tab.focus();
+    });
+    document.querySelectorAll(".set-pane").forEach((panel) => {
+      panel.hidden = panel.dataset.setpane !== section;
+    });
+    document.querySelectorAll(".set-accordion-trigger").forEach((trigger) => {
+      const expanded = trigger.dataset.set === section;
+      trigger.classList.toggle("on", expanded);
+      trigger.setAttribute("aria-expanded", expanded ? "true" : "false");
+    });
+  }
+
+  function openSettings() {
+    renderFontList();
+    updateTexPathControl();
+    renderCompileProfile();
+    const selected = document.querySelector(".set-nav [role=tab].on")?.dataset.set || "fonts";
+    activateSettingsSection(selected);
+    $("settingsModal").classList.add("on");
+    requestAnimationFrame(() => {
+      const compact = window.matchMedia("(max-width: 700px)").matches;
+      const target = compact
+        ? document.querySelector(`.set-accordion-trigger[data-set="${selected}"]`)
+        : document.querySelector(`.set-nav [data-set="${selected}"]`);
+      target?.focus();
+    });
+  }
+
   /* ---------------- toast ---------------- */
   function toast(msg, type) {
     const t = document.createElement("div");
@@ -1276,7 +1386,7 @@
     const kind = attachKind(name, af.isImg);
     folder.push({ type: "file", id: "file_" + Date.now(), name, kind, path, data: af.data });
     renderTree();
-    persist();
+    void persistWhenDocumentClean();
     $("attachModal").classList.remove("on");
     toast(`“${name}” caricato in ${dest || "/"}`);
   }
@@ -1299,7 +1409,7 @@
         else state.fonts.push(font);
         renderFontList();
         applyFont(fam);
-        persist();
+        void persistWhenDocumentClean();
         toast(`Font “${file.name}” caricato`);
       } catch (e) { toast("Impossibile caricare il font", "err"); }
     };
@@ -1347,10 +1457,10 @@
   function applyFont(fam, save) {
     if (save == null) save = true;
     state.appliedFont = fam;
-    if (fam) document.documentElement.style.setProperty("--proj-font", `'${fam}', 'CMU Serif', Georgia, serif`);
+    if (fam) document.documentElement.style.setProperty("--proj-font", `'${fam}', var(--font-document)`);
     else document.documentElement.style.removeProperty("--proj-font");
     renderFontList();
-    if (save) persist();
+    if (save) void persistWhenDocumentClean();
   }
 
   /* ---------------- download compiled output ---------------- */
@@ -1377,13 +1487,19 @@
   function newFile() {
     openNewItem("file");
   }
+  async function saveProject() {
+    clearTimeout(persistT);
+    const saved = await persist();
+    toast(saved ? "Documento salvato" : "Salvataggio non riuscito", saved ? "" : "err");
+    return saved;
+  }
   function openExternal(file) {
     const reader = new FileReader();
     reader.onload = () => {
       const id = "open_" + Date.now();
       const kind = inferKind(file.name, isLilyPondProject() ? "ly" : "tex");
       project.nodes.push({ type: "file", id, name: file.name, kind, path: file.name, content: reader.result });
-      renderTree(); openFile(id); persist(); toast(`Aperto ${file.name}`);
+      renderTree(); openFile(id); markFileDirty(id); schedulePersist(); toast(`Aperto ${file.name}`);
     };
     reader.readAsText(file);
   }
@@ -1399,17 +1515,18 @@
       const pos = area.selectionStart;
       area.value = (f.kind === "ly" ? WTLilyPond : WTLatex).format(area.value);
       f.content = area.value;
+      markFileDirty(f.id);
       area.selectionStart = area.selectionEnd = Math.min(pos, area.value.length);
       paint(); schedulePersist();
       toast("Codice formattato");
     });
-    $("btnSave").addEventListener("click", () => { persist(); toast("Documento salvato"); });
+    $("btnSave").addEventListener("click", saveProject);
     $("btnNew").addEventListener("click", newFile);
     $("newFileBtn").addEventListener("click", newFile);
     $("btnOpen").addEventListener("click", () => { const i = document.createElement("input"); i.type = "file"; i.accept = ".tex,.ly,.ily,.bib,.txt"; i.onchange = () => i.files[0] && openExternal(i.files[0]); i.click(); });
     $("btnAttach").addEventListener("click", openAttach);
     $("dlBtn").addEventListener("click", downloadPdf);
-    $("btnSettings").addEventListener("click", () => { renderFontList(); updateTexPathControl(); renderCompileProfile(); $("settingsModal").classList.add("on"); });
+    $("btnSettings").addEventListener("click", openSettings);
 
     // latex binaries path (in Impostazioni → Compilazione)
     $("texPath").addEventListener("input", function () {
@@ -1427,7 +1544,7 @@
     $("lilypondFormat").addEventListener("change", function () {
       state.lilypondFormat = this.value;
       updateCompileCommandPreview();
-      persist();
+      void persistWhenDocumentClean();
     });
     $("compilePreset").addEventListener("change", function () {
       state.compileProfile = this.value === "custom"
@@ -1451,15 +1568,44 @@
       this.setAttribute("aria-checked", state.autoIndent ? "true" : "false");
       saveLayout();
     });
+    $("autoSave").addEventListener("click", function () {
+      state.autoSave = !state.autoSave;
+      updateAutoSaveControls();
+      if (state.autoSave) schedulePersist();
+      else clearTimeout(persistT);
+      void persistWhenDocumentClean();
+    });
+    $("autoSaveDelay").addEventListener("input", function () {
+      const seconds = Number.parseInt(this.value, 10);
+      if (!Number.isFinite(seconds)) return;
+      state.autoSaveDelay = normalizeAutoSaveDelay(seconds);
+      if (state.autoSave) schedulePersist();
+    });
+    $("autoSaveDelay").addEventListener("change", function () {
+      state.autoSaveDelay = normalizeAutoSaveDelay(this.value);
+      updateAutoSaveControls();
+      if (state.autoSave) schedulePersist();
+      void persistWhenDocumentClean();
+    });
 
-    // settings nav (tab switching)
-    document.querySelectorAll(".set-nav .item").forEach((it) => {
-      if (it.classList.contains("soon")) return;
-      it.addEventListener("click", () => {
-        document.querySelectorAll(".set-nav .item").forEach((x) => x.classList.toggle("on", x === it));
-        const which = it.dataset.set;
-        document.querySelectorAll(".set-pane").forEach((p) => { p.style.display = p.dataset.setpane === which ? "" : "none"; });
+    // settings tabs + compact accordion
+    const settingsTabs = Array.from(document.querySelectorAll(".set-nav [role=tab]"));
+    settingsTabs.forEach((tab) => {
+      tab.addEventListener("click", () => activateSettingsSection(tab.dataset.set));
+      tab.addEventListener("keydown", (event) => {
+        const current = settingsTabs.indexOf(tab);
+        let next = current;
+        if (event.key === "ArrowDown" || event.key === "ArrowRight") next = (current + 1) % settingsTabs.length;
+        else if (event.key === "ArrowUp" || event.key === "ArrowLeft") next = (current - 1 + settingsTabs.length) % settingsTabs.length;
+        else if (event.key === "Home") next = 0;
+        else if (event.key === "End") next = settingsTabs.length - 1;
+        else return;
+        event.preventDefault();
+        activateSettingsSection(settingsTabs[next].dataset.set, true);
       });
+    });
+    document.querySelectorAll(".set-accordion-trigger").forEach((trigger) => {
+      trigger.addEventListener("click", () => activateSettingsSection(trigger.dataset.set));
     });
 
     // engine menu
@@ -1477,7 +1623,7 @@
       em.querySelectorAll(".mi").forEach((m) => m.classList.toggle("on", m.dataset.engine === state.engine));
     });
     em.querySelectorAll(".mi").forEach((m) => m.addEventListener("click", () => {
-      state.engine = m.dataset.engine; $("engineName").textContent = state.engine; em.classList.remove("on"); $("engineBtn").setAttribute("aria-expanded", "false"); updateCompileCommandPreview(); persist();
+      state.engine = m.dataset.engine; $("engineName").textContent = state.engine; em.classList.remove("on"); $("engineBtn").setAttribute("aria-expanded", "false"); updateCompileCommandPreview(); void persistWhenDocumentClean();
     }));
     document.addEventListener("click", () => { em.classList.remove("on"); $("engineBtn").setAttribute("aria-expanded", "false"); });
 
@@ -1504,12 +1650,21 @@
 
     // modal close
     document.querySelectorAll("[data-close]").forEach((b) => b.addEventListener("click", () => {
+      const closingSettings = $("settingsModal").classList.contains("on") && !!b.closest("#settingsModal");
       $("attachModal").classList.remove("on"); $("settingsModal").classList.remove("on");
+      if (closingSettings) $("btnSettings").focus();
     }));
-    document.querySelectorAll(".scrim").forEach((s) => s.addEventListener("click", (e) => { if (e.target === s) s.classList.remove("on"); }));
+    document.querySelectorAll(".scrim").forEach((s) => s.addEventListener("click", (e) => {
+      if (e.target !== s) return;
+      const closingSettings = s.id === "settingsModal" && s.classList.contains("on");
+      s.classList.remove("on");
+      if (closingSettings) $("btnSettings").focus();
+    }));
     document.addEventListener("keydown", (e) => {
       if (e.key !== "Escape") return;
+      const closingSettings = $("settingsModal").classList.contains("on");
       document.querySelectorAll(".scrim.on").forEach((s) => s.classList.remove("on"));
+      if (closingSettings) $("btnSettings").focus();
       if (document.querySelector(".body").classList.contains("drawer-open")) {
         closeResponsiveSidebar();
         $("btnSidebar").focus();
@@ -1607,8 +1762,14 @@
     document.addEventListener("keydown", (e) => {
       if (!document.documentElement.classList.contains("wt-authed")) return;
       const mod = e.ctrlKey || e.metaKey;
-      if (mod && (e.key === "f" || e.key === "F")) { e.preventDefault(); findOpen(false); }
+      if (mod && (e.key === "s" || e.key === "S")) { e.preventDefault(); void saveProject(); }
+      else if (mod && (e.key === "f" || e.key === "F")) { e.preventDefault(); findOpen(false); }
       else if (mod && (e.key === "h" || e.key === "H")) { e.preventDefault(); findOpen(true); }
+    });
+    window.addEventListener("beforeunload", (event) => {
+      if (!state.dirtyFiles.size) return;
+      event.preventDefault();
+      event.returnValue = "";
     });
   }
   function dnd(el, cb) {
@@ -1781,7 +1942,10 @@
   }
   function commitEditor() {
     const f = findFile(state.activeId);
-    if (f) f.content = area.value;
+    if (f) {
+      f.content = area.value;
+      markFileDirty(f.id);
+    }
     paint(); renderOutline(); schedulePersist();
   }
   function findReplaceOne() {
@@ -1831,6 +1995,12 @@
       clearCompiledArtifacts();
       state.pages = []; state.curPage = 1;
       state.untitledN = data.untitledN || 0;
+      state.autoSave = data.autoSave === true;
+      state.autoSaveDelay = normalizeAutoSaveDelay(data.autoSaveDelay ?? 600);
+      clearTimeout(persistT);
+      state.dirtyFiles.clear();
+      state.editRevision = 0;
+      updateAutoSaveControls();
       state.zoom = 1; state.effectiveZoom = 1; state.fit = true; state.view = "preview";
       setWorkspaceView("editor");
       updateProjectTypeUi();
@@ -1863,6 +2033,7 @@
     serialize() {
       return projectSnapshot();
     },
+    hasUnsavedChanges() { return state.dirtyFiles.size > 0; },
     setName(name) { project.name = name; },
   };
 

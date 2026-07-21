@@ -176,14 +176,18 @@
   }
 
   async function closeCurrent() {
-    await persistCurrent();
+    const dirty = !!(currentId && window.WTApp && window.WTApp.hasUnsavedChanges && window.WTApp.hasUnsavedChanges());
+    if (dirty && !window.confirm("Il progetto contiene modifiche non salvate. Uscire e scartarle?")) return false;
+    if (dirty) cache.delete(currentId);
+    else await persistCurrent();
     currentId = null;
     document.documentElement.classList.remove("wt-inproject");
     await renderPicker();
+    return true;
   }
 
   async function persistCurrent() {
-    if (!currentId || !window.WTApp) return;
+    if (!currentId || !window.WTApp) return false;
     const data = window.WTApp.serialize();
     const now = Date.now();
     data.updatedAt = now;
@@ -202,8 +206,10 @@
       });
       if (out && out.data) cache.set(currentId, out.data);
       if (out && out.project && m) Object.assign(m, out.project);
+      return true;
     } catch (err) {
       console.error("Salvataggio progetto fallito", err);
+      return false;
     }
   }
 
@@ -366,11 +372,15 @@
 
   /* ---------------- public API ---------------- */
   async function showPicker() {
-    await persistCurrent();
+    const dirty = !!(currentId && window.WTApp && window.WTApp.hasUnsavedChanges && window.WTApp.hasUnsavedChanges());
+    if (dirty && !window.confirm("Il progetto contiene modifiche non salvate. Uscire e scartarle?")) return false;
+    if (dirty) cache.delete(currentId);
+    else await persistCurrent();
     currentId = null;
     document.documentElement.classList.remove("wt-inproject");
     setPickerLoading();
     await renderPicker();
+    return true;
   }
   function onLogout() {
     currentId = null;

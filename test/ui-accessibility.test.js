@@ -7,6 +7,7 @@ const root = path.resolve(__dirname, "..");
 const css = fs.readFileSync(path.join(root, "public/webtex.css"), "utf8");
 const html = fs.readFileSync(path.join(root, "public/WebTeX.html"), "utf8");
 const app = fs.readFileSync(path.join(root, "public/wt-app.js"), "utf8");
+const projects = fs.readFileSync(path.join(root, "public/wt-projects.js"), "utf8");
 
 function token(name) {
   const match = css.match(new RegExp(`--${name}:\\s*(#[0-9a-f]{6})`, "i"));
@@ -31,8 +32,8 @@ test("muted interface and syntax text keep at least 4.5:1 contrast", () => {
   ["bg", "editor-bg", "panel", "panel-2", "topbar"].forEach((background) => {
     assert.ok(contrast(muted, token(background)) >= 4.5, `--txt-mut fails on --${background}`);
   });
-  assert.ok(contrast(token("s-comment"), token("editor-bg")) >= 4.5);
-  assert.ok(contrast(token("s-brace"), token("editor-bg")) >= 4.5);
+  assert.ok(contrast(token("syntax-comment"), token("editor-bg")) >= 4.5);
+  assert.ok(contrast(token("syntax-bracket"), token("editor-bg")) >= 4.5);
 });
 
 test("keyboard focus and persistent contextual actions are styled", () => {
@@ -79,4 +80,63 @@ test("word wrap is an opt-in persistent footer control", () => {
   assert.match(app, /wordWrap:\s*state\.wordWrap/);
   assert.match(app, /function sourcePositionTop\(index\)/);
   assert.match(app, /selectionDirection === "backward" \? area\.selectionStart : area\.selectionEnd/);
+});
+
+test("open file tabs expose unsaved changes until persistence succeeds", () => {
+  assert.match(app, /dirtyFiles:\s*new Map\(\)/);
+  assert.match(app, /function markFileDirty\(id = state\.activeId\)/);
+  assert.match(app, /modifiche non salvate/);
+  assert.match(app, /if \(!saved\) return false/);
+  assert.match(css, /\.ftab\.dirty \.dot\{[^}]*opacity:1/);
+  assert.match(css, /\.ftab \.dot\{[^}]*background:var\(--semantic-warning\)/);
+});
+
+test("project autosave is opt-in and uses a configurable long debounce", () => {
+  assert.match(html, /id="autoSave"[^>]*role="switch"[^>]*aria-checked="false"/);
+  assert.match(html, /id="autoSaveDelay"[^>]*type="number"[^>]*value="600"[^>]*disabled/);
+  assert.match(app, /autoSave:\s*false/);
+  assert.match(app, /autoSaveDelay:\s*600/);
+  assert.match(app, /if \(!state\.autoSave \|\| !state\.dirtyFiles\.size\) return/);
+  assert.match(app, /state\.autoSaveDelay \* 1000/);
+  assert.match(app, /autoSave:\s*state\.autoSave/);
+  assert.match(app, /data\.autoSave === true/);
+  assert.match(app, /e\.key === "s"/);
+  assert.match(app, /beforeunload/);
+  assert.match(app, /hasUnsavedChanges\(\)/);
+  assert.match(app, /Salva le modifiche prima di compilare/);
+  assert.match(projects, /Uscire e scartarle\?/);
+});
+
+test("settings use accessible tabs and a compact accordion", () => {
+  const settings = html.slice(html.indexOf('id="settingsModal"'), html.indexOf('<div class="toasts"'));
+  assert.match(settings, /role="tablist"[^>]*aria-orientation="vertical"/);
+  assert.equal((settings.match(/role="tab"/g) || []).length, 3);
+  assert.equal((settings.match(/role="tabpanel"/g) || []).length, 3);
+  assert.equal((settings.match(/class="set-accordion-trigger"/g) || []).length, 3);
+  assert.equal((settings.match(/data-close/g) || []).length, 1);
+  assert.doesNotMatch(settings, /PRESTO|data-set="general"/);
+  assert.match(css, /@media\(max-width:700px\)[\s\S]*\.set-nav\{display:none\}/);
+  assert.match(app, /function activateSettingsSection\(section, focusTab = false\)/);
+  assert.match(app, /event\.key === "ArrowDown"/);
+  assert.match(app, /event\.key === "Home"/);
+});
+
+test("settings typography and compiler guidance keep their visual alignment", () => {
+  assert.match(html, /id="fontDrop"[\s\S]*class="fontdrop-copy"/);
+  assert.match(css, /#fontDrop\{display:flex;align-items:center;justify-content:center/);
+  assert.match(css, /\.binresolve\+\.field\{margin-top:20px\}/);
+  assert.match(css, /\.hint\{[^}]*display:block/);
+  assert.doesNotMatch(css, /\.hint\{[^}]*display:flex/);
+});
+
+test("interface semantics, syntax colors and font roles are independent", () => {
+  ["semantic-success", "semantic-danger", "semantic-warning", "semantic-info"].forEach((name) => token(name));
+  ["syntax-command", "syntax-environment", "syntax-comment", "syntax-text"].forEach((name) => token(name));
+  assert.doesNotMatch(html + app, /var\(--syntax-/);
+  assert.doesNotMatch(css + html + app, /var\(--(?:green|danger|warn|purple|s-[a-z]+)/);
+  assert.match(css, /--font-ui:/);
+  assert.match(css, /--font-code:/);
+  assert.match(css, /--font-document:/);
+  assert.match(css, /\.node-act\{width:30px;height:30px/);
+  assert.match(css, /\.m-x\{[^}]*width:36px;height:36px/);
 });
