@@ -1503,6 +1503,13 @@
     };
     reader.readAsText(file);
   }
+  function openExternalPicker() {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".tex,.ly,.ily,.bib,.txt";
+    input.onchange = () => input.files[0] && openExternal(input.files[0]);
+    input.click();
+  }
 
   /* ---------------- wiring ---------------- */
   function wire() {
@@ -1523,7 +1530,7 @@
     $("btnSave").addEventListener("click", saveProject);
     $("btnNew").addEventListener("click", newFile);
     $("newFileBtn").addEventListener("click", newFile);
-    $("btnOpen").addEventListener("click", () => { const i = document.createElement("input"); i.type = "file"; i.accept = ".tex,.ly,.ily,.bib,.txt"; i.onchange = () => i.files[0] && openExternal(i.files[0]); i.click(); });
+    $("btnOpen").addEventListener("click", openExternalPicker);
     $("btnAttach").addEventListener("click", openAttach);
     $("dlBtn").addEventListener("click", downloadPdf);
     $("btnSettings").addEventListener("click", openSettings);
@@ -1762,9 +1769,14 @@
     document.addEventListener("keydown", (e) => {
       if (!document.documentElement.classList.contains("wt-authed")) return;
       const mod = e.ctrlKey || e.metaKey;
-      if (mod && (e.key === "s" || e.key === "S")) { e.preventDefault(); void saveProject(); }
-      else if (mod && (e.key === "f" || e.key === "F")) { e.preventDefault(); findOpen(false); }
-      else if (mod && (e.key === "h" || e.key === "H")) { e.preventDefault(); findOpen(true); }
+      const key = e.key.toLowerCase();
+      if (!mod || e.altKey || e.repeat) return;
+      if (key === "s") { e.preventDefault(); void saveProject(); }
+      else if (key === "n") { e.preventDefault(); newFile(); }
+      else if (key === "o") { e.preventDefault(); openExternalPicker(); }
+      else if (e.key === "Enter") { e.preventDefault(); void compile(); }
+      else if (key === "f") { e.preventDefault(); findOpen(false); }
+      else if (key === "h") { e.preventDefault(); findOpen(true); }
     });
     window.addEventListener("beforeunload", (event) => {
       if (!state.dirtyFiles.size) return;

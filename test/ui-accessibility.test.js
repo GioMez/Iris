@@ -100,11 +100,21 @@ test("project autosave is opt-in and uses a configurable long debounce", () => {
   assert.match(app, /state\.autoSaveDelay \* 1000/);
   assert.match(app, /autoSave:\s*state\.autoSave/);
   assert.match(app, /data\.autoSave === true/);
-  assert.match(app, /e\.key === "s"/);
+  assert.match(app, /key === "s"/);
   assert.match(app, /beforeunload/);
   assert.match(app, /hasUnsavedChanges\(\)/);
   assert.match(app, /Salva le modifiche prima di compilare/);
   assert.match(projects, /Uscire e scartarle\?/);
+});
+
+test("fundamental project actions expose matching keyboard shortcuts", () => {
+  assert.match(html, /id="btnSave"[^>]*aria-keyshortcuts="Control\+S Meta\+S"/);
+  assert.match(html, /id="btnNew"[^>]*aria-keyshortcuts="Control\+N Meta\+N"/);
+  assert.match(html, /id="btnOpen"[^>]*aria-keyshortcuts="Control\+O Meta\+O"/);
+  assert.match(html, /id="btnCompile"[^>]*aria-keyshortcuts="Control\+Enter Meta\+Enter"/);
+  assert.match(app, /key === "n"[^\n]*newFile\(\)/);
+  assert.match(app, /key === "o"[^\n]*openExternalPicker\(\)/);
+  assert.match(app, /e\.key === "Enter"[^\n]*compile\(\)/);
 });
 
 test("settings use accessible tabs and a compact accordion", () => {

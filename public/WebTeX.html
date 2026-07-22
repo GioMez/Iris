@@ -25,8 +25,8 @@
       <button class="tbtn" id="btnCloseProject" title="Chiudi il progetto e torna all'elenco"><span class="ic" data-icon="arrow-left"></span>Progetti</button>
       <div class="projchip" id="projChip"><span class="pdot" data-icon="file-code-2"></span><span id="projChipName">—</span></div>
       <div class="tsep"></div>
-      <button class="tbtn" id="btnNew"><span class="ic" data-icon="file-plus"></span>Nuovo</button>
-      <button class="tbtn" id="btnOpen"><span class="ic" data-icon="folder-open"></span>Apri</button>
+      <button class="tbtn" id="btnNew" title="Nuovo file (Ctrl/Cmd+N)" aria-keyshortcuts="Control+N Meta+N"><span class="ic" data-icon="file-plus"></span>Nuovo</button>
+      <button class="tbtn" id="btnOpen" title="Apri file (Ctrl/Cmd+O)" aria-keyshortcuts="Control+O Meta+O"><span class="ic" data-icon="folder-open"></span>Apri</button>
       <button class="tbtn" id="btnAttach"><span class="ic" data-icon="paperclip"></span>Allega</button>
     </div>
     <div class="workspace-switch" id="workspaceSwitch" role="tablist" aria-label="Area di lavoro">
@@ -34,8 +34,8 @@
       <button type="button" role="tab" aria-label="Mostra anteprima" aria-selected="false" data-workspace="preview"><span data-icon="file-type-pdf"></span><span class="workspace-label">Anteprima</span></button>
     </div>
     <div class="workflow-actions" aria-label="Flusso del documento">
-      <button class="workflow-btn" id="btnSave" type="button" title="Salva" aria-label="Salva il documento"><span class="ic" data-icon="device-floppy"></span><span class="workflow-label">Salva</span></button>
-      <button class="workflow-compile" id="btnCompile" type="button" title="Compila" aria-label="Compila il progetto"><span class="ic" data-icon="player-play"></span><span class="workflow-label">Compila</span></button>
+      <button class="workflow-btn" id="btnSave" type="button" title="Salva (Ctrl/Cmd+S)" aria-label="Salva il documento" aria-keyshortcuts="Control+S Meta+S"><span class="ic" data-icon="device-floppy"></span><span class="workflow-label">Salva</span></button>
+      <button class="workflow-compile" id="btnCompile" type="button" title="Compila (Ctrl/Cmd+Invio)" aria-label="Compila il progetto" aria-keyshortcuts="Control+Enter Meta+Enter"><span class="ic" data-icon="player-play"></span><span class="workflow-label">Compila</span></button>
       <button class="workflow-btn workflow-output" id="dlBtn" type="button" title="Scarica output" aria-label="Scarica l'output compilato"><span class="ic" data-icon="download"></span><span class="dl-label workflow-label">Output</span></button>
     </div>
     <div class="tbar-right">
