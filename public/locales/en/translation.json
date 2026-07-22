@@ -184,8 +184,7 @@
     "noCustomFonts": "No custom fonts. System fonts remain available.",
     "uploadedFont": "Font “{{name}}” uploaded",
     "fontUploadFailed": "Unable to upload the font",
-    "previewActive": "preview active",
-    "showFontPreview": "show preview"
+    "fontPreviewAction": "Preview"
   },
   "tree": {
     "newTitle": "New item",

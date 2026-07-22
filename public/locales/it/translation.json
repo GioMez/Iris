@@ -184,8 +184,7 @@
     "noCustomFonts": "Nessun font personalizzato. Quelli di sistema restano disponibili.",
     "uploadedFont": "Font “{{name}}” caricato",
     "fontUploadFailed": "Impossibile caricare il font",
-    "previewActive": "anteprima attiva",
-    "showFontPreview": "mostra anteprima"
+    "fontPreviewAction": "Anteprima"
   },
   "tree": {
     "newTitle": "Nuovo elemento",

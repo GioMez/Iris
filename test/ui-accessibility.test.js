@@ -174,8 +174,8 @@ test("settings typography and compiler guidance keep their visual alignment", ()
 });
 
 test("font selection is preview-only and LilyPond has no pipeline editor", () => {
-  assert.match(app, /settings\.showFontPreview/);
-  assert.match(app, /settings\.previewActive/);
+  assert.match(app, /settings\.fontPreviewAction/);
+  assert.doesNotMatch(app, /settings\.showFontPreview|settings\.previewActive/);
   assert.doesNotMatch(app, /settings\.useFont|state\.appliedFont/);
   assert.match(html, /id="fontPreviewBlock" hidden/);
   assert.match(html, /data-i18n="settings\.fontPreviewTitle">Font preview/);

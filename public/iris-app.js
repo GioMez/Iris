@@ -1675,7 +1675,7 @@
       const active = state.previewFont === fo.family;
       el.innerHTML = `<div class="glyph" style="font-family:'${fo.family}'">Ag</div>
         <div><div class="nm" style="font-family:'${fo.family}'">${esc(fo.name)}</div><div class="fm">${esc(fo.path || fo.family)}</div></div>
-        <div class="use"><button class="pill${active ? " active" : ""}">${active ? `${ti("check")}<span>${esc(t("settings.previewActive"))}</span>` : esc(t("settings.showFontPreview"))}</button></div>`;
+        <div class="use"><button class="pill${active ? " active" : ""}">${active ? ti("check") : ""}<span>${esc(t("settings.fontPreviewAction"))}</span></button></div>`;
       el.querySelector(".pill").addEventListener("click", () => setPreviewFont(active ? null : fo.family));
       box.appendChild(el);
     });
