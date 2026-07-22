@@ -7,6 +7,7 @@ const { spawn } = require("node:child_process");
 const { URL } = require("node:url");
 const argon2 = require("argon2");
 const mariadb = require("mariadb");
+const { createZip, extractZip } = require("./zip");
 
 loadDotEnv(path.resolve(".env"));
 
@@ -460,7 +461,7 @@ async function seedUsers() {
   initialAdminCredentials = { username: "admin", password };
 }
 
-async function readBody(req) {
+async function readRequestBuffer(req) {
   const chunks = [];
   let size = 0;
   for await (const chunk of req) {
@@ -470,9 +471,14 @@ async function readBody(req) {
     }
     chunks.push(chunk);
   }
-  if (!chunks.length) return {};
+  return chunks.length ? Buffer.concat(chunks) : Buffer.alloc(0);
+}
+
+async function readBody(req) {
+  const body = await readRequestBuffer(req);
+  if (!body.length) return {};
   try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    return JSON.parse(body.toString("utf8"));
   } catch {
     throw requestError("INVALID_JSON", 400);
   }
@@ -578,7 +584,7 @@ function mimeForProjectFile(filePath) {
 }
 
 function fileIsBinaryNode(node) {
-  return node.kind === "img" || node.data || /\.(png|jpe?g|gif|webp|svg|pdf)$/i.test(node.name || node.path || "");
+  return node.encoding === "base64" || node.binary === true || node.kind === "img" || node.data || /\.(png|jpe?g|gif|webp|svg|pdf)$/i.test(node.name || node.path || "");
 }
 
 function fileIsFontPath(filePath) {
@@ -595,7 +601,7 @@ function fileKindForPath(filePath) {
 }
 
 function fileIsTextPath(filePath) {
-  return /\.(tex|ly|ily|bib|txt|sty|cls|md|log|aux|bbl|blg|idx|ilg|ind|out|toc|xml|bcf|fls|fdb_latexmk)$/i.test(filePath || "");
+  return /\.(tex|ly|ily|bib|txt|sty|cls|md|csv|dat|scm|lua|json|ya?ml|log|aux|bbl|blg|idx|ilg|ind|out|toc|xml|bcf|fls|fdb_latexmk)$/i.test(filePath || "");
 }
 
 function generatedIdFor(relPath) {
@@ -623,6 +629,12 @@ function stripFilePayloads(data) {
     nodes.forEach((node) => {
       if (node.type === "folder") strip(node.children);
       else {
+        if (node.data != null) {
+          node.binary = true;
+          node.encoding = "base64";
+        } else if (node.content != null) {
+          node.encoding = "utf8";
+        }
         delete node.content;
         delete node.data;
       }
@@ -717,7 +729,7 @@ async function pruneProjectFiles(storagePath, expectedFiles) {
   await walkDir(storagePath);
 }
 
-async function buildFsNode(storagePath, relPath, entry, generated) {
+async function buildFsNode(storagePath, relPath, entry, generated, textHint = false) {
   const abs = path.join(storagePath, relPath);
   if (entry.isDirectory()) {
     const children = await scanFsTree(storagePath, relPath, generated);
@@ -739,10 +751,17 @@ async function buildFsNode(storagePath, relPath, entry, generated) {
     ...(generated ? { generated: true, readOnly: true } : {}),
   };
   if (!generated) {
-    if (fileIsTextPath(relPath)) node.content = await fs.readFile(abs, "utf8").catch(() => "");
-    else if (fileIsBinaryNode(node)) {
+    if (textHint || fileIsTextPath(relPath)) {
+      node.encoding = "utf8";
+      node.content = await fs.readFile(abs, "utf8").catch(() => "");
+    }
+    else {
       const buf = await fs.readFile(abs).catch(() => null);
-      if (buf) node.data = `data:${mimeForProjectFile(relPath)};base64,${buf.toString("base64")}`;
+      if (buf) {
+        node.binary = true;
+        node.encoding = "base64";
+        node.data = `data:${mimeForProjectFile(relPath)};base64,${buf.toString("base64")}`;
+      }
     }
   }
   return node;
@@ -809,7 +828,8 @@ async function syncNodesWithFilesystem(storagePath, data) {
       } else if (node.type === "folder") {
         synced.push(await buildFsNode(storagePath, rel, entry, false));
       } else {
-        const hydrated = await buildFsNode(storagePath, rel, entry, false);
+        const textHint = node.encoding === "utf8" || (node.content != null && !fileIsBinaryNode(node));
+        const hydrated = await buildFsNode(storagePath, rel, entry, false, textHint);
         synced.push({
           ...hydrated,
           ...node,
@@ -902,19 +922,59 @@ async function readProjectManifest(storagePath) {
   return JSON.parse(await fs.readFile(metaFile, "utf8"));
 }
 
-async function writeProjectFile(storagePath, data) {
-  await fs.mkdir(storagePath, { recursive: true });
-  await ensureProjectDirs(storagePath, data);
-  const expectedFiles = await writeProjectNodes(storagePath, data);
-  await writeProjectFonts(storagePath, data, expectedFiles);
-  await pruneProjectFiles(storagePath, expectedFiles);
+async function writeProjectManifest(storagePath, data) {
   const irisDir = path.join(storagePath, ".iris");
   await fs.mkdir(irisDir, { recursive: true });
   const file = path.join(irisDir, "project.json");
   const tmp = path.join(irisDir, `.project.${process.pid}.${Date.now()}.tmp`);
   await fs.writeFile(tmp, JSON.stringify(stripFilePayloads(data), null, 2), "utf8");
   await fs.rename(tmp, file);
+}
+
+async function writeProjectFile(storagePath, data) {
+  await fs.mkdir(storagePath, { recursive: true });
+  await ensureProjectDirs(storagePath, data);
+  const expectedFiles = await writeProjectNodes(storagePath, data);
+  await writeProjectFonts(storagePath, data, expectedFiles);
+  await pruneProjectFiles(storagePath, expectedFiles);
+  await writeProjectManifest(storagePath, data);
   await fs.rm(path.join(storagePath, "project.json"), { force: true }).catch(() => {});
+}
+
+async function collectProjectArchiveEntries(storagePath, projectName) {
+  const entries = [];
+  const walk = async (directory, relBase = "") => {
+    const children = await fs.readdir(directory, { withFileTypes: true });
+    for (const child of children.sort((a, b) => a.name.localeCompare(b.name))) {
+      if (isIgnoredProjectFsEntry(child.name)) continue;
+      const rel = relBase ? path.posix.join(relBase, child.name) : child.name;
+      const absolute = path.join(directory, child.name);
+      if (child.isSymbolicLink()) continue;
+      if (child.isDirectory()) {
+        entries.push({ name: rel, directory: true });
+        await walk(absolute, rel);
+      } else if (child.isFile()) {
+        entries.push({ name: rel, data: await fs.readFile(absolute) });
+      }
+    }
+  };
+  await walk(storagePath);
+
+  const manifest = stripFilePayloads(await readProjectManifest(storagePath));
+  manifest.project = manifest.project && typeof manifest.project === "object" ? manifest.project : { nodes: [] };
+  manifest.project.name = projectName;
+  manifest.irisArchive = {
+    format: "iris-project",
+    version: 1,
+    exportedAt: new Date().toISOString(),
+  };
+  entries.push({ name: ".iris", directory: true });
+  entries.push({ name: ".iris/project.json", data: Buffer.from(JSON.stringify(manifest, null, 2), "utf8") });
+  return entries;
+}
+
+async function buildProjectArchive(storagePath, projectName) {
+  return createZip(await collectProjectArchiveEntries(storagePath, projectName));
 }
 
 async function projectForUser(id, userId) {
@@ -1036,6 +1096,124 @@ async function downloadProjectFile(req, res, user, id, url) {
     res.on("finish", resolve);
     res.on("close", resolve);
     stream.pipe(res);
+  });
+}
+
+async function downloadProjectArchive(req, res, user, id) {
+  const row = await projectForUser(id, user.sub);
+  const archive = await buildProjectArchive(row.storage_path, row.name);
+  const fileName = `${slugify(row.name)}.zip`;
+  res.writeHead(200, {
+    "content-type": "application/zip",
+    "content-length": archive.length,
+    "content-disposition": `attachment; filename="${fileName}"; filename*=UTF-8''${encodeURIComponent(`${row.name}.zip`)}`,
+    "cache-control": "private, no-store",
+  });
+  res.end(archive);
+}
+
+function invalidProjectArchive() {
+  return requestError("PROJECT_ARCHIVE_INVALID", 400);
+}
+
+function parseProjectArchive(body) {
+  let archive;
+  try {
+    archive = extractZip(body, { maxEntries: 10000, maxUncompressedSize: MAX_BODY });
+  } catch (err) {
+    if (err && (err.code === "ZIP_TOO_LARGE" || err.code === "ZIP_TOO_MANY_ENTRIES")) {
+      throw requestError("REQUEST_TOO_LARGE", 413);
+    }
+    throw invalidProjectArchive();
+  }
+
+  const manifestBuffer = archive.files.get(".iris/project.json");
+  if (!manifestBuffer) throw invalidProjectArchive();
+  for (const name of archive.files.keys()) {
+    if ((name === ".iris" || name.startsWith(".iris/")) && name !== ".iris/project.json") {
+      throw invalidProjectArchive();
+    }
+  }
+  for (const name of archive.directories) {
+    if (name.startsWith(".iris/") && name !== ".iris/") throw invalidProjectArchive();
+  }
+
+  let data;
+  try {
+    data = JSON.parse(manifestBuffer.toString("utf8"));
+  } catch {
+    throw invalidProjectArchive();
+  }
+  if (!data || !data.irisArchive || data.irisArchive.format !== "iris-project") throw invalidProjectArchive();
+  if (data.irisArchive.version !== 1) throw requestError("PROJECT_ARCHIVE_VERSION_UNSUPPORTED", 400);
+  return { archive, data };
+}
+
+function normalizeImportedProject(data, name, now) {
+  if (!data || typeof data !== "object" || Array.isArray(data)) throw invalidProjectArchive();
+  delete data.irisArchive;
+  data.project = data.project && typeof data.project === "object" && Array.isArray(data.project.nodes)
+    ? data.project
+    : { nodes: [] };
+  data.project.name = name;
+  data.projectType = inferProjectType(data);
+  data.engine = data.projectType === "lilypond"
+    ? "lilypond"
+    : (LATEX_ENGINES.has(data.engine) ? data.engine : "pdflatex");
+  data.compileProfile = sanitizeCompileProfileForStorage(data.compileProfile, data.projectType);
+  data.lilypondArgs = data.projectType === "lilypond" ? sanitizeLilypondArgsForStorage(data.lilypondArgs) : "";
+  data.lilypondFormat = data.projectType === "lilypond" ? normalizeLilypondFormat(data.lilypondFormat) : "pdf";
+  data.createdAt = now;
+  data.updatedAt = now;
+  return data;
+}
+
+async function importProjectArchive(req, res, user, url) {
+  const body = await readRequestBuffer(req);
+  let { archive, data } = parseProjectArchive(body);
+
+  const uploadedName = path.basename(String(url.searchParams.get("filename") || ""), path.extname(String(url.searchParams.get("filename") || "")));
+  const name = cleanName((data.project && data.project.name) || uploadedName || "Imported project");
+  const id = crypto.randomBytes(16).toString("hex");
+  const storagePath = path.join(DATA_DIR, String(user.sub), `${id}-${slugify(name)}`);
+  const now = Date.now();
+  try {
+    normalizeImportedProject(data, name, now);
+  } catch {
+    throw invalidProjectArchive();
+  }
+
+  try {
+    await fs.mkdir(storagePath, { recursive: true });
+    for (const directory of archive.directories) {
+      if (directory === ".iris/") continue;
+      await fs.mkdir(path.join(storagePath, directory), { recursive: true });
+    }
+    for (const [fileName, contents] of archive.files) {
+      if (fileName === ".iris/project.json") continue;
+      const absolute = path.join(storagePath, fileName);
+      await fs.mkdir(path.dirname(absolute), { recursive: true });
+      await fs.writeFile(absolute, contents);
+    }
+    await writeProjectManifest(storagePath, data);
+    try {
+      data = normalizeImportedProject(await readProjectFile(storagePath), name, now);
+    } catch {
+      throw invalidProjectArchive();
+    }
+    await writeProjectManifest(storagePath, data);
+    await pool.query(
+      "INSERT INTO projects (id, user_id, name, storage_path) VALUES (?, ?, ?, ?)",
+      [id, user.sub, name, storagePath]
+    );
+  } catch (err) {
+    await fs.rm(storagePath, { recursive: true, force: true }).catch(() => {});
+    throw err;
+  }
+
+  json(res, 201, {
+    project: { id, name, projectType: data.projectType, createdAt: now, updatedAt: now, fileCount: countFiles(data) },
+    data: { id, ...data },
   });
 }
 
@@ -1687,10 +1865,14 @@ async function handleApi(req, res, url) {
   const user = requireUser(req);
 
   if (req.method === "GET" && url.pathname === "/api/projects") return listProjects(req, res, user);
+  if (req.method === "POST" && url.pathname === "/api/projects/import") return importProjectArchive(req, res, user, url);
   if (req.method === "POST" && url.pathname === "/api/projects") return createProject(req, res, user);
 
   const compileMatch = url.pathname.match(/^\/api\/projects\/([a-f0-9]{32})\/compile$/);
   if (compileMatch && req.method === "POST") return compileProject(req, res, user, compileMatch[1]);
+
+  const archiveMatch = url.pathname.match(/^\/api\/projects\/([a-f0-9]{32})\/archive$/);
+  if (archiveMatch && req.method === "GET") return downloadProjectArchive(req, res, user, archiveMatch[1]);
 
   const fileDownloadMatch = url.pathname.match(/^\/api\/projects\/([a-f0-9]{32})\/files\/download$/);
   if (fileDownloadMatch && req.method === "GET") return downloadProjectFile(req, res, user, fileDownloadMatch[1], url);
@@ -1765,6 +1947,9 @@ if (require.main === module) initDb()
   });
 
 module.exports = {
+  buildProjectArchive,
+  collectProjectArchiveEntries,
+  parseProjectArchive,
   fileKindForPath,
   inferProjectType,
   findCompileFile,

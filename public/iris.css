@@ -652,14 +652,18 @@ html:not(.iris-inproject) #projChip{display:none}
 .picker-title{font-size:24px;font-weight:600;letter-spacing:.2px;margin:0 0 5px}
 .picker-sub{font-size:13.5px;color:var(--txt-mut);margin:0;max-width:520px}
 .pk-count{color:var(--txt-dim);font-family:var(--font-code);font-size:12px}
-.picker-head .btn.cta{height:40px;flex:0 0 auto;white-space:nowrap}
+.picker-actions{display:flex;align-items:center;gap:9px;flex:0 0 auto}
+.picker-actions .btn{height:40px;white-space:nowrap}
+.picker-import-status{min-height:18px;margin:-11px 0 14px;color:var(--semantic-success);font-size:12.5px}
+.picker-import-status:empty{display:none}
+.picker-import-status.error{color:var(--semantic-danger)}
 
 .picker-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(286px,1fr));gap:14px}
 .pcard{position:relative;background:var(--panel);border:1px solid var(--border);border-radius:13px;
   transition:.14s;overflow:hidden}
 .pcard:hover{border-color:#3a3d59;background:var(--panel-2);transform:translateY(-2px);box-shadow:0 10px 26px -14px rgba(0,0,0,.6)}
 .pcard:focus-within{border-color:rgba(125,207,255,.52)}
-.pcard-open{display:flex;align-items:center;gap:14px;width:100%;padding:18px 84px 18px 16px;
+.pcard-open{display:flex;align-items:center;gap:14px;width:100%;padding:18px 130px 18px 16px;
   background:transparent;border:0;cursor:pointer;text-align:left;color:inherit}
 .pcard-open:disabled{padding-right:16px;cursor:default}
 .pcard-open:focus-visible{outline-offset:-3px}
@@ -689,6 +693,8 @@ html:not(.iris-inproject) #projChip{display:none}
 .picker-empty .pe-sub{font-size:13px;color:var(--txt-mut);max-width:340px;margin-bottom:8px}
 @media(max-width:600px){
   .picker-head{flex-direction:column;align-items:stretch}
+  .picker-actions{display:grid;grid-template-columns:1fr 1fr}
+  .picker-actions .btn{justify-content:center}
   .picker-user-txt{display:none}
 }
 

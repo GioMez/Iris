@@ -543,8 +543,13 @@
         <h1 class="picker-title" data-i18n="projects.yourProjects">Your projects</h1>
         <p class="picker-sub"><span data-i18n="projects.description">Each project is self-contained, with its own files and bibliographies.</span> <span id="pkCount" class="pk-count"></span></p>
       </div>
-      <button class="btn cta" id="pkNew"><span class="ic" data-icon="plus"></span><span data-i18n="projects.newButton">New project</span></button>
+      <div class="picker-actions">
+        <button class="btn" id="pkImport"><span class="ic" data-icon="upload"></span><span data-i18n="projects.importButton">Import project</span></button>
+        <button class="btn cta" id="pkNew"><span class="ic" data-icon="plus"></span><span data-i18n="projects.newButton">New project</span></button>
+      </div>
     </div>
+
+    <div class="picker-import-status" id="pkImportStatus" role="status" aria-live="polite"></div>
 
     <div class="picker-grid" id="pkGrid"></div>
 
@@ -603,6 +608,7 @@
 <!-- hidden inputs -->
 <input type="file" id="attachInput" accept="image/*,application/pdf,.csv,.dat" style="display:none">
 <input type="file" id="fontInput" accept=".ttf,.otf,.woff,.woff2" style="display:none">
+<input type="file" id="projectImportInput" accept=".zip,application/zip" style="display:none">
 
 <script src="iris-icons.js"></script>
 <script src="iris-i18n.js"></script>

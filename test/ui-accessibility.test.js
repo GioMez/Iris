@@ -78,6 +78,15 @@ test("compiled outputs sync into the tree and every file exposes download", () =
   assert.match(projects, /function downloadCurrentFile\(filePath, fileName\)/);
 });
 
+test("project chooser supports portable ZIP downloads and imports", () => {
+  assert.match(html, /id="pkImport"[\s\S]*?data-icon="upload"/);
+  assert.match(html, /id="projectImportInput"[^>]*accept="\.zip,application\/zip"/);
+  assert.match(html, /id="pkImportStatus"[^>]*aria-live="polite"/);
+  assert.match(projects, /data-act="download"/);
+  assert.match(projects, /\/api\/projects\/\$\{id\}\/archive/);
+  assert.match(projects, /\/api\/projects\/import\?\$\{query\}/);
+});
+
 test("editor suppresses native boundary bounce without custom motion", () => {
   assert.match(css, /\.code-area\{[^}]*overscroll-behavior:none/);
   assert.doesNotMatch(css, /editor-bounce|bounce-push|bounce-return/);

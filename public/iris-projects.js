@@ -33,6 +33,36 @@
     return data;
   }
 
+  async function errorFromResponse(res) {
+    let data = {};
+    try { data = await res.json(); } catch (e) {}
+    if (res.status === 401 && window.IrisAuth) window.IrisAuth.showLogin();
+    const err = new Error();
+    err.code = data.errorCode || "SERVER_ERROR";
+    err.params = data.params || {};
+    err.message = window.IrisI18n.error(err);
+    err.status = res.status;
+    return err;
+  }
+
+  function saveBlob(blob, fileName) {
+    const blobUrl = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = blobUrl;
+    link.download = fileName || "download";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+  }
+
+  function setPickerStatus(message, isError = false) {
+    const status = $("pkImportStatus");
+    if (!status) return;
+    status.textContent = message || "";
+    status.classList.toggle("error", !!isError);
+  }
+
   /* ---------------- blank content ---------------- */
   function blankNodes(name, projectType) {
     if (projectType === "lilypond") {
@@ -148,10 +178,24 @@
             `</span>` +
           `</button>` +
           `<div class="pcard-tools">` +
+            `<button class="pcard-ic" type="button" data-act="download" title="${esc(t("common.download"))}" aria-label="${esc(t("projects.downloadAria", { name: m.name }))}">${ti("download")}</button>` +
             `<button class="pcard-ic" type="button" data-act="rename" title="${esc(t("common.rename"))}" aria-label="${esc(t("projects.renameAria", { name: m.name }))}">${ti("edit")}</button>` +
             `<button class="pcard-ic danger" type="button" data-act="delete" title="${esc(t("common.delete"))}" aria-label="${esc(t("projects.deleteAria", { name: m.name }))}">${ti("trash")}</button>` +
           `</div>`;
         card.querySelector(".pcard-open").addEventListener("click", () => openProject(m.id));
+        card.querySelector('[data-act="download"]').addEventListener("click", async (e) => {
+          e.stopPropagation();
+          const button = e.currentTarget;
+          button.disabled = true;
+          setPickerStatus("");
+          try {
+            await downloadProjectArchive(m.id, m.name);
+          } catch (err) {
+            setPickerStatus(t("projects.downloadFailed", { name: m.name, error: window.IrisI18n.error(err) }), true);
+          } finally {
+            button.disabled = false;
+          }
+        });
         card.querySelector('[data-act="rename"]').addEventListener("click", (e) => { e.stopPropagation(); askRename(m.id); });
         card.querySelector('[data-act="delete"]').addEventListener("click", (e) => { e.stopPropagation(); askDelete(m.id); });
         grid.appendChild(card);
@@ -251,24 +295,47 @@
     if (!currentId) throw new Error(t("projects.noneOpen"));
     const query = new URLSearchParams({ path: String(filePath || "") });
     const res = await fetch(`/api/projects/${currentId}/files/download?${query}`, { credentials: "same-origin" });
-    if (!res.ok) {
-      let data = {};
-      try { data = await res.json(); } catch (e) {}
-      const err = new Error();
-      err.code = data.errorCode || "SERVER_ERROR";
-      err.params = data.params || {};
-      err.message = window.IrisI18n.error(err);
-      err.status = res.status;
-      throw err;
+    if (!res.ok) throw await errorFromResponse(res);
+    saveBlob(await res.blob(), fileName || String(filePath || "download").split("/").pop());
+  }
+
+  async function downloadProjectArchive(id, projectName) {
+    const res = await fetch(`/api/projects/${id}/archive`, { credentials: "same-origin" });
+    if (!res.ok) throw await errorFromResponse(res);
+    const safeName = String(projectName || "project").replace(/[\\/:*?"<>|]+/g, "-").trim() || "project";
+    saveBlob(await res.blob(), `${safeName}.zip`);
+  }
+
+  async function importProjectArchive(file) {
+    const query = new URLSearchParams({ filename: file.name || "project.zip" });
+    const res = await fetch(`/api/projects/import?${query}`, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "content-type": "application/zip" },
+      body: file,
+    });
+    if (!res.ok) throw await errorFromResponse(res);
+    return res.json();
+  }
+
+  async function handleProjectImport(file) {
+    if (!file) return;
+    const button = $("pkImport");
+    button.disabled = true;
+    button.classList.add("loading");
+    setPickerStatus(t("projects.importing"));
+    try {
+      const out = await importProjectArchive(file);
+      if (out.project) index.unshift(out.project);
+      if (out.project && out.data) cache.set(out.project.id, out.data);
+      await renderPicker();
+      setPickerStatus(t("projects.imported", { name: out.project ? out.project.name : file.name }));
+    } catch (err) {
+      setPickerStatus(t("projects.importFailed", { error: window.IrisI18n.error(err) }), true);
+    } finally {
+      button.disabled = false;
+      button.classList.remove("loading");
     }
-    const blobUrl = URL.createObjectURL(await res.blob());
-    const link = document.createElement("a");
-    link.href = blobUrl;
-    link.download = fileName || String(filePath || "download").split("/").pop();
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
   }
 
   /* ---------------- create / rename / delete ---------------- */
@@ -423,6 +490,12 @@
   function wire() {
     $("pkNew").addEventListener("click", askNew);
     const ne = $("pkNewEmpty"); if (ne) ne.addEventListener("click", askNew);
+    $("pkImport").addEventListener("click", () => $("projectImportInput").click());
+    $("projectImportInput").addEventListener("change", function () {
+      const file = this.files && this.files[0];
+      this.value = "";
+      void handleProjectImport(file);
+    });
 
     const back = $("btnCloseProject");
     if (back) back.addEventListener("click", () => closeCurrent());

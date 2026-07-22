@@ -16,6 +16,7 @@ the Node.js service handles authentication, persistence, and compilation.
 
 - Separate workspaces for LaTeX documents and LilyPond scores.
 - A project dashboard scoped to the authenticated user.
+- Portable project export and import through ZIP archives.
 - A file tree with folders, multiple open tabs, uploads, per-file downloads,
   renaming, and deletion.
 - Syntax highlighting, document outline, search and replace, formatting,
@@ -188,6 +189,20 @@ path remains visible in project settings but cannot be changed from the browser.
 This is useful when the deployment controls compiler locations centrally.
 
 ## Working with projects
+
+### Portable project archives
+
+Every project card can download a ZIP archive. The archive keeps the project
+directory structure, including sources, uploaded assets, fonts, empty folders,
+and existing `output/` artifacts. It also contains `.iris/project.json`, a
+versioned manifest with the project type, compiler settings, output format,
+editor state, and compilation pipeline. Runtime caches below `.iris/` are not
+exported.
+
+The project chooser can import an archive previously exported by Iris. Import
+creates a separate project with a new identifier and timestamps while restoring
+the archived name, files, folders, and settings. The normal `MAX_BODY_MB`
+request limit also applies to imported archives.
 
 ### LaTeX projects
 
