@@ -1228,18 +1228,6 @@ function normalizeLilypondFormat(value) {
   return format;
 }
 
-function lilypondProjectFontArgs(data) {
-  const fonts = Array.isArray(data && data.fonts) ? data.fonts : [];
-  const hasProjectFonts = fonts.some((font) => {
-    if (!font || !font.path) return false;
-    const rel = safeRelPath(font.path);
-    return rel.startsWith("fonts/") && fileIsFontPath(rel);
-  });
-  return hasProjectFonts
-    ? ["-e", '(ly:font-config-add-directory "fonts")']
-    : [];
-}
-
 function lilypondArgs(args, vars, additionalArgs = [], outputFormat = "pdf") {
   const format = normalizeLilypondFormat(outputFormat);
   const stripOutputOptions = (requested) => {
@@ -1339,6 +1327,7 @@ function runCompileStep({ step, binPath, cwd, fontDir, texmfVar }) {
         PATH: envPath,
         HOME: "/tmp",
         TMPDIR: "/tmp",
+        ...(step.tool === "lilypond" ? { XDG_DATA_HOME: cwd } : {}),
         OSFONTDIR: fontDir || "",
         TEXMFVAR: texmfVar || "",
         TEXINPUTS: projectSearchPath,
@@ -1475,9 +1464,7 @@ async function compileProject(req, res, user, id) {
   const outputFormat = projectType === "lilypond"
     ? normalizeLilypondFormat(body.lilypondFormat ?? data.lilypondFormat)
     : "pdf";
-  const additionalArgs = projectType === "lilypond"
-    ? [...lilypondProjectFontArgs(data), ...parseCompileArguments(storedLilypondArgs)]
-    : [];
+  const additionalArgs = projectType === "lilypond" ? parseCompileArguments(storedLilypondArgs) : [];
   const storedCompileProfile = sanitizeCompileProfileForStorage(body.compileProfile || data.compileProfile, projectType);
   const compileProfile = normalizeCompileProfile(storedCompileProfile, engine, mainPath, projectType, additionalArgs, outputFormat);
   data.compileProfile = storedCompileProfile;
@@ -1740,7 +1727,6 @@ module.exports = {
   parseCompileArguments,
   sanitizeLilypondArgsForStorage,
   normalizeLilypondFormat,
-  lilypondProjectFontArgs,
   readCompileArtifacts,
   runCompilePipeline,
 };

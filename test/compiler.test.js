@@ -15,7 +15,6 @@ const {
   parseCompileArguments,
   sanitizeLilypondArgsForStorage,
   normalizeLilypondFormat,
-  lilypondProjectFontArgs,
   readCompileArtifacts,
   runCompilePipeline,
 } = require("../src/server");
@@ -78,29 +77,6 @@ test("parses LilyPond parameter strings without invoking a shell", () => {
   assert.equal(sanitizeLilypondArgsForStorage('-I "bozza'), '-I "bozza');
 });
 
-test("registers uploaded project fonts with LilyPond", () => {
-  const fontArgs = lilypondProjectFontArgs({
-    fonts: [{ name: "EBGaramond-Regular.otf", path: "fonts/EBGaramond-Regular.otf" }],
-  });
-  assert.deepEqual(fontArgs, ["-e", '(ly:font-config-add-directory "fonts")']);
-
-  const profile = normalizeCompileProfile(
-    { mode: "quick" },
-    "lilypond",
-    "main.ly",
-    "lilypond",
-    fontArgs
-  );
-  assert.deepEqual(profile.steps[0].args, [
-    "--pdf",
-    "--output=output/main",
-    "-e",
-    '(ly:font-config-add-directory "fonts")',
-    "main.ly",
-  ]);
-  assert.deepEqual(lilypondProjectFontArgs({ fonts: [] }), []);
-});
-
 test("selects and constrains every supported LilyPond output format", () => {
   for (const format of ["pdf", "png", "svg", "ps", "eps"]) assert.equal(normalizeLilypondFormat(format), format);
   assert.throws(() => normalizeLilypondFormat("jpg"), (error) => error.errorCode === "LILYPOND_FORMAT_UNSUPPORTED");
@@ -153,7 +129,7 @@ test("keeps the existing hardened LaTeX invocation", () => {
   assert.equal(profile.steps[0].args.at(-1), "main.tex");
 });
 
-test("invokes LilyPond and reads its PDF from output", async (t) => {
+test("invokes LilyPond with project-local XDG data and reads its PDF", async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "iris-lilypond-test-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const bin = path.join(root, "bin");
@@ -165,6 +141,7 @@ test("invokes LilyPond and reads its PDF from output", async (t) => {
   await fs.writeFile(executable, `#!/usr/bin/env node
 const fs = require("node:fs");
 const output = process.argv.find((arg) => arg.startsWith("--output=")).slice(9);
+if (fs.realpathSync(process.env.XDG_DATA_HOME) !== process.cwd()) process.exit(3);
 fs.writeFileSync(output + ".pdf", "%PDF-1.4 fake");
 `, { mode: 0o755 });
 
