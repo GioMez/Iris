@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="it">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -15,31 +15,31 @@
 
   <!-- ===================== TOPBAR ===================== -->
   <div class="topbar">
-    <button class="tbtn icononly" id="btnSidebar" title="Mostra/nascondi pannello laterale" aria-label="Mostra o nascondi il pannello laterale" aria-controls="projectSidebar" aria-expanded="true"><span class="ic" data-icon="layout-sidebar-left-collapse"></span></button>
+    <button class="tbtn icononly" id="btnSidebar" title="Show/hide sidebar" aria-label="Show or hide the sidebar" data-i18n-title="toolbar.toggleSidebarTitle" data-i18n-aria-label="toolbar.toggleSidebarAria" aria-controls="projectSidebar" aria-expanded="true"><span class="ic" data-icon="layout-sidebar-left-collapse"></span></button>
     <div class="logo">
       <div class="mark">Ir</div>
       <div><b>Iris</b> <span class="v">Beta 1</span></div>
     </div>
     <div class="tbar-scroll">
       <div class="tsep"></div>
-      <button class="tbtn" id="btnCloseProject" title="Chiudi il progetto e torna all'elenco"><span class="ic" data-icon="arrow-left"></span>Progetti</button>
+      <button class="tbtn" id="btnCloseProject" title="Close the project and return to the list" data-i18n-title="toolbar.projectsTitle"><span class="ic" data-icon="arrow-left"></span><span data-i18n="toolbar.projects">Projects</span></button>
       <div class="projchip" id="projChip"><span class="pdot" data-icon="file-code-2"></span><span id="projChipName">—</span></div>
       <div class="tsep"></div>
-      <button class="tbtn" id="btnNew" title="Nuovo file (Ctrl/Cmd+N)" aria-keyshortcuts="Control+N Meta+N"><span class="ic" data-icon="file-plus"></span>Nuovo</button>
-      <button class="tbtn" id="btnOpen" title="Apri file (Ctrl/Cmd+O)" aria-keyshortcuts="Control+O Meta+O"><span class="ic" data-icon="folder-open"></span>Apri</button>
-      <button class="tbtn" id="btnAttach"><span class="ic" data-icon="paperclip"></span>Allega</button>
+      <button class="tbtn" id="btnNew" title="New file (Ctrl/Cmd+N)" data-i18n-title="toolbar.newTitle" aria-keyshortcuts="Control+N Meta+N"><span class="ic" data-icon="file-plus"></span><span data-i18n="toolbar.new">New</span></button>
+      <button class="tbtn" id="btnOpen" title="Open file (Ctrl/Cmd+O)" data-i18n-title="toolbar.openTitle" aria-keyshortcuts="Control+O Meta+O"><span class="ic" data-icon="folder-open"></span><span data-i18n="toolbar.open">Open</span></button>
+      <button class="tbtn" id="btnAttach"><span class="ic" data-icon="paperclip"></span><span data-i18n="toolbar.attach">Attach</span></button>
     </div>
-    <div class="workspace-switch" id="workspaceSwitch" role="tablist" aria-label="Area di lavoro">
-      <button class="on" type="button" role="tab" aria-label="Mostra editor" aria-selected="true" data-workspace="editor"><span data-icon="code"></span><span class="workspace-label">Editor</span></button>
-      <button type="button" role="tab" aria-label="Mostra anteprima" aria-selected="false" data-workspace="preview"><span data-icon="file-type-pdf"></span><span class="workspace-label">Anteprima</span></button>
+    <div class="workspace-switch" id="workspaceSwitch" role="tablist" aria-label="Workspace" data-i18n-aria-label="workspace.aria">
+      <button class="on" type="button" role="tab" aria-label="Show editor" data-i18n-aria-label="workspace.showEditor" aria-selected="true" data-workspace="editor"><span data-icon="code"></span><span class="workspace-label" data-i18n="workspace.editor">Editor</span></button>
+      <button type="button" role="tab" aria-label="Show preview" data-i18n-aria-label="workspace.showPreview" aria-selected="false" data-workspace="preview"><span data-icon="file-type-pdf"></span><span class="workspace-label" data-i18n="workspace.preview">Preview</span></button>
     </div>
-    <div class="workflow-actions" aria-label="Flusso del documento">
-      <button class="workflow-btn" id="btnSave" type="button" title="Salva (Ctrl/Cmd+S)" aria-label="Salva il documento" aria-keyshortcuts="Control+S Meta+S"><span class="ic" data-icon="device-floppy"></span><span class="workflow-label">Salva</span></button>
-      <button class="workflow-compile" id="btnCompile" type="button" title="Compila (Ctrl/Cmd+Invio)" aria-label="Compila il progetto" aria-keyshortcuts="Control+Enter Meta+Enter"><span class="ic" data-icon="player-play"></span><span class="workflow-label">Compila</span></button>
-      <button class="workflow-btn workflow-output" id="dlBtn" type="button" title="Scarica output" aria-label="Scarica l'output compilato"><span class="ic" data-icon="download"></span><span class="dl-label workflow-label">Output</span></button>
+    <div class="workflow-actions" aria-label="Document workflow" data-i18n-aria-label="toolbar.workflow">
+      <button class="workflow-btn" id="btnSave" type="button" title="Save (Ctrl/Cmd+S)" aria-label="Save the document" data-i18n-title="toolbar.saveTitle" data-i18n-aria-label="toolbar.saveAria" aria-keyshortcuts="Control+S Meta+S"><span class="ic" data-icon="device-floppy"></span><span class="workflow-label" data-i18n="toolbar.save">Save</span></button>
+      <button class="workflow-compile" id="btnCompile" type="button" title="Compile (Ctrl/Cmd+Enter)" aria-label="Compile the project" data-i18n-title="toolbar.compileTitle" data-i18n-aria-label="toolbar.compileAria" aria-keyshortcuts="Control+Enter Meta+Enter"><span class="ic" data-icon="player-play"></span><span class="workflow-label" data-i18n="toolbar.compile">Compile</span></button>
+      <button class="workflow-btn workflow-output" id="dlBtn" type="button" title="Download output" aria-label="Download the compiled output" data-i18n-title="toolbar.outputTitle" data-i18n-aria-label="toolbar.outputAria"><span class="ic" data-icon="download"></span><span class="dl-label workflow-label" data-i18n="toolbar.output">Output</span></button>
     </div>
     <div class="tbar-right">
-      <button class="userchip" id="userChip" title="Account" aria-haspopup="menu" aria-expanded="false" aria-controls="userMenu">
+      <button class="userchip" id="userChip" title="Account" data-i18n-title="common.account" aria-haspopup="menu" aria-expanded="false" aria-controls="userMenu">
         <span class="avatar" id="userAvatar">–</span>
         <span class="uname" id="userName">–</span>
         <span class="chev" data-icon="chevron-down"></span>
@@ -53,32 +53,32 @@
     <!-- sidebar -->
     <aside class="pane side" id="projectSidebar">
       <div class="side-tabs">
-        <button class="side-tab on" data-side="files"><span data-icon="files"></span>File</button>
-        <button class="side-tab" data-side="outline"><span data-icon="list-tree"></span>Struttura</button>
+        <button class="side-tab on" data-side="files"><span data-icon="files"></span><span data-i18n="sidebar.files">Files</span></button>
+        <button class="side-tab" data-side="outline"><span data-icon="list-tree"></span><span data-i18n="sidebar.outline">Outline</span></button>
       </div>
       <div class="side-scroll">
         <div data-panel="files">
-          <div class="side-head">Progetto
+          <div class="side-head"><span data-i18n="sidebar.project">Project</span>
             <span class="act">
-              <button class="iconbtn" id="newFileBtn" title="Nuovo file o cartella" aria-label="Nuovo file o cartella"><span data-icon="plus"></span></button>
+              <button class="iconbtn" id="newFileBtn" title="New file or folder" aria-label="New file or folder" data-i18n-title="sidebar.newItem" data-i18n-aria-label="sidebar.newItem"><span data-icon="plus"></span></button>
             </span>
           </div>
           <div class="tree" id="tree" role="tree"></div>
           <button class="dropzone" id="sideDrop" type="button">
-            <b><span data-icon="upload"></span>Trascina immagini qui</b>
-            nella cartella selezionata, oppure <span class="lk">sfoglia…</span>
+            <b><span data-icon="upload"></span><span data-i18n="sidebar.dropImages">Drop images here</span></b>
+            <span data-i18n="sidebar.dropImagesRest">in the selected folder, or browse…</span>
           </button>
         </div>
         <div data-panel="outline" style="display:none">
-          <div class="side-head">Struttura documento</div>
+          <div class="side-head" data-i18n="sidebar.documentOutline">Document outline</div>
           <div class="outline" id="outline"></div>
         </div>
       </div>
     </aside>
 
-    <button class="side-backdrop" id="sideBackdrop" type="button" aria-label="Chiudi il pannello laterale"></button>
+    <button class="side-backdrop" id="sideBackdrop" type="button" aria-label="Close the sidebar" data-i18n-aria-label="sidebar.close"></button>
 
-    <div class="resizer" id="rz1" title="Trascina per ridimensionare"></div>
+    <div class="resizer" id="rz1" title="Drag to resize" data-i18n-title="sidebar.resize"></div>
 
     <!-- editor -->
     <section class="pane edpane">
@@ -87,18 +87,18 @@
         <div class="findbar" id="findBar">
           <div class="findrow">
             <span class="findic" data-icon="search"></span>
-            <input class="findinput" id="findInput" placeholder="Trova" spellcheck="false" autocomplete="off">
+            <input class="findinput" id="findInput" placeholder="Find" data-i18n-placeholder="find.find" spellcheck="false" autocomplete="off">
             <span class="findcount" id="findCount"></span>
-            <button class="findbtn" id="findPrev" title="Precedente (⇧⏎)" aria-label="Risultato precedente"><span data-icon="chevron-left"></span></button>
-            <button class="findbtn" id="findNext" title="Successivo (⏎)" aria-label="Risultato successivo"><span data-icon="chevron-right"></span></button>
-            <button class="findbtn toggle" id="findCase" title="Maiuscole/minuscole">Aa</button>
-            <button class="findbtn" id="findClose" title="Chiudi (Esc)" aria-label="Chiudi ricerca"><span data-icon="x"></span></button>
+            <button class="findbtn" id="findPrev" title="Previous (⇧⏎)" aria-label="Previous result" data-i18n-title="find.previousTitle" data-i18n-aria-label="find.previousAria"><span data-icon="chevron-left"></span></button>
+            <button class="findbtn" id="findNext" title="Next (⏎)" aria-label="Next result" data-i18n-title="find.nextTitle" data-i18n-aria-label="find.nextAria"><span data-icon="chevron-right"></span></button>
+            <button class="findbtn toggle" id="findCase" title="Match case" data-i18n-title="find.caseSensitive">Aa</button>
+            <button class="findbtn" id="findClose" title="Close (Esc)" aria-label="Close search" data-i18n-title="find.closeTitle" data-i18n-aria-label="find.closeAria"><span data-icon="x"></span></button>
           </div>
           <div class="findrow">
             <span class="findic" data-icon="replace"></span>
-            <input class="findinput" id="replaceInput" placeholder="Sostituisci con…" spellcheck="false" autocomplete="off">
-            <button class="findbtn txt" id="replaceOne">Sostituisci</button>
-            <button class="findbtn txt" id="replaceAll">Tutti</button>
+            <input class="findinput" id="replaceInput" placeholder="Replace with…" data-i18n-placeholder="find.replacePlaceholder" spellcheck="false" autocomplete="off">
+            <button class="findbtn txt" id="replaceOne" data-i18n="find.replace">Replace</button>
+            <button class="findbtn txt" id="replaceAll" data-i18n="find.replaceAll">All</button>
           </div>
         </div>
         <div class="gutter" id="gutter"></div>
@@ -111,38 +111,38 @@
       </div>
     </section>
 
-    <div class="resizer" id="rz2" title="Trascina per ridimensionare"></div>
+    <div class="resizer" id="rz2" title="Drag to resize" data-i18n-title="sidebar.resize"></div>
 
     <!-- preview -->
     <section class="pane pvpane">
       <div class="pvbar">
         <div class="seg" id="pvSeg">
-          <button data-view="preview" class="on"><span data-icon="file-type-pdf"></span><span class="lbl">Anteprima</span></button>
-          <button data-view="log"><span data-icon="terminal-2"></span><span class="lbl">Log</span></button>
+          <button data-view="preview" class="on"><span data-icon="file-type-pdf"></span><span class="lbl" data-i18n="preview.preview">Preview</span></button>
+          <button data-view="log"><span data-icon="terminal-2"></span><span class="lbl" data-i18n="preview.log">Log</span></button>
         </div>
         <div class="spring"></div>
         <div class="pchip">
-          <button class="pgbtn" id="pgPrev" aria-label="Pagina precedente"><span data-icon="chevron-left"></span></button>
+          <button class="pgbtn" id="pgPrev" aria-label="Previous page" data-i18n-aria-label="preview.previousPage"><span data-icon="chevron-left"></span></button>
           <span class="val"><span id="pgCur">–</span> / <span id="pgTot">–</span></span>
-          <button class="pgbtn" id="pgNext" aria-label="Pagina successiva"><span data-icon="chevron-right"></span></button>
+          <button class="pgbtn" id="pgNext" aria-label="Next page" data-i18n-aria-label="preview.nextPage"><span data-icon="chevron-right"></span></button>
         </div>
         <div class="pchip zoom">
-          <button class="zbtn" id="zOut" aria-label="Riduci zoom"><span data-icon="minus"></span></button>
+          <button class="zbtn" id="zOut" aria-label="Zoom out" data-i18n-aria-label="preview.zoomOut"><span data-icon="minus"></span></button>
           <span class="val" id="zVal">100%</span>
-          <button class="zbtn" id="zIn" aria-label="Aumenta zoom"><span data-icon="plus"></span></button>
+          <button class="zbtn" id="zIn" aria-label="Zoom in" data-i18n-aria-label="preview.zoomIn"><span data-icon="plus"></span></button>
         </div>
-        <button class="mini fit on" id="fitBtn" title="Adatta alla larghezza">Adatta</button>
+        <button class="mini fit on" id="fitBtn" title="Fit to width" data-i18n-title="preview.fitTitle" data-i18n="preview.fit">Fit</button>
       </div>
       <div class="pv-stage" id="pvStage">
         <div class="pv-empty" id="pvEmpty">
           <div class="big" data-icon="file-type-pdf"></div>
-          Premi <b>Compila</b> per generare l'output.
+          <span data-i18n="preview.empty">Press Compile to generate the output.</span>
         </div>
         <div class="pv-pages" id="pvPages"></div>
         <div class="logview" id="logView"></div>
         <div class="compiling" id="compiling">
           <div class="spinner"></div>
-          <div id="compileMsg">Compilazione in corso…</div>
+          <div id="compileMsg" data-i18n="preview.compiling">Compiling…</div>
         </div>
       </div>
     </section>
@@ -151,24 +151,24 @@
   <!-- ===================== STATUSBAR ===================== -->
   <div class="statusbar">
     <div class="sb-info">
-      <span class="st accent"><span class="dotok" id="stDot"></span><span id="stState">pronto</span></span>
+      <span class="st accent"><span class="dotok" id="stDot"></span><span id="stState" data-i18n="status.ready">ready</span></span>
       <span class="st" id="stCursor">Ln 1, Col 1</span>
-      <span class="st">Spazi: 2</span>
+      <span class="st" data-i18n="status.spaces">Spaces: 2</span>
       <span class="st">UTF-8</span>
       <span class="st" id="stLanguage">LaTeX</span>
       <div class="spring"></div>
       <span class="st" id="stMath"></span>
       <button class="st warn btnlike" id="stWarn" type="button" style="display:none"></button>
       <button class="st err btnlike" id="stErr" type="button" style="display:none"></button>
-      <span class="st" id="stTime">non ancora compilato</span>
+      <span class="st" id="stTime" data-i18n="status.neverCompiled">not compiled yet</span>
     </div>
     <div class="sb-actions">
-      <button class="sb-btn" id="btnFormat"><span class="ic" data-icon="align-left-2"></span>Format</button>
-      <button class="sb-btn" id="btnFind"><span class="ic" data-icon="search"></span>Trova</button>
-      <button class="sb-wrap" id="btnWrap" type="button" role="switch" aria-checked="false" aria-label="Attiva ritorno a capo automatico" title="Ritorno a capo automatico"><span class="sb-wrap-label">A capo</span><span class="sb-switch" aria-hidden="true"></span></button>
+      <button class="sb-btn" id="btnFormat"><span class="ic" data-icon="align-left-2"></span><span data-i18n="status.format">Format</span></button>
+      <button class="sb-btn" id="btnFind"><span class="ic" data-icon="search"></span><span data-i18n="find.find">Find</span></button>
+      <button class="sb-wrap" id="btnWrap" type="button" role="switch" aria-checked="false" aria-label="Enable word wrap" data-i18n-aria-label="status.wrapEnable" title="Enable word wrap" data-i18n-title="status.wrapEnable"><span class="sb-wrap-label" data-i18n="status.wrap">Wrap</span><span class="sb-switch" aria-hidden="true"></span></button>
       <div class="sb-divider"></div>
-      <button class="sb-engine" id="engineBtn" title="Motore di compilazione" aria-haspopup="menu" aria-expanded="false" aria-controls="engineMenu">motore <b id="engineName">pdflatex</b><span class="chev" data-icon="chevron-up"></span></button>
-      <button class="sb-icon" id="btnSettings" title="Impostazioni" aria-label="Impostazioni"><span class="ic" data-icon="settings"></span></button>
+      <button class="sb-engine" id="engineBtn" title="Compilation engine" data-i18n-title="status.engineTitle" aria-haspopup="menu" aria-expanded="false" aria-controls="engineMenu"><span data-i18n="status.engine">engine</span> <b id="engineName">pdflatex</b><span class="chev" data-icon="chevron-up"></span></button>
+      <button class="sb-icon" id="btnSettings" title="Settings" aria-label="Settings" data-i18n-title="status.settings" data-i18n-aria-label="status.settings"><span class="ic" data-icon="settings"></span></button>
     </div>
   </div>
 </div>
@@ -191,44 +191,44 @@
     </div>
   </div>
   <div class="msep"></div>
-  <button class="mi" id="miPassword" type="button" role="menuitem"><span class="ic" data-icon="key"></span>Cambia password</button>
-  <button class="mi danger" id="miLogout" type="button" role="menuitem"><span class="ic" data-icon="logout"></span>Disconnetti</button>
+  <button class="mi" id="miPassword" type="button" role="menuitem"><span class="ic" data-icon="key"></span><span data-i18n="account.changePassword">Change password</span></button>
+  <button class="mi danger" id="miLogout" type="button" role="menuitem"><span class="ic" data-icon="logout"></span><span data-i18n="account.signOut">Sign out</span></button>
 </div>
 
 <!-- ===================== ATTACH MODAL ===================== -->
 <div class="scrim" id="attachModal">
   <div class="modal">
     <div class="m-head">
-      <h3>Allega file</h3><span class="sub">immagini, PDF, dati…</span>
-      <button class="m-x" data-close aria-label="Chiudi"><span data-icon="x"></span></button>
+      <h3 data-i18n="attach.title">Attach file</h3><span class="sub" data-i18n="attach.subtitle">images, PDFs, data…</span>
+      <button class="m-x" data-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
       <div class="field">
-        <span class="label">File</span>
+        <span class="label" data-i18n="attach.file">File</span>
         <button class="bigdrop" id="attachDrop" type="button">
           <span class="ic" data-icon="upload"></span>
-          <b>Trascina un file qui</b> oppure clicca per sfogliare
+          <span data-i18n="attach.drop">Drop a file here or click to browse</span>
         </button>
         <div class="filerow" id="attachPicked" style="display:none">
           <img class="thumb" id="attachThumb" alt="">
           <span id="attachName">—</span>
           <span class="meta" id="attachMeta"></span>
-          <button class="rm" id="attachClear" type="button" aria-label="Rimuovi file"><span data-icon="x"></span></button>
+          <button class="rm" id="attachClear" type="button" aria-label="Remove file" data-i18n-aria-label="attach.removeFile"><span data-icon="x"></span></button>
         </div>
       </div>
       <div class="field">
-        <span class="label">Cartella di destinazione</span>
+        <span class="label" data-i18n="attach.destination">Destination folder</span>
         <select class="select" id="attachDest"></select>
-        <div class="hint"><span data-icon="info-circle"></span>Le immagini di solito vanno in <b style="color:var(--category-image);margin:0 3px">figure/</b>.</div>
+        <div class="hint"><span data-icon="info-circle"></span><span data-i18n="attach.destinationHint">Images usually belong in figure/.</span></div>
       </div>
       <div class="field">
-        <span class="label">Nome file</span>
-        <input class="input" id="attachRename" placeholder="nome-file.png">
+        <span class="label" data-i18n="attach.fileName">File name</span>
+        <input class="input" id="attachRename" placeholder="file-name.png" data-i18n-placeholder="attach.fileNamePlaceholder">
       </div>
     </div>
     <div class="m-foot">
-      <button class="btn" data-close>Annulla</button>
-      <button class="btn cta" id="attachUpload" disabled><span class="ic" data-icon="upload"></span>Carica</button>
+      <button class="btn" data-close data-i18n="common.cancel">Cancel</button>
+      <button class="btn cta" id="attachUpload" disabled><span class="ic" data-icon="upload"></span><span data-i18n="attach.upload">Upload</span></button>
     </div>
   </div>
 </div>
@@ -237,109 +237,123 @@
 <div class="scrim" id="settingsModal">
   <div class="modal wide settings-modal" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
     <div class="m-head">
-      <h3 id="settingsTitle">Impostazioni</h3>
-      <span class="sub">Preferenze del progetto</span>
+      <h3 id="settingsTitle" data-i18n="settings.title">Settings</h3>
+      <span class="sub" data-i18n="settings.subtitle">Project preferences</span>
     </div>
     <div class="set-grid">
-      <nav class="set-nav" role="tablist" aria-label="Sezioni impostazioni" aria-orientation="vertical">
-        <button class="item on" id="settingsTabFonts" type="button" role="tab" aria-selected="true" aria-controls="settingsPanelFonts" tabindex="0" data-set="fonts"><span data-icon="typography"></span>Font</button>
-        <button class="item" id="settingsTabEditor" type="button" role="tab" aria-selected="false" aria-controls="settingsPanelEditor" tabindex="-1" data-set="editor"><span data-icon="code"></span>Editor</button>
-        <button class="item" id="settingsTabCompile" type="button" role="tab" aria-selected="false" aria-controls="settingsPanelCompile" tabindex="-1" data-set="compile"><span data-icon="terminal-2"></span>Compilazione</button>
+      <nav class="set-nav" role="tablist" aria-label="Settings sections" data-i18n-aria-label="settings.sections" aria-orientation="vertical">
+        <button class="item on" id="settingsTabFonts" type="button" role="tab" aria-selected="true" aria-controls="settingsPanelFonts" tabindex="0" data-set="fonts"><span data-icon="typography"></span><span data-i18n="settings.fonts">Fonts</span></button>
+        <button class="item" id="settingsTabEditor" type="button" role="tab" aria-selected="false" aria-controls="settingsPanelEditor" tabindex="-1" data-set="editor"><span data-icon="code"></span><span data-i18n="settings.editor">Editor</span></button>
+        <button class="item" id="settingsTabCompile" type="button" role="tab" aria-selected="false" aria-controls="settingsPanelCompile" tabindex="-1" data-set="compile"><span data-icon="terminal-2"></span><span data-i18n="settings.compile">Compilation</span></button>
+        <button class="item" id="settingsTabLanguage" type="button" role="tab" aria-selected="false" aria-controls="settingsPanelLanguage" tabindex="-1" data-set="language"><span data-icon="language"></span><span data-i18n="language.title">Language</span></button>
       </nav>
       <div class="set-content">
-      <button class="set-accordion-trigger" type="button" data-set="fonts" aria-expanded="true" aria-controls="settingsPanelFonts"><span data-icon="typography"></span><span>Font</span><span class="set-chevron" data-icon="chevron-down"></span></button>
+      <button class="set-accordion-trigger" type="button" data-set="fonts" aria-expanded="true" aria-controls="settingsPanelFonts"><span data-icon="typography"></span><span data-i18n="settings.fonts">Fonts</span><span class="set-chevron" data-icon="chevron-down"></span></button>
       <section class="set-pane" id="settingsPanelFonts" role="tabpanel" aria-labelledby="settingsTabFonts" tabindex="0" data-setpane="fonts">
-        <h4 class="set-title"><span data-icon="typography"></span>Font personalizzati</h4>
-        <p class="desc">Carica un font da usare nei tuoi documenti compilati. Formati: .ttf · .otf · .woff · .woff2</p>
+        <h4 class="set-title"><span data-icon="typography"></span><span data-i18n="settings.customFonts">Custom fonts</span></h4>
+        <p class="desc" data-i18n="settings.fontsDescription">Upload a font to use in compiled documents. Formats: .ttf · .otf · .woff · .woff2</p>
         <button class="bigdrop" id="fontDrop" type="button">
           <span class="ic" data-icon="typography"></span>
-          <span class="fontdrop-copy"><b>Trascina un font qui</b> oppure clicca per sfogliare</span>
+          <span class="fontdrop-copy" data-i18n="settings.dropFont">Drop a font here or click to browse</span>
         </button>
-        <div style="margin:18px 0 8px" class="label">Font caricati</div>
+        <div style="margin:18px 0 8px" class="label" data-i18n="settings.uploadedFonts">Uploaded fonts</div>
         <div id="fontList"></div>
-        <div class="label" style="margin-top:18px">Anteprima documento</div>
-        <div class="fontprev" id="fontPrev">The quick brown fox — Relazione di Laboratorio — 0123456789</div>
+        <div class="label" style="margin-top:18px" data-i18n="settings.documentPreview">Document preview</div>
+        <div class="fontprev" id="fontPrev" data-i18n="settings.fontPreview">The quick brown fox — Laboratory Report — 0123456789</div>
       </section>
-      <button class="set-accordion-trigger" type="button" data-set="editor" aria-expanded="false" aria-controls="settingsPanelEditor"><span data-icon="code"></span><span>Editor</span><span class="set-chevron" data-icon="chevron-down"></span></button>
+      <button class="set-accordion-trigger" type="button" data-set="editor" aria-expanded="false" aria-controls="settingsPanelEditor"><span data-icon="code"></span><span data-i18n="settings.editor">Editor</span><span class="set-chevron" data-icon="chevron-down"></span></button>
       <section class="set-pane" id="settingsPanelEditor" role="tabpanel" aria-labelledby="settingsTabEditor" tabindex="0" data-setpane="editor" hidden>
-        <h4 class="set-title"><span data-icon="code"></span>Editor</h4>
-        <p class="desc">Preferenze di scrittura e formattazione del codice LaTeX.</p>
+        <h4 class="set-title"><span data-icon="code"></span><span data-i18n="settings.editor">Editor</span></h4>
+        <p class="desc" data-i18n="settings.editorDescription">LaTeX source editing and formatting preferences.</p>
         <div class="set-row">
           <div class="set-row-txt">
-            <div class="set-row-title">Auto-indent</div>
-            <div class="set-row-sub">Mantieni il rientro corrente e indenta automaticamente all'interno degli ambienti quando vai a capo.</div>
+            <div class="set-row-title" data-i18n="settings.autoIndent">Auto-indent</div>
+            <div class="set-row-sub" data-i18n="settings.autoIndentDescription">Keep the current indentation and automatically indent inside environments when starting a new line.</div>
           </div>
-          <button class="switch-wrap on" id="autoIndent" type="button" role="switch" aria-checked="true" aria-label="Auto-indent"><span class="sw"></span></button>
+          <button class="switch-wrap on" id="autoIndent" type="button" role="switch" aria-checked="true" aria-label="Auto-indent" data-i18n-aria-label="settings.autoIndent"><span class="sw"></span></button>
         </div>
         <div class="set-row set-row-stack" id="autoSaveSetting">
           <div class="set-row-head">
             <div class="set-row-txt">
-              <div class="set-row-title">Autosalvataggio</div>
-              <div class="set-row-sub">Salva automaticamente i documenti modificati dopo un periodo di inattività. È disattivato per impostazione predefinita.</div>
+              <div class="set-row-title" data-i18n="settings.autosave">Autosave</div>
+              <div class="set-row-sub" data-i18n="settings.autosaveDescription">Automatically save changed documents after a period of inactivity. It is disabled by default.</div>
             </div>
-            <button class="switch-wrap" id="autoSave" type="button" role="switch" aria-checked="false" aria-label="Autosalvataggio" aria-controls="autoSaveDelayGroup"><span class="sw"></span></button>
+            <button class="switch-wrap" id="autoSave" type="button" role="switch" aria-checked="false" aria-label="Autosave" data-i18n-aria-label="settings.autosave" aria-controls="autoSaveDelayGroup"><span class="sw"></span></button>
           </div>
           <div class="set-subcontrol" id="autoSaveDelayGroup" aria-disabled="true">
-            <label class="label" for="autoSaveDelay">Intervallo di inattività</label>
+            <label class="label" for="autoSaveDelay" data-i18n="settings.idleInterval">Idle interval</label>
             <div class="number-field">
               <input class="input" id="autoSaveDelay" type="number" value="600" min="10" max="86400" step="10" inputmode="numeric" disabled>
-              <span>secondi</span>
+              <span data-i18n="settings.seconds">seconds</span>
             </div>
-            <div class="hint">Per un fallback discreto: 300 secondi corrispondono a 5 minuti, 900 a 15 minuti.</div>
+            <div class="hint" data-i18n="settings.autosaveHint">For a conservative fallback: 300 seconds is 5 minutes, 900 is 15 minutes.</div>
           </div>
         </div>
       </section>
-      <button class="set-accordion-trigger" type="button" data-set="compile" aria-expanded="false" aria-controls="settingsPanelCompile"><span data-icon="terminal-2"></span><span>Compilazione</span><span class="set-chevron" data-icon="chevron-down"></span></button>
+      <button class="set-accordion-trigger" type="button" data-set="compile" aria-expanded="false" aria-controls="settingsPanelCompile"><span data-icon="terminal-2"></span><span data-i18n="settings.compile">Compilation</span><span class="set-chevron" data-icon="chevron-down"></span></button>
       <section class="set-pane" id="settingsPanelCompile" role="tabpanel" aria-labelledby="settingsTabCompile" tabindex="0" data-setpane="compile" hidden>
-        <h4 class="set-title"><span data-icon="terminal-2"></span>Compilazione</h4>
-        <p class="desc" id="compileSettingsDesc">Indica dove Iris deve cercare i binari del compilatore. Il campo è opzionale: se resta vuoto viene usato il <code>PATH</code> del backend.</p>
+        <h4 class="set-title"><span data-icon="terminal-2"></span><span data-i18n="settings.compile">Compilation</span></h4>
+        <p class="desc" id="compileSettingsDesc" data-i18n="settings.compileDescriptionDefault">Choose where Iris should find compiler binaries. The field is optional: when empty, the backend PATH is used.</p>
         <div class="binresolve">
-          <span class="label">Tipo progetto riconosciuto</span>
+          <span class="label" data-i18n="settings.detectedProjectType">Detected project type</span>
           <code class="binpath" id="projectTypeLabel">LaTeX</code>
         </div>
         <div class="field">
-          <span class="label" id="compilerPathLabel">Percorso dei binari LaTeX</span>
-          <input class="input" id="texPath" placeholder="opzionale, es. /opt/homebrew/bin" spellcheck="false" autocomplete="off">
-          <div class="hint" id="texPathHint"><span data-icon="info-circle"></span>Se vuoto usa il <b style="color:var(--semantic-info);margin:0 3px">PATH</b> del backend; compila con eseguibili come <b style="color:var(--semantic-info);margin:0 3px">pdflatex</b> <b style="color:var(--semantic-info);margin-right:3px">xelatex</b> <b style="color:var(--semantic-info)">lualatex</b>.</div>
+          <span class="label" id="compilerPathLabel" data-i18n="settings.latexBinaryPath">LaTeX binaries path</span>
+          <input class="input" id="texPath" placeholder="optional, e.g. /opt/homebrew/bin" data-i18n-placeholder="common.optionalExample" spellcheck="false" autocomplete="off">
+          <div class="hint" id="texPathHint"><span data-icon="info-circle"></span><span>When empty, the backend PATH is used.</span></div>
         </div>
         <div class="field" id="lilypondArgsField" style="display:none">
-          <span class="label">Parametri LilyPond</span>
-          <input class="input" id="lilypondArgs" placeholder='es. --loglevel=WARNING -I "include musicali"' spellcheck="false" autocomplete="off" maxlength="2000">
-          <div class="hint"><span data-icon="info-circle"></span>Inseriti tra <b style="color:var(--semantic-info);margin:0 3px">lilypond</b> e il file <b style="color:var(--semantic-info);margin:0 3px">.ly</b>; sono supportiti valori tra virgolette. La destinazione resta gestita da Iris.</div>
+          <span class="label" data-i18n="settings.lilypondArgs">LilyPond arguments</span>
+          <input class="input" id="lilypondArgs" placeholder='e.g. --loglevel=WARNING -I "music includes"' data-i18n-placeholder="settings.lilypondArgsPlaceholder" spellcheck="false" autocomplete="off" maxlength="2000">
+          <div class="hint"><span data-icon="info-circle"></span><span data-i18n="settings.lilypondArgsHint">Inserted between lilypond and the .ly file; quoted values are supported. Iris still manages the destination.</span></div>
         </div>
         <div class="field" id="lilypondFormatField" style="display:none">
-          <span class="label">Formato di output LilyPond</span>
+          <span class="label" data-i18n="settings.lilypondOutput">LilyPond output format</span>
           <select class="select" id="lilypondFormat">
-            <option value="pdf">PDF — documento impaginato</option>
-            <option value="png">PNG — un'immagine per pagina</option>
-            <option value="svg">SVG — un'immagine vettoriale per pagina</option>
-            <option value="ps">PS — PostScript</option>
-            <option value="eps">EPS — Encapsulated PostScript</option>
+            <option value="pdf" data-i18n="settings.formatPdf">PDF — typeset document</option>
+            <option value="png" data-i18n="settings.formatPng">PNG — one image per page</option>
+            <option value="svg" data-i18n="settings.formatSvg">SVG — one vector image per page</option>
+            <option value="ps" data-i18n="settings.formatPs">PS — PostScript</option>
+            <option value="eps" data-i18n="settings.formatEps">EPS — Encapsulated PostScript</option>
           </select>
-          <div class="hint"><span data-icon="info-circle"></span>PNG, SVG e partiture con più blocchi possono produrre più artefatti nella cartella <b style="color:var(--semantic-info);margin:0 3px">output/</b>.</div>
+          <div class="hint"><span data-icon="info-circle"></span><span data-i18n="settings.formatHint">PNG, SVG and scores with multiple blocks can produce several artifacts in output/.</span></div>
         </div>
         <div class="binresolve">
-          <span class="label">Comando richiesto al backend</span>
+          <span class="label" data-i18n="settings.backendCommand">Command sent to the backend</span>
           <code class="binpath" id="compileCommandPreview">pdflatex</code>
         </div>
         <div class="field" style="margin-top:18px">
-          <span class="label">Pipeline di compilazione</span>
+          <span class="label" data-i18n="settings.pipeline">Compilation pipeline</span>
           <select class="select" id="compilePreset">
-            <option value="quick">Rapida</option>
-            <option value="bibtex">Bibliografia BibTeX</option>
-            <option value="biber">Bibliografia Biber</option>
-            <option value="index">Indice</option>
-            <option value="custom">Personalizzata</option>
+            <option value="quick" data-i18n="settings.presetQuick">Quick</option>
+            <option value="bibtex" data-i18n="settings.presetBibtex">BibTeX bibliography</option>
+            <option value="biber" data-i18n="settings.presetBiber">Biber bibliography</option>
+            <option value="index" data-i18n="settings.presetIndex">Index</option>
+            <option value="custom" data-i18n="settings.presetCustom">Custom</option>
           </select>
-          <div class="hint"><span data-icon="info-circle"></span>Gli output vengono sovrascritti nella cartella <b style="color:var(--semantic-info);margin:0 3px">output/</b> del progetto.</div>
+          <div class="hint"><span data-icon="info-circle"></span><span data-i18n="settings.outputOverwriteHint">Outputs are overwritten in the project's output/ folder.</span></div>
         </div>
         <div id="compileSteps"></div>
-        <button class="btn sm" type="button" id="compileAddStep"><span class="ic" data-icon="plus"></span>Step</button>
+        <button class="btn sm" type="button" id="compileAddStep"><span class="ic" data-icon="plus"></span><span data-i18n="settings.step">Step</span></button>
+      </section>
+      <button class="set-accordion-trigger" type="button" data-set="language" aria-expanded="false" aria-controls="settingsPanelLanguage"><span data-icon="language"></span><span data-i18n="language.title">Language</span><span class="set-chevron" data-icon="chevron-down"></span></button>
+      <section class="set-pane" id="settingsPanelLanguage" role="tabpanel" aria-labelledby="settingsTabLanguage" tabindex="0" data-setpane="language" hidden>
+        <h4 class="set-title"><span data-icon="language"></span><span data-i18n="language.title">Language</span></h4>
+        <p class="desc" data-i18n="language.description">Choose the language used by the Iris interface.</p>
+        <div class="field language-field">
+          <label class="label" for="settingsLanguage" data-i18n="language.interface">Interface language</label>
+          <select class="select" id="settingsLanguage" data-language-select>
+            <option value="en" data-i18n="language.english">English</option>
+            <option value="it" data-i18n="language.italian">Italiano</option>
+          </select>
+          <div class="hint" data-i18n="language.savedLocally">The preference is saved in this browser.</div>
+        </div>
       </section>
       </div>
     </div>
     <div class="m-foot">
-      <button class="btn" data-close>Chiudi</button>
+      <button class="btn" data-close data-i18n="common.close">Close</button>
     </div>
   </div>
 </div>
@@ -350,30 +364,30 @@
 <div class="scrim" id="treeNewModal">
   <div class="modal narrow">
     <div class="m-head">
-      <h3>Nuovo elemento</h3>
-      <button class="m-x" data-tree-close aria-label="Chiudi"><span data-icon="x"></span></button>
+      <h3 data-i18n="tree.newTitle">New item</h3>
+      <button class="m-x" data-tree-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
       <div class="field">
-        <span class="label">Tipo</span>
+        <span class="label" data-i18n="tree.type">Type</span>
         <div class="typepick" id="newItemType">
-          <button class="typepick-btn on" type="button" data-new-type="file">File .tex</button>
-          <button class="typepick-btn" type="button" data-new-type="folder">Cartella</button>
+          <button class="typepick-btn on" type="button" data-new-type="file" data-i18n="tree.fileTex">.tex file</button>
+          <button class="typepick-btn" type="button" data-new-type="folder" data-i18n="tree.folder">Folder</button>
         </div>
       </div>
       <div class="field">
-        <span class="label">Crea in</span>
+        <span class="label" data-i18n="tree.createIn">Create in</span>
         <select class="select" id="newItemDest"></select>
       </div>
       <div class="field">
-        <span class="label" id="newItemLabel">Nome file</span>
+        <span class="label" id="newItemLabel" data-i18n="tree.fileName">File name</span>
         <input class="input" id="newItemInput" spellcheck="false" autocomplete="off" maxlength="120">
-        <div class="hint" id="newItemHint">Scegli la cartella di destinazione.</div>
+        <div class="hint" id="newItemHint" data-i18n="tree.destinationHint">Choose the destination folder.</div>
       </div>
     </div>
     <div class="m-foot">
-      <button class="btn" data-tree-close>Annulla</button>
-      <button class="btn cta" id="treeNewOk">Crea</button>
+      <button class="btn" data-tree-close data-i18n="common.cancel">Cancel</button>
+      <button class="btn cta" id="treeNewOk" data-i18n="common.create">Create</button>
     </div>
   </div>
 </div>
@@ -381,19 +395,19 @@
 <div class="scrim" id="treeRenameModal">
   <div class="modal narrow">
     <div class="m-head">
-      <h3 id="treeRenameTitle">Rinomina</h3>
-      <button class="m-x" data-tree-close aria-label="Chiudi"><span data-icon="x"></span></button>
+      <h3 id="treeRenameTitle" data-i18n="tree.renameTitle">Rename</h3>
+      <button class="m-x" data-tree-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
       <div class="field">
-        <span class="label" id="treeRenameLabel">Nome</span>
+        <span class="label" id="treeRenameLabel" data-i18n="tree.fileName">File name</span>
         <input class="input" id="treeRenameInput" spellcheck="false" autocomplete="off" maxlength="120">
-        <div class="hint" id="treeRenameHint">Usa un nome senza separatori di cartella.</div>
+        <div class="hint" id="treeRenameHint" data-i18n="tree.nameHint">Use a name without folder separators.</div>
       </div>
     </div>
     <div class="m-foot">
-      <button class="btn" data-tree-close>Annulla</button>
-      <button class="btn cta" id="treeRenameOk">Salva</button>
+      <button class="btn" data-tree-close data-i18n="common.cancel">Cancel</button>
+      <button class="btn cta" id="treeRenameOk" data-i18n="common.save">Save</button>
     </div>
   </div>
 </div>
@@ -401,15 +415,15 @@
 <div class="scrim" id="treeDeleteModal">
   <div class="modal narrow">
     <div class="m-head">
-      <h3 id="treeDeleteTitle">Elimina</h3>
-      <button class="m-x" data-tree-close aria-label="Chiudi"><span data-icon="x"></span></button>
+      <h3 id="treeDeleteTitle" data-i18n="tree.deleteTitle">Delete</h3>
+      <button class="m-x" data-tree-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
-      <p class="confirm-txt" id="treeDeleteText">Vuoi eliminare questo elemento? L'azione non è reversibile.</p>
+      <p class="confirm-txt" id="treeDeleteText" data-i18n="tree.deleteGeneric">Do you want to delete this item? This action cannot be undone.</p>
     </div>
     <div class="m-foot">
-      <button class="btn" data-tree-close>Annulla</button>
-      <button class="btn danger" id="treeDeleteOk">Elimina</button>
+      <button class="btn" data-tree-close data-i18n="common.cancel">Cancel</button>
+      <button class="btn danger" id="treeDeleteOk" data-i18n="common.delete">Delete</button>
     </div>
   </div>
 </div>
@@ -418,15 +432,15 @@
 <div class="scrim" id="logoutModal">
   <div class="modal narrow">
     <div class="m-head">
-      <h3>Disconnessione</h3>
-      <button class="m-x" data-close aria-label="Chiudi"><span data-icon="x"></span></button>
+      <h3 data-i18n="logout.title">Sign out</h3>
+      <button class="m-x" data-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
-      <p class="confirm-txt">Vuoi uscire da <b>Iris</b>? Le modifiche non salvate nell'editor andranno perse.</p>
+      <p class="confirm-txt" data-i18n="logout.confirm">Do you want to sign out of Iris? Unsaved editor changes will be lost.</p>
     </div>
     <div class="m-foot">
-      <button class="btn" data-close>Annulla</button>
-      <button class="btn danger" id="logoutConfirm">Disconnetti</button>
+      <button class="btn" data-close data-i18n="common.cancel">Cancel</button>
+      <button class="btn danger" id="logoutConfirm" data-i18n="logout.button">Sign out</button>
     </div>
   </div>
 </div>
@@ -435,29 +449,29 @@
 <div class="scrim" id="passwordModal">
   <div class="modal narrow">
     <div class="m-head">
-      <h3>Cambia password</h3>
-      <button class="m-x" data-close aria-label="Chiudi"><span data-icon="x"></span></button>
+      <h3 data-i18n="password.title">Change password</h3>
+      <button class="m-x" data-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
-      <div class="login-error inline" id="passwordError">Password non valida.</div>
+      <div class="login-error inline" id="passwordError" data-i18n="password.invalid">Invalid password.</div>
       <div class="field">
-        <span class="label">Password attuale</span>
+        <span class="label" data-i18n="password.current">Current password</span>
         <input class="input" id="passwordCurrent" type="password" autocomplete="current-password">
       </div>
       <div class="field">
-        <span class="label">Nuova password</span>
+        <span class="label" data-i18n="password.new">New password</span>
         <input class="input" id="passwordNew" type="password" autocomplete="new-password">
-        <div class="hint"><span data-icon="info-circle"></span>Almeno 10 caratteri.</div>
+        <div class="hint"><span data-icon="info-circle"></span><span data-i18n="password.minimum">At least 10 characters.</span></div>
       </div>
       <div class="field">
-        <span class="label">Conferma nuova password</span>
+        <span class="label" data-i18n="password.confirm">Confirm new password</span>
         <input class="input" id="passwordConfirm" type="password" autocomplete="new-password">
       </div>
       <div class="hint" id="passwordHint"></div>
     </div>
     <div class="m-foot">
-      <button class="btn" data-close>Annulla</button>
-      <button class="btn cta" id="passwordSave">Salva password</button>
+      <button class="btn" data-close data-i18n="common.cancel">Cancel</button>
+      <button class="btn cta" id="passwordSave" data-i18n="password.save">Save password</button>
     </div>
   </div>
 </div>
@@ -466,26 +480,26 @@
 <div class="scrim" id="projModal">
   <div class="modal narrow">
     <div class="m-head">
-      <h3 id="projModalTitle">Nuovo progetto</h3>
-      <button class="m-x" data-close aria-label="Chiudi"><span data-icon="x"></span></button>
+      <h3 id="projModalTitle" data-i18n="projects.newTitle">New project</h3>
+      <button class="m-x" data-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
       <div class="field">
-        <span class="label">Nome del progetto</span>
-        <input class="input" id="projNameInput" placeholder="es. Tesi di laurea" spellcheck="false" autocomplete="off" maxlength="80">
-        <div class="hint" id="projModalHint">Verrà creato con un file main.tex iniziale.</div>
+        <span class="label" data-i18n="projects.name">Project name</span>
+        <input class="input" id="projNameInput" placeholder="e.g. Graduation thesis" data-i18n-placeholder="projects.namePlaceholder" spellcheck="false" autocomplete="off" maxlength="80">
+        <div class="hint" id="projModalHint" data-i18n="projects.newLatexHint">It will be created with an initial main.tex file.</div>
       </div>
       <div class="field" id="projTypeField">
-        <span class="label">Tipo di progetto</span>
+        <span class="label" data-i18n="projects.type">Project type</span>
         <select class="select" id="projTypeSelect">
-          <option value="latex">Documento LaTeX</option>
-          <option value="lilypond">Partitura LilyPond</option>
+          <option value="latex" data-i18n="projects.latex">LaTeX document</option>
+          <option value="lilypond" data-i18n="projects.lilypond">LilyPond score</option>
         </select>
       </div>
     </div>
     <div class="m-foot">
-      <button class="btn" data-close>Annulla</button>
-      <button class="btn cta" id="projModalOk">Crea progetto</button>
+      <button class="btn" data-close data-i18n="common.cancel">Cancel</button>
+      <button class="btn cta" id="projModalOk" data-i18n="projects.create">Create project</button>
     </div>
   </div>
 </div>
@@ -493,15 +507,15 @@
 <div class="scrim" id="projDelModal">
   <div class="modal narrow">
     <div class="m-head">
-      <h3>Elimina progetto</h3>
-      <button class="m-x" data-close aria-label="Chiudi"><span data-icon="x"></span></button>
+      <h3 data-i18n="projects.deleteTitle">Delete project</h3>
+      <button class="m-x" data-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
-      <p class="confirm-txt">Vuoi eliminare <b id="projDelName">questo progetto</b>? Tutti i suoi file e le sue bibliografie verranno rimossi. L'azione non è reversibile.</p>
+      <p class="confirm-txt" id="projDeleteText" data-i18n="projects.deleteGeneric">Do you want to delete this project? All its files and bibliographies will be removed. This action cannot be undone.</p>
     </div>
     <div class="m-foot">
-      <button class="btn" data-close>Annulla</button>
-      <button class="btn danger" id="projDelOk">Elimina progetto</button>
+      <button class="btn" data-close data-i18n="common.cancel">Cancel</button>
+      <button class="btn danger" id="projDelOk" data-i18n="projects.deleteButton">Delete project</button>
     </div>
   </div>
 </div>
@@ -520,25 +534,25 @@
           <div class="pu-name" id="pkName">–</div>
           <div class="pu-email" id="pkEmail">–</div>
         </div>
-        <button class="tbtn" id="pkLogout" title="Disconnetti"><span class="ic" data-icon="logout"></span>Esci</button>
+        <button class="tbtn" id="pkLogout" title="Sign out" data-i18n-title="account.signOut"><span class="ic" data-icon="logout"></span><span data-i18n="account.exit">Exit</span></button>
       </div>
     </header>
 
     <div class="picker-head">
       <div>
-        <h1 class="picker-title">I tuoi progetti</h1>
-        <p class="picker-sub">Ogni progetto è autonomo, con i suoi file e le sue bibliografie. <span id="pkCount" class="pk-count"></span></p>
+        <h1 class="picker-title" data-i18n="projects.yourProjects">Your projects</h1>
+        <p class="picker-sub"><span data-i18n="projects.description">Each project is self-contained, with its own files and bibliographies.</span> <span id="pkCount" class="pk-count"></span></p>
       </div>
-      <button class="btn cta" id="pkNew"><span class="ic" data-icon="plus"></span>Nuovo progetto</button>
+      <button class="btn cta" id="pkNew"><span class="ic" data-icon="plus"></span><span data-i18n="projects.newButton">New project</span></button>
     </div>
 
     <div class="picker-grid" id="pkGrid"></div>
 
     <div class="picker-empty" id="pkEmpty" style="display:none">
       <div class="pe-mark" data-icon="files"></div>
-      <div class="pe-title">Nessun progetto</div>
-      <div class="pe-sub">Crea il tuo primo progetto per iniziare a scrivere in LaTeX.</div>
-      <button class="btn cta" id="pkNewEmpty"><span class="ic" data-icon="plus"></span>Nuovo progetto</button>
+      <div class="pe-title" data-i18n="projects.empty">No projects</div>
+      <div class="pe-sub" data-i18n="projects.emptyDescription">Create your first project to start writing in LaTeX or LilyPond.</div>
+      <button class="btn cta" id="pkNewEmpty"><span class="ic" data-icon="plus"></span><span data-i18n="projects.newButton">New project</span></button>
     </div>
   </div>
 </div>
@@ -550,32 +564,39 @@
       <div class="mark">Ir</div>
       <div><b>Iris</b> <span class="v">Beta 1</span></div>
     </div>
-    <h1 class="login-title">Accedi al tuo spazio</h1>
-    <p class="login-sub">Inserisci le tue credenziali per continuare</p>
+    <label class="login-language" for="loginLanguage">
+      <span data-icon="language"></span>
+      <select id="loginLanguage" data-language-select aria-label="Interface language" data-i18n-aria-label="language.interface">
+        <option value="en" data-i18n="language.english">English</option>
+        <option value="it" data-i18n="language.italian">Italiano</option>
+      </select>
+    </label>
+    <h1 class="login-title" data-i18n="auth.title">Sign in to your workspace</h1>
+    <p class="login-sub" data-i18n="auth.subtitle">Enter your credentials to continue</p>
 
-    <div class="login-error" id="loginError">Credenziali non valide.</div>
+    <div class="login-error" id="loginError" data-i18n="auth.invalidCredentials">Invalid credentials.</div>
 
     <div class="lfield">
-      <span class="label">Nome utente o email</span>
-      <input class="linput" id="loginUser" name="username" autocomplete="username" placeholder="es. m.rossi" spellcheck="false">
+      <span class="label" data-i18n="auth.identity">Username or email</span>
+      <input class="linput" id="loginUser" name="username" autocomplete="username" placeholder="e.g. j.smith" data-i18n-placeholder="auth.identityPlaceholder" spellcheck="false">
     </div>
     <div class="lfield">
-      <span class="label">Password</span>
+      <span class="label" data-i18n="auth.password">Password</span>
       <div class="pwwrap">
         <input class="linput" id="loginPass" name="password" type="password" autocomplete="current-password" placeholder="••••••••">
-        <button class="pwtoggle" id="pwToggle" type="button">mostra</button>
+        <button class="pwtoggle" id="pwToggle" type="button" data-i18n="auth.showPassword">show</button>
       </div>
     </div>
 
-    <button class="btn cta full" id="loginBtn" type="submit"><span class="ic" data-icon="login"></span>Accedi</button>
+    <button class="btn cta full" id="loginBtn" type="submit"><span class="ic" data-icon="login"></span><span data-i18n="auth.signIn">Sign in</span></button>
 
-    <div class="login-divider">oppure continua con</div>
+    <div class="login-divider" data-i18n="auth.continueWith">or continue with</div>
 
     <div class="sso-grid">
       <button class="ssobtn" id="ssoLoginBtn" type="button" data-sso><span class="pmark sso" data-icon="shield-lock"></span>SSO<span class="arr" data-icon="arrow-right"></span></button>
     </div>
 
-    <p class="login-foot">Accesso riservato. Gli account sono gestiti dall'amministratore.</p>
+    <p class="login-foot" data-i18n="auth.restricted">Restricted access. Accounts are managed by the administrator.</p>
   </form>
 </div>
 
@@ -584,6 +605,7 @@
 <input type="file" id="fontInput" accept=".ttf,.otf,.woff,.woff2" style="display:none">
 
 <script src="iris-icons.js"></script>
+<script src="iris-i18n.js"></script>
 <script src="iris-latex.js"></script>
 <script src="iris-lilypond.js"></script>
 <script src="iris-app.js"></script>

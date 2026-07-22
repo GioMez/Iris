@@ -459,6 +459,7 @@ button.st{border:0;background:transparent;font:inherit}
 .pill.active{background:rgba(158,206,106,.16);border-color:rgba(158,206,106,.4);color:var(--semantic-success)}
 .fontprev{margin-top:14px;padding:16px;border-radius:10px;background:#fff;color:#1a1a1a;font-family:var(--proj-font,var(--font-document));font-size:18px}
 .set-pane .desc code{font-family:var(--font-code);color:var(--semantic-info);background:#ffffff0c;padding:1px 6px;border-radius:5px;font-size:.92em}
+.language-field{max-width:360px}
 .binresolve{margin-top:20px}
 .binresolve+.field{margin-top:20px}
 .binpath{display:block;margin-top:8px;font-family:var(--font-code);font-size:12.5px;color:var(--semantic-success);
@@ -548,6 +549,11 @@ button.st{border:0;background:transparent;font:inherit}
   display:grid;place-items:center;color:#0d1326;font-weight:700;font-size:17px;font-family:var(--font-code);box-shadow:0 3px 14px -2px rgba(125,207,255,.55)}
 .login-brand b{font-size:20px;font-weight:600;letter-spacing:.2px}
 .login-brand .v{color:var(--txt-mut);font-size:11px;font-family:var(--font-code);margin-left:1px}
+.login-language{position:absolute;top:14px;right:14px;display:flex;align-items:center;gap:5px;color:var(--txt-mut)}
+.login-card{position:relative}
+.login-language>[data-icon]{display:flex}
+.login-language .ti{width:15px;height:15px}
+.login-language select{height:30px;padding:0 24px 0 7px;border:1px solid var(--border);border-radius:8px;background:var(--panel-2);color:var(--txt-dim);font:11.5px var(--font-ui);cursor:pointer}
 .login-title{font-size:18px;font-weight:600;text-align:center;margin:0 0 4px}
 .login-sub{font-size:13px;color:var(--txt-mut);text-align:center;margin:0 0 22px}
 .lfield{margin-bottom:14px}

@@ -47,7 +47,10 @@ test("selects a LilyPond score as the main source", () => {
     { path: "score.ly", content: "\\score { \\relative c' { c1 } }" },
   ]);
   assert.equal(findCompileFile(data, undefined, "lilypond").path, "score.ly");
-  assert.throws(() => findCompileFile(data, undefined, "latex"), /Nessun file \.tex/);
+  assert.throws(
+    () => findCompileFile(data, undefined, "latex"),
+    (error) => error.errorCode === "COMPILE_NO_SOURCE" && error.params.extension === ".tex"
+  );
 });
 
 test("builds a constrained LilyPond PDF pipeline", () => {
@@ -70,13 +73,13 @@ test("parses LilyPond parameter strings without invoking a shell", () => {
     parseCompileArguments('--loglevel=WARNING -I "include musicali" -dno-point-and-click'),
     ["--loglevel=WARNING", "-I", "include musicali", "-dno-point-and-click"]
   );
-  assert.throws(() => parseCompileArguments('-I "non terminato'), /non terminati/);
+  assert.throws(() => parseCompileArguments('-I "unterminated'), (error) => error.errorCode === "LILYPOND_ARGUMENTS_UNTERMINATED");
   assert.equal(sanitizeLilypondArgsForStorage('-I "bozza'), '-I "bozza');
 });
 
 test("selects and constrains every supported LilyPond output format", () => {
   for (const format of ["pdf", "png", "svg", "ps", "eps"]) assert.equal(normalizeLilypondFormat(format), format);
-  assert.throws(() => normalizeLilypondFormat("jpg"), /non supportato/);
+  assert.throws(() => normalizeLilypondFormat("jpg"), (error) => error.errorCode === "LILYPOND_FORMAT_UNSUPPORTED");
   const profile = normalizeCompileProfile(
     { mode: "quick" },
     "lilypond",
@@ -108,7 +111,7 @@ test("collects all numbered artifacts for the selected format", async (t) => {
 test("rejects LaTeX tools in a LilyPond custom pipeline", () => {
   assert.throws(
     () => normalizeCompileProfile({ mode: "custom", steps: [{ tool: "pdflatex", args: ["[main]"] }] }, "lilypond", "main.ly", "lilypond"),
-    /non supportato/
+    (error) => error.errorCode === "COMPILE_TOOL_UNSUPPORTED"
   );
   assert.deepEqual(sanitizeCompileProfileForStorage({ mode: "bibtex" }, "lilypond"), { mode: "quick" });
 });

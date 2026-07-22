@@ -3,6 +3,7 @@
    vive in un cookie HttpOnly firmato dal server. */
 (function () {
   const $ = (id) => document.getElementById(id);
+  const t = (key, params) => window.IrisI18n.t(key, params);
   let ssoEnabled = false;
   let currentUser = null;
 
@@ -15,7 +16,10 @@
     let data = {};
     try { data = await res.json(); } catch (e) {}
     if (!res.ok) {
-      const err = new Error(data.error || "Errore di comunicazione con il server.");
+      const err = new Error();
+      err.code = data.errorCode || "SERVER_ERROR";
+      err.params = data.params || {};
+      err.message = window.IrisI18n.error(err);
       err.status = res.status;
       throw err;
     }
@@ -97,7 +101,7 @@
   async function doLogin() {
     const username = $("loginUser").value.trim();
     const password = $("loginPass").value;
-    if (!username || !password) { showError("Inserisci nome utente e password."); return; }
+    if (!username || !password) { showError(t("auth.required")); return; }
     const btn = $("loginBtn");
     btn.disabled = true;
     btn.classList.add("loading");
@@ -109,7 +113,7 @@
       hideError();
       showApp(user);
     } catch (err) {
-      showError(err.message || "Credenziali non valide. Riprova.");
+      showError(window.IrisI18n.error(err, "auth.invalidRetry"));
       $("loginPass").select();
     } finally {
       btn.disabled = false;
@@ -127,13 +131,13 @@
     const btn = $("ssoLoginBtn");
     if (btn) {
       btn.disabled = !ssoEnabled;
-      btn.title = ssoEnabled ? "Accedi con SSO" : "SSO non configurato sul backend";
+      btn.title = ssoEnabled ? t("auth.ssoSignIn") : t("auth.ssoDisabled");
     }
   }
 
   function ssoLogin() {
     if (!ssoEnabled) {
-      showError("SSO non configurato. Usa le credenziali locali o aggiorna la configurazione del backend.");
+      showError(t("auth.ssoNotConfigured"));
       return;
     }
     const btn = $("ssoLoginBtn");
@@ -155,16 +159,16 @@
     const newPassword = $("passwordNew").value;
     const confirmPassword = $("passwordConfirm").value;
     if (!currentPassword || !newPassword || !confirmPassword) {
-      passwordError("Compila tutti i campi.");
+      passwordError(t("password.allFields"));
       return;
     }
     if (newPassword.length < 10) {
-      passwordError("La nuova password deve contenere almeno 10 caratteri.");
+      passwordError(t("password.tooShort"));
       $("passwordNew").focus();
       return;
     }
     if (newPassword !== confirmPassword) {
-      passwordError("La conferma non coincide con la nuova password.");
+      passwordError(t("password.mismatch"));
       $("passwordConfirm").focus();
       return;
     }
@@ -177,10 +181,10 @@
         body: JSON.stringify({ currentPassword, newPassword }),
       });
       if (user) applyUserUI(user);
-      $("passwordHint").textContent = "Password aggiornata.";
+      $("passwordHint").textContent = t("password.updated");
       setTimeout(closePasswordModal, 650);
     } catch (err) {
-      passwordError(err.message || "Impossibile aggiornare la password.");
+      passwordError(window.IrisI18n.error(err, "password.updateFailed"));
     } finally {
       btn.disabled = false;
       btn.classList.remove("loading");
@@ -195,7 +199,7 @@
       const p = $("loginPass");
       const reveal = p.type === "password";
       p.type = reveal ? "text" : "password";
-      $("pwToggle").textContent = reveal ? "nascondi" : "mostra";
+      $("pwToggle").textContent = t(reveal ? "auth.hidePassword" : "auth.showPassword");
       p.focus();
     });
     document.querySelectorAll("[data-sso]").forEach((b) => b.addEventListener("click", () => ssoLogin()));
@@ -258,10 +262,15 @@
       showApp(user);
     } catch (e) {
       showLogin();
-      if (authError === "sso") showError("Accesso SSO non riuscito. Riprova o usa le credenziali locali.");
+      if (authError === "sso") showError(t("auth.ssoFailed"));
     }
   }
 
   window.IrisAuth = { showLogin, showApp };
-  boot();
+  document.addEventListener("iris:languagechange", () => {
+    const reveal = $("loginPass").type === "text";
+    $("pwToggle").textContent = t(reveal ? "auth.hidePassword" : "auth.showPassword");
+    void loadConfig();
+  });
+  window.IrisI18n.ready.then(boot);
 })();

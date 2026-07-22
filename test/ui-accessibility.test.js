@@ -85,7 +85,7 @@ test("word wrap is an opt-in persistent footer control", () => {
 test("open file tabs expose unsaved changes until persistence succeeds", () => {
   assert.match(app, /dirtyFiles:\s*new Map\(\)/);
   assert.match(app, /function markFileDirty\(id = state\.activeId\)/);
-  assert.match(app, /modifiche non salvate/);
+  assert.match(app, /tree\.dirty/);
   assert.match(app, /if \(!saved\) return false/);
   assert.match(css, /\.ftab\.dirty \.dot\{[^}]*opacity:1/);
   assert.match(css, /\.ftab \.dot\{[^}]*background:var\(--semantic-warning\)/);
@@ -103,8 +103,8 @@ test("project autosave is opt-in and uses a configurable long debounce", () => {
   assert.match(app, /key === "s"/);
   assert.match(app, /beforeunload/);
   assert.match(app, /hasUnsavedChanges\(\)/);
-  assert.match(app, /Salva le modifiche prima di compilare/);
-  assert.match(projects, /Uscire e scartarle\?/);
+  assert.match(app, /editor\.saveBeforeCompile/);
+  assert.match(projects, /projects\.unsavedConfirm/);
 });
 
 test("fundamental project actions expose matching keyboard shortcuts", () => {
@@ -120,9 +120,9 @@ test("fundamental project actions expose matching keyboard shortcuts", () => {
 test("settings use accessible tabs and a compact accordion", () => {
   const settings = html.slice(html.indexOf('id="settingsModal"'), html.indexOf('<div class="toasts"'));
   assert.match(settings, /role="tablist"[^>]*aria-orientation="vertical"/);
-  assert.equal((settings.match(/role="tab"/g) || []).length, 3);
-  assert.equal((settings.match(/role="tabpanel"/g) || []).length, 3);
-  assert.equal((settings.match(/class="set-accordion-trigger"/g) || []).length, 3);
+  assert.equal((settings.match(/role="tab"/g) || []).length, 4);
+  assert.equal((settings.match(/role="tabpanel"/g) || []).length, 4);
+  assert.equal((settings.match(/class="set-accordion-trigger"/g) || []).length, 4);
   assert.equal((settings.match(/data-close/g) || []).length, 1);
   assert.doesNotMatch(settings, /PRESTO|data-set="general"/);
   assert.match(css, /@media\(max-width:700px\)[\s\S]*\.set-nav\{display:none\}/);

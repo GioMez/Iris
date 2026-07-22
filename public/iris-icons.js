@@ -48,6 +48,7 @@
     "shield-lock": "<path d=\"M12 3a12 12 0 0 0 8.5 3a12 12 0 0 1 -8.5 15a12 12 0 0 1 -8.5 -15a12 12 0 0 0 8.5 -3\" /><path d=\"M11 11a1 1 0 1 0 2 0a1 1 0 1 0 -2 0\" /><path d=\"M12 12l0 2.5\" />",
     "file-code-2": "<path d=\"M10 12h-1v5h1\" /><path d=\"M14 12h1v5h-1\" /><path d=\"M14 3v4a1 1 0 0 0 1 1h4\" /><path d=\"M17 21h-10a2 2 0 0 1 -2 -2v-14a2 2 0 0 1 2 -2h7l5 5v11a2 2 0 0 1 -2 2\" />",
     "info-circle": "<path d=\"M3 12a9 9 0 1 0 18 0a9 9 0 0 0 -18 0\" /><path d=\"M12 9h.01\" /><path d=\"M11 12h1v4h1\" />",
+    "language": "<path d=\"M4 5h7\" /><path d=\"M7 4c0 4.5 -1.5 7.5 -4 9\" /><path d=\"M5 9c1.5 2 3.5 3.5 6 4\" /><path d=\"M12 20l4 -9l4 9\" /><path d=\"M14 17h4\" />",
   };
 
   function icon(name, className = "", label = "") {

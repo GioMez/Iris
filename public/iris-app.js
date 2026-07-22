@@ -1,6 +1,7 @@
 /* ===================== Iris · app ===================== */
 (function () {
   const $ = (id) => document.getElementById(id);
+  const t = (key, params) => window.IrisI18n.t(key, params);
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   const ti = (name, className = "", label = "") => window.IrisIcons.icon(name, className, label);
@@ -57,6 +58,7 @@
     untitledN: 0,
     attachFile: null,
     compiledArtifacts: [],
+    lastCompile: null,
     dirtyFiles: new Map(), // file id -> edit revision not yet persisted
     editRevision: 0,
   };
@@ -108,14 +110,14 @@
     state.engine = lilypond ? "lilypond" : (state.engine === "lilypond" ? "pdflatex" : state.engine);
     $("engineName").textContent = state.engine;
     $("stLanguage").textContent = lilypond ? "LilyPond" : "LaTeX";
-    $("engineBtn").title = lilypond ? "Compilatore LilyPond" : "Motore di compilazione LaTeX";
+    $("engineBtn").title = t(lilypond ? "editor.lilypondCompiler" : "editor.latexEngine");
     $("engineBtn").disabled = lilypond;
-    $("btnFormat").title = lilypond ? "Formatta il sorgente LilyPond" : "Formatta il sorgente LaTeX";
+    $("btnFormat").title = t(lilypond ? "editor.formatLilypond" : "editor.formatLatex");
     document.querySelectorAll("#engineMenu .mi").forEach((item) => {
       item.style.display = lilypond ? (item.dataset.engine === "lilypond" ? "" : "none") : (item.dataset.engine === "lilypond" ? "none" : "");
     });
     const newFileButton = document.querySelector('[data-new-type="file"]');
-    if (newFileButton) newFileButton.textContent = lilypond ? "File .ly" : "File .tex";
+    if (newFileButton) newFileButton.textContent = t(lilypond ? "tree.fileLy" : "tree.fileTex");
     updateTexPathControl();
   }
 
@@ -202,7 +204,7 @@
     const before = area.value.slice(0, pos);
     const ln = before.split("\n").length;
     const col = pos - before.lastIndexOf("\n");
-    $("stCursor").textContent = `Ln ${ln}, Col ${col}`;
+    $("stCursor").textContent = t("status.cursor", { line: ln, column: col });
     // re-mark current gutter line
     const cur = before.split("\n").length;
     gutter.querySelectorAll(".gl").forEach((el, i) => el.classList.toggle("cur", i + 1 === cur));
@@ -226,8 +228,9 @@
     area.setAttribute("wrap", state.wordWrap ? "soft" : "off");
     $("btnWrap").classList.toggle("on", state.wordWrap);
     $("btnWrap").setAttribute("aria-checked", state.wordWrap ? "true" : "false");
-    $("btnWrap").setAttribute("aria-label", `${state.wordWrap ? "Disattiva" : "Attiva"} ritorno a capo automatico`);
-    $("btnWrap").title = `${state.wordWrap ? "Disattiva" : "Attiva"} ritorno a capo automatico`;
+    const wrapLabel = t(state.wordWrap ? "status.wrapDisable" : "status.wrapEnable");
+    $("btnWrap").setAttribute("aria-label", wrapLabel);
+    $("btnWrap").title = wrapLabel;
     if (state.wordWrap) area.scrollLeft = 0;
     paint();
     scheduleScrollSync();
@@ -357,9 +360,9 @@
     const compilerPath = currentCompilerPath();
     const command = compilerPath ? compilerPath.replace(/[\/\\]+$/, "") + "/" + engine : engine;
     if (isLilyPondProject()) {
-      return [command, `--${state.lilypondFormat}`, "--output=output/<nome>", state.lilypondArgs.trim(), "file.ly"].filter(Boolean).join(" ");
+      return [command, `--${state.lilypondFormat}`, "--output=output/<name>", state.lilypondArgs.trim(), "file.ly"].filter(Boolean).join(" ");
     }
-    return compilerPath ? command : command + " (dal PATH del backend)";
+    return compilerPath ? command : `${command} (${t("editor.pathBackend")})`;
   }
   function updateCompileCommandPreview() {
     const el = $("compileCommandPreview");
@@ -418,7 +421,7 @@
       const row = document.createElement("div");
       row.className = "compile-step";
       row.innerHTML = `<select class="select" data-step-tool>
-          <option value="[engine]">motore scelto</option>
+          <option value="[engine]">${esc(t("settings.selectedEngine"))}</option>
           <option value="lilypond">lilypond</option>
           <option value="pdflatex">pdflatex</option>
           <option value="xelatex">xelatex</option>
@@ -429,7 +432,7 @@
           <option value="makeindex">makeindex</option>
         </select>
         <input class="input" data-step-args spellcheck="false" autocomplete="off">
-        <button class="node-act danger" type="button" data-step-del title="Elimina step" aria-label="Elimina step">${ti("trash")}</button>`;
+        <button class="node-act danger" type="button" data-step-del title="${esc(t("settings.deleteStep"))}" aria-label="${esc(t("settings.deleteStep"))}">${ti("trash")}</button>`;
       row.querySelector("[data-step-tool]").value = step.tool;
       row.querySelectorAll("[data-step-tool] option").forEach((option) => {
         if (option.value === "[engine]") return;
@@ -463,17 +466,16 @@
     input.value = compilerPath;
     input.disabled = locked;
     $("projectTypeLabel").textContent = lilypond ? "LilyPond (.ly)" : "LaTeX (.tex)";
-    $("compilerPathLabel").textContent = lilypond ? "Percorso dei binari LilyPond" : "Percorso dei binari LaTeX";
-    $("compileSettingsDesc").innerHTML = lilypond
-      ? "Il progetto contiene sorgenti musicali <code>.ly</code>: Iris invocherà <code>lilypond</code> e produrrà il PDF in <code>output/</code>."
-      : "Il progetto contiene sorgenti <code>.tex</code>: scegli il motore e la pipeline LaTeX da invocare.";
+    $("compilerPathLabel").textContent = t(lilypond ? "settings.lilypondBinaryPath" : "settings.latexBinaryPath");
+    $("compileSettingsDesc").textContent = t(lilypond ? "settings.compileDescriptionLilypond" : "settings.compileDescriptionLatex");
     $("lilypondArgsField").style.display = lilypond ? "" : "none";
     $("lilypondArgs").value = state.lilypondArgs;
     $("lilypondFormatField").style.display = lilypond ? "" : "none";
     $("lilypondFormat").value = state.lilypondFormat;
-    hint.innerHTML = locked
-      ? `${ti("info-circle", "hint-ti")}configurato dal deployment Docker Compose; modifica il mapping nel file <b style="color:var(--semantic-info);margin:0 3px">docker-compose.yml</b>.`
-      : `${ti("info-circle", "hint-ti")}se vuoto usa il <b style="color:var(--semantic-info);margin:0 3px">PATH</b> del backend; in alternativa indica la cartella che contiene <b style="color:var(--semantic-info);margin:0 3px">${lilypond ? "lilypond" : "pdflatex"}</b>.`;
+    const pathHint = locked
+      ? t("settings.pathHintLocked")
+      : t("settings.pathHintUnlocked", { executable: lilypond ? "lilypond" : "pdflatex" });
+    hint.innerHTML = `${ti("info-circle", "hint-ti")}<span>${esc(pathHint)}</span>`;
     updateCompileCommandPreview();
   }
   async function loadRuntimeConfig() {
@@ -508,10 +510,11 @@
       t.className = "ftab" + (id === state.activeId ? " on" : "") + (dirty ? " dirty" : "");
       t.setAttribute("role", "tab");
       t.setAttribute("aria-selected", id === state.activeId ? "true" : "false");
-      t.setAttribute("aria-label", `${f.name}${dirty ? ", modifiche non salvate" : ""}`);
-      t.title = dirty ? `${f.name} — modifiche non salvate` : f.name;
+      t.setAttribute("aria-label", dirty ? `${f.name}, ${window.IrisI18n.t("tree.dirty")}` : f.name);
+      t.title = dirty ? `${f.name} — ${window.IrisI18n.t("tree.dirty")}` : f.name;
       t.tabIndex = 0;
-      t.innerHTML = `${fileIcon(f.kind)}<span class="tab-name"><span class="dot" aria-hidden="true"></span><span>${esc(f.name)}</span></span><button class="x" type="button" data-x aria-label="Chiudi ${esc(f.name)}${dirty ? " con modifiche non salvate" : ""}">${ti("x")}</button>`;
+      const closeLabel = window.IrisI18n.t(dirty ? "tree.closeDirtyTab" : "tree.closeTab", { name: f.name });
+      t.innerHTML = `${fileIcon(f.kind)}<span class="tab-name"><span class="dot" aria-hidden="true"></span><span>${esc(f.name)}</span></span><button class="x" type="button" data-x aria-label="${esc(closeLabel)}">${ti("x")}</button>`;
       t.addEventListener("click", (e) => {
         if (e.target.closest("[data-x]")) { closeTab(id); return; }
         openFile(id);
@@ -534,7 +537,7 @@
   function openFile(id) {
     const f = findFile(id);
     if (!f) return;
-    if (f.generated || f.readOnly) { toast("File generato disponibile nella cartella output/", "err"); return; }
+    if (f.generated || f.readOnly) { toast(t("tree.generatedFile"), "err"); return; }
     closeResponsiveSidebar();
     if (f.kind === "img") { setWorkspaceView("preview"); previewImage(f); markTree(id); return; }
     setWorkspaceView("editor");
@@ -640,7 +643,7 @@
 
   function updateNewItemHint() {
     const dest = folderNodeByPath(newItemDestPath()) || { path: "" };
-    $("newItemHint").textContent = `Creato in ${dest.path || "/ (radice)"}. Usa un nome senza separatori di cartella.`;
+    $("newItemHint").textContent = t("tree.createdIn", { destination: dest.path || `/ (${t("common.root")})` });
   }
 
   function uniqueName(parent, base, ext) {
@@ -658,12 +661,12 @@
     document.querySelectorAll("[data-new-type]").forEach((b) => b.classList.toggle("on", b.dataset.newType === newItemMode));
     const dest = folderNodeByPath(newItemDestPath()) || { nodes: project.nodes, path: "" };
     const isFolder = newItemMode === "folder";
-    $("newItemLabel").textContent = isFolder ? "Nome cartella" : "Nome file";
+    $("newItemLabel").textContent = t(isFolder ? "tree.folderName" : "tree.fileName");
     $("newItemInput").value = isFolder
-      ? uniqueName(dest.nodes, "nuova-cartella", "")
-      : uniqueName(dest.nodes, `senza-nome-${state.untitledN + 1}`, ".tex");
+      ? uniqueName(dest.nodes, t("tree.newFolderBase"), "")
+      : uniqueName(dest.nodes, t("tree.untitledBase", { number: state.untitledN + 1 }), ".tex");
     if (!isFolder && isLilyPondProject()) {
-      $("newItemInput").value = uniqueName(dest.nodes, `senza-nome-${state.untitledN + 1}`, ".ly");
+      $("newItemInput").value = uniqueName(dest.nodes, t("tree.untitledBase", { number: state.untitledN + 1 }), ".ly");
     }
     updateNewItemHint();
     $("newItemInput").classList.remove("nomatch");
@@ -691,13 +694,13 @@
     if (newItemMode === "file" && name && !/\.[A-Za-z0-9]{1,12}$/.test(name)) name += isLilyPondProject() ? ".ly" : ".tex";
     if (!validTreeName(name)) {
       input.classList.add("nomatch");
-      hint.textContent = "Il nome non puo' essere vuoto e non puo' contenere / o \\.";
+      hint.textContent = t("tree.invalidName");
       input.focus();
       return;
     }
     if (hasNamed(dest.nodes, name)) {
       input.classList.add("nomatch");
-      hint.textContent = "Esiste gia' un elemento con questo nome nella cartella scelta.";
+      hint.textContent = t("tree.duplicateDestination");
       input.focus();
       return;
     }
@@ -708,7 +711,7 @@
       closeNewItem();
       renderTree();
       void persistWhenDocumentClean();
-      toast(`Creata cartella ${name}`);
+      toast(t("tree.folderCreated", { name }));
       return;
     }
 
@@ -716,22 +719,22 @@
     const id = "untitled_" + state.untitledN;
     const filePath = joinPath(dest.path, name);
     const kind = inferKind(name, isLilyPondProject() ? "ly" : "tex");
-    dest.nodes.push({ type: "file", id, name, kind, path: filePath, content: kind === "ly" ? NEWLY : NEWDOC });
+    dest.nodes.push({ type: "file", id, name, kind, path: filePath, content: kind === "ly" ? NEWLY : newDocumentTemplate() });
     closeNewItem();
     renderTree();
     openFile(id);
     markFileDirty(id);
     schedulePersist();
-    toast(`Creato ${filePath}`);
+    toast(t("tree.fileCreated", { path: filePath }));
   }
 
   function openTreeRename(node, parent, parentPath) {
-    if (node.readOnly || node.generated) { toast("Gli output generati non si modificano dall'albero", "err"); return; }
+    if (node.readOnly || node.generated) { toast(t("tree.generatedReadOnly"), "err"); return; }
     treeAction = { node, parent, parentPath };
     const isFolder = node.type === "folder";
-    $("treeRenameTitle").textContent = isFolder ? "Rinomina cartella" : "Rinomina file";
-    $("treeRenameLabel").textContent = isFolder ? "Nome cartella" : "Nome file";
-    $("treeRenameHint").textContent = "Usa un nome senza separatori di cartella.";
+    $("treeRenameTitle").textContent = t(isFolder ? "tree.renameFolder" : "tree.renameFile");
+    $("treeRenameLabel").textContent = t(isFolder ? "tree.folderName" : "tree.fileName");
+    $("treeRenameHint").textContent = t("tree.nameHint");
     $("treeRenameInput").value = node.name || "";
     $("treeRenameInput").classList.remove("nomatch");
     $("treeRenameModal").classList.add("on");
@@ -749,13 +752,13 @@
     const hint = $("treeRenameHint");
     if (!validTreeName(name)) {
       input.classList.add("nomatch");
-      hint.textContent = "Il nome non puo' essere vuoto e non puo' contenere / o \\.";
+      hint.textContent = t("tree.invalidName");
       input.focus();
       return;
     }
     if (hasSiblingNamed(treeAction.parent, node, name)) {
       input.classList.add("nomatch");
-      hint.textContent = "Esiste gia' un elemento con questo nome nella stessa cartella.";
+      hint.textContent = t("tree.duplicateSibling");
       input.focus();
       return;
     }
@@ -782,17 +785,15 @@
     renderTabs();
     renderOutline();
     void persistWhenDocumentClean();
-    toast(`Rinominato “${name}”`);
+    toast(t("tree.renamed", { name }));
   }
 
   function openTreeDelete(node, parent, parentPath) {
-    if (node.readOnly || node.generated) { toast("Gli output generati vengono sovrascritti alla prossima compilazione", "err"); return; }
+    if (node.readOnly || node.generated) { toast(t("tree.generatedOverwrite"), "err"); return; }
     treeAction = { node, parent, parentPath };
     const isFolder = node.type === "folder";
-    $("treeDeleteTitle").textContent = isFolder ? "Elimina cartella" : "Elimina file";
-    $("treeDeleteText").innerHTML = isFolder
-      ? `Vuoi eliminare la cartella <b>${esc(node.name)}</b> e tutto il suo contenuto? L'azione non e' reversibile.`
-      : `Vuoi eliminare il file <b>${esc(node.name)}</b>? L'azione non e' reversibile.`;
+    $("treeDeleteTitle").textContent = t(isFolder ? "tree.deleteFolder" : "tree.deleteFile");
+    $("treeDeleteText").textContent = t(isFolder ? "tree.deleteFolderConfirm" : "tree.deleteFileConfirm", { name: node.name });
     $("treeDeleteModal").classList.add("on");
   }
   function closeTreeDelete() {
@@ -829,7 +830,7 @@
       renderOutline();
     }
     void persistWhenDocumentClean();
-    toast(`Eliminato “${node.name}”`);
+    toast(t("tree.deleted", { name: node.name }));
   }
 
   function renderTree() {
@@ -849,8 +850,8 @@
           el.innerHTML = `<span class="tw">${ti(n.open ? "chevron-down" : "chevron-right")}</span><span class="fi fold">${ti(n.open ? "folder-open" : "folder")}</span><span class="nm">${esc(n.name)}</span>` +
             (n.generated ? `<span class="tag">output</span>` : "") +
             (n.readOnly || n.generated ? "" : `<span class="node-tools">` +
-              `<button class="node-act" type="button" data-act="rename" title="Rinomina" aria-label="Rinomina ${esc(n.name)}">${ti("edit")}</button>` +
-              `<button class="node-act danger" type="button" data-act="delete" title="Elimina" aria-label="Elimina ${esc(n.name)}">${ti("trash")}</button>` +
+              `<button class="node-act" type="button" data-act="rename" title="${esc(t("common.rename"))}" aria-label="${esc(t("tree.renameAria", { name: n.name }))}">${ti("edit")}</button>` +
+              `<button class="node-act danger" type="button" data-act="delete" title="${esc(t("common.delete"))}" aria-label="${esc(t("tree.deleteAria", { name: n.name }))}">${ti("trash")}</button>` +
             `</span>`);
           const selectFolder = () => {
             n.open = !n.open;
@@ -876,8 +877,8 @@
           el.innerHTML = `<span class="tw"></span>${fileIcon(n.kind)}<span class="nm">${esc(n.name)}</span>` +
             (n.generated ? `<span class="tag">gen</span>` : (n.kind === "img" ? `<span class="tag">img</span>` : "")) +
             (n.readOnly || n.generated ? "" : `<span class="node-tools">` +
-              `<button class="node-act" type="button" data-act="rename" title="Rinomina" aria-label="Rinomina ${esc(n.name)}">${ti("edit")}</button>` +
-              `<button class="node-act danger" type="button" data-act="delete" title="Elimina" aria-label="Elimina ${esc(n.name)}">${ti("trash")}</button>` +
+              `<button class="node-act" type="button" data-act="rename" title="${esc(t("common.rename"))}" aria-label="${esc(t("tree.renameAria", { name: n.name }))}">${ti("edit")}</button>` +
+              `<button class="node-act danger" type="button" data-act="delete" title="${esc(t("common.delete"))}" aria-label="${esc(t("tree.deleteAria", { name: n.name }))}">${ti("trash")}</button>` +
             `</span>`);
           const selectFile = () => {
             state.selectedFolder = folderSlash(parentPath);
@@ -909,9 +910,9 @@
   function renderOutline() {
     const f = findFile(state.activeId);
     const box = $("outline");
-    if (!f || (f.kind !== "tex" && f.kind !== "ly")) { box.innerHTML = `<div class="ol-empty">Nessuna struttura</div>`; return; }
+    if (!f || (f.kind !== "tex" && f.kind !== "ly")) { box.innerHTML = `<div class="ol-empty">${esc(t("tree.noOutline"))}</div>`; return; }
     const items = (f.kind === "ly" ? IrisLilyPond : IrisLatex).outline(f.content);
-    if (!items.length) { box.innerHTML = `<div class="ol-empty">Nessuna struttura nel documento</div>`; return; }
+    if (!items.length) { box.innerHTML = `<div class="ol-empty">${esc(t("tree.noDocumentOutline"))}</div>`; return; }
     box.innerHTML = "";
     items.forEach((it) => {
       const el = document.createElement("div");
@@ -1018,7 +1019,7 @@
   function requestPdfLayout() {
     layoutPdfPages().catch((err) => {
       console.error("PDF preview render failed", err);
-      toast("Impossibile aggiornare l'anteprima PDF", "err");
+      toast(t("preview.refreshFailed"), "err");
     });
   }
 
@@ -1067,22 +1068,22 @@
   }
   async function compile() {
     if (state.dirtyFiles.size) {
-      toast("Salva le modifiche prima di compilare", "err");
+      toast(t("editor.saveBeforeCompile"), "err");
       $("btnSave").focus();
       return;
     }
     const f = docFileForCompile();
-    if (!f) { toast("Nessun documento da compilare", "err"); return; }
+    if (!f) { toast(t("editor.nothingToCompile"), "err"); return; }
     setWorkspaceView("preview");
     setView("preview");
     $("compiling").classList.add("on");
     $("compileMsg").textContent = `${state.engine} ${f.name}…`;
-    $("stState").textContent = "compilazione…";
+    $("stState").textContent = t("status.compiling");
     $("stDot").className = "dotok";
     $("btnCompile").disabled = true;
     const t0 = performance.now();
     try {
-      if (!window.IrisProjects || !window.IrisProjects.compileCurrent) throw new Error("Backend progetti non disponibile.");
+      if (!window.IrisProjects || !window.IrisProjects.compileCurrent) throw new Error(t("editor.projectsBackendUnavailable"));
       const res = await window.IrisProjects.compileCurrent(projectSnapshot(), {
         engine: state.engine,
         mainPath: f.path,
@@ -1107,24 +1108,28 @@
       }
     } catch (err) {
       const ms = ((performance.now() - t0) / 1000).toFixed(1);
-      const res = { success: false, log: `Iris: ${err.message || "compilazione non riuscita"}`, warnings: [], errors: [err.message || "Errore di compilazione"] };
+      const message = err.message || t("editor.compileFailed");
+      const res = { success: false, log: t("editor.compileFailedLog", { message }), warnings: [], errors: [err.message || t("editor.compileError")] };
       buildLog(f, res, ms);
       updateCompileStatus(res, ms);
       setView("log");
-      toast("Compilazione non riuscita", "err");
+      toast(t("editor.compileFailed"), "err");
     } finally {
       $("compiling").classList.remove("on");
       $("btnCompile").disabled = false;
     }
   }
-  function buildLog(f, res, ms) {
+  function buildLog(f, res, ms, remember = true) {
+    if (remember) state.lastCompile = { f, res, ms, compiledAt: new Date() };
     const cls = res.success ? "ok" : "err";
     const artifacts = Array.isArray(res.artifacts) ? res.artifacts : [];
     const totalSize = artifacts.reduce((sum, artifact) => sum + (artifact.size || 0), 0) || res.pdfSize || 0;
     const outputLabel = res.outputName || res.pdfName || f.name.replace(/\.(tex|ly)$/, `.${res.outputFormat || "pdf"}`);
+    const artifactSummary = artifacts.length > 1 ? t("editor.artifacts", { count: artifacts.length }) : "";
+    const sizeSummary = totalSize ? ` · ${(totalSize / 1024).toFixed(0)} KB` : "";
     const summary = res.success
-      ? `\n✓ Compilazione completata in ${ms}s — ${outputLabel}${artifacts.length > 1 ? ` · ${artifacts.length} artefatti` : ""}${totalSize ? ` · ${(totalSize / 1024).toFixed(0)} KB` : ""}.`
-      : `\n! Compilazione fallita in ${ms}s${res.timedOut ? " · timeout" : ""}.`;
+      ? `\n✓ ${t("editor.compileSuccessSummary", { seconds: ms, output: outputLabel, artifacts: artifactSummary, size: sizeSummary })}`
+      : `\n! ${t("editor.compileFailureSummary", { seconds: ms, timeout: res.timedOut ? t("editor.timeout") : "" })}`;
     const raw = `${res.log || ""}${summary}`;
     $("logView").innerHTML = raw.split(/\r?\n/).map((line) => {
       const rowClass = /^!|error|fatal|failed|fallita/i.test(line) ? "err"
@@ -1134,23 +1139,24 @@
       return `<div class="log-l ${rowClass}">${esc(line || " ")}</div>`;
     }).join("");
   }
-  function updateCompileStatus(res, ms) {
+  function updateCompileStatus(res, ms, compiledAt = state.lastCompile?.compiledAt || new Date()) {
     const errN = (res.errors || []).length || (res.success ? 0 : 1);
     const warnN = (res.warnings || []).length;
     const artifacts = Array.isArray(res.artifacts) ? res.artifacts : [];
     const totalSize = artifacts.reduce((sum, artifact) => sum + (artifact.size || 0), 0) || res.pdfSize || 0;
     const format = String(res.outputFormat || (res.pdfSize ? "pdf" : "")).toUpperCase();
-    $("stTime").textContent = `compilato ${new Date().toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" })} · ${ms}s`;
-    $("stMath").textContent = totalSize ? `${format || "Output"} ${(totalSize / 1024).toFixed(0)} KB${artifacts.length > 1 ? ` · ${artifacts.length} file` : ""}` : "";
+    const time = window.IrisI18n.formatDate(compiledAt, { hour: "2-digit", minute: "2-digit" });
+    $("stTime").textContent = t("status.compiled", { time, seconds: ms });
+    $("stMath").textContent = totalSize ? `${format || t("toolbar.output")} ${(totalSize / 1024).toFixed(0)} KB${artifacts.length > 1 ? t("status.artifacts", { count: artifacts.length }) : ""}` : "";
     const we = $("stWarn"), ee = $("stErr");
-    if (warnN) { we.style.display = ""; we.innerHTML = `${ti("alert-triangle")}<span>${warnN} warning</span>`; } else we.style.display = "none";
+    if (warnN) { we.style.display = ""; we.innerHTML = `${ti("alert-triangle")}<span>${esc(t("status.warnings", { count: warnN }))}</span>`; } else we.style.display = "none";
     if (!res.success || errN) {
-      ee.style.display = ""; ee.innerHTML = `${ti("circle-x")}<span>${errN} error${errN > 1 ? "i" : "e"}</span>`;
-      $("stState").textContent = "errori"; $("stDot").className = "doterr";
+      ee.style.display = ""; ee.innerHTML = `${ti("circle-x")}<span>${esc(t("status.errors", { count: errN }))}</span>`;
+      $("stState").textContent = t("status.errors"); $("stDot").className = "doterr";
       $("stState").parentElement.classList.remove("accent"); $("stState").parentElement.classList.add("err");
     } else {
       ee.style.display = "none";
-      $("stState").textContent = "pronto"; $("stDot").className = "dotok";
+      $("stState").textContent = t("status.ready"); $("stDot").className = "dotok";
       $("stState").parentElement.classList.add("accent"); $("stState").parentElement.classList.remove("err");
     }
   }
@@ -1168,7 +1174,7 @@
     state.pdfBlobUrl = null;
     state.pdfName = "";
     $("dlBtn").classList.remove("output-ready");
-    $("dlBtn").innerHTML = `${ti("download", "ic")}<span class="dl-label workflow-label">Output</span>`;
+    $("dlBtn").innerHTML = `${ti("download", "ic")}<span class="dl-label workflow-label">${esc(t("toolbar.output"))}</span>`;
   }
   function prepareCompiledArtifacts(res) {
     clearCompiledArtifacts();
@@ -1214,7 +1220,7 @@
       $("pgTot").textContent = state.pages.length || "–";
       $("pgCur").textContent = state.pages.length ? "1" : "–";
     } else {
-      $("pvEmpty").innerHTML = `<div class="big success">${ti("circle-check")}</div>${artifacts.length} file ${esc(format.toUpperCase())} generat${artifacts.length === 1 ? "o" : "i"}.<br>Usa <b>Scarica</b> o apri la cartella <b>output/</b>.`;
+      $("pvEmpty").innerHTML = `<div class="big success">${ti("circle-check")}</div><span>${esc(t("preview.generated", { count: artifacts.length, format: format.toUpperCase() }))}</span>`;
       $("pvEmpty").style.display = "";
       $("pgTot").textContent = "–";
       $("pgCur").textContent = "–";
@@ -1316,7 +1322,7 @@
 
   /* ---------------- attach ---------------- */
   function folderOptions(selectedPath = state.selectedFolder) {
-    const opts = [`<option value="">/ (radice)</option>`];
+    const opts = [`<option value="">/ (${esc(t("common.root"))})</option>`];
     const add = (nodes, parentPath) => {
       (nodes || []).forEach((n) => {
         if (n.type !== "folder") return;
@@ -1388,7 +1394,7 @@
     renderTree();
     void persistWhenDocumentClean();
     $("attachModal").classList.remove("on");
-    toast(`“${name}” caricato in ${dest || "/"}`);
+    toast(t("attach.uploaded", { name, destination: dest || "/" }));
   }
 
   /* ---------------- fonts ---------------- */
@@ -1410,8 +1416,8 @@
         renderFontList();
         applyFont(fam);
         void persistWhenDocumentClean();
-        toast(`Font “${file.name}” caricato`);
-      } catch (e) { toast("Impossibile caricare il font", "err"); }
+        toast(t("settings.uploadedFont", { name: file.name }));
+      } catch (e) { toast(t("settings.fontUploadFailed"), "err"); }
     };
     reader.readAsDataURL(file);
   }
@@ -1435,13 +1441,13 @@
       document.fonts.add(ff);
       return true;
     } catch (e) {
-      console.warn("Font non caricabile", font.name, e);
+      console.warn("Font could not be loaded", font.name, e);
       return false;
     }
   }
   function renderFontList() {
     const box = $("fontList");
-    if (!state.fonts.length) { box.innerHTML = `<div class="hint" style="margin:0">Nessun font personalizzato. Quelli di sistema restano disponibili.</div>`; return; }
+    if (!state.fonts.length) { box.innerHTML = `<div class="hint" style="margin:0">${esc(t("settings.noCustomFonts"))}</div>`; return; }
     box.innerHTML = "";
     state.fonts.forEach((fo) => {
       const el = document.createElement("div");
@@ -1449,7 +1455,7 @@
       const active = state.appliedFont === fo.family;
       el.innerHTML = `<div class="glyph" style="font-family:'${fo.family}'">Ag</div>
         <div><div class="nm" style="font-family:'${fo.family}'">${esc(fo.name)}</div><div class="fm">${esc(fo.path || fo.family)}</div></div>
-        <div class="use"><button class="pill${active ? " active" : ""}">${active ? `${ti("check")}<span>in uso</span>` : "usa nel progetto"}</button></div>`;
+        <div class="use"><button class="pill${active ? " active" : ""}">${active ? `${ti("check")}<span>${esc(t("settings.fontInUse"))}</span>` : esc(t("settings.useFont"))}</button></div>`;
       el.querySelector(".pill").addEventListener("click", () => applyFont(active ? null : fo.family));
       box.appendChild(el);
     });
@@ -1466,7 +1472,7 @@
   /* ---------------- download compiled output ---------------- */
   function downloadPdf() {
     if (!state.compiledArtifacts.length) {
-      toast("Compila prima di scaricare l'output", "err");
+      toast(t("editor.downloadFirst"), "err");
       return;
     }
     state.compiledArtifacts.forEach((artifact, index) => {
@@ -1482,7 +1488,7 @@
   }
 
   /* ---------------- new / open / save ---------------- */
-  const NEWDOC = `\\documentclass[11pt]{article}\n\\usepackage[utf8]{inputenc}\n\n\\title{Nuovo documento}\n\\author{}\n\\date{\\today}\n\n\\begin{document}\n\\maketitle\n\n\\section{}\n\n\\end{document}`;
+  const newDocumentTemplate = () => `\\documentclass[11pt]{article}\n\\usepackage[utf8]{inputenc}\n\n\\title{${t("templates.newDocument")}}\n\\author{}\n\\date{\\today}\n\n\\begin{document}\n\\maketitle\n\n\\section{}\n\n\\end{document}`;
   const NEWLY = `\\version "2.24.0"\n\n\\score {\n  \\relative c' {\n    \\key c \\major\n    \\time 4/4\n    c4 d e f | g1 \\bar "|."\n  }\n  \\layout { }\n}`;
   function newFile() {
     openNewItem("file");
@@ -1490,7 +1496,7 @@
   async function saveProject() {
     clearTimeout(persistT);
     const saved = await persist();
-    toast(saved ? "Documento salvato" : "Salvataggio non riuscito", saved ? "" : "err");
+    toast(t(saved ? "editor.documentSaved" : "editor.saveFailed"), saved ? "" : "err");
     return saved;
   }
   function openExternal(file) {
@@ -1499,7 +1505,7 @@
       const id = "open_" + Date.now();
       const kind = inferKind(file.name, isLilyPondProject() ? "ly" : "tex");
       project.nodes.push({ type: "file", id, name: file.name, kind, path: file.name, content: reader.result });
-      renderTree(); openFile(id); markFileDirty(id); schedulePersist(); toast(`Aperto ${file.name}`);
+      renderTree(); openFile(id); markFileDirty(id); schedulePersist(); toast(t("editor.opened", { name: file.name }));
     };
     reader.readAsText(file);
   }
@@ -1525,7 +1531,7 @@
       markFileDirty(f.id);
       area.selectionStart = area.selectionEnd = Math.min(pos, area.value.length);
       paint(); schedulePersist();
-      toast("Codice formattato");
+      toast(t("editor.formatted"));
     });
     $("btnSave").addEventListener("click", saveProject);
     $("btnNew").addEventListener("click", newFile);
@@ -1693,7 +1699,7 @@
     $("treeRenameOk").addEventListener("click", confirmTreeRename);
     $("treeRenameInput").addEventListener("input", () => {
       $("treeRenameInput").classList.remove("nomatch");
-      $("treeRenameHint").textContent = "Usa un nome senza separatori di cartella.";
+      $("treeRenameHint").textContent = t("tree.nameHint");
     });
     $("treeRenameInput").addEventListener("keydown", (e) => {
       if (e.key === "Enter") { e.preventDefault(); confirmTreeRename(); }
@@ -1980,7 +1986,7 @@
     area.value = area.value.replace(re, () => rep);
     commitEditor();
     fState.idx = 0; findCompute();
-    toast(`${n} occorrenz${n > 1 ? "e sostituite" : "a sostituita"}`);
+    toast(t("find.replaced", { count: n }));
   }
 
   /* ---------------- IrisApp: bridge used by the projects layer ---------------- */
@@ -2005,6 +2011,7 @@
       state.pdfLoadGeneration += 1;
       void releasePdfDocument();
       clearCompiledArtifacts();
+      state.lastCompile = null;
       state.pages = []; state.curPage = 1;
       state.untitledN = data.untitledN || 0;
       state.autoSave = data.autoSave === true;
@@ -2031,9 +2038,9 @@
       renderTabs();
       // reset preview / status
       $("pvPages").innerHTML = ""; $("logView").innerHTML = "";
-      $("pvEmpty").innerHTML = `<div class="big">${ti("file-type-pdf")}</div>Premi <b>Compila</b> per generare l'output.`;
+      $("pvEmpty").innerHTML = `<div class="big">${ti("file-type-pdf")}</div><span>${esc(t("preview.empty"))}</span>`;
       $("pvEmpty").style.display = ""; $("pgTot").textContent = "–"; $("pgCur").textContent = "–";
-      $("stTime").textContent = "non ancora compilato";
+      $("stTime").textContent = t("status.neverCompiled");
       $("stWarn").style.display = "none"; $("stErr").style.display = "none"; $("stMath").textContent = "";
       setView("preview");
 
@@ -2050,10 +2057,70 @@
   };
 
   /* ---------------- boot ---------------- */
-  loadLayout();
-  loadRuntimeConfig();
-  renderFontList();
-  renderCompileProfile();
-  updateZoomLabel();
-  wire();
+  function refreshLocalizedUi() {
+    updateProjectTypeUi();
+    updateCursor();
+    setWordWrap(state.wordWrap);
+    renderCompileProfile();
+    updateTexPathControl();
+    renderTabs();
+    renderTree();
+    renderOutline();
+    renderFontList();
+
+    if ($("treeNewModal").classList.contains("on")) {
+      const destination = $("newItemDest").value;
+      const isFolder = newItemMode === "folder";
+      $("newItemDest").innerHTML = folderOptions(destination);
+      $("newItemDest").value = destination;
+      $("newItemLabel").textContent = t(isFolder ? "tree.folderName" : "tree.fileName");
+      updateNewItemHint();
+    }
+
+    if (treeAction && $("treeRenameModal").classList.contains("on")) {
+      const isFolder = treeAction.node.type === "folder";
+      $("treeRenameTitle").textContent = t(isFolder ? "tree.renameFolder" : "tree.renameFile");
+      $("treeRenameLabel").textContent = t(isFolder ? "tree.folderName" : "tree.fileName");
+      $("treeRenameHint").textContent = t("tree.nameHint");
+    }
+
+    if (treeAction && $("treeDeleteModal").classList.contains("on")) {
+      const isFolder = treeAction.node.type === "folder";
+      $("treeDeleteTitle").textContent = t(isFolder ? "tree.deleteFolder" : "tree.deleteFile");
+      $("treeDeleteText").textContent = t(isFolder ? "tree.deleteFolderConfirm" : "tree.deleteFileConfirm", {
+        name: treeAction.node.name,
+      });
+    }
+
+    if ($("attachModal").classList.contains("on")) {
+      const destination = $("attachDest").value;
+      $("attachDest").innerHTML = folderOptions(destination);
+      $("attachDest").value = destination;
+    }
+
+    if (state.lastCompile) {
+      const { f, res, ms, compiledAt } = state.lastCompile;
+      buildLog(f, res, ms, false);
+      updateCompileStatus(res, ms, compiledAt);
+    } else if ($("compiling").classList.contains("on")) {
+      $("stState").textContent = t("status.compiling");
+    } else {
+      $("stState").textContent = t("status.ready");
+      $("stTime").textContent = t("status.neverCompiled");
+      if (!state.compiledArtifacts.length && !state.pdfDocument) {
+        $("pvEmpty").innerHTML = `<div class="big">${ti("file-type-pdf")}</div><span>${esc(t("preview.empty"))}</span>`;
+      }
+    }
+    if (!state.compiledArtifacts.length) clearCompiledArtifacts();
+  }
+
+  document.addEventListener("iris:languagechange", refreshLocalizedUi);
+  window.IrisI18n.ready.then(() => {
+    loadLayout();
+    loadRuntimeConfig();
+    renderFontList();
+    renderCompileProfile();
+    updateZoomLabel();
+    wire();
+  });
 })();

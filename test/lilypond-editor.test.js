@@ -28,6 +28,6 @@ test("formats and outlines LilyPond source blocks", () => {
   assert.match(formatted, /\n  \\relative/);
   assert.match(formatted, /\n    c1/);
   const outline = lilypond.outline(formatted);
-  assert.equal(outline[0].title, "Partitura 1");
+  assert.equal(outline[0].title, "Score 1");
   assert.ok(outline.some((item) => item.title === "\\layout"));
 });

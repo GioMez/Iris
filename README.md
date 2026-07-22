@@ -27,10 +27,23 @@ the Node.js service handles authentication, persistence, and compilation.
   build duration, and downloadable artifacts.
 - Project-local font uploads, including XeLaTeX and LuaLaTeX font discovery.
 - Local password authentication and optional OAuth 2.0/OpenID Connect SSO.
+- Localized interface with English as the default and Italian included.
 
 Iris does not currently provide real-time collaboration, Git integration, or a
 hosted compilation service. It is designed to run on infrastructure you
 control.
+
+## Localization
+
+The browser interface loads i18next v4-compatible JSON catalogs from
+`public/locales/`. English is the source and fallback language; users can switch
+to Italian from the login screen or Settings, and the choice is stored in their
+browser. UI labels, accessibility attributes, dynamic messages, plural forms,
+dates, starter documents, and API errors all use the same localization layer.
+
+See [TRANSLATING.md](TRANSLATING.md) for the Weblate component settings,
+translation conventions, and the checks required when adding or updating a
+language.
 
 ## How it works
 

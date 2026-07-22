@@ -96,7 +96,7 @@ function sessionSecret(value) {
     "change-this-secret-in-production",
   ]);
   if (!secret || insecure.has(secret)) {
-    throw new Error("IRIS_SECRET deve essere impostato con un valore sicuro e non predefinito");
+    throw new Error("IRIS_SECRET must be set to a secure, non-default value");
   }
   return secret;
 }
@@ -109,6 +109,18 @@ function json(res, status, data, headers = {}) {
     ...headers,
   });
   res.end(body);
+}
+
+function requestError(errorCode, status, params = {}) {
+  const err = new Error(errorCode);
+  err.errorCode = errorCode;
+  err.status = status;
+  err.params = params;
+  return err;
+}
+
+function errorJson(res, status, errorCode, params = {}) {
+  return json(res, status, { errorCode, ...(Object.keys(params).length ? { params } : {}) });
 }
 
 function text(res, status, body, headers = {}) {
@@ -247,14 +259,14 @@ async function oauthEndpoints() {
       userinfoEndpoint: OAUTH_USERINFO_URL,
     };
   }
-  if (!OAUTH_ISSUER_URL) throw new Error("Configurazione OAuth incompleta");
+  if (!OAUTH_ISSUER_URL) throw new Error("Incomplete OAuth configuration");
   if (oauthDiscoveryCache) return oauthDiscoveryCache;
   const discoveryUrl = `${OAUTH_ISSUER_URL}/.well-known/openid-configuration`;
   const res = await fetch(discoveryUrl, { headers: { accept: "application/json" } });
-  if (!res.ok) throw new Error(`Discovery OAuth non riuscita (${res.status})`);
+  if (!res.ok) throw new Error(`OAuth discovery failed (${res.status})`);
   const data = await res.json();
   if (!data.authorization_endpoint || !data.token_endpoint || !data.userinfo_endpoint) {
-    throw new Error("Discovery OAuth priva degli endpoint necessari");
+    throw new Error("OAuth discovery response is missing required endpoints");
   }
   oauthDiscoveryCache = {
     authorizationEndpoint: data.authorization_endpoint,
@@ -294,7 +306,7 @@ async function oauthTokenRequest(code, redirectUri) {
   }
   const res = await fetch(endpoints.tokenEndpoint, { method: "POST", headers, body });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok || !data.access_token) throw new Error(data.error_description || data.error || "Scambio token OAuth non riuscito");
+  if (!res.ok || !data.access_token) throw new Error(data.error_description || data.error || "OAuth token exchange failed");
   return data;
 }
 
@@ -304,9 +316,9 @@ async function oauthUserInfo(accessToken) {
     headers: { accept: "application/json", authorization: `Bearer ${accessToken}` },
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error_description || data.error || "Lettura profilo OAuth non riuscita");
+  if (!res.ok) throw new Error(data.error_description || data.error || "OAuth profile request failed");
   const email = String(data.email || "").trim().toLowerCase();
-  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw new Error("Il provider SSO non ha restituito un'email valida");
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw new Error("The SSO provider did not return a valid email address");
   return {
     email,
     name: String(data.name || data.preferred_username || email).trim(),
@@ -347,7 +359,7 @@ async function userFromOAuthProfile(profile) {
     return rows[0];
   }
   if (!OAUTH_AUTO_REGISTER) {
-    const err = new Error("Utente SSO non autorizzato");
+    const err = new Error("Unauthorized SSO user");
     err.status = 403;
     throw err;
   }
@@ -454,9 +466,7 @@ async function readBody(req) {
   for await (const chunk of req) {
     size += chunk.length;
     if (size > MAX_BODY) {
-      const err = new Error("Payload troppo grande");
-      err.status = 413;
-      throw err;
+      throw requestError("REQUEST_TOO_LARGE", 413);
     }
     chunks.push(chunk);
   }
@@ -464,9 +474,7 @@ async function readBody(req) {
   try {
     return JSON.parse(Buffer.concat(chunks).toString("utf8"));
   } catch {
-    const err = new Error("JSON non valido");
-    err.status = 400;
-    throw err;
+    throw requestError("INVALID_JSON", 400);
   }
 }
 
@@ -474,9 +482,7 @@ function requireUser(req) {
   const token = parseCookies(req).iris_session;
   const payload = verifyToken(token);
   if (!payload) {
-    const err = new Error("Non autenticato");
-    err.status = 401;
-    throw err;
+    throw requestError("NOT_AUTHENTICATED", 401);
   }
   return payload;
 }
@@ -484,14 +490,10 @@ function requireUser(req) {
 function cleanName(name) {
   const out = String(name || "").trim().replace(/\s+/g, " ");
   if (!out) {
-    const err = new Error("Nome progetto obbligatorio");
-    err.status = 400;
-    throw err;
+    throw requestError("PROJECT_NAME_REQUIRED", 400);
   }
   if (out.length > 80) {
-    const err = new Error("Nome progetto troppo lungo");
-    err.status = 400;
-    throw err;
+    throw requestError("PROJECT_NAME_TOO_LONG", 400);
   }
   return out;
 }
@@ -535,9 +537,7 @@ function safeRelPath(relPath) {
   const raw = String(relPath || "").replace(/\\/g, "/").replace(/^\/+/, "");
   const normalized = path.posix.normalize(raw);
   if (!normalized || normalized === "." || normalized.startsWith("../") || normalized === ".." || path.isAbsolute(normalized)) {
-    const err = new Error("Percorso file non valido");
-    err.status = 400;
-    throw err;
+    throw requestError("PROJECT_PATH_INVALID", 400);
   }
   return normalized;
 }
@@ -901,9 +901,7 @@ async function projectForUser(id, userId) {
     [id, userId]
   );
   if (!rows.length) {
-    const err = new Error("Progetto non trovato");
-    err.status = 404;
-    throw err;
+    throw requestError("PROJECT_NOT_FOUND", 404);
   }
   return rows[0];
 }
@@ -1040,9 +1038,7 @@ function findCompileFile(data, requestedPath, projectType = inferProjectType(dat
   const picked = requested || main || firstSource;
   if (!picked || fileKindForPath(picked.path || picked.name || "") !== expectedKind) {
     const ext = projectType === "lilypond" ? ".ly" : ".tex";
-    const err = new Error(`Nessun file ${ext} compilabile nel progetto`);
-    err.status = 400;
-    throw err;
+    throw requestError("COMPILE_NO_SOURCE", 400, { extension: ext });
   }
   return picked;
 }
@@ -1051,9 +1047,7 @@ function resolveCompileTool(tool, engine, projectType = "latex") {
   const resolved = tool === "[engine]" ? engine : String(tool || "").trim();
   const allowedTools = projectType === "lilypond" ? LILYPOND_COMPILE_TOOLS : LATEX_COMPILE_TOOLS;
   if (!allowedTools.has(resolved)) {
-    const err = new Error("Tool di compilazione non supportato");
-    err.status = 400;
-    throw err;
+    throw requestError("COMPILE_TOOL_UNSUPPORTED", 400);
   }
   return resolved;
 }
@@ -1069,7 +1063,7 @@ function parseCompileLog(log) {
   const lines = String(log || "").split(/\r?\n/);
   lines.forEach((line) => {
     if (/warning/i.test(line)) warnings.push(line.trim());
-    if (/^! /.test(line) || /:[0-9]+:/.test(line) || /Emergency stop|impossibile avviare|not found|ENOENT/i.test(line)) errors.push(line.trim());
+    if (/^! /.test(line) || /:[0-9]+:/.test(line) || /Emergency stop|unable to start|not found|ENOENT/i.test(line)) errors.push(line.trim());
   });
   return {
     warnings: warnings.slice(0, 80),
@@ -1086,10 +1080,10 @@ function refreshFontCache(fontDir) {
     const timer = setTimeout(() => child.kill("SIGTERM"), 10000);
     child.stdout.on("data", (chunk) => { log += chunk.toString("utf8"); });
     child.stderr.on("data", (chunk) => { log += chunk.toString("utf8"); });
-    child.on("error", (err) => { log += `Iris: fc-cache non disponibile: ${err.message}\n`; });
+    child.on("error", (err) => { log += `Iris: fc-cache unavailable: ${err.message}\n`; });
     child.on("close", (code) => {
       clearTimeout(timer);
-      log += `Iris: cache font terminata in ${Date.now() - startedAt}ms (exit ${code}).\n`;
+      log += `Iris: font cache completed in ${Date.now() - startedAt}ms (exit ${code}).\n`;
       resolve(log);
     });
   });
@@ -1157,9 +1151,7 @@ function expandCompileArg(arg, vars, engine) {
     .replaceAll("[jobname]", vars.jobname)
     .replaceAll("[pdf]", vars.pdf);
   if (!out || out.includes("\0") || out.length > 500) {
-    const err = new Error("Parametro di compilazione non valido");
-    err.status = 400;
-    throw err;
+    throw requestError("COMPILE_ARGUMENT_INVALID", 400);
   }
   return out;
 }
@@ -1168,9 +1160,7 @@ function parseCompileArguments(value) {
   const input = String(value || "").trim();
   if (!input) return [];
   if (input.length > 2000 || input.includes("\0")) {
-    const err = new Error("Parametri LilyPond non validi");
-    err.status = 400;
-    throw err;
+    throw requestError("LILYPOND_ARGUMENTS_INVALID", 400);
   }
   const args = [];
   let current = "";
@@ -1179,9 +1169,7 @@ function parseCompileArguments(value) {
   let started = false;
   const push = () => {
     if (!started || !current || current.length > 500 || args.length >= 40) {
-      const err = new Error("Parametri LilyPond non validi");
-      err.status = 400;
-      throw err;
+      throw requestError("LILYPOND_ARGUMENTS_INVALID", 400);
     }
     args.push(current);
     current = "";
@@ -1218,9 +1206,7 @@ function parseCompileArguments(value) {
     started = true;
   }
   if (quote || escaped) {
-    const err = new Error("Virgolette o escape non terminati nei parametri LilyPond");
-    err.status = 400;
-    throw err;
+    throw requestError("LILYPOND_ARGUMENTS_UNTERMINATED", 400);
   }
   if (started) push();
   return args;
@@ -1229,9 +1215,7 @@ function parseCompileArguments(value) {
 function sanitizeLilypondArgsForStorage(value) {
   const input = String(value || "").trim();
   if (input.length > 2000 || input.includes("\0")) {
-    const err = new Error("Parametri LilyPond non validi");
-    err.status = 400;
-    throw err;
+    throw requestError("LILYPOND_ARGUMENTS_INVALID", 400);
   }
   return input;
 }
@@ -1239,9 +1223,7 @@ function sanitizeLilypondArgsForStorage(value) {
 function normalizeLilypondFormat(value) {
   const format = String(value || "pdf").trim().toLowerCase();
   if (!LILYPOND_OUTPUT_FORMATS.has(format)) {
-    const err = new Error("Formato di output LilyPond non supportato");
-    err.status = 400;
-    throw err;
+    throw requestError("LILYPOND_FORMAT_UNSUPPORTED", 400);
   }
   return format;
 }
@@ -1312,9 +1294,7 @@ function sanitizeCompileProfileForStorage(profile, projectType = "latex") {
         args: args.slice(0, 20).map((arg) => {
           const out = String(arg || "");
           if (!out || out.includes("\0") || out.length > 500) {
-            const err = new Error("Parametro di compilazione non valido");
-            err.status = 400;
-            throw err;
+            throw requestError("COMPILE_ARGUMENT_INVALID", 400);
           }
           return out;
         }),
@@ -1370,13 +1350,13 @@ function runCompileStep({ step, binPath, cwd, fontDir, texmfVar }) {
     }, COMPILE_TIMEOUT_MS);
     child.stdout.on("data", append);
     child.stderr.on("data", append);
-    child.on("error", (err) => append(`\nIris: impossibile avviare ${command}: ${err.message}\n`));
+    child.on("error", (err) => append(`\nIris: unable to start ${command}: ${err.message}\n`));
     child.on("close", (code, signal) => {
       done = true;
       clearTimeout(timer);
       const durationMs = Date.now() - startedAt;
-      if (timedOut) append(`\nIris: compilazione interrotta dopo ${COMPILE_TIMEOUT_MS}ms.\n`);
-      else if (signal) append(`\nIris: processo terminato con segnale ${signal}.\n`);
+      if (timedOut) append(`\nIris: compilation stopped after ${COMPILE_TIMEOUT_MS}ms.\n`);
+      else if (signal) append(`\nIris: process terminated by signal ${signal}.\n`);
       const parsed = parseCompileLog(log);
       resolve({ code, signal, timedOut, durationMs, log, ...parsed });
     });
@@ -1470,9 +1450,7 @@ async function compileProject(req, res, user, id) {
   data.projectType = projectType;
   const engine = projectType === "lilypond" ? "lilypond" : String(body.engine || data.engine || "pdflatex").trim();
   if (projectType === "latex" && !LATEX_ENGINES.has(engine)) {
-    const err = new Error("Motore LaTeX non supportato");
-    err.status = 400;
-    throw err;
+    throw requestError("LATEX_ENGINE_UNSUPPORTED", 400);
   }
   const binPath = projectType === "lilypond"
     ? (LILYPOND_PATH_LOCKED ? LILYPOND_BIN_PATH : String(body.lilypondPath || LILYPOND_BIN_PATH || "").trim())
@@ -1553,7 +1531,7 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === "GET" && url.pathname === "/api/auth/sso/start") {
-    if (!oauthEnabled()) return text(res, 503, "SSO non configurato");
+    if (!oauthEnabled()) return text(res, 503, "SSO is not configured");
     try {
       const endpoints = await oauthEndpoints();
       const state = oauthStateToken();
@@ -1567,7 +1545,7 @@ async function handleApi(req, res, url) {
         "set-cookie": cookie("iris_oauth_state", state, { maxAge: 10 * 60 }),
       });
     } catch (err) {
-      return text(res, 503, err.message || "SSO non disponibile");
+      return text(res, 503, err.message || "SSO unavailable");
     }
   }
 
@@ -1578,7 +1556,7 @@ async function handleApi(req, res, url) {
       const code = url.searchParams.get("code");
       const expectedState = parseCookies(req).iris_oauth_state;
       if (!code || !state || !expectedState || !timingSafeStringEqual(state, expectedState) || !verifySignedJson(state)) {
-        throw new Error("Stato OAuth non valido");
+        throw new Error("Invalid OAuth state");
       }
       const token = await oauthTokenRequest(code, oauthRedirectUri(req));
       const profile = await oauthUserInfo(token.access_token);
@@ -1599,18 +1577,18 @@ async function handleApi(req, res, url) {
     const body = await readBody(req);
     const login = String(body.username || "").trim().toLowerCase();
     const password = String(body.password || "");
-    if (!login || !password) return json(res, 400, { error: "Inserisci nome utente e password." });
+    if (!login || !password) return errorJson(res, 400, "AUTH_REQUIRED_FIELDS");
     const rows = await pool.query(
       "SELECT id, username, email, display_name, role, password_hash FROM users WHERE LOWER(username) = ? OR LOWER(email) = ? LIMIT 1",
       [login, login]
     );
     const user = rows[0];
     if (user && !user.password_hash) {
-      return json(res, 401, { error: "Questo account usa SSO. Accedi con il pulsante SSO." });
+      return errorJson(res, 401, "AUTH_SSO_ACCOUNT");
     }
     const passwordCheck = user ? await verifyPassword(password, user.password_hash) : { valid: false, needsRehash: false };
     if (!user || !passwordCheck.valid) {
-      return json(res, 401, { error: "Credenziali non valide. Riprova." });
+      return errorJson(res, 401, "AUTH_INVALID_CREDENTIALS");
     }
     if (passwordCheck.needsRehash) {
       const passwordHash = await hashPassword(password);
@@ -1625,14 +1603,14 @@ async function handleApi(req, res, url) {
   if (req.method === "POST" && url.pathname === "/api/auth/password") {
     const sessionUser = requireUser(req);
     if (sessionUser.authMethod !== "local") {
-      return json(res, 403, { error: "La password locale si puo' cambiare solo dopo un login user/password." });
+      return errorJson(res, 403, "PASSWORD_LOCAL_LOGIN_REQUIRED");
     }
     const body = await readBody(req);
     const currentPassword = String(body.currentPassword || "");
     const newPassword = String(body.newPassword || "");
-    if (!currentPassword || !newPassword) return json(res, 400, { error: "Inserisci password attuale e nuova password." });
-    if (newPassword.length < 10) return json(res, 400, { error: "La nuova password deve contenere almeno 10 caratteri." });
-    if (currentPassword === newPassword) return json(res, 400, { error: "La nuova password deve essere diversa da quella attuale." });
+    if (!currentPassword || !newPassword) return errorJson(res, 400, "PASSWORD_REQUIRED_FIELDS");
+    if (newPassword.length < 10) return errorJson(res, 400, "PASSWORD_TOO_SHORT");
+    if (currentPassword === newPassword) return errorJson(res, 400, "PASSWORD_MUST_DIFFER");
 
     const rows = await pool.query(
       "SELECT id, username, email, display_name, role, password_hash FROM users WHERE id = ? LIMIT 1",
@@ -1640,10 +1618,10 @@ async function handleApi(req, res, url) {
     );
     const user = rows[0];
     if (!user || !user.password_hash) {
-      return json(res, 403, { error: "Questo account usa SSO e non ha una password locale." });
+      return errorJson(res, 403, "PASSWORD_SSO_ACCOUNT");
     }
     const passwordCheck = await verifyPassword(currentPassword, user.password_hash);
-    if (!passwordCheck.valid) return json(res, 401, { error: "Password attuale non corretta." });
+    if (!passwordCheck.valid) return errorJson(res, 401, "PASSWORD_CURRENT_INCORRECT");
 
     const passwordHash = await hashPassword(newPassword);
     await pool.query("UPDATE users SET password_hash = ? WHERE id = ?", [passwordHash, user.id]);
@@ -1677,7 +1655,7 @@ async function handleApi(req, res, url) {
     if (req.method === "DELETE") return deleteProject(req, res, user, match[1]);
   }
 
-  json(res, 404, { error: "Endpoint non trovato" });
+  errorJson(res, 404, "ENDPOINT_NOT_FOUND");
 }
 
 async function serveStatic(req, res, url) {
@@ -1708,8 +1686,10 @@ async function handle(req, res) {
   } catch (err) {
     const status = err.status || 500;
     if (status >= 500) console.error(err);
-    if (url.pathname.startsWith("/api/")) return json(res, status, { error: err.message || "Errore server" });
-    return text(res, status, err.message || "Errore server");
+    if (url.pathname.startsWith("/api/")) {
+      return errorJson(res, status, err.errorCode || "SERVER_ERROR", err.params || {});
+    }
+    return text(res, status, err.message || "Server error");
   }
 }
 

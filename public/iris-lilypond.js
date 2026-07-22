@@ -95,7 +95,9 @@
       items.push({
         level: /^(layout|midi)$/.test(match[1]) ? 2 : 1,
         num: match[1] === "score" ? String(score) : "",
-        title: match[1] === "score" ? `Partitura ${score}` : `\\${match[1]}`,
+        title: match[1] === "score"
+          ? (window.IrisI18n ? window.IrisI18n.t("templates.scoreNumber", { number: score }) : `Score ${score}`)
+          : `\\${match[1]}`,
         offset: match.index,
       });
     }

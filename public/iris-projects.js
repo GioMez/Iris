@@ -4,6 +4,7 @@
    in una cartella dedicata sul filesystem. */
 (function () {
   const $ = (id) => document.getElementById(id);
+  const t = (key, params) => window.IrisI18n.t(key, params);
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   const ti = (name, className = "", label = "") => window.IrisIcons.icon(name, className, label);
@@ -22,7 +23,10 @@
     try { data = await res.json(); } catch (e) {}
     if (!res.ok) {
       if (res.status === 401 && window.IrisAuth) window.IrisAuth.showLogin();
-      const err = new Error(data.error || "Errore di comunicazione con il server.");
+      const err = new Error();
+      err.code = data.errorCode || "SERVER_ERROR";
+      err.params = data.params || {};
+      err.message = window.IrisI18n.error(err);
       err.status = res.status;
       throw err;
     }
@@ -32,7 +36,7 @@
   /* ---------------- blank content ---------------- */
   function blankNodes(name, projectType) {
     if (projectType === "lilypond") {
-      const title = String(name || "Nuova partitura").replace(/["\\]/g, "");
+      const title = String(name || t("templates.newScore")).replace(/["\\]/g, "");
       const tpl = `\\version "2.24.0"
 
 \\header {
@@ -57,14 +61,14 @@
 \\usepackage[utf8]{inputenc}
 \\usepackage{amsmath}
 
-\\title{${name}}
+\\title{${name || t("templates.newDocument")}}
 \\author{}
 \\date{\\today}
 
 \\begin{document}
 \\maketitle
 
-\\section{Introduzione}
+\\section{${t("templates.introduction")}}
 
 
 \\end{document}`;
@@ -88,11 +92,11 @@
   function fmtTime(ts) {
     if (!ts) return "-";
     const d = new Date(ts), now = new Date();
-    const time = d.toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" });
+    const time = window.IrisI18n.formatDate(d, { hour: "2-digit", minute: "2-digit" });
     const yest = new Date(now); yest.setDate(now.getDate() - 1);
-    if (d.toDateString() === now.toDateString()) return "oggi " + time;
-    if (d.toDateString() === yest.toDateString()) return "ieri " + time;
-    return d.toLocaleDateString("it-IT", { day: "2-digit", month: "short", year: "numeric" });
+    if (d.toDateString() === now.toDateString()) return t("projects.today", { time });
+    if (d.toDateString() === yest.toDateString()) return t("projects.yesterday", { time });
+    return window.IrisI18n.formatDate(d, { day: "2-digit", month: "short", year: "numeric" });
   }
   function setProjName(name) {
     const el = $("projChipName");
@@ -105,7 +109,7 @@
     if (empty) empty.style.display = "none";
     if (grid) {
       grid.style.display = "";
-      grid.innerHTML = `<div class="pcard"><button class="pcard-open" type="button" disabled><span class="pcard-text"><span class="pcard-name">Caricamento...</span><span class="pcard-meta">recupero progetti dal server</span></span></button></div>`;
+      grid.innerHTML = `<div class="pcard"><button class="pcard-open" type="button" disabled><span class="pcard-text"><span class="pcard-name">${esc(t("projects.loading"))}</span><span class="pcard-meta">${esc(t("projects.loadingDescription"))}</span></span></button></div>`;
     }
   }
 
@@ -126,7 +130,7 @@
     const grid = $("pkGrid"), empty = $("pkEmpty"), count = $("pkCount");
     try {
       const idx = (await loadIndex()).slice().sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
-      if (count) count.textContent = idx.length ? `${idx.length} progett${idx.length > 1 ? "i" : "o"}` : "";
+      if (count) count.textContent = idx.length ? t("projects.count", { count: idx.length }) : "";
       grid.innerHTML = "";
       if (!idx.length) { empty.style.display = ""; grid.style.display = "none"; return; }
       empty.style.display = "none"; grid.style.display = "";
@@ -136,16 +140,16 @@
         card.className = "pcard";
         card.dataset.id = m.id;
         card.innerHTML =
-          `<button class="pcard-open" type="button" title="Apri il progetto">` +
+          `<button class="pcard-open" type="button" title="${esc(t("projects.openTitle"))}">` +
             `<span class="pcard-icon${m.projectType === "lilypond" ? " lilypond" : ""}">${ti(m.projectType === "lilypond" ? "music" : "file-code-2")}</span>` +
             `<span class="pcard-text">` +
               `<span class="pcard-name">${esc(m.name)}</span>` +
-              `<span class="pcard-meta">${m.projectType === "lilypond" ? "LilyPond" : "LaTeX"} · ${nfiles} file · modificato ${fmtTime(m.updatedAt)}</span>` +
+              `<span class="pcard-meta">${m.projectType === "lilypond" ? "LilyPond" : "LaTeX"} · ${esc(t("projects.fileCount", { count: nfiles }))} · ${esc(t("projects.modified", { time: fmtTime(m.updatedAt) }))}</span>` +
             `</span>` +
           `</button>` +
           `<div class="pcard-tools">` +
-            `<button class="pcard-ic" type="button" data-act="rename" title="Rinomina" aria-label="Rinomina ${esc(m.name)}">${ti("edit")}</button>` +
-            `<button class="pcard-ic danger" type="button" data-act="delete" title="Elimina" aria-label="Elimina ${esc(m.name)}">${ti("trash")}</button>` +
+            `<button class="pcard-ic" type="button" data-act="rename" title="${esc(t("common.rename"))}" aria-label="${esc(t("projects.renameAria", { name: m.name }))}">${ti("edit")}</button>` +
+            `<button class="pcard-ic danger" type="button" data-act="delete" title="${esc(t("common.delete"))}" aria-label="${esc(t("projects.deleteAria", { name: m.name }))}">${ti("trash")}</button>` +
           `</div>`;
         card.querySelector(".pcard-open").addEventListener("click", () => openProject(m.id));
         card.querySelector('[data-act="rename"]').addEventListener("click", (e) => { e.stopPropagation(); askRename(m.id); });
@@ -155,7 +159,7 @@
     } catch (err) {
       grid.style.display = "";
       empty.style.display = "none";
-      grid.innerHTML = `<div class="picker-empty" style="display:block"><div class="pe-title">Impossibile caricare i progetti</div><div class="pe-sub">${esc(err.message)}</div></div>`;
+      grid.innerHTML = `<div class="picker-empty" style="display:block"><div class="pe-title">${esc(t("projects.loadFailed"))}</div><div class="pe-sub">${esc(window.IrisI18n.error(err))}</div></div>`;
     }
   }
 
@@ -177,7 +181,7 @@
 
   async function closeCurrent() {
     const dirty = !!(currentId && window.IrisApp && window.IrisApp.hasUnsavedChanges && window.IrisApp.hasUnsavedChanges());
-    if (dirty && !window.confirm("Il progetto contiene modifiche non salvate. Uscire e scartarle?")) return false;
+    if (dirty && !window.confirm(t("projects.unsavedConfirm"))) return false;
     if (dirty) cache.delete(currentId);
     else await persistCurrent();
     currentId = null;
@@ -214,7 +218,7 @@
   }
 
   async function compileCurrent(data, options) {
-    if (!currentId) throw new Error("Nessun progetto aperto.");
+    if (!currentId) throw new Error(t("projects.noneOpen"));
     data = data && typeof data === "object" ? data : (window.IrisApp ? window.IrisApp.serialize() : {});
     const now = Date.now();
     data.updatedAt = now;
@@ -299,9 +303,9 @@
 
   function askNew() {
     projMode = "new"; projTargetId = null;
-    $("projModalTitle").textContent = "Nuovo progetto";
-    $("projModalOk").textContent = "Crea progetto";
-    $("projModalHint").textContent = "Verrà creato con un file main.tex iniziale.";
+    $("projModalTitle").textContent = t("projects.newTitle");
+    $("projModalOk").textContent = t("projects.create");
+    $("projModalHint").textContent = t("projects.newLatexHint");
     $("projTypeField").style.display = "";
     $("projTypeSelect").value = "latex";
     $("projNameInput").value = "";
@@ -312,9 +316,9 @@
   function askRename(id) {
     const m = metaOf(id);
     projMode = "rename"; projTargetId = id;
-    $("projModalTitle").textContent = "Rinomina progetto";
-    $("projModalOk").textContent = "Salva";
-    $("projModalHint").textContent = "Il nome aiuta a riconoscere il progetto nell'elenco.";
+    $("projModalTitle").textContent = t("projects.renameTitle");
+    $("projModalOk").textContent = t("common.save");
+    $("projModalHint").textContent = t("projects.renameHint");
     $("projTypeField").style.display = "none";
     $("projNameInput").value = m ? m.name : "";
     $("projNameInput").classList.remove("nomatch");
@@ -344,7 +348,7 @@
       }
     } catch (err) {
       $("projNameInput").classList.add("nomatch");
-      $("projModalHint").textContent = err.message || "Operazione non riuscita.";
+      $("projModalHint").textContent = window.IrisI18n.error(err, "projects.operationFailed");
     } finally {
       ok.disabled = false;
       ok.classList.remove("loading");
@@ -353,7 +357,7 @@
   function askDelete(id) {
     const m = metaOf(id);
     delTargetId = id;
-    $("projDelName").textContent = m ? m.name : "questo progetto";
+    $("projDeleteText").textContent = t("projects.deleteConfirm", { name: m ? m.name : t("projects.thisProject") });
     openModal("projDelModal");
   }
   async function confirmDelete() {
@@ -373,7 +377,7 @@
   /* ---------------- public API ---------------- */
   async function showPicker() {
     const dirty = !!(currentId && window.IrisApp && window.IrisApp.hasUnsavedChanges && window.IrisApp.hasUnsavedChanges());
-    if (dirty && !window.confirm("Il progetto contiene modifiche non salvate. Uscire e scartarle?")) return false;
+    if (dirty && !window.confirm(t("projects.unsavedConfirm"))) return false;
     if (dirty) cache.delete(currentId);
     else await persistCurrent();
     currentId = null;
@@ -405,9 +409,7 @@
     $("projModalOk").addEventListener("click", () => confirmProjModal());
     $("projNameInput").addEventListener("input", () => $("projNameInput").classList.remove("nomatch"));
     $("projTypeSelect").addEventListener("change", function () {
-      $("projModalHint").textContent = this.value === "lilypond"
-        ? "Verrà creato con un file main.ly testuale iniziale."
-        : "Verrà creato con un file main.tex iniziale.";
+      $("projModalHint").textContent = t(this.value === "lilypond" ? "projects.newLilypondHint" : "projects.newLatexHint");
     });
     $("projNameInput").addEventListener("keydown", (e) => {
       if (e.key === "Enter") { e.preventDefault(); confirmProjModal(); }
@@ -422,5 +424,13 @@
     });
   }
 
-  wire();
+  document.addEventListener("iris:languagechange", () => {
+    if (document.documentElement.classList.contains("iris-authed") && !currentId) void renderPicker();
+    if ($("projModal").classList.contains("on")) {
+      if (projMode === "new") askNew();
+      else if (projTargetId) askRename(projTargetId);
+    }
+    if (delTargetId && $("projDelModal").classList.contains("on")) askDelete(delTargetId);
+  });
+  window.IrisI18n.ready.then(wire);
 })();
