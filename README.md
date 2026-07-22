@@ -232,6 +232,12 @@ are preserved as one argument, but Iris removes user-provided output and format
 overrides so that artifacts always remain in the managed `output/` directory and
 use the selected project format.
 
+Fonts uploaded through project settings remain project-local in `fonts/`. When a
+LilyPond project contains uploaded fonts, Iris registers that directory with
+LilyPond through `ly:font-config-add-directory` before parsing the score. The
+score remains responsible for selecting the desired font family; no font is
+installed in the host or container.
+
 ## Authentication
 
 ### Local accounts

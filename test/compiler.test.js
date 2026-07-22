@@ -15,6 +15,7 @@ const {
   parseCompileArguments,
   sanitizeLilypondArgsForStorage,
   normalizeLilypondFormat,
+  lilypondProjectFontArgs,
   readCompileArtifacts,
   runCompilePipeline,
 } = require("../src/server");
@@ -75,6 +76,29 @@ test("parses LilyPond parameter strings without invoking a shell", () => {
   );
   assert.throws(() => parseCompileArguments('-I "unterminated'), (error) => error.errorCode === "LILYPOND_ARGUMENTS_UNTERMINATED");
   assert.equal(sanitizeLilypondArgsForStorage('-I "bozza'), '-I "bozza');
+});
+
+test("registers uploaded project fonts with LilyPond", () => {
+  const fontArgs = lilypondProjectFontArgs({
+    fonts: [{ name: "EBGaramond-Regular.otf", path: "fonts/EBGaramond-Regular.otf" }],
+  });
+  assert.deepEqual(fontArgs, ["-e", '(ly:font-config-add-directory "fonts")']);
+
+  const profile = normalizeCompileProfile(
+    { mode: "quick" },
+    "lilypond",
+    "main.ly",
+    "lilypond",
+    fontArgs
+  );
+  assert.deepEqual(profile.steps[0].args, [
+    "--pdf",
+    "--output=output/main",
+    "-e",
+    '(ly:font-config-add-directory "fonts")',
+    "main.ly",
+  ]);
+  assert.deepEqual(lilypondProjectFontArgs({ fonts: [] }), []);
 });
 
 test("selects and constrains every supported LilyPond output format", () => {
