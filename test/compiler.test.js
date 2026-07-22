@@ -15,6 +15,7 @@ const {
   parseCompileArguments,
   sanitizeLilypondArgsForStorage,
   normalizeLilypondFormat,
+  reconcileProjectFonts,
   generatedOutputTree,
   resolveProjectFile,
   readCompileArtifacts,
@@ -142,12 +143,49 @@ test("resolves downloadable files only inside the project", async (t) => {
   await assert.rejects(() => resolveProjectFile(root, "outside.txt"), (error) => error.errorCode === "PROJECT_FILE_NOT_FOUND");
 });
 
-test("rejects LaTeX tools in a LilyPond custom pipeline", () => {
-  assert.throws(
-    () => normalizeCompileProfile({ mode: "custom", steps: [{ tool: "pdflatex", args: ["[main]"] }] }, "lilypond", "main.ly", "lilypond"),
-    (error) => error.errorCode === "COMPILE_TOOL_UNSUPPORTED"
+test("font settings follow the files currently present below fonts", () => {
+  const data = {
+    project: {
+      nodes: [{
+        type: "folder",
+        name: "fonts",
+        children: [{ type: "file", name: "Current.otf", path: "fonts/Current.otf", data: "data:font/otf;base64,AQID" }],
+      }],
+    },
+    fonts: [
+      { family: "ExistingFamily", name: "Current.otf", path: "fonts/Current.otf", data: "current" },
+      { family: "DeletedFamily", name: "Deleted.otf", path: "fonts/Deleted.otf", data: "stale" },
+    ],
+  };
+  reconcileProjectFonts(data);
+  assert.deepEqual(data.fonts.map((font) => font.path), ["fonts/Current.otf"]);
+  assert.equal(data.fonts[0].family, "ExistingFamily");
+
+  data.project.nodes[0].children = [{ type: "file", name: "Added Font.ttf", path: "fonts/Added Font.ttf", data: "new" }];
+  reconcileProjectFonts(data);
+  assert.deepEqual(data.fonts, [{
+    family: "IrisUser_Added_Font",
+    name: "Added Font.ttf",
+    path: "fonts/Added Font.ttf",
+    data: "new",
+  }]);
+
+  data.project.nodes[0].children = [];
+  reconcileProjectFonts(data);
+  assert.deepEqual(data.fonts, []);
+});
+
+test("always reduces LilyPond compilation to one managed step", () => {
+  const profile = normalizeCompileProfile(
+    { mode: "custom", steps: [{ tool: "pdflatex", args: ["unsafe.tex"] }] },
+    "lilypond",
+    "main.ly",
+    "lilypond"
   );
+  assert.equal(profile.mode, "quick");
+  assert.deepEqual(profile.steps, [{ tool: "lilypond", args: ["--pdf", "--output=output/main", "main.ly"] }]);
   assert.deepEqual(sanitizeCompileProfileForStorage({ mode: "bibtex" }, "lilypond"), { mode: "quick" });
+  assert.deepEqual(sanitizeCompileProfileForStorage({ mode: "custom", steps: [{ tool: "lilypond", args: ["[main]"] }] }, "lilypond"), { mode: "quick" });
 });
 
 test("keeps the existing hardened LaTeX invocation", () => {

@@ -169,6 +169,8 @@ button{font-family:inherit;color:inherit}
 .iconbtn{width:30px;height:30px;border-radius:7px;border:0;background:transparent;color:var(--txt-mut);cursor:pointer;display:grid;place-items:center}
 .iconbtn:hover{background:#ffffff12;color:var(--txt)}
 .iconbtn .ti{width:15px;height:15px}
+.iconbtn.loading .ti{animation:spin .8s linear infinite}
+.iconbtn:disabled{opacity:.55;cursor:wait}
 
 /* file tree */
 .tree{font-size:13px;user-select:none}

@@ -78,6 +78,17 @@ test("compiled outputs sync into the tree and every file exposes download", () =
   assert.match(projects, /function downloadCurrentFile\(filePath, fileName\)/);
 });
 
+test("file tree supports server refresh and font uploads sync immediately", () => {
+  assert.match(html, /id="refreshTreeBtn"[^>]*data-i18n-title="sidebar\.refreshTree"/);
+  assert.match(app, /function refreshFileTree\(\)/);
+  assert.match(projects, /async function refreshCurrent\(\)/);
+  assert.match(app, /function syncFontInTree\(font\)/);
+  assert.match(app, /syncFontInTree\(font\)/);
+  assert.match(app, /function removeFontSettings\(paths\)/);
+  assert.match(app, /state\.fonts = fontSettingsFromTree\(state\.fonts\)/);
+  assert.match(app, /removeFontSettings\(deletedPaths\)/);
+});
+
 test("project chooser supports portable ZIP downloads and imports", () => {
   assert.match(html, /id="pkImport"[\s\S]*?data-icon="upload"/);
   assert.match(html, /id="projectImportInput"[^>]*accept="\.zip,application\/zip"/);
@@ -160,6 +171,18 @@ test("settings typography and compiler guidance keep their visual alignment", ()
   assert.match(css, /\.binresolve\+\.field\{margin-top:20px\}/);
   assert.match(css, /\.hint\{[^}]*display:block/);
   assert.doesNotMatch(css, /\.hint\{[^}]*display:flex/);
+});
+
+test("font selection is preview-only and LilyPond has no pipeline editor", () => {
+  assert.match(app, /settings\.showFontPreview/);
+  assert.match(app, /settings\.previewActive/);
+  assert.doesNotMatch(app, /settings\.useFont|state\.appliedFont/);
+  assert.match(html, /id="fontPreviewBlock" hidden/);
+  assert.match(html, /data-i18n="settings\.fontPreviewTitle">Font preview/);
+  assert.match(app, /\$\("fontPreviewBlock"\)\.hidden = !fam/);
+  assert.match(html, /id="compilePipelineControls"/);
+  assert.match(app, /controls\.hidden = lilypond/);
+  assert.match(app, /if \(isLilyPondProject\(\)\) return presetCompileProfile\("quick"\)/);
 });
 
 test("interface semantics, syntax colors and font roles are independent", () => {

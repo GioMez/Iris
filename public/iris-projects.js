@@ -115,7 +115,11 @@
   }
   function countFiles(data) {
     let n = 0;
-    const w = (ns) => (ns || []).forEach((x) => { if (x.type === "folder") w(x.children); else n++; });
+    const w = (ns) => (ns || []).forEach((x) => {
+      if (x.generated) return;
+      if (x.type === "folder") w(x.children);
+      else n++;
+    });
     if (data && data.project && data.project.nodes) w(data.project.nodes);
     return n;
   }
@@ -152,6 +156,20 @@
     if (cache.has(id)) return cache.get(id);
     const data = await api(`/api/projects/${id}`);
     cache.set(id, data);
+    return data;
+  }
+
+  async function refreshCurrent() {
+    if (!currentId) throw new Error(t("projects.noneOpen"));
+    const data = await api(`/api/projects/${currentId}`);
+    cache.set(currentId, data);
+    const meta = metaOf(currentId);
+    if (meta) {
+      meta.name = (data.project && data.project.name) || meta.name;
+      meta.projectType = data.projectType || meta.projectType;
+      meta.fileCount = countFiles(data);
+      meta.updatedAt = data.updatedAt || meta.updatedAt;
+    }
     return data;
   }
 
@@ -484,7 +502,7 @@
     document.documentElement.classList.remove("iris-inproject");
   }
 
-  window.IrisProjects = { showPicker, openProject, closeCurrent, persistCurrent, compileCurrent, downloadCurrentFile, renderPicker, onLogout };
+  window.IrisProjects = { showPicker, openProject, closeCurrent, persistCurrent, compileCurrent, downloadCurrentFile, refreshCurrent, renderPicker, onLogout };
 
   /* ---------------- wiring ---------------- */
   function wire() {

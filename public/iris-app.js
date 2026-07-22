@@ -44,7 +44,7 @@
     previewKind: "empty",
     assets: {},           // path -> dataURL
     fonts: [],            // {family, name}
-    appliedFont: null,
+    previewFont: null,
     selectedFolder: "",   // for attach destination
     pdfBlobUrl: null,
     pdfName: "",
@@ -394,11 +394,11 @@
     return JSON.parse(JSON.stringify(presets[mode] || presets.quick));
   }
   function normalizeCompileProfile(profile) {
+    if (isLilyPondProject()) return presetCompileProfile("quick");
     if (!profile || typeof profile !== "object") return presetCompileProfile("quick");
-    if (isLilyPondProject() && profile.mode !== "custom") return presetCompileProfile("quick");
     const steps = Array.isArray(profile.steps) && profile.steps.length ? profile.steps : presetCompileProfile(profile.mode || "quick").steps;
     return {
-      mode: isLilyPondProject() && profile.mode !== "custom" ? "quick" : (profile.mode || "quick"),
+      mode: profile.mode || "quick",
       steps: steps.slice(0, 12).map((s) => ({
         tool: s.tool || "[engine]",
         args: Array.isArray(s.args) ? s.args.map(String) : String(s.args || "[main]").split(/\s+/).filter(Boolean),
@@ -409,13 +409,17 @@
     const preset = $("compilePreset");
     const box = $("compileSteps");
     const add = $("compileAddStep");
-    if (!preset || !box || !add) return;
+    const controls = $("compilePipelineControls");
+    if (!preset || !box || !add || !controls) return;
+    const lilypond = isLilyPondProject();
+    controls.hidden = lilypond;
     const profile = normalizeCompileProfile(state.compileProfile);
     state.compileProfile = profile;
+    if (lilypond) {
+      box.innerHTML = "";
+      return;
+    }
     preset.value = profile.mode || "quick";
-    Array.from(preset.options).forEach((option) => {
-      option.hidden = isLilyPondProject() && !["quick", "custom"].includes(option.value);
-    });
     const custom = profile.mode === "custom";
     box.innerHTML = "";
     profile.steps.forEach((step, idx) => {
@@ -435,10 +439,7 @@
         <input class="input" data-step-args spellcheck="false" autocomplete="off">
         <button class="node-act danger" type="button" data-step-del title="${esc(t("settings.deleteStep"))}" aria-label="${esc(t("settings.deleteStep"))}">${ti("trash")}</button>`;
       row.querySelector("[data-step-tool]").value = step.tool;
-      row.querySelectorAll("[data-step-tool] option").forEach((option) => {
-        if (option.value === "[engine]") return;
-        option.hidden = isLilyPondProject() ? option.value !== "lilypond" : option.value === "lilypond";
-      });
+      row.querySelectorAll('[data-step-tool] option[value="lilypond"]').forEach((option) => { option.hidden = true; });
       row.querySelector("[data-step-args]").value = (step.args || []).join(" ");
       row.querySelectorAll("select,input,button").forEach((el) => { el.disabled = !custom; });
       row.querySelector("[data-step-tool]").addEventListener("change", (e) => { step.tool = e.target.value; saveCompileProfile(); });
@@ -588,6 +589,55 @@
     state.assets[newPath] = state.assets[oldPath];
     delete state.assets[oldPath];
   }
+  function isFontFilePath(filePath) {
+    return /^fonts\/.+\.(?:ttf|otf|woff2?)$/i.test(String(filePath || ""));
+  }
+  function fontPreviewFamily(fileName) {
+    return "IrisUser_" + String(fileName || "font").split("/").pop().replace(/\.[^.]+$/, "").replace(/[^a-zA-Z0-9]/g, "_");
+  }
+  function fontSettingsFromTree(fonts) {
+    const existing = new Map((Array.isArray(fonts) ? fonts : []).filter((font) => font && font.path).map((font) => [font.path, font]));
+    const found = [];
+    const scan = (nodes, parentPath = "") => (nodes || []).forEach((node) => {
+      if (!node || node.generated) return;
+      if (node.type === "folder") {
+        scan(node.children, joinPath(parentPath, node.name));
+        return;
+      }
+      const filePath = node.path || joinPath(parentPath, node.name);
+      if (!isFontFilePath(filePath)) return;
+      const prior = existing.get(filePath) || {};
+      found.push({
+        ...prior,
+        family: prior.family || fontPreviewFamily(filePath),
+        name: String(filePath).split("/").pop(),
+        path: filePath,
+        ...(prior.data || node.data ? { data: prior.data || node.data } : {}),
+      });
+    });
+    scan(project.nodes);
+    return found.sort((a, b) => a.path.localeCompare(b.path));
+  }
+  function moveFontSetting(oldPath, newPath) {
+    const index = state.fonts.findIndex((font) => font.path === oldPath);
+    if (index < 0) return;
+    if (!isFontFilePath(newPath)) {
+      state.fonts.splice(index, 1);
+      return;
+    }
+    state.fonts[index].path = newPath;
+    state.fonts[index].name = String(newPath).split("/").pop();
+  }
+  function removeFontSettings(paths) {
+    const removed = new Set(paths);
+    state.fonts = state.fonts.filter((font) => !removed.has(font.path));
+    refreshFontSettingsUi();
+  }
+  function refreshFontSettingsUi() {
+    state.fonts = fontSettingsFromTree(state.fonts);
+    if (state.previewFont && !state.fonts.some((font) => font.family === state.previewFont)) setPreviewFont(null);
+    else renderFontList();
+  }
   function updateFolderChildPaths(node, oldPrefix, newPrefix) {
     walkNodeFiles(node, (f) => {
       const oldPath = f.path || "";
@@ -595,6 +645,7 @@
       const next = newPrefix + oldPath.slice(oldPrefix.length);
       f.path = next;
       moveAsset(oldPath, next);
+      moveFontSetting(oldPath, next);
     });
     Object.keys(state.assets).forEach((p) => {
       if (!p.startsWith(oldPrefix)) return;
@@ -779,13 +830,15 @@
       node.path = newPath;
       node.kind = inferKind(name, node.kind);
       moveAsset(oldPath, newPath);
+      moveFontSetting(oldPath, newPath);
       if (node.kind === "img" && node.data && !state.assets[newPath]) state.assets[newPath] = node.data;
     }
     closeTreeRename();
     renderTree();
     renderTabs();
     renderOutline();
-    void persistWhenDocumentClean();
+    refreshFontSettingsUi();
+    void persist();
     toast(t("tree.renamed", { name }));
   }
 
@@ -812,6 +865,7 @@
     });
     removeTreeNode(treeAction);
     deletedPaths.forEach((p) => delete state.assets[p]);
+    removeFontSettings(deletedPaths);
     if (node.type === "folder") {
       const prefix = folderSlash(joinPath(treeAction.parentPath, node.name));
       Object.keys(state.assets).forEach((p) => { if (p.startsWith(prefix)) delete state.assets[p]; });
@@ -830,7 +884,7 @@
       renderTabs();
       renderOutline();
     }
-    void persistWhenDocumentClean();
+    void persist();
     toast(t("tree.deleted", { name: node.name }));
   }
 
@@ -909,6 +963,64 @@
     if (index >= 0) project.nodes.splice(index, 1, outputTree);
     else project.nodes.push(outputTree);
     renderTree();
+  }
+
+  function applyRefreshedFileTree(data) {
+    if (!data || !data.project || !Array.isArray(data.project.nodes)) throw new Error("Invalid project tree");
+    const previousActive = state.activeId;
+    const previousPreviewFont = state.previewFont;
+    project.name = data.project.name || project.name;
+    project.nodes = data.project.nodes;
+    state.assets = data.assets || {};
+    state.fonts = fontSettingsFromTree(data.fonts);
+    state.fonts.forEach((font) => { void registerProjectFont(font); });
+    setPreviewFont(state.fonts.some((font) => font.family === previousPreviewFont) ? previousPreviewFont : null);
+
+    state.openTabs = state.openTabs.filter((id) => {
+      const file = findFile(id);
+      return file && !file.generated && !file.readOnly;
+    });
+    let active = previousActive && findFile(previousActive);
+    if (!active || active.generated || active.readOnly) active = firstFile();
+    if (active && (active.generated || active.readOnly)) active = null;
+    state.activeId = active ? active.id : null;
+    if (state.activeId && !state.openTabs.includes(state.activeId)) state.openTabs.unshift(state.activeId);
+    if (!folderNodeByPath(state.selectedFolder)) state.selectedFolder = "";
+
+    renderTree();
+    renderTabs();
+    if (!active) {
+      clearEditorSelection();
+    } else if (active.kind === "img") {
+      previewImage(active);
+      markTree(active.id);
+    } else {
+      area.value = active.content || "";
+      paint();
+      renderOutline();
+      markTree(active.id);
+    }
+  }
+
+  async function refreshFileTree() {
+    if (state.dirtyFiles.size) {
+      toast(t("tree.refreshUnsaved"), "err");
+      return;
+    }
+    const button = $("refreshTreeBtn");
+    button.disabled = true;
+    button.classList.add("loading");
+    try {
+      if (!window.IrisProjects || !window.IrisProjects.refreshCurrent) throw new Error(t("editor.projectsBackendUnavailable"));
+      applyRefreshedFileTree(await window.IrisProjects.refreshCurrent());
+      toast(t("tree.refreshed"));
+    } catch (err) {
+      console.error("File tree refresh failed", err);
+      toast(t("tree.refreshFailed"), "err");
+    } finally {
+      button.disabled = false;
+      button.classList.remove("loading");
+    }
   }
 
   async function downloadTreeFile(file) {
@@ -1109,7 +1221,6 @@
       lilypondArgs: state.lilypondArgs,
       lilypondFormat: state.lilypondFormat,
       fonts: state.fonts,
-      appliedFont: state.appliedFont,
       activeId: state.activeId,
       openTabs: state.openTabs.slice(),
       untitledN: state.untitledN,
@@ -1481,6 +1592,32 @@
   }
 
   /* ---------------- fonts ---------------- */
+  function syncFontInTree(font) {
+    let folder = project.nodes.find((node) => node.name === "fonts");
+    if (folder && folder.type !== "folder") throw new Error("fonts is not a folder");
+    if (!folder) {
+      folder = { type: "folder", name: "fonts", open: true, children: [] };
+      project.nodes.push(folder);
+    }
+    folder.open = true;
+    folder.children = Array.isArray(folder.children) ? folder.children : [];
+    const name = String(font.path || font.name).split("/").pop();
+    let node = folder.children.find((item) => item.type === "file" && (item.path === font.path || item.name === name));
+    if (!node) {
+      node = { type: "file", id: `font_${Date.now()}_${folder.children.length}`, name, kind: "file", path: font.path };
+      folder.children.push(node);
+    }
+    Object.assign(node, {
+      name,
+      path: font.path,
+      kind: "file",
+      binary: true,
+      encoding: "base64",
+      data: font.data,
+    });
+    renderTree();
+  }
+
   function pickFont(file) {
     if (!file) return;
     const fam = "IrisUser_" + file.name.replace(/\.[^.]+$/, "").replace(/[^a-zA-Z0-9]/g, "_");
@@ -1488,17 +1625,17 @@
     reader.onload = async () => {
       try {
         const dataUrl = reader.result;
-        const path = uniqueFontPath(file.name);
         const ff = new FontFace(fam, `url(${dataUrl})`);
         await ff.load();
         document.fonts.add(ff);
         const prev = state.fonts.findIndex((x) => x.name.toLowerCase() === file.name.toLowerCase());
+        const path = prev >= 0 ? state.fonts[prev].path : uniqueFontPath(file.name);
         const font = { family: fam, name: file.name, path, data: dataUrl };
         if (prev >= 0) state.fonts.splice(prev, 1, font);
         else state.fonts.push(font);
-        renderFontList();
-        applyFont(fam);
-        void persistWhenDocumentClean();
+        syncFontInTree(font);
+        setPreviewFont(fam);
+        if (!await persist()) throw new Error("Font persistence failed");
         toast(t("settings.uploadedFont", { name: file.name }));
       } catch (e) { toast(t("settings.fontUploadFailed"), "err"); }
     };
@@ -1535,21 +1672,20 @@
     state.fonts.forEach((fo) => {
       const el = document.createElement("div");
       el.className = "fontcard";
-      const active = state.appliedFont === fo.family;
+      const active = state.previewFont === fo.family;
       el.innerHTML = `<div class="glyph" style="font-family:'${fo.family}'">Ag</div>
         <div><div class="nm" style="font-family:'${fo.family}'">${esc(fo.name)}</div><div class="fm">${esc(fo.path || fo.family)}</div></div>
-        <div class="use"><button class="pill${active ? " active" : ""}">${active ? `${ti("check")}<span>${esc(t("settings.fontInUse"))}</span>` : esc(t("settings.useFont"))}</button></div>`;
-      el.querySelector(".pill").addEventListener("click", () => applyFont(active ? null : fo.family));
+        <div class="use"><button class="pill${active ? " active" : ""}">${active ? `${ti("check")}<span>${esc(t("settings.previewActive"))}</span>` : esc(t("settings.showFontPreview"))}</button></div>`;
+      el.querySelector(".pill").addEventListener("click", () => setPreviewFont(active ? null : fo.family));
       box.appendChild(el);
     });
   }
-  function applyFont(fam, save) {
-    if (save == null) save = true;
-    state.appliedFont = fam;
+  function setPreviewFont(fam) {
+    state.previewFont = fam;
     if (fam) document.documentElement.style.setProperty("--proj-font", `'${fam}', var(--font-document)`);
     else document.documentElement.style.removeProperty("--proj-font");
+    $("fontPreviewBlock").hidden = !fam;
     renderFontList();
-    if (save) void persistWhenDocumentClean();
   }
 
   /* ---------------- download compiled output ---------------- */
@@ -1619,6 +1755,7 @@
     $("btnSave").addEventListener("click", saveProject);
     $("btnNew").addEventListener("click", newFile);
     $("newFileBtn").addEventListener("click", newFile);
+    $("refreshTreeBtn").addEventListener("click", () => { void refreshFileTree(); });
     $("btnOpen").addEventListener("click", openExternalPicker);
     $("btnAttach").addEventListener("click", openAttach);
     $("dlBtn").addEventListener("click", downloadPdf);
@@ -2100,9 +2237,9 @@
         ? data.lilypondFormat
         : "pdf";
       state.compileProfile = normalizeCompileProfile(data.compileProfile);
-      state.fonts = Array.isArray(data.fonts) ? data.fonts : [];
+      state.fonts = fontSettingsFromTree(data.fonts);
       state.fonts.forEach((font) => registerProjectFont(font).then(() => renderFontList()));
-      applyFont(data.appliedFont || null, false);
+      setPreviewFont(null);
       state.pdfLoadGeneration += 1;
       void releasePdfDocument();
       clearCompiledArtifacts();

@@ -17,8 +17,8 @@ the Node.js service handles authentication, persistence, and compilation.
 - Separate workspaces for LaTeX documents and LilyPond scores.
 - A project dashboard scoped to the authenticated user.
 - Portable project export and import through ZIP archives.
-- A file tree with folders, multiple open tabs, uploads, per-file downloads,
-  renaming, and deletion.
+- A refreshable file tree with folders, multiple open tabs, uploads, per-file
+  downloads, renaming, and deletion.
 - Syntax highlighting, document outline, search and replace, formatting,
   optional word wrapping, and configurable autosave.
 - Server-side LaTeX compilation with `pdflatex`, `xelatex`, or `lualatex`.
@@ -232,6 +232,12 @@ errors, and a forced `output/` destination.
 For XeLaTeX and LuaLaTeX, fonts uploaded through project settings are stored in
 `fonts/` and exposed through `OSFONTDIR`. Iris also keeps a project-local TeX
 cache in `.iris/texmf-var` and refreshes Fontconfig when available.
+
+The font card's preview control only changes the sample shown in project
+settings. It does not select a font for compilation; the document source remains
+responsible for using the desired family. The uploaded-font list is reconciled
+with the actual files below `fonts/`, so deleting or renaming one from the file
+tree also updates project settings.
 
 ### LilyPond projects
 

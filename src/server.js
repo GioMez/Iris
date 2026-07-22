@@ -591,6 +591,50 @@ function fileIsFontPath(filePath) {
   return /\.(ttf|otf|woff2?)$/i.test(filePath || "");
 }
 
+function fontPreviewFamily(fileName) {
+  return "IrisUser_" + path.basename(String(fileName || "font"), path.extname(String(fileName || "")))
+    .replace(/[^a-zA-Z0-9]/g, "_");
+}
+
+function reconcileProjectFonts(data) {
+  const nodesByPath = new Map();
+  const walk = (nodes, parentPath = "") => {
+    if (!Array.isArray(nodes)) return;
+    for (const node of nodes) {
+      if (!node || node.generated) continue;
+      if (node.type === "folder") {
+        const rel = safeRelPath(path.posix.join(parentPath, node.name || ""));
+        walk(node.children, rel);
+        continue;
+      }
+      const rel = nodeRelPath(node, node.name, parentPath);
+      if (rel.startsWith("fonts/") && fileIsFontPath(rel)) nodesByPath.set(rel, node);
+    }
+  };
+  walk(data && data.project && data.project.nodes);
+
+  const existing = new Map();
+  for (const font of Array.isArray(data && data.fonts) ? data.fonts : []) {
+    if (!font || !font.path) continue;
+    let rel;
+    try { rel = safeRelPath(font.path); } catch { continue; }
+    if (rel.startsWith("fonts/") && fileIsFontPath(rel)) existing.set(rel, font);
+  }
+  data.fonts = [...nodesByPath.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([rel, node]) => {
+      const prior = existing.get(rel) || {};
+      return {
+        ...prior,
+        family: prior.family || fontPreviewFamily(rel),
+        name: path.posix.basename(rel),
+        path: rel,
+        ...(prior.data || node.data ? { data: prior.data || node.data } : {}),
+      };
+    });
+  return data.fonts;
+}
+
 function fileKindForPath(filePath) {
   if (/\.tex$/i.test(filePath)) return "tex";
   if (/\.ly$/i.test(filePath)) return "ly";
@@ -905,15 +949,15 @@ async function readProjectFile(storagePath) {
   await hydrate(data.project.nodes);
   await syncNodesWithFilesystem(storagePath, data);
   data.projectType = inferProjectType(data);
-  if (Array.isArray(data.fonts)) {
-    for (const font of data.fonts) {
-      if (!font || !font.path) continue;
-      const rel = safeRelPath(font.path);
-      if (!fileIsFontPath(rel)) continue;
-      const buf = await fs.readFile(path.join(storagePath, rel)).catch(() => null);
-      if (buf) font.data = `data:${mimeForProjectFile(rel)};base64,${buf.toString("base64")}`;
-    }
+  reconcileProjectFonts(data);
+  const hydratedFonts = [];
+  for (const font of data.fonts) {
+    const buf = await fs.readFile(path.join(storagePath, font.path)).catch(() => null);
+    if (!buf) continue;
+    font.data = `data:${mimeForProjectFile(font.path)};base64,${buf.toString("base64")}`;
+    hydratedFonts.push(font);
   }
+  data.fonts = hydratedFonts;
   return data;
 }
 
@@ -933,6 +977,7 @@ async function writeProjectManifest(storagePath, data) {
 
 async function writeProjectFile(storagePath, data) {
   await fs.mkdir(storagePath, { recursive: true });
+  reconcileProjectFonts(data);
   await ensureProjectDirs(storagePath, data);
   const expectedFiles = await writeProjectNodes(storagePath, data);
   await writeProjectFonts(storagePath, data, expectedFiles);
@@ -1468,7 +1513,9 @@ function lilypondArgs(args, vars, additionalArgs = [], outputFormat = "pdf") {
 }
 
 function normalizeCompileProfile(profile, engine, mainPath, projectType = "latex", additionalArgs = [], outputFormat = "pdf") {
-  const requested = profile && typeof profile === "object" ? profile : defaultCompileProfile(projectType);
+  const requested = projectType === "lilypond"
+    ? defaultCompileProfile("lilypond")
+    : (profile && typeof profile === "object" ? profile : defaultCompileProfile(projectType));
   const source = requested.mode && requested.mode !== "custom" ? presetCompileProfile(requested.mode, projectType) : requested;
   const steps = Array.isArray(source.steps) ? source.steps : defaultCompileProfile(projectType).steps;
   const vars = compileVariables(mainPath);
@@ -1495,17 +1542,18 @@ function normalizeCompileProfile(profile, engine, mainPath, projectType = "latex
 }
 
 function sanitizeCompileProfileForStorage(profile, projectType = "latex") {
+  if (projectType === "lilypond") return { mode: "quick" };
   if (!profile || typeof profile !== "object") return { mode: "quick" };
   const mode = String(profile.mode || "quick");
   if (mode !== "custom") {
-    const modes = projectType === "lilypond" ? ["quick"] : ["quick", "bibtex", "biber", "index"];
+    const modes = ["quick", "bibtex", "biber", "index"];
     return { mode: modes.includes(mode) ? mode : "quick" };
   }
   const steps = Array.isArray(profile.steps) ? profile.steps : [];
   return {
     mode: "custom",
     steps: steps.slice(0, 12).map((step) => {
-      const fallbackEngine = projectType === "lilypond" ? "lilypond" : "pdflatex";
+      const fallbackEngine = "pdflatex";
       const tool = step.tool === "[engine]" ? "[engine]" : resolveCompileTool(step.tool, fallbackEngine, projectType);
       const args = Array.isArray(step.args) ? step.args : String(step.args || "").split(/\s+/).filter(Boolean);
       return {
@@ -1950,6 +1998,7 @@ module.exports = {
   buildProjectArchive,
   collectProjectArchiveEntries,
   parseProjectArchive,
+  reconcileProjectFonts,
   fileKindForPath,
   inferProjectType,
   findCompileFile,

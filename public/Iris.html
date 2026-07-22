@@ -60,6 +60,7 @@
         <div data-panel="files">
           <div class="side-head"><span data-i18n="sidebar.project">Project</span>
             <span class="act">
+              <button class="iconbtn" id="refreshTreeBtn" type="button" title="Refresh file tree" aria-label="Refresh file tree" data-i18n-title="sidebar.refreshTree" data-i18n-aria-label="sidebar.refreshTree"><span data-icon="refresh"></span></button>
               <button class="iconbtn" id="newFileBtn" title="New file or folder" aria-label="New file or folder" data-i18n-title="sidebar.newItem" data-i18n-aria-label="sidebar.newItem"><span data-icon="plus"></span></button>
             </span>
           </div>
@@ -258,8 +259,10 @@
         </button>
         <div style="margin:18px 0 8px" class="label" data-i18n="settings.uploadedFonts">Uploaded fonts</div>
         <div id="fontList"></div>
-        <div class="label" style="margin-top:18px" data-i18n="settings.documentPreview">Document preview</div>
-        <div class="fontprev" id="fontPrev" data-i18n="settings.fontPreview">The quick brown fox — Laboratory Report — 0123456789</div>
+        <div id="fontPreviewBlock" hidden>
+          <div class="label" style="margin-top:18px" data-i18n="settings.fontPreviewTitle">Font preview</div>
+          <div class="fontprev" id="fontPrev" data-i18n="settings.fontPreview">The quick brown fox — Laboratory Report — 0123456789</div>
+        </div>
       </section>
       <button class="set-accordion-trigger" type="button" data-set="editor" aria-expanded="false" aria-controls="settingsPanelEditor"><span data-icon="code"></span><span data-i18n="settings.editor">Editor</span><span class="set-chevron" data-icon="chevron-down"></span></button>
       <section class="set-pane" id="settingsPanelEditor" role="tabpanel" aria-labelledby="settingsTabEditor" tabindex="0" data-setpane="editor" hidden>
@@ -323,19 +326,21 @@
           <span class="label" data-i18n="settings.backendCommand">Command sent to the backend</span>
           <code class="binpath" id="compileCommandPreview">pdflatex</code>
         </div>
-        <div class="field" style="margin-top:18px">
-          <span class="label" data-i18n="settings.pipeline">Compilation pipeline</span>
-          <select class="select" id="compilePreset">
-            <option value="quick" data-i18n="settings.presetQuick">Quick</option>
-            <option value="bibtex" data-i18n="settings.presetBibtex">BibTeX bibliography</option>
-            <option value="biber" data-i18n="settings.presetBiber">Biber bibliography</option>
-            <option value="index" data-i18n="settings.presetIndex">Index</option>
-            <option value="custom" data-i18n="settings.presetCustom">Custom</option>
-          </select>
-          <div class="hint"><span data-icon="info-circle"></span><span data-i18n="settings.outputOverwriteHint">Outputs are overwritten in the project's output/ folder.</span></div>
+        <div id="compilePipelineControls">
+          <div class="field" style="margin-top:18px">
+            <span class="label" data-i18n="settings.pipeline">Compilation pipeline</span>
+            <select class="select" id="compilePreset">
+              <option value="quick" data-i18n="settings.presetQuick">Quick</option>
+              <option value="bibtex" data-i18n="settings.presetBibtex">BibTeX bibliography</option>
+              <option value="biber" data-i18n="settings.presetBiber">Biber bibliography</option>
+              <option value="index" data-i18n="settings.presetIndex">Index</option>
+              <option value="custom" data-i18n="settings.presetCustom">Custom</option>
+            </select>
+            <div class="hint"><span data-icon="info-circle"></span><span data-i18n="settings.outputOverwriteHint">Outputs are overwritten in the project's output/ folder.</span></div>
+          </div>
+          <div id="compileSteps"></div>
+          <button class="btn sm" type="button" id="compileAddStep"><span class="ic" data-icon="plus"></span><span data-i18n="settings.step">Step</span></button>
         </div>
-        <div id="compileSteps"></div>
-        <button class="btn sm" type="button" id="compileAddStep"><span class="ic" data-icon="plus"></span><span data-i18n="settings.step">Step</span></button>
       </section>
       <button class="set-accordion-trigger" type="button" data-set="language" aria-expanded="false" aria-controls="settingsPanelLanguage"><span data-icon="language"></span><span data-i18n="language.title">Language</span><span class="set-chevron" data-icon="chevron-down"></span></button>
       <section class="set-pane" id="settingsPanelLanguage" role="tabpanel" aria-labelledby="settingsTabLanguage" tabindex="0" data-setpane="language" hidden>

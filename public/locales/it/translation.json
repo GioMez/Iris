@@ -53,6 +53,7 @@
     "files": "File",
     "outline": "Struttura",
     "project": "Progetto",
+    "refreshTree": "Aggiorna albero dei file",
     "newItem": "Nuovo file o cartella",
     "dropImages": "Trascina immagini qui",
     "dropImagesRest": "nella cartella selezionata, oppure sfoglia…",
@@ -139,7 +140,7 @@
     "fontsDescription": "Carica un font da usare nei tuoi documenti compilati. Formati: .ttf · .otf · .woff · .woff2",
     "dropFont": "Trascina un font qui oppure clicca per sfogliare",
     "uploadedFonts": "Font caricati",
-    "documentPreview": "Anteprima documento",
+    "fontPreviewTitle": "Anteprima font",
     "fontPreview": "The quick brown fox — Relazione di Laboratorio — 0123456789",
     "editor": "Editor",
     "editorDescription": "Preferenze di scrittura e formattazione del codice LaTeX.",
@@ -183,8 +184,8 @@
     "noCustomFonts": "Nessun font personalizzato. Quelli di sistema restano disponibili.",
     "uploadedFont": "Font “{{name}}” caricato",
     "fontUploadFailed": "Impossibile caricare il font",
-    "fontInUse": "in uso",
-    "useFont": "usa nel progetto"
+    "previewActive": "anteprima attiva",
+    "showFontPreview": "mostra anteprima"
   },
   "tree": {
     "newTitle": "Nuovo elemento",
@@ -223,6 +224,9 @@
     "deleteAria": "Elimina {{name}}",
     "downloadAria": "Scarica {{name}}",
     "downloadFailed": "Impossibile scaricare “{{name}}”",
+    "refreshed": "Albero dei file aggiornato",
+    "refreshFailed": "Impossibile aggiornare l'albero dei file",
+    "refreshUnsaved": "Salva le modifiche aperte prima di aggiornare l'albero dei file",
     "closeTab": "Chiudi {{name}}",
     "closeDirtyTab": "Chiudi {{name}} con modifiche non salvate",
     "dirty": "modifiche non salvate",

@@ -53,6 +53,7 @@
     "files": "Files",
     "outline": "Outline",
     "project": "Project",
+    "refreshTree": "Refresh file tree",
     "newItem": "New file or folder",
     "dropImages": "Drop images here",
     "dropImagesRest": "in the selected folder, or browse…",
@@ -139,7 +140,7 @@
     "fontsDescription": "Upload a font to use in compiled documents. Formats: .ttf · .otf · .woff · .woff2",
     "dropFont": "Drop a font here or click to browse",
     "uploadedFonts": "Uploaded fonts",
-    "documentPreview": "Document preview",
+    "fontPreviewTitle": "Font preview",
     "fontPreview": "The quick brown fox — Laboratory Report — 0123456789",
     "editor": "Editor",
     "editorDescription": "LaTeX source editing and formatting preferences.",
@@ -183,8 +184,8 @@
     "noCustomFonts": "No custom fonts. System fonts remain available.",
     "uploadedFont": "Font “{{name}}” uploaded",
     "fontUploadFailed": "Unable to upload the font",
-    "fontInUse": "in use",
-    "useFont": "use in project"
+    "previewActive": "preview active",
+    "showFontPreview": "show preview"
   },
   "tree": {
     "newTitle": "New item",
@@ -223,6 +224,9 @@
     "deleteAria": "Delete {{name}}",
     "downloadAria": "Download {{name}}",
     "downloadFailed": "Unable to download “{{name}}”",
+    "refreshed": "File tree refreshed",
+    "refreshFailed": "Unable to refresh the file tree",
+    "refreshUnsaved": "Save the open changes before refreshing the file tree",
     "closeTab": "Close {{name}}",
     "closeDirtyTab": "Close {{name}} with unsaved changes",
     "dirty": "unsaved changes",
