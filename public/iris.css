@@ -1,4 +1,4 @@
-/* ===================== WebTeX · hi-fi ===================== */
+/* ===================== Iris · hi-fi ===================== */
 :root{
   --bg:#16161e;
   --editor-bg:#1a1b26;
@@ -539,7 +539,7 @@ button.st{border:0;background:transparent;font:inherit}
 /* ===================== login screen ===================== */
 .login-screen{position:fixed;inset:0;z-index:100;display:flex;align-items:center;justify-content:center;padding:24px;overflow-y:auto;
   background:var(--bg);background-image:radial-gradient(circle at 1px 1px,#ffffff0a 1px,transparent 0);background-size:24px 24px}
-.wt-authed .login-screen{display:none}
+.iris-authed .login-screen{display:none}
 .login-card{width:min(404px,96vw);margin:auto;background:var(--panel);border:1px solid var(--border);border-radius:16px;
   box-shadow:var(--shadow);padding:34px 34px 26px;animation:pop .2s ease}
 .login-card.shake{animation:shake .4s}
@@ -619,15 +619,15 @@ button.st{border:0;background:transparent;font:inherit}
 .projchip .pdot{color:var(--accent);font-size:14px}
 .projchip .pdot .ti{width:14px;height:14px}
 .projchip #projChipName{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500;color:var(--txt)}
-html:not(.wt-inproject) #btnCloseProject,
-html:not(.wt-inproject) #projChip{display:none}
+html:not(.iris-inproject) #btnCloseProject,
+html:not(.iris-inproject) #projChip{display:none}
 
 /* ===================== project chooser ===================== */
 .scrim{z-index:120}              /* modali sempre sopra il chooser */
 .picker-screen{position:fixed;inset:0;z-index:90;display:none;overflow-y:auto;padding:46px 30px 60px;
   background:var(--bg);background-image:radial-gradient(circle at 1px 1px,#ffffff0a 1px,transparent 0);background-size:24px 24px}
-.wt-authed .picker-screen{display:block}
-.wt-inproject .picker-screen{display:none}
+.iris-authed .picker-screen{display:block}
+.iris-inproject .picker-screen{display:none}
 .picker-wrap{width:min(940px,100%);margin:0 auto;animation:pop .22s ease}
 
 .picker-top{display:flex;align-items:center;justify-content:space-between;gap:16px;

@@ -1,9 +1,9 @@
-/* ===================== WebTeX · app ===================== */
+/* ===================== Iris · app ===================== */
 (function () {
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-  const ti = (name, className = "", label = "") => window.WTIcons.icon(name, className, label);
+  const ti = (name, className = "", label = "") => window.IrisIcons.icon(name, className, label);
   const activateOnKeyboard = (element, action) => element.addEventListener("keydown", (event) => {
     if (event.target !== element || (event.key !== "Enter" && event.key !== " ")) return;
     event.preventDefault();
@@ -17,8 +17,8 @@
   });
 
   /* ---------------- project (loaded by the projects layer) ---------------- */
-  // The active project's file tree. Populated by WTApp.load() when the user
-  // opens a project from the chooser screen (see wt-projects.js).
+  // The active project's file tree. Populated by IrisApp.load() when the user
+  // opens a project from the chooser screen (see iris-projects.js).
   let project = { name: "", nodes: [] };
 
   /* ---------------- state ---------------- */
@@ -64,10 +64,10 @@
   /* ---------------- persistence (delegated to the projects layer) ---------------- */
   let persistQueue = Promise.resolve(true);
   function persist() {
-    if (!window.WTProjects) return Promise.resolve(false);
+    if (!window.IrisProjects) return Promise.resolve(false);
     const operation = async () => {
       const dirtyAtStart = new Map(state.dirtyFiles);
-      const saved = await window.WTProjects.persistCurrent();
+      const saved = await window.IrisProjects.persistCurrent();
       if (!saved) return false;
       let dirtyChanged = false;
       dirtyAtStart.forEach((revision, id) => {
@@ -140,7 +140,7 @@
   function paint() {
     const v = area.value;
     const active = findFile(state.activeId);
-    const syntax = active && active.kind === "ly" ? WTLilyPond : WTLatex;
+    const syntax = active && active.kind === "ly" ? IrisLilyPond : IrisLatex;
     layer.innerHTML = syntax.highlight(v) + "\n";
     updateEditorViewportInsets();
     renderGutter(v);
@@ -306,7 +306,7 @@
     } else if (e.key === "Enter" && state.autoIndent) {
       e.preventDefault();
       const f = findFile(state.activeId);
-      const syntax = f && f.kind === "ly" ? WTLilyPond : WTLatex;
+      const syntax = f && f.kind === "ly" ? IrisLilyPond : IrisLatex;
       insertAtCursor(syntax.indentOnEnter(area.value, area.selectionStart));
     }
     scheduleScrollSync();
@@ -465,7 +465,7 @@
     $("projectTypeLabel").textContent = lilypond ? "LilyPond (.ly)" : "LaTeX (.tex)";
     $("compilerPathLabel").textContent = lilypond ? "Percorso dei binari LilyPond" : "Percorso dei binari LaTeX";
     $("compileSettingsDesc").innerHTML = lilypond
-      ? "Il progetto contiene sorgenti musicali <code>.ly</code>: WebTeX invocherà <code>lilypond</code> e produrrà il PDF in <code>output/</code>."
+      ? "Il progetto contiene sorgenti musicali <code>.ly</code>: Iris invocherà <code>lilypond</code> e produrrà il PDF in <code>output/</code>."
       : "Il progetto contiene sorgenti <code>.tex</code>: scegli il motore e la pipeline LaTeX da invocare.";
     $("lilypondArgsField").style.display = lilypond ? "" : "none";
     $("lilypondArgs").value = state.lilypondArgs;
@@ -910,7 +910,7 @@
     const f = findFile(state.activeId);
     const box = $("outline");
     if (!f || (f.kind !== "tex" && f.kind !== "ly")) { box.innerHTML = `<div class="ol-empty">Nessuna struttura</div>`; return; }
-    const items = (f.kind === "ly" ? WTLilyPond : WTLatex).outline(f.content);
+    const items = (f.kind === "ly" ? IrisLilyPond : IrisLatex).outline(f.content);
     if (!items.length) { box.innerHTML = `<div class="ol-empty">Nessuna struttura nel documento</div>`; return; }
     box.innerHTML = "";
     items.forEach((it) => {
@@ -1082,8 +1082,8 @@
     $("btnCompile").disabled = true;
     const t0 = performance.now();
     try {
-      if (!window.WTProjects || !window.WTProjects.compileCurrent) throw new Error("Backend progetti non disponibile.");
-      const res = await window.WTProjects.compileCurrent(projectSnapshot(), {
+      if (!window.IrisProjects || !window.IrisProjects.compileCurrent) throw new Error("Backend progetti non disponibile.");
+      const res = await window.IrisProjects.compileCurrent(projectSnapshot(), {
         engine: state.engine,
         mainPath: f.path,
         texPath: state.texPath,
@@ -1107,7 +1107,7 @@
       }
     } catch (err) {
       const ms = ((performance.now() - t0) / 1000).toFixed(1);
-      const res = { success: false, log: `WebTeX: ${err.message || "compilazione non riuscita"}`, warnings: [], errors: [err.message || "Errore di compilazione"] };
+      const res = { success: false, log: `Iris: ${err.message || "compilazione non riuscita"}`, warnings: [], errors: [err.message || "Errore di compilazione"] };
       buildLog(f, res, ms);
       updateCompileStatus(res, ms);
       setView("log");
@@ -1394,7 +1394,7 @@
   /* ---------------- fonts ---------------- */
   function pickFont(file) {
     if (!file) return;
-    const fam = "WTUser_" + file.name.replace(/\.[^.]+$/, "").replace(/[^a-zA-Z0-9]/g, "_");
+    const fam = "IrisUser_" + file.name.replace(/\.[^.]+$/, "").replace(/[^a-zA-Z0-9]/g, "_");
     const reader = new FileReader();
     reader.onload = async () => {
       try {
@@ -1520,7 +1520,7 @@
       const f = findFile(state.activeId);
       if (!f || (f.kind !== "tex" && f.kind !== "ly")) return;
       const pos = area.selectionStart;
-      area.value = (f.kind === "ly" ? WTLilyPond : WTLatex).format(area.value);
+      area.value = (f.kind === "ly" ? IrisLilyPond : IrisLatex).format(area.value);
       f.content = area.value;
       markFileDirty(f.id);
       area.selectionStart = area.selectionEnd = Math.min(pos, area.value.length);
@@ -1767,7 +1767,7 @@
 
     // ---- global shortcuts ----
     document.addEventListener("keydown", (e) => {
-      if (!document.documentElement.classList.contains("wt-authed")) return;
+      if (!document.documentElement.classList.contains("iris-authed")) return;
       const mod = e.ctrlKey || e.metaKey;
       const key = e.key.toLowerCase();
       if (!mod || e.altKey || e.repeat) return;
@@ -1814,7 +1814,7 @@
   }
 
   /* ---------------- layout: resize + collapse ---------------- */
-  const LS_LAYOUT = "webtex_layout";
+  const LS_LAYOUT = "iris_layout";
   const drawerMedia = window.matchMedia("(max-width: 1180px)");
   function loadLayout() {
     let L = {};
@@ -1983,8 +1983,8 @@
     toast(`${n} occorrenz${n > 1 ? "e sostituite" : "a sostituita"}`);
   }
 
-  /* ---------------- WTApp: bridge used by the projects layer ---------------- */
-  window.WTApp = {
+  /* ---------------- IrisApp: bridge used by the projects layer ---------------- */
+  window.IrisApp = {
     // Load a project's data into the editor and render everything.
     load(data) {
       data = data || {};

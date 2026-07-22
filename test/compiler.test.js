@@ -4,7 +4,7 @@ const fs = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
 
-process.env.WEBTEX_SECRET = "test-only-secret-with-sufficient-entropy";
+process.env.IRIS_SECRET = "test-only-secret-with-sufficient-entropy";
 
 const {
   fileKindForPath,
@@ -94,7 +94,7 @@ test("selects and constrains every supported LilyPond output format", () => {
 });
 
 test("collects all numbered artifacts for the selected format", async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "webtex-artifacts-test-"));
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "iris-artifacts-test-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   await fs.writeFile(path.join(root, "main.png"), "page one");
   await fs.writeFile(path.join(root, "main-page2.png"), "page two");
@@ -127,7 +127,7 @@ test("keeps the existing hardened LaTeX invocation", () => {
 });
 
 test("invokes LilyPond and reads its PDF from output", async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "webtex-lilypond-test-"));
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "iris-lilypond-test-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const bin = path.join(root, "bin");
   const cwd = path.join(root, "project");

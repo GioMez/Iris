@@ -72,6 +72,6 @@
     });
   }
 
-  window.WTIcons = { icon, hydrate };
+  window.IrisIcons = { icon, hydrate };
   hydrate();
 })();

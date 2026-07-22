@@ -7,10 +7,10 @@ const root = path.resolve(__dirname, "..");
 const read = (file) => fs.readFileSync(path.join(root, file), "utf8");
 
 test("every referenced Tabler icon is bundled locally", () => {
-  const icons = read("public/wt-icons.js");
-  const html = read("public/WebTeX.html");
-  const app = read("public/wt-app.js");
-  const projects = read("public/wt-projects.js");
+  const icons = read("public/iris-icons.js");
+  const html = read("public/Iris.html");
+  const app = read("public/iris-app.js");
+  const projects = read("public/iris-projects.js");
   const fileIconBlock = app.slice(app.indexOf("function fileIcon"), app.indexOf("function paint"));
   const definitions = new Set(Array.from(icons.matchAll(/^\s+"([a-z0-9-]+)": "</gm), (match) => match[1]));
   const references = new Set([
@@ -23,13 +23,13 @@ test("every referenced Tabler icon is bundled locally", () => {
 });
 
 test("the icon runtime loads before UI modules", () => {
-  const html = read("public/WebTeX.html");
-  assert.ok(html.indexOf('src="wt-icons.js"') < html.indexOf('src="wt-app.js"'));
-  assert.ok(html.indexOf('src="wt-icons.js"') < html.indexOf('src="wt-projects.js"'));
+  const html = read("public/Iris.html");
+  assert.ok(html.indexOf('src="iris-icons.js"') < html.indexOf('src="iris-app.js"'));
+  assert.ok(html.indexOf('src="iris-icons.js"') < html.indexOf('src="iris-projects.js"'));
 });
 
 test("legacy interface glyphs are no longer used as icons", () => {
-  const sources = ["public/WebTeX.html", "public/wt-app.js", "public/wt-projects.js"]
+  const sources = ["public/Iris.html", "public/iris-app.js", "public/iris-projects.js"]
     .map(read)
     .join("\n");
   assert.doesNotMatch(sources, /[▤☰◆＋▢⤓⊕‹›⌕⇄✕▣≣−✦▶⚙⚿🅰▾▴✎⚠✗✷➜♪◦▸]/u);

@@ -1,19 +1,19 @@
 services:
   webapp:
     build: .
-    container_name: webtex-webapp
+    container_name: iris-webapp
     restart: unless-stopped
     depends_on:
       mariadb:
         condition: service_healthy
     environment:
       PORT: 3000
-      WEBTEX_SECRET: ${WEBTEX_SECRET:?Imposta WEBTEX_SECRET con un valore casuale sicuro}
+      IRIS_SECRET: ${IRIS_SECRET:?Imposta IRIS_SECRET con un valore casuale sicuro}
       DB_HOST: mariadb
       DB_PORT: 3306
-      DB_USER: webtex
-      DB_PASSWORD: webtex
-      DB_NAME: webtex
+      DB_USER: iris
+      DB_PASSWORD: iris
+      DB_NAME: iris
       DATA_DIR: /app/data/projects
       APP_BASE_URL: http://localhost:3000
       TEX_BIN_PATH: /usr/local/texlive/bin/x86_64-linux
@@ -23,11 +23,11 @@ services:
       COMPILE_TIMEOUT_MS: 30000
       COOKIE_SECURE: "false"
       # OAuth 2.0 / OIDC SSO, ad esempio Authentik.
-      # OAUTH_ISSUER_URL: https://auth.example.org/application/o/webtex
+      # OAUTH_ISSUER_URL: https://auth.example.org/application/o/iris
       # OAUTH_AUTHORIZATION_URL: https://auth.example.org/application/o/authorize/
       # OAUTH_TOKEN_URL: https://auth.example.org/application/o/token/
       # OAUTH_USERINFO_URL: https://auth.example.org/application/o/userinfo/
-      # OAUTH_CLIENT_ID: webtex
+      # OAUTH_CLIENT_ID: iris
       # OAUTH_CLIENT_SECRET: change-this-client-secret
       # OAUTH_REDIRECT_URI: http://localhost:3000/api/auth/sso/callback
       # OAUTH_SCOPE: openid email profile
@@ -54,19 +54,19 @@ services:
 
   mariadb:
     image: mariadb:11.4.10-noble
-    container_name: webtex-mariadb
+    container_name: iris-mariadb
     restart: unless-stopped
     environment:
-      MARIADB_ROOT_PASSWORD: webtex-root
-      MARIADB_DATABASE: webtex
-      MARIADB_USER: webtex
-      MARIADB_PASSWORD: webtex
+      MARIADB_ROOT_PASSWORD: iris-root
+      MARIADB_DATABASE: iris
+      MARIADB_USER: iris
+      MARIADB_PASSWORD: iris
     ports:
       - "3306:3306"
     volumes:
       - mariadb-data:/var/lib/mysql
     healthcheck:
-      test: ["CMD", "mariadb-admin", "ping", "-h", "127.0.0.1", "-uwebtex", "-pwebtex"]
+      test: ["CMD", "mariadb-admin", "ping", "-h", "127.0.0.1", "-uiris", "-piris"]
       interval: 5s
       timeout: 3s
       retries: 20

@@ -7,10 +7,10 @@ const vm = require("node:vm");
 function loadEditorSupport() {
   const context = { window: {} };
   vm.createContext(context);
-  vm.runInContext(fs.readFileSync(path.join(__dirname, "../public/wt-latex.js"), "utf8"), context);
-  context.WTLatex = context.window.WTLatex;
-  vm.runInContext(fs.readFileSync(path.join(__dirname, "../public/wt-lilypond.js"), "utf8"), context);
-  return context.window.WTLilyPond;
+  vm.runInContext(fs.readFileSync(path.join(__dirname, "../public/iris-latex.js"), "utf8"), context);
+  context.IrisLatex = context.window.IrisLatex;
+  vm.runInContext(fs.readFileSync(path.join(__dirname, "../public/iris-lilypond.js"), "utf8"), context);
+  return context.window.IrisLilyPond;
 }
 
 test("highlights LilyPond commands and comments as text", () => {

@@ -1,4 +1,4 @@
-/* ===================== WebTeX · LaTeX engine ===================== */
+/* ===================== Iris · LaTeX engine ===================== */
 (function () {
   function escAll(s) {
     return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -149,5 +149,5 @@
     return res;
   }
 
-  window.WTLatex = { highlight, format, indentOnEnter, outline, escAll };
+  window.IrisLatex = { highlight, format, indentOnEnter, outline, escAll };
 })();

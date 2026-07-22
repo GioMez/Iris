@@ -1,4 +1,4 @@
-/* ===================== WebTeX · projects ===================== */
+/* ===================== Iris · projects ===================== */
 /* Schermata di scelta progetti + persistenza backend.
    Il backend tiene auth/metadati in MariaDB e salva lo snapshot del progetto
    in una cartella dedicata sul filesystem. */
@@ -6,7 +6,7 @@
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-  const ti = (name, className = "", label = "") => window.WTIcons.icon(name, className, label);
+  const ti = (name, className = "", label = "") => window.IrisIcons.icon(name, className, label);
 
   let index = [];
   let currentId = null;
@@ -21,7 +21,7 @@
     let data = {};
     try { data = await res.json(); } catch (e) {}
     if (!res.ok) {
-      if (res.status === 401 && window.WTAuth) window.WTAuth.showLogin();
+      if (res.status === 401 && window.IrisAuth) window.IrisAuth.showLogin();
       const err = new Error(data.error || "Errore di comunicazione con il server.");
       err.status = res.status;
       throw err;
@@ -97,7 +97,7 @@
   function setProjName(name) {
     const el = $("projChipName");
     if (el) el.textContent = name || "-";
-    document.title = name ? `${name} · WebTeX` : "WebTeX";
+    document.title = name ? `${name} · Iris` : "Iris";
   }
   function setPickerLoading() {
     const grid = $("pkGrid"), empty = $("pkEmpty"), count = $("pkCount");
@@ -163,12 +163,12 @@
   async function openProject(id) {
     try {
       const data = await loadData(id);
-      if (!data || !window.WTApp) return;
+      if (!data || !window.IrisApp) return;
       currentId = id;
-      window.WTApp.load(data);
+      window.IrisApp.load(data);
       const m = metaOf(id);
       setProjName(m ? m.name : (data.project && data.project.name) || "");
-      document.documentElement.classList.add("wt-inproject");
+      document.documentElement.classList.add("iris-inproject");
     } catch (err) {
       console.error(err);
       await renderPicker();
@@ -176,19 +176,19 @@
   }
 
   async function closeCurrent() {
-    const dirty = !!(currentId && window.WTApp && window.WTApp.hasUnsavedChanges && window.WTApp.hasUnsavedChanges());
+    const dirty = !!(currentId && window.IrisApp && window.IrisApp.hasUnsavedChanges && window.IrisApp.hasUnsavedChanges());
     if (dirty && !window.confirm("Il progetto contiene modifiche non salvate. Uscire e scartarle?")) return false;
     if (dirty) cache.delete(currentId);
     else await persistCurrent();
     currentId = null;
-    document.documentElement.classList.remove("wt-inproject");
+    document.documentElement.classList.remove("iris-inproject");
     await renderPicker();
     return true;
   }
 
   async function persistCurrent() {
-    if (!currentId || !window.WTApp) return false;
-    const data = window.WTApp.serialize();
+    if (!currentId || !window.IrisApp) return false;
+    const data = window.IrisApp.serialize();
     const now = Date.now();
     data.updatedAt = now;
     cache.set(currentId, data);
@@ -215,7 +215,7 @@
 
   async function compileCurrent(data, options) {
     if (!currentId) throw new Error("Nessun progetto aperto.");
-    data = data && typeof data === "object" ? data : (window.WTApp ? window.WTApp.serialize() : {});
+    data = data && typeof data === "object" ? data : (window.IrisApp ? window.IrisApp.serialize() : {});
     const now = Date.now();
     data.updatedAt = now;
     cache.set(currentId, data);
@@ -272,7 +272,7 @@
     const data = cache.get(id);
     if (m) { m.name = name; m.updatedAt = Date.now(); }
     if (data && data.project) { data.project.name = name; data.updatedAt = Date.now(); }
-    if (id === currentId && window.WTApp) { window.WTApp.setName(name); setProjName(name); }
+    if (id === currentId && window.IrisApp) { window.IrisApp.setName(name); setProjName(name); }
     const out = await api(`/api/projects/${id}`, {
       method: "PUT",
       body: JSON.stringify({ name, data }),
@@ -287,7 +287,7 @@
     cache.delete(id);
     if (id === currentId) {
       currentId = null;
-      document.documentElement.classList.remove("wt-inproject");
+      document.documentElement.classList.remove("iris-inproject");
     }
   }
 
@@ -372,12 +372,12 @@
 
   /* ---------------- public API ---------------- */
   async function showPicker() {
-    const dirty = !!(currentId && window.WTApp && window.WTApp.hasUnsavedChanges && window.WTApp.hasUnsavedChanges());
+    const dirty = !!(currentId && window.IrisApp && window.IrisApp.hasUnsavedChanges && window.IrisApp.hasUnsavedChanges());
     if (dirty && !window.confirm("Il progetto contiene modifiche non salvate. Uscire e scartarle?")) return false;
     if (dirty) cache.delete(currentId);
     else await persistCurrent();
     currentId = null;
-    document.documentElement.classList.remove("wt-inproject");
+    document.documentElement.classList.remove("iris-inproject");
     setPickerLoading();
     await renderPicker();
     return true;
@@ -386,10 +386,10 @@
     currentId = null;
     cache.clear();
     index = [];
-    document.documentElement.classList.remove("wt-inproject");
+    document.documentElement.classList.remove("iris-inproject");
   }
 
-  window.WTProjects = { showPicker, openProject, closeCurrent, persistCurrent, compileCurrent, renderPicker, onLogout };
+  window.IrisProjects = { showPicker, openProject, closeCurrent, persistCurrent, compileCurrent, renderPicker, onLogout };
 
   /* ---------------- wiring ---------------- */
   function wire() {

@@ -2,7 +2,7 @@
 
 ## Tabler Icons
 
-WebTeX includes a curated subset of Tabler Icons 3.45.0.
+Iris includes a curated subset of Tabler Icons 3.45.0.
 
 Copyright (c) 2020-2026 Paweł Kuna
 

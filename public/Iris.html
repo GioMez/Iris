@@ -3,12 +3,12 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>WebTeX</title>
+<title>Iris</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <link href="https://fonts.cdnfonts.com/css/cmu-serif" rel="stylesheet">
-<link rel="stylesheet" href="webtex.css">
+<link rel="stylesheet" href="iris.css">
 </head>
 <body>
 <div class="app">
@@ -17,8 +17,8 @@
   <div class="topbar">
     <button class="tbtn icononly" id="btnSidebar" title="Mostra/nascondi pannello laterale" aria-label="Mostra o nascondi il pannello laterale" aria-controls="projectSidebar" aria-expanded="true"><span class="ic" data-icon="layout-sidebar-left-collapse"></span></button>
     <div class="logo">
-      <div class="mark">Tx</div>
-      <div><b>WebTeX</b> <span class="v">v0.1</span></div>
+      <div class="mark">Ir</div>
+      <div><b>Iris</b> <span class="v">Beta 1</span></div>
     </div>
     <div class="tbar-scroll">
       <div class="tsep"></div>
@@ -292,7 +292,7 @@
       <button class="set-accordion-trigger" type="button" data-set="compile" aria-expanded="false" aria-controls="settingsPanelCompile"><span data-icon="terminal-2"></span><span>Compilazione</span><span class="set-chevron" data-icon="chevron-down"></span></button>
       <section class="set-pane" id="settingsPanelCompile" role="tabpanel" aria-labelledby="settingsTabCompile" tabindex="0" data-setpane="compile" hidden>
         <h4 class="set-title"><span data-icon="terminal-2"></span>Compilazione</h4>
-        <p class="desc" id="compileSettingsDesc">Indica dove WebTeX deve cercare i binari del compilatore. Il campo è opzionale: se resta vuoto viene usato il <code>PATH</code> del backend.</p>
+        <p class="desc" id="compileSettingsDesc">Indica dove Iris deve cercare i binari del compilatore. Il campo è opzionale: se resta vuoto viene usato il <code>PATH</code> del backend.</p>
         <div class="binresolve">
           <span class="label">Tipo progetto riconosciuto</span>
           <code class="binpath" id="projectTypeLabel">LaTeX</code>
@@ -305,7 +305,7 @@
         <div class="field" id="lilypondArgsField" style="display:none">
           <span class="label">Parametri LilyPond</span>
           <input class="input" id="lilypondArgs" placeholder='es. --loglevel=WARNING -I "include musicali"' spellcheck="false" autocomplete="off" maxlength="2000">
-          <div class="hint"><span data-icon="info-circle"></span>Inseriti tra <b style="color:var(--semantic-info);margin:0 3px">lilypond</b> e il file <b style="color:var(--semantic-info);margin:0 3px">.ly</b>; sono supportiti valori tra virgolette. La destinazione resta gestita da WebTeX.</div>
+          <div class="hint"><span data-icon="info-circle"></span>Inseriti tra <b style="color:var(--semantic-info);margin:0 3px">lilypond</b> e il file <b style="color:var(--semantic-info);margin:0 3px">.ly</b>; sono supportiti valori tra virgolette. La destinazione resta gestita da Iris.</div>
         </div>
         <div class="field" id="lilypondFormatField" style="display:none">
           <span class="label">Formato di output LilyPond</span>
@@ -422,7 +422,7 @@
       <button class="m-x" data-close aria-label="Chiudi"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
-      <p class="confirm-txt">Vuoi uscire da <b>WebTeX</b>? Le modifiche non salvate nell'editor andranno perse.</p>
+      <p class="confirm-txt">Vuoi uscire da <b>Iris</b>? Le modifiche non salvate nell'editor andranno perse.</p>
     </div>
     <div class="m-foot">
       <button class="btn" data-close>Annulla</button>
@@ -511,8 +511,8 @@
   <div class="picker-wrap">
     <header class="picker-top">
       <div class="login-brand">
-        <div class="mark">Tx</div>
-        <div><b>WebTeX</b> <span class="v">v0.1</span></div>
+        <div class="mark">Ir</div>
+        <div><b>Iris</b> <span class="v">Beta 1</span></div>
       </div>
       <div class="picker-user">
         <span class="avatar" id="pkAvatar">–</span>
@@ -547,8 +547,8 @@
 <div class="login-screen" id="loginScreen">
   <form class="login-card" id="loginCard" autocomplete="on">
     <div class="login-brand">
-      <div class="mark">Tx</div>
-      <div><b>WebTeX</b> <span class="v">v0.1</span></div>
+      <div class="mark">Ir</div>
+      <div><b>Iris</b> <span class="v">Beta 1</span></div>
     </div>
     <h1 class="login-title">Accedi al tuo spazio</h1>
     <p class="login-sub">Inserisci le tue credenziali per continuare</p>
@@ -583,11 +583,11 @@
 <input type="file" id="attachInput" accept="image/*,application/pdf,.csv,.dat" style="display:none">
 <input type="file" id="fontInput" accept=".ttf,.otf,.woff,.woff2" style="display:none">
 
-<script src="wt-icons.js"></script>
-<script src="wt-latex.js"></script>
-<script src="wt-lilypond.js"></script>
-<script src="wt-app.js"></script>
-<script src="wt-projects.js"></script>
-<script src="wt-auth.js"></script>
+<script src="iris-icons.js"></script>
+<script src="iris-latex.js"></script>
+<script src="iris-lilypond.js"></script>
+<script src="iris-app.js"></script>
+<script src="iris-projects.js"></script>
+<script src="iris-auth.js"></script>
 </body>
 </html>

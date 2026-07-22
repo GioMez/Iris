@@ -4,10 +4,10 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const root = path.resolve(__dirname, "..");
-const css = fs.readFileSync(path.join(root, "public/webtex.css"), "utf8");
-const html = fs.readFileSync(path.join(root, "public/WebTeX.html"), "utf8");
-const app = fs.readFileSync(path.join(root, "public/wt-app.js"), "utf8");
-const projects = fs.readFileSync(path.join(root, "public/wt-projects.js"), "utf8");
+const css = fs.readFileSync(path.join(root, "public/iris.css"), "utf8");
+const html = fs.readFileSync(path.join(root, "public/Iris.html"), "utf8");
+const app = fs.readFileSync(path.join(root, "public/iris-app.js"), "utf8");
+const projects = fs.readFileSync(path.join(root, "public/iris-projects.js"), "utf8");
 
 function token(name) {
   const match = css.match(new RegExp(`--${name}:\\s*(#[0-9a-f]{6})`, "i"));

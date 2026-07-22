@@ -1,6 +1,6 @@
 {
-  "name": "webtex",
-  "version": "0.1.0",
+  "name": "iris",
+  "version": "1.0.0-beta.1",
   "private": true,
   "license": "GPL-3.0-or-later",
   "type": "commonjs",

@@ -1,6 +1,6 @@
-/* ===================== WebTeX · LilyPond text support ===================== */
+/* ===================== Iris · LilyPond text support ===================== */
 (function () {
-  const esc = (s) => WTLatex.escAll(s);
+  const esc = (s) => IrisLatex.escAll(s);
 
   function highlight(src) {
     let out = "";
@@ -102,5 +102,5 @@
     return items;
   }
 
-  window.WTLilyPond = { highlight, format, indentOnEnter, outline };
+  window.IrisLilyPond = { highlight, format, indentOnEnter, outline };
 })();

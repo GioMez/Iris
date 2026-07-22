@@ -13,9 +13,9 @@ loadDotEnv(path.resolve(".env"));
 const PORT = Number(process.env.PORT || 3000);
 const DB_HOST = process.env.DB_HOST || "127.0.0.1";
 const DB_PORT = Number(process.env.DB_PORT || 3306);
-const DB_USER = process.env.DB_USER || "webtex";
-const DB_PASSWORD = process.env.DB_PASSWORD || "webtex";
-const DB_NAME = process.env.DB_NAME || "webtex";
+const DB_USER = process.env.DB_USER || "iris";
+const DB_PASSWORD = process.env.DB_PASSWORD || "iris";
+const DB_NAME = process.env.DB_NAME || "iris";
 const DB_CONNECT_TIMEOUT = Number(process.env.DB_CONNECT_TIMEOUT_MS || 5000);
 const DATA_DIR = path.resolve(process.env.DATA_DIR || "./data/projects");
 const PUBLIC_DIR = path.resolve(process.env.PUBLIC_DIR || "./public");
@@ -23,7 +23,7 @@ const TEX_BIN_PATH = process.env.TEX_BIN_PATH || "";
 const TEX_PATH_LOCKED = String(process.env.TEX_PATH_LOCKED || "false") === "true";
 const LILYPOND_BIN_PATH = process.env.LILYPOND_BIN_PATH || "";
 const LILYPOND_PATH_LOCKED = String(process.env.LILYPOND_PATH_LOCKED || "false") === "true";
-const SECRET = sessionSecret(process.env.WEBTEX_SECRET);
+const SECRET = sessionSecret(process.env.IRIS_SECRET);
 const COOKIE_SECURE = String(process.env.COOKIE_SECURE || "false") === "true";
 const MAX_BODY = Number(process.env.MAX_BODY_MB || 25) * 1024 * 1024;
 const COMPILE_TIMEOUT_MS = Number(process.env.COMPILE_TIMEOUT_MS || 30000);
@@ -92,11 +92,11 @@ function positiveIntEnv(name, fallback) {
 function sessionSecret(value) {
   const secret = String(value || "").trim();
   const insecure = new Set([
-    "webtex-dev-secret-change-me",
+    "iris-dev-secret-change-me",
     "change-this-secret-in-production",
   ]);
   if (!secret || insecure.has(secret)) {
-    throw new Error("WEBTEX_SECRET deve essere impostato con un valore sicuro e non predefinito");
+    throw new Error("IRIS_SECRET deve essere impostato con un valore sicuro e non predefinito");
   }
   return secret;
 }
@@ -443,7 +443,7 @@ async function seedUsers() {
   const password = crypto.randomBytes(18).toString("base64url");
   await pool.query(
     "INSERT INTO users (username, email, display_name, role, password_hash) VALUES (?, ?, ?, 'admin', ?)",
-    ["admin", "admin@webtex.local", "WebTeX Admin", await hashPassword(password)]
+    ["admin", "admin@iris.local", "Iris Admin", await hashPassword(password)]
   );
   initialAdminCredentials = { username: "admin", password };
 }
@@ -471,7 +471,7 @@ async function readBody(req) {
 }
 
 function requireUser(req) {
-  const token = parseCookies(req).webtex_session;
+  const token = parseCookies(req).iris_session;
   const payload = verifyToken(token);
   if (!payload) {
     const err = new Error("Non autenticato");
@@ -601,7 +601,7 @@ function generatedIdFor(relPath) {
 }
 
 function isIgnoredProjectFsEntry(name) {
-  return name === ".webtex" || name === ".DS_Store" || name === "Thumbs.db" || name === "desktop.ini";
+  return name === ".iris" || name === ".DS_Store" || name === "Thumbs.db" || name === "desktop.ini";
 }
 
 function stripGeneratedNodes(nodes, isRoot = true) {
@@ -636,7 +636,7 @@ function stripFilePayloads(data) {
 }
 
 async function ensureProjectDirs(storagePath, data) {
-  const dirs = new Set([".webtex"]);
+  const dirs = new Set([".iris"]);
   const walk = (nodes, parentPath = "") => {
     if (!Array.isArray(nodes)) return;
     nodes.forEach((node) => {
@@ -699,7 +699,7 @@ async function pruneProjectFiles(storagePath, expectedFiles) {
   async function walkDir(dir, relBase = "") {
     const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
     for (const entry of entries) {
-      if (entry.name === ".webtex") continue;
+      if (entry.name === ".iris") continue;
       if (!relBase && entry.name === "output") continue;
       const rel = relBase ? path.posix.join(relBase, entry.name) : entry.name;
       const abs = path.join(dir, entry.name);
@@ -819,7 +819,7 @@ async function syncNodesWithFilesystem(storagePath, data) {
 }
 
 async function readProjectFile(storagePath) {
-  const metaFile = path.join(storagePath, ".webtex", "project.json");
+  const metaFile = path.join(storagePath, ".iris", "project.json");
   const legacyFile = path.join(storagePath, "project.json");
   let data;
   let legacy = false;
@@ -876,7 +876,7 @@ async function readProjectFile(storagePath) {
 }
 
 async function readProjectManifest(storagePath) {
-  const metaFile = path.join(storagePath, ".webtex", "project.json");
+  const metaFile = path.join(storagePath, ".iris", "project.json");
   return JSON.parse(await fs.readFile(metaFile, "utf8"));
 }
 
@@ -886,10 +886,10 @@ async function writeProjectFile(storagePath, data) {
   const expectedFiles = await writeProjectNodes(storagePath, data);
   await writeProjectFonts(storagePath, data, expectedFiles);
   await pruneProjectFiles(storagePath, expectedFiles);
-  const webtexDir = path.join(storagePath, ".webtex");
-  await fs.mkdir(webtexDir, { recursive: true });
-  const file = path.join(webtexDir, "project.json");
-  const tmp = path.join(webtexDir, `.project.${process.pid}.${Date.now()}.tmp`);
+  const irisDir = path.join(storagePath, ".iris");
+  await fs.mkdir(irisDir, { recursive: true });
+  const file = path.join(irisDir, "project.json");
+  const tmp = path.join(irisDir, `.project.${process.pid}.${Date.now()}.tmp`);
   await fs.writeFile(tmp, JSON.stringify(stripFilePayloads(data), null, 2), "utf8");
   await fs.rename(tmp, file);
   await fs.rm(path.join(storagePath, "project.json"), { force: true }).catch(() => {});
@@ -1086,10 +1086,10 @@ function refreshFontCache(fontDir) {
     const timer = setTimeout(() => child.kill("SIGTERM"), 10000);
     child.stdout.on("data", (chunk) => { log += chunk.toString("utf8"); });
     child.stderr.on("data", (chunk) => { log += chunk.toString("utf8"); });
-    child.on("error", (err) => { log += `WebTeX: fc-cache non disponibile: ${err.message}\n`; });
+    child.on("error", (err) => { log += `Iris: fc-cache non disponibile: ${err.message}\n`; });
     child.on("close", (code) => {
       clearTimeout(timer);
-      log += `WebTeX: cache font terminata in ${Date.now() - startedAt}ms (exit ${code}).\n`;
+      log += `Iris: cache font terminata in ${Date.now() - startedAt}ms (exit ${code}).\n`;
       resolve(log);
     });
   });
@@ -1370,13 +1370,13 @@ function runCompileStep({ step, binPath, cwd, fontDir, texmfVar }) {
     }, COMPILE_TIMEOUT_MS);
     child.stdout.on("data", append);
     child.stderr.on("data", append);
-    child.on("error", (err) => append(`\nWebTeX: impossibile avviare ${command}: ${err.message}\n`));
+    child.on("error", (err) => append(`\nIris: impossibile avviare ${command}: ${err.message}\n`));
     child.on("close", (code, signal) => {
       done = true;
       clearTimeout(timer);
       const durationMs = Date.now() - startedAt;
-      if (timedOut) append(`\nWebTeX: compilazione interrotta dopo ${COMPILE_TIMEOUT_MS}ms.\n`);
-      else if (signal) append(`\nWebTeX: processo terminato con segnale ${signal}.\n`);
+      if (timedOut) append(`\nIris: compilazione interrotta dopo ${COMPILE_TIMEOUT_MS}ms.\n`);
+      else if (signal) append(`\nIris: processo terminato con segnale ${signal}.\n`);
       const parsed = parseCompileLog(log);
       resolve({ code, signal, timedOut, durationMs, log, ...parsed });
     });
@@ -1393,7 +1393,7 @@ async function runCompilePipeline({ profile, binPath, cwd, fontDir, texmfVar, pr
   let timedOut = false;
   for (let i = 0; i < profile.steps.length; i++) {
     const step = profile.steps[i];
-    log += `\n===== WebTeX step ${i + 1}/${profile.steps.length}: ${step.tool} =====\n`;
+    log += `\n===== Iris step ${i + 1}/${profile.steps.length}: ${step.tool} =====\n`;
     const res = await runCompileStep({ step, binPath, cwd, fontDir, texmfVar });
     log += res.log;
     warnings = warnings.concat(res.warnings || []);
@@ -1503,7 +1503,7 @@ async function compileProject(req, res, user, id) {
   const formatsToClean = projectType === "lilypond" ? Array.from(LILYPOND_OUTPUT_FORMATS) : ["pdf"];
   await Promise.all(formatsToClean.map((format) => removePriorCompileArtifacts(outputDir, jobname, format)));
   const fontDir = path.join(row.storage_path, "fonts");
-  const texmfVar = path.join(row.storage_path, ".webtex", "texmf-var");
+  const texmfVar = path.join(row.storage_path, ".iris", "texmf-var");
   await fs.mkdir(texmfVar, { recursive: true });
   const preLog = /^(xelatex|lualatex)$/i.test(engine) ? await refreshFontCache(fontDir) : "";
   const result = await runCompilePipeline({ profile: compileProfile, binPath, cwd: row.storage_path, fontDir, texmfVar, preLog });
@@ -1564,7 +1564,7 @@ async function handleApi(req, res, url) {
       authUrl.searchParams.set("scope", OAUTH_SCOPE);
       authUrl.searchParams.set("state", state);
       return redirect(res, authUrl.toString(), {
-        "set-cookie": cookie("webtex_oauth_state", state, { maxAge: 10 * 60 }),
+        "set-cookie": cookie("iris_oauth_state", state, { maxAge: 10 * 60 }),
       });
     } catch (err) {
       return text(res, 503, err.message || "SSO non disponibile");
@@ -1572,11 +1572,11 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === "GET" && url.pathname === "/api/auth/sso/callback") {
-    const clearState = cookie("webtex_oauth_state", "", { maxAge: 0 });
+    const clearState = cookie("iris_oauth_state", "", { maxAge: 0 });
     try {
       const state = url.searchParams.get("state");
       const code = url.searchParams.get("code");
-      const expectedState = parseCookies(req).webtex_oauth_state;
+      const expectedState = parseCookies(req).iris_oauth_state;
       if (!code || !state || !expectedState || !timingSafeStringEqual(state, expectedState) || !verifySignedJson(state)) {
         throw new Error("Stato OAuth non valido");
       }
@@ -1586,7 +1586,7 @@ async function handleApi(req, res, url) {
       return redirect(res, "/", {
         "set-cookie": [
           clearState,
-          cookie("webtex_session", makeToken(user, "sso"), { maxAge: 60 * 60 * 24 * 7 }),
+          cookie("iris_session", makeToken(user, "sso"), { maxAge: 60 * 60 * 24 * 7 }),
         ],
       });
     } catch (err) {
@@ -1618,7 +1618,7 @@ async function handleApi(req, res, url) {
       user.password_hash = passwordHash;
     }
     return json(res, 200, { user: publicUser(user) }, {
-      "set-cookie": cookie("webtex_session", makeToken(user, "local"), { maxAge: 60 * 60 * 24 * 7 }),
+      "set-cookie": cookie("iris_session", makeToken(user, "local"), { maxAge: 60 * 60 * 24 * 7 }),
     });
   }
 
@@ -1649,12 +1649,12 @@ async function handleApi(req, res, url) {
     await pool.query("UPDATE users SET password_hash = ? WHERE id = ?", [passwordHash, user.id]);
     user.password_hash = passwordHash;
     return json(res, 200, { ok: true, user: publicUser({ ...user, authMethod: "local" }) }, {
-      "set-cookie": cookie("webtex_session", makeToken(user, "local"), { maxAge: 60 * 60 * 24 * 7 }),
+      "set-cookie": cookie("iris_session", makeToken(user, "local"), { maxAge: 60 * 60 * 24 * 7 }),
     });
   }
 
   if (req.method === "POST" && url.pathname === "/api/auth/logout") {
-    return json(res, 200, { ok: true }, { "set-cookie": cookie("webtex_session", "", { maxAge: 0 }) });
+    return json(res, 200, { ok: true }, { "set-cookie": cookie("iris_session", "", { maxAge: 0 }) });
   }
 
   if (req.method === "GET" && url.pathname === "/api/auth/session") {
@@ -1682,7 +1682,7 @@ async function handleApi(req, res, url) {
 
 async function serveStatic(req, res, url) {
   let pathname = decodeURIComponent(url.pathname);
-  if (pathname === "/") pathname = "/WebTeX.html";
+  if (pathname === "/") pathname = "/Iris.html";
   const pdfjsFile = pathname.match(/^\/vendor\/pdfjs\/(pdf(?:\.worker)?\.min\.mjs)$/);
   const root = pdfjsFile ? PDFJS_BUILD_DIR : PUBLIC_DIR;
   const relativePath = pdfjsFile ? pdfjsFile[1] : `.${pathname}`;
@@ -1716,13 +1716,13 @@ async function handle(req, res) {
 if (require.main === module) initDb()
   .then(() => {
     http.createServer(handle).listen(PORT, () => {
-      console.log(`WebTeX listening on http://localhost:${PORT}`);
+      console.log(`Iris listening on http://localhost:${PORT}`);
       console.log(`Static files dir: ${PUBLIC_DIR}`);
       console.log(`Projects data dir: ${DATA_DIR}`);
       if (initialAdminCredentials) {
         console.log("");
         console.log("================================================================");
-        console.log("WebTeX initial admin account created");
+        console.log("Iris initial admin account created");
         console.log(`Username: ${initialAdminCredentials.username}`);
         console.log(`Password: ${initialAdminCredentials.password}`);
         console.log("Save this password now: it will not be shown again.");
@@ -1732,7 +1732,7 @@ if (require.main === module) initDb()
     });
   })
   .catch((err) => {
-    console.error("Unable to start WebTeX backend");
+    console.error("Unable to start Iris backend");
     console.error(err);
     process.exit(1);
   });

@@ -1,4 +1,4 @@
-/* ===================== WebTeX · auth ===================== */
+/* ===================== Iris · auth ===================== */
 /* Login / logout. Gli account sono verificati dal backend; la sessione
    vive in un cookie HttpOnly firmato dal server. */
 (function () {
@@ -43,16 +43,16 @@
 
   function showApp(u) {
     applyUserUI(u);
-    document.documentElement.classList.add("wt-authed");
+    document.documentElement.classList.add("iris-authed");
     const app = document.querySelector(".app");
     if (app) app.inert = false;
-    if (window.WTProjects) window.WTProjects.showPicker();
+    if (window.IrisProjects) window.IrisProjects.showPicker();
   }
 
   function showLogin() {
-    if (window.WTProjects) window.WTProjects.onLogout();
-    document.documentElement.classList.remove("wt-authed");
-    document.documentElement.classList.remove("wt-inproject");
+    if (window.IrisProjects) window.IrisProjects.onLogout();
+    document.documentElement.classList.remove("iris-authed");
+    document.documentElement.classList.remove("iris-inproject");
     currentUser = null;
     const app = document.querySelector(".app");
     if (app) app.inert = true;
@@ -145,7 +145,7 @@
   }
 
   async function doLogout() {
-    if (window.WTProjects) await window.WTProjects.persistCurrent();
+    if (window.IrisProjects) await window.IrisProjects.persistCurrent();
     try { await api("/api/auth/logout", { method: "POST", body: "{}" }); } catch (e) {}
     showLogin();
   }
@@ -262,6 +262,6 @@
     }
   }
 
-  window.WTAuth = { showLogin, showApp };
+  window.IrisAuth = { showLogin, showApp };
   boot();
 })();
