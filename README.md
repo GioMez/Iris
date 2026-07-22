@@ -1,151 +1,237 @@
 # Iris
 
-Frontend statico + backend minimale per login e gestione progetti.
+Iris is a self-hosted, browser-based writing and compilation environment for
+LaTeX documents and LilyPond scores. It combines a project-oriented source
+editor, server-side compilation, output preview, and authenticated storage in a
+single web application.
 
-## Struttura
+> **Release status:** Beta 1 (`1.0.0-beta.1`)
+
+Iris is not a client-only editor. Projects are stored on the server as real
+files, associated with individual user accounts, and compiled by toolchains
+installed on the host running the backend. The browser provides the workspace;
+the Node.js service handles authentication, persistence, and compilation.
+
+## What Iris provides
+
+- Separate workspaces for LaTeX documents and LilyPond scores.
+- A project dashboard scoped to the authenticated user.
+- A file tree with folders, multiple open tabs, uploads, renaming, and deletion.
+- Syntax highlighting, document outline, search and replace, formatting,
+  optional word wrapping, and configurable autosave.
+- Server-side LaTeX compilation with `pdflatex`, `xelatex`, or `lualatex`.
+- Built-in LaTeX pipelines for quick builds, BibTeX, Biber, and indexes, plus
+  constrained custom pipelines.
+- Server-side LilyPond compilation to PDF, PNG, SVG, PS, or EPS.
+- An integrated PDF.js viewer, image preview, compiler log, warnings, errors,
+  build duration, and downloadable artifacts.
+- Project-local font uploads, including XeLaTeX and LuaLaTeX font discovery.
+- Local password authentication and optional OAuth 2.0/OpenID Connect SSO.
+
+Iris does not currently provide real-time collaboration, Git integration, or a
+hosted compilation service. It is designed to run on infrastructure you
+control.
+
+## How it works
 
 ```text
-public/   frontend servito al browser
-src/      backend Node
-db/       schema SQL e, in futuro, migration
-data/     dati progetto locali, ignorati da git
+Browser
+  │  static UI + same-origin JSON API
+  ▼
+Node.js backend
+  ├── MariaDB      users, project ownership, timestamps
+  ├── DATA_DIR     source files, assets, fonts, project state, outputs
+  └── Toolchains   LaTeX / BibTeX / Biber / MakeIndex / LilyPond
 ```
 
-## Avvio sviluppo
+A typical session follows this sequence:
 
-1. Installa Node.js 24 LTS, quindi le dipendenze:
+1. The user signs in with a local account or an OIDC identity.
+2. The backend returns only the projects owned by that user.
+3. Opening a project loads its manifest and source files into the browser
+   workspace.
+4. Saving synchronizes the browser's project tree to real files below
+   `DATA_DIR`.
+5. Compiling first saves the current project, then runs the selected allowlisted
+   tools in the project directory without invoking a shell.
+6. Generated files are written to the project's `output/` directory and sent
+   back to the browser for preview or download.
+
+MariaDB stores account and project index data. The filesystem stores the actual
+project content, so a complete backup must include both the database and
+`DATA_DIR`.
+
+## Requirements
+
+- Node.js 24 or later.
+- MariaDB.
+- A LaTeX distribution for LaTeX compilation.
+- LilyPond for score compilation.
+
+The compiler toolchains are optional if you only want to inspect or edit the
+application, but the corresponding build actions will not work until their
+executables are available to the backend.
+
+## Quick start for local development
+
+Install the Node.js dependencies:
 
 ```sh
 npm install
 ```
 
-2. Avvia MariaDB, ad esempio con Docker:
-
-```sh
-docker compose up -d mariadb
-```
-
-Oppure, con un MariaDB gia' installato:
-
-```sql
-CREATE DATABASE IF NOT EXISTS iris CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-CREATE USER IF NOT EXISTS 'iris'@'localhost' IDENTIFIED BY 'iris';
-GRANT ALL PRIVILEGES ON iris.* TO 'iris'@'localhost';
-FLUSH PRIVILEGES;
-```
-
-3. Copia la configurazione e genera un secret di sessione:
+Create the local configuration file and generate a session secret:
 
 ```sh
 cp .env.example .env
 openssl rand -hex 32
 ```
 
-Incolla il valore generato in `IRIS_SECRET` dentro `.env`. Il backend rifiuta
-di avviarsi se il secret manca o usa uno dei valori predefiniti noti.
+Paste the generated value into `IRIS_SECRET` in `.env`. Iris refuses to start
+without a non-default session secret.
 
-4. Avvia il backend:
+Start MariaDB with Docker Compose:
+
+```sh
+docker compose up -d mariadb
+```
+
+The defaults in `.env.example` match the development database exposed by the
+Compose service. Iris creates or updates its tables during startup.
+
+Start the application:
 
 ```sh
 npm start
 ```
 
-Apri `http://localhost:3000`.
+Open [http://localhost:3000](http://localhost:3000).
 
-## Avvio con Docker Compose
+On the first successful startup, if the `users` table is empty, Iris creates one
+local administrator account with:
 
-Per avviare webapp e database insieme:
+- Username: `admin`
+- Role: `admin`
+- A randomly generated password printed once to the server console
+
+Save that password immediately. Only its Argon2id hash is stored.
+
+### Using an existing MariaDB server
+
+Create a database and a dedicated user, then update the `DB_*` values in `.env`:
+
+```sql
+CREATE DATABASE IF NOT EXISTS iris
+  CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER IF NOT EXISTS 'iris'@'localhost'
+  IDENTIFIED BY 'replace-with-a-strong-password';
+GRANT ALL PRIVILEGES ON iris.* TO 'iris'@'localhost';
+FLUSH PRIVILEGES;
+```
+
+The database user needs permission to create and alter Iris tables. If the
+configured database does not exist, Iris also attempts to create it; that only
+works when the database user has the required server-level permission.
+
+## Running with Docker Compose
+
+Create `.env` and generate a secret:
 
 ```sh
-export IRIS_SECRET="$(openssl rand -hex 32)"
+cp .env.example .env
+openssl rand -hex 32
+```
+
+Paste the generated value into `IRIS_SECRET`, then start both services:
+
+```sh
 docker compose up --build
 ```
 
-La webapp espone `http://localhost:3000`. I dati MariaDB e i progetti sono salvati in volumi Docker.
+The application is available at
+[http://localhost:3000](http://localhost:3000). MariaDB data and project files
+are stored in the named volumes `mariadb-data` and `project-data`.
 
-Nel profilo Docker Compose il percorso dei binari LaTeX e' configurato via ambiente:
+To retrieve the initial administrator password from a detached deployment:
 
-```yaml
-TEX_BIN_PATH: /usr/local/texlive/bin/x86_64-linux
-TEX_PATH_LOCKED: "true"
+```sh
+docker compose logs webapp | sed -n '/Iris initial admin account created/,+5p'
 ```
 
-Quando `TEX_PATH_LOCKED` e' `true`, il campo nei settings resta visibile ma non modificabile: il valore va cambiato nel file `docker-compose.yml` o nella configurazione del container.
+### Compiler availability in containers
 
-Per LilyPond sono disponibili le variabili equivalenti `LILYPOND_BIN_PATH` e `LILYPOND_PATH_LOCKED`. L'immagine applicativa non include le distribuzioni di compilazione: i binari compatibili vanno montati nel container oppure forniti in un'immagine derivata.
+The application image deliberately does not bundle TeX or LilyPond. The sample
+Compose configuration declares compiler paths, but you must either:
 
-## SSO OAuth 2.0 / OIDC
+- mount compatible compiler installations into the container; or
+- build a derived image that installs the required toolchains.
 
-Iris supporta un login SSO generico OAuth 2.0/OIDC, pensato per Authentik ma non legato a pulsanti provider-specifici. Se `OAUTH_ISSUER_URL` e' impostato, il backend usa la discovery `/.well-known/openid-configuration`.
+The commented volume examples in `docker-compose.yml` show the intended mount
+points. Adjust them to the layout of your compiler installation.
 
-Variabili principali:
+When `TEX_PATH_LOCKED=true` or `LILYPOND_PATH_LOCKED=true`, the corresponding
+path remains visible in project settings but cannot be changed from the browser.
+This is useful when the deployment controls compiler locations centrally.
 
-```env
-APP_BASE_URL=http://localhost:3000
-OAUTH_ISSUER_URL=https://auth.example.org/application/o/iris
-OAUTH_CLIENT_ID=iris
-OAUTH_CLIENT_SECRET=change-this-client-secret
-OAUTH_REDIRECT_URI=http://localhost:3000/api/auth/sso/callback
-OAUTH_SCOPE=openid email profile
-OAUTH_CLIENT_AUTH_METHOD=client_secret_basic
-OAUTH_AUTO_REGISTER=false
-```
+## Working with projects
 
-In alternativa alla discovery via issuer puoi impostare direttamente `OAUTH_AUTHORIZATION_URL`, `OAUTH_TOKEN_URL` e `OAUTH_USERINFO_URL`.
+### LaTeX projects
 
-Registra in Authentik la callback `APP_BASE_URL/api/auth/sso/callback`, oppure imposta `OAUTH_REDIRECT_URI` esplicitamente se l'app e' dietro reverse proxy.
+A new LaTeX project starts with `main.tex` and a basic document template. The
+selected compiler engine and pipeline are stored with the project.
 
-L'utente OAuth viene collegato alla tabella interna tramite email. Se l'email non esiste, Iris crea automaticamente un utente con ruolo `user` solo quando `OAUTH_AUTO_REGISTER=true`; altrimenti l'accesso viene rifiutato e l'utente va creato prima nella tabella interna.
+The available pipeline presets are:
 
-Gli utenti creati via SSO hanno `password_hash=NULL`: non possono accedere dal form user/password finche' non viene impostata una password locale. Gli utenti esistenti mantengono il proprio ruolo.
+- **Quick:** one run of the selected engine.
+- **BibTeX:** engine, BibTeX, then two additional engine runs.
+- **Biber:** engine, Biber, then two additional engine runs.
+- **Index:** engine, MakeIndex, then one additional engine run.
+- **Custom:** up to twelve ordered steps using allowlisted tools and arguments.
 
-## Compilazione LaTeX
+Custom pipeline arguments can use these placeholders:
 
-Il pulsante `Compila` salva il progetto, lancia il motore selezionato lato backend e mostra il PDF prodotto nel pannello di anteprima. Il viewer PDF.js locale offre scorrimento continuo, zoom, adattamento alla larghezza e navigazione tra le pagine. Il log reale del processo viene riportato nel tab `Log`, mentre la barra in basso mostra durata, warning/errori e dimensione del PDF.
+| Placeholder | Value |
+| --- | --- |
+| `[engine]` | Selected LaTeX engine |
+| `[main]` | Main source file path |
+| `[jobname]` | Main filename without its extension |
+| `[pdf]` | Expected PDF path below `output/` |
 
-Gli artefatti di compilazione vengono scritti nella cartella `output/` del progetto e possono essere sovrascritti a ogni compilazione. La pipeline e' configurabile dai settings con preset per compilazione rapida, BibTeX, Biber, indice o step personalizzati. Gli step custom sono strutturati come tool in allowlist piu' argomenti, senza shell libera; sono disponibili le variabili `[engine]`, `[main]`, `[jobname]` e `[pdf]`.
+LaTeX processes run with `-no-shell-escape`, nonstop interaction, file-and-line
+errors, and a forced `output/` destination.
 
-Variabili utili:
+For XeLaTeX and LuaLaTeX, fonts uploaded through project settings are stored in
+`fonts/` and exposed through `OSFONTDIR`. Iris also keeps a project-local TeX
+cache in `.iris/texmf-var` and refreshes Fontconfig when available.
 
-```env
-TEX_BIN_PATH=/usr/local/texlive/bin/x86_64-linux
-COMPILE_TIMEOUT_MS=30000
-COMPILE_LOG_LIMIT=1048576
-```
+### LilyPond projects
 
-Prime protezioni attive:
+A new LilyPond project starts with `main.ly`. Iris also recognizes an older
+untyped project as LilyPond when it contains `.ly` sources and no `.tex` files.
 
-- LaTeX viene lanciato senza shell e con `-no-shell-escape`.
-- Per XeLaTeX/LuaLaTeX Iris espone la cartella `fonts/` del progetto via `OSFONTDIR`, usa una cache TeX per-progetto in `.iris/texmf-var` e prova ad aggiornare `fc-cache` prima della compilazione, se disponibile.
-- L'ambiente del processo di compilazione non eredita le credenziali del backend.
-- Il container webapp gira come utente non-root.
-- Le immagini Docker sono pinnate a tag specifici (`node:24.18.0-alpine3.23`, `mariadb:11.4.10-noble`) invece di tag floating.
-- Nel Compose la webapp usa `read_only`, `tmpfs` su `/tmp`, `cap_drop: ALL` e `no-new-privileges`.
+LilyPond projects use a single constrained compiler step and support PDF, PNG,
+SVG, PS, and EPS output. Multi-page or multi-score builds may produce multiple
+artifacts. PDF, PNG, and SVG can be previewed in Iris; every format remains
+available in the file tree and as a download.
 
-Nota: la compilazione LaTeX resta una superficie sensibile. Il passo successivo consigliato e' isolare la compilazione in un worker/container dedicato, senza accesso a codice applicativo, variabili DB o volume completo dei progetti.
+Additional LilyPond arguments can be entered in project settings. Quoted values
+are preserved as one argument, but Iris removes user-provided output and format
+overrides so that artifacts always remain in the managed `output/` directory and
+use the selected project format.
 
-## Compilazione LilyPond
+## Authentication
 
-Iris gestisce anche progetti musicali testuali LilyPond. In fase di creazione puoi scegliere `Partitura LilyPond`; i progetti esistenti privi di tipo vengono riconosciuti come LilyPond quando contengono file `.ly` e nessun `.tex`.
+### Local accounts
 
-Per un progetto musicale l'interfaccia usa `main.ly`, mostra solo il compilatore `lilypond` e propone una pipeline coerente. Dalle impostazioni si puo' scegliere il formato di stampa tra PDF, PNG, SVG, PS ed EPS; PNG, SVG e documenti con più blocchi possono generare più artefatti, tutti raccolti nella cartella `output/`. Il viewer mostra PDF, PNG e SVG, mentre PS ed EPS restano scaricabili e visibili nell'albero dei file.
+Local passwords are hashed with Argon2id. The first administrator is created
+only when the user table is empty; Iris does not repeatedly promote a username
+or email address on later startups.
 
-Il campo `Parametri LilyPond` permette inoltre di aggiungere opzioni tra l'eseguibile e il sorgente; i valori tra virgolette vengono mantenuti come un singolo argomento. Il backend invoca LilyPond senza shell e forza formato e destinazione scelti nelle impostazioni, ignorando eventuali override `-o`, `--output`, `-f` o `--format` presenti nei parametri liberi.
+Iris has no public sign-up or account-management interface. Additional users
+must currently be provisioned externally or created through OIDC
+auto-registration.
 
-Variabili utili:
-
-```env
-LILYPOND_BIN_PATH=/usr/bin
-LILYPOND_PATH_LOCKED=true
-```
-
-Anche i sorgenti LilyPond non fidati devono essere compilati in un worker/container isolato: LilyPond incorpora Guile e la compilazione va considerata esecuzione di input non fidato.
-
-## Password locali
-
-Il login user/password usa Argon2id.
-
-Parametri opzionali:
+Argon2id costs can be configured with:
 
 ```env
 ARGON2_MEMORY_COST=65536
@@ -153,28 +239,172 @@ ARGON2_TIME_COST=3
 ARGON2_PARALLELISM=1
 ```
 
-`ARGON2_MEMORY_COST` e' espresso in KiB. Questi parametri riguardano solo il login locale; gli utenti creati via SSO non hanno password locale.
+`ARGON2_MEMORY_COST` is expressed in KiB.
 
-## Account iniziali
+### OAuth 2.0 / OpenID Connect
 
-Alla prima partenza, se la tabella `users` e' vuota, il backend crea un solo account locale:
+Iris supports a generic OIDC login flow. It can discover endpoints from an
+issuer URL or use explicitly configured authorization, token, and user-info
+endpoints.
 
-- username `admin`
-- ruolo `admin`
-- password random generata al momento
+Minimal issuer-based configuration:
 
-La password viene stampata una sola volta nei log dopo l'inizializzazione del backend e non viene salvata in chiaro. Se usi Docker Compose in detached mode, recuperala con:
-
-```sh
-docker compose logs webapp | sed -n '/Iris initial admin account created/,+5p'
+```env
+APP_BASE_URL=https://iris.example.com
+OAUTH_ISSUER_URL=https://auth.example.com/application/o/iris
+OAUTH_CLIENT_ID=iris
+OAUTH_CLIENT_SECRET=replace-with-the-client-secret
+OAUTH_SCOPE=openid email profile
+OAUTH_CLIENT_AUTH_METHOD=client_secret_basic
+OAUTH_AUTO_REGISTER=false
 ```
 
-Il seed avviene solo su tabella vuota; non esiste una promotion automatica ricorrente per username o email.
+Register this callback with the identity provider:
 
-## Persistenza
+```text
+https://iris.example.com/api/auth/sso/callback
+```
 
-- MariaDB contiene utenti e metadati dei progetti.
-- Ogni progetto ha una cartella sotto `DATA_DIR`.
-- I file del progetto vengono salvati come file reali, ad esempio `main.tex`, `references.bib`, `figure/plot.png`.
-- I font caricati dalle impostazioni vengono salvati come file reali sotto `fonts/`.
-- Lo stato dell'editor e l'albero dei file vengono salvati in `.iris/project.json`, senza duplicare il contenuto dei file sorgente.
+Set `OAUTH_REDIRECT_URI` when the callback cannot be derived from
+`APP_BASE_URL`. Without `OAUTH_ISSUER_URL`, configure
+`OAUTH_AUTHORIZATION_URL`, `OAUTH_TOKEN_URL`, and `OAUTH_USERINFO_URL`
+directly.
+
+OIDC identities are matched to local users by normalized email address. With
+`OAUTH_AUTO_REGISTER=false`, the matching local user must already exist. With
+auto-registration enabled, Iris creates a `user` account without a local
+password. Existing users retain their current role.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `APP_BASE_URL` | request origin | Public application URL used to build the callback. |
+| `OAUTH_ISSUER_URL` | empty | OIDC issuer used for discovery. |
+| `OAUTH_AUTHORIZATION_URL` | empty | Explicit authorization endpoint. |
+| `OAUTH_TOKEN_URL` | empty | Explicit token endpoint. |
+| `OAUTH_USERINFO_URL` | empty | Explicit user-info endpoint. |
+| `OAUTH_CLIENT_ID` | empty | OIDC client identifier. |
+| `OAUTH_CLIENT_SECRET` | empty | OIDC client secret. |
+| `OAUTH_REDIRECT_URI` | derived | Explicit callback override. |
+| `OAUTH_SCOPE` | `openid email profile` | Requested scopes. |
+| `OAUTH_CLIENT_AUTH_METHOD` | `client_secret_basic` | Token endpoint authentication; `client_secret_post` is also supported. |
+| `OAUTH_AUTO_REGISTER` | `false` | Create missing users from verified OIDC profiles. |
+
+## Configuration reference
+
+All settings are read from environment variables. When launched from the
+repository, Iris also loads a root-level `.env` file without overwriting values
+already present in the process environment.
+
+### Application and storage
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `PORT` | `3000` | HTTP port. |
+| `IRIS_SECRET` | none | Required secret used to sign sessions and OAuth state. |
+| `DATA_DIR` | `./data/projects` | Root directory for project files. |
+| `PUBLIC_DIR` | `./public` | Static frontend directory. |
+| `MAX_BODY_MB` | `25` | Maximum JSON request body size in MiB. |
+| `COOKIE_SECURE` | `false` | Set `true` when Iris is served over HTTPS. |
+
+### Database
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `DB_HOST` | `127.0.0.1` | MariaDB host. |
+| `DB_PORT` | `3306` | MariaDB port. |
+| `DB_USER` | `iris` | MariaDB user. |
+| `DB_PASSWORD` | `iris` | MariaDB password. |
+| `DB_NAME` | `iris` | MariaDB database. |
+| `DB_CONNECT_TIMEOUT_MS` | `5000` | Connection and acquisition timeout. |
+
+### Compilers
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `TEX_BIN_PATH` | empty | Directory containing LaTeX-related executables; an empty value uses `PATH`. |
+| `TEX_PATH_LOCKED` | `false` | Prevent projects from overriding the LaTeX binary directory. |
+| `LILYPOND_BIN_PATH` | empty | Directory containing `lilypond`; an empty value uses `PATH`. |
+| `LILYPOND_PATH_LOCKED` | `false` | Prevent projects from overriding the LilyPond binary directory. |
+| `COMPILE_TIMEOUT_MS` | `30000` | Maximum duration of each compiler step. |
+| `COMPILE_LOG_LIMIT` | `1048576` | Maximum captured log size in bytes. |
+
+The OIDC and Argon2id variables are documented in their respective sections
+above and listed together in [`.env.example`](.env.example).
+
+## Persistence and backups
+
+Each project is stored below `DATA_DIR` in a user-specific directory. Its layout
+is broadly:
+
+```text
+DATA_DIR/
+└── <user-id>/
+    └── <project-id>-<slug>/
+        ├── .iris/
+        │   ├── project.json
+        │   └── texmf-var/
+        ├── fonts/
+        ├── output/
+        ├── main.tex or main.ly
+        └── other project files and folders
+```
+
+`project.json` stores editor state, the project tree, and compilation settings;
+it does not duplicate source file contents. Uploaded assets and fonts remain
+ordinary files.
+
+Back up MariaDB and `DATA_DIR` together. The database records project ownership
+and absolute storage paths, while the filesystem contains the data itself.
+
+## Security notes
+
+Iris applies several boundaries to compilation:
+
+- Compiler processes are spawned directly without a shell.
+- Custom pipelines accept only known tools.
+- LaTeX always runs with `-no-shell-escape`.
+- Compiler processes receive a reduced environment without backend database or
+  authentication secrets.
+- Output paths and LilyPond format overrides are controlled by the backend.
+- The application container runs as a non-root user and the sample Compose
+  service uses a read-only root filesystem, a temporary `/tmp`, dropped Linux
+  capabilities, and `no-new-privileges`.
+
+These controls do **not** make arbitrary LaTeX or LilyPond input safe. LilyPond
+embeds Guile, and document compilers are complex native programs. A public or
+multi-tenant deployment should run compilation in a separate disposable worker
+or container with strict CPU, memory, time, filesystem, and network limits.
+
+For a production deployment, also:
+
+- use HTTPS and set `COOKIE_SECURE=true`;
+- place Iris behind a properly configured reverse proxy;
+- replace all sample database credentials;
+- restrict MariaDB to the application network instead of publishing it;
+- keep `IRIS_SECRET` and OIDC credentials outside version control; and
+- back up and test restoration of both persistence layers.
+
+## Development
+
+Run the test suite with:
+
+```sh
+npm test
+```
+
+Repository layout:
+
+```text
+public/   browser UI and frontend assets
+src/      Node.js HTTP server, API, persistence, and compiler orchestration
+db/       reference SQL schema
+test/     Node.js test suite
+data/     local project data, excluded from Git
+```
+
+## License
+
+Iris is distributed under the GNU General Public License v3.0 or later. See
+[`LICENSE`](LICENSE) for the complete terms and
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for bundled third-party
+components.
