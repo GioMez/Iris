@@ -562,12 +562,14 @@ function dataUrlMime(value) {
 
 function mimeForProjectFile(filePath) {
   const ext = path.extname(filePath).toLowerCase();
+  if ([".tex", ".ly", ".ily", ".bib", ".txt", ".sty", ".cls", ".md", ".log"].includes(ext)) return "text/plain; charset=utf-8";
   if (ext === ".png") return "image/png";
   if (ext === ".jpg" || ext === ".jpeg") return "image/jpeg";
   if (ext === ".gif") return "image/gif";
   if (ext === ".webp") return "image/webp";
   if (ext === ".svg") return "image/svg+xml";
   if (ext === ".pdf") return "application/pdf";
+  if (ext === ".ps" || ext === ".eps") return "application/postscript";
   if (ext === ".ttf") return "font/ttf";
   if (ext === ".otf") return "font/otf";
   if (ext === ".woff") return "font/woff";
@@ -760,6 +762,26 @@ async function scanFsTree(storagePath, relBase = "", generated = false) {
     nodes.push(await buildFsNode(storagePath, rel, entry, generated));
   }
   return nodes;
+}
+
+async function generatedOutputTree(storagePath) {
+  const outputPath = path.join(storagePath, "output");
+  const stat = await fs.stat(outputPath).catch(() => null);
+  if (!stat || !stat.isDirectory()) return null;
+  return buildFsNode(storagePath, "output", { name: "output", isDirectory: () => true }, true);
+}
+
+async function resolveProjectFile(storagePath, requestedPath) {
+  const rel = safeRelPath(requestedPath);
+  if (rel === ".iris" || rel.startsWith(".iris/")) throw requestError("PROJECT_PATH_INVALID", 400);
+  const storageReal = await fs.realpath(storagePath);
+  const fileReal = await fs.realpath(path.join(storagePath, rel)).catch(() => null);
+  if (!fileReal || (fileReal !== storageReal && !fileReal.startsWith(storageReal + path.sep))) {
+    throw requestError("PROJECT_FILE_NOT_FOUND", 404);
+  }
+  const stat = await fs.stat(fileReal).catch(() => null);
+  if (!stat || !stat.isFile()) throw requestError("PROJECT_FILE_NOT_FOUND", 404);
+  return { path: fileReal, name: path.basename(rel), mimeType: mimeForProjectFile(rel), size: stat.size };
 }
 
 async function syncNodesWithFilesystem(storagePath, data) {
@@ -996,6 +1018,25 @@ async function deleteProject(req, res, user, id) {
   await pool.query("DELETE FROM projects WHERE id = ? AND user_id = ?", [id, user.sub]);
   await fs.rm(row.storage_path, { recursive: true, force: true });
   json(res, 200, { ok: true });
+}
+
+async function downloadProjectFile(req, res, user, id, url) {
+  const row = await projectForUser(id, user.sub);
+  const file = await resolveProjectFile(row.storage_path, url.searchParams.get("path"));
+  const fallbackName = file.name.replace(/[^A-Za-z0-9._-]/g, "_") || "download";
+  res.writeHead(200, {
+    "content-type": file.mimeType,
+    "content-length": file.size,
+    "content-disposition": `attachment; filename="${fallbackName}"; filename*=UTF-8''${encodeURIComponent(file.name)}`,
+    "cache-control": "private, no-store",
+  });
+  await new Promise((resolve, reject) => {
+    const stream = fsSync.createReadStream(file.path);
+    stream.on("error", reject);
+    res.on("finish", resolve);
+    res.on("close", resolve);
+    stream.pipe(res);
+  });
 }
 
 function walkProjectFiles(nodes, fn) {
@@ -1487,6 +1528,7 @@ async function compileProject(req, res, user, id) {
   const preLog = /^(xelatex|lualatex)$/i.test(engine) ? await refreshFontCache(fontDir) : "";
   const result = await runCompilePipeline({ profile: compileProfile, binPath, cwd: row.storage_path, fontDir, texmfVar, preLog });
   const artifacts = await readCompileArtifacts(outputDir, jobname, outputFormat);
+  const outputTree = await generatedOutputTree(row.storage_path);
   const primaryArtifact = artifacts[0] || null;
   const pdfArtifact = outputFormat === "pdf" ? primaryArtifact : null;
   const success = result.code === 0 && artifacts.length > 0;
@@ -1499,6 +1541,7 @@ async function compileProject(req, res, user, id) {
     outputFormat,
     outputName: primaryArtifact ? primaryArtifact.name : `output/${outputName}`,
     artifacts,
+    outputTree,
     artifactCount: artifacts.length,
     pdfName: pdfArtifact ? pdfArtifact.name : null,
     pdfBase64: pdfArtifact ? pdfArtifact.base64 : null,
@@ -1649,6 +1692,9 @@ async function handleApi(req, res, url) {
   const compileMatch = url.pathname.match(/^\/api\/projects\/([a-f0-9]{32})\/compile$/);
   if (compileMatch && req.method === "POST") return compileProject(req, res, user, compileMatch[1]);
 
+  const fileDownloadMatch = url.pathname.match(/^\/api\/projects\/([a-f0-9]{32})\/files\/download$/);
+  if (fileDownloadMatch && req.method === "GET") return downloadProjectFile(req, res, user, fileDownloadMatch[1], url);
+
   const match = url.pathname.match(/^\/api\/projects\/([a-f0-9]{32})$/);
   if (match) {
     if (req.method === "GET") return getProject(req, res, user, match[1]);
@@ -1727,6 +1773,8 @@ module.exports = {
   parseCompileArguments,
   sanitizeLilypondArgsForStorage,
   normalizeLilypondFormat,
+  generatedOutputTree,
+  resolveProjectFile,
   readCompileArtifacts,
   runCompilePipeline,
 };

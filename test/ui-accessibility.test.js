@@ -64,6 +64,20 @@ test("save, compile and output form one ordered workflow", () => {
   assert.match(css, /\.workflow-output\.output-ready/);
 });
 
+test("preview controls support PDFs and image artifacts without format-specific branding", () => {
+  assert.doesNotMatch(html, /data-icon="file-type-pdf"/);
+  assert.doesNotMatch(app, /ti\("file-type-pdf"\)/);
+  assert.match(app, /function layoutImagePages\(\)/);
+  assert.match(app, /function requestPreviewLayout\(\)/);
+  assert.match(css, /\.image-preview img\{[^}]*width:100%/);
+});
+
+test("compiled outputs sync into the tree and every file exposes download", () => {
+  assert.match(app, /function syncOutputTree\(outputTree\)/);
+  assert.match(app, /data-act="download"/);
+  assert.match(projects, /function downloadCurrentFile\(filePath, fileName\)/);
+});
+
 test("editor suppresses native boundary bounce without custom motion", () => {
   assert.match(css, /\.code-area\{[^}]*overscroll-behavior:none/);
   assert.doesNotMatch(css, /editor-bounce|bounce-push|bounce-return/);

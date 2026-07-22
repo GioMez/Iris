@@ -247,6 +247,30 @@
     return out;
   }
 
+  async function downloadCurrentFile(filePath, fileName) {
+    if (!currentId) throw new Error(t("projects.noneOpen"));
+    const query = new URLSearchParams({ path: String(filePath || "") });
+    const res = await fetch(`/api/projects/${currentId}/files/download?${query}`, { credentials: "same-origin" });
+    if (!res.ok) {
+      let data = {};
+      try { data = await res.json(); } catch (e) {}
+      const err = new Error();
+      err.code = data.errorCode || "SERVER_ERROR";
+      err.params = data.params || {};
+      err.message = window.IrisI18n.error(err);
+      err.status = res.status;
+      throw err;
+    }
+    const blobUrl = URL.createObjectURL(await res.blob());
+    const link = document.createElement("a");
+    link.href = blobUrl;
+    link.download = fileName || String(filePath || "download").split("/").pop();
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+  }
+
   /* ---------------- create / rename / delete ---------------- */
   async function createProject(name, projectType) {
     const now = Date.now();
@@ -393,7 +417,7 @@
     document.documentElement.classList.remove("iris-inproject");
   }
 
-  window.IrisProjects = { showPicker, openProject, closeCurrent, persistCurrent, compileCurrent, renderPicker, onLogout };
+  window.IrisProjects = { showPicker, openProject, closeCurrent, persistCurrent, compileCurrent, downloadCurrentFile, renderPicker, onLogout };
 
   /* ---------------- wiring ---------------- */
   function wire() {

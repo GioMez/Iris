@@ -15,6 +15,8 @@ const {
   parseCompileArguments,
   sanitizeLilypondArgsForStorage,
   normalizeLilypondFormat,
+  generatedOutputTree,
+  resolveProjectFile,
   readCompileArtifacts,
   runCompilePipeline,
 } = require("../src/server");
@@ -106,6 +108,38 @@ test("collects all numbered artifacts for the selected format", async (t) => {
   const artifacts = await readCompileArtifacts(root, "main", "png");
   assert.deepEqual(artifacts.map((artifact) => artifact.name), ["output/main.png", "output/main-page2.png"]);
   assert.equal(Buffer.from(artifacts[1].base64, "base64").toString(), "page two");
+});
+
+test("builds a generated output tree immediately after compilation", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "iris-output-tree-test-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  await fs.mkdir(path.join(root, "output"));
+  await fs.writeFile(path.join(root, "output", "main.pdf"), "pdf");
+  await fs.writeFile(path.join(root, "output", "main.log"), "log");
+  const output = await generatedOutputTree(root);
+  assert.equal(output.name, "output");
+  assert.equal(output.generated, true);
+  assert.deepEqual(output.children.map((node) => node.path), ["output/main.log", "output/main.pdf"]);
+  assert.ok(output.children.every((node) => node.generated && node.readOnly));
+});
+
+test("resolves downloadable files only inside the project", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "iris-download-test-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  await fs.mkdir(path.join(root, ".iris"));
+  await fs.writeFile(path.join(root, "main.ly"), "{ c1 }");
+  await fs.writeFile(path.join(root, ".iris", "project.json"), "{}");
+  const file = await resolveProjectFile(root, "main.ly");
+  assert.equal(file.name, "main.ly");
+  assert.equal(file.mimeType, "text/plain; charset=utf-8");
+  await assert.rejects(() => resolveProjectFile(root, ".iris/project.json"), (error) => error.errorCode === "PROJECT_PATH_INVALID");
+  await assert.rejects(() => resolveProjectFile(root, "missing.ly"), (error) => error.errorCode === "PROJECT_FILE_NOT_FOUND");
+
+  const outside = path.join(path.dirname(root), `${path.basename(root)}-outside.txt`);
+  await fs.writeFile(outside, "outside");
+  t.after(() => fs.rm(outside, { force: true }));
+  await fs.symlink(outside, path.join(root, "outside.txt"));
+  await assert.rejects(() => resolveProjectFile(root, "outside.txt"), (error) => error.errorCode === "PROJECT_FILE_NOT_FOUND");
 });
 
 test("rejects LaTeX tools in a LilyPond custom pipeline", () => {

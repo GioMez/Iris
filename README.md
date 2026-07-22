@@ -16,15 +16,16 @@ the Node.js service handles authentication, persistence, and compilation.
 
 - Separate workspaces for LaTeX documents and LilyPond scores.
 - A project dashboard scoped to the authenticated user.
-- A file tree with folders, multiple open tabs, uploads, renaming, and deletion.
+- A file tree with folders, multiple open tabs, uploads, per-file downloads,
+  renaming, and deletion.
 - Syntax highlighting, document outline, search and replace, formatting,
   optional word wrapping, and configurable autosave.
 - Server-side LaTeX compilation with `pdflatex`, `xelatex`, or `lualatex`.
 - Built-in LaTeX pipelines for quick builds, BibTeX, Biber, and indexes, plus
   constrained custom pipelines.
 - Server-side LilyPond compilation to PDF, PNG, SVG, PS, or EPS.
-- An integrated PDF.js viewer, image preview, compiler log, warnings, errors,
-  build duration, and downloadable artifacts.
+- An integrated PDF.js viewer, zoomable image preview, compiler log, warnings,
+  errors, build duration, and downloadable artifacts.
 - Project-local font uploads, including XeLaTeX and LuaLaTeX font discovery.
 - Local password authentication and optional OAuth 2.0/OpenID Connect SSO.
 - Localized interface with English as the default and Italian included.
