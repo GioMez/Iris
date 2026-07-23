@@ -15,7 +15,7 @@ const PORT = Number(process.env.PORT || 3000);
 const DB_HOST = process.env.DB_HOST || "127.0.0.1";
 const DB_PORT = Number(process.env.DB_PORT || 3306);
 const DB_USER = process.env.DB_USER || "iris";
-const DB_PASSWORD = process.env.DB_PASSWORD || "iris";
+const DB_PASSWORD = requiredSecret("DB_PASSWORD", process.env.DB_PASSWORD, ["iris"]);
 const DB_NAME = process.env.DB_NAME || "iris";
 const DB_CONNECT_TIMEOUT = Number(process.env.DB_CONNECT_TIMEOUT_MS || 5000);
 const DATA_DIR = path.resolve(process.env.DATA_DIR || "./data/projects");
@@ -24,7 +24,10 @@ const TEX_BIN_PATH = process.env.TEX_BIN_PATH || "";
 const TEX_PATH_LOCKED = String(process.env.TEX_PATH_LOCKED || "false") === "true";
 const LILYPOND_BIN_PATH = process.env.LILYPOND_BIN_PATH || "";
 const LILYPOND_PATH_LOCKED = String(process.env.LILYPOND_PATH_LOCKED || "false") === "true";
-const SECRET = sessionSecret(process.env.IRIS_SECRET);
+const SECRET = requiredSecret("IRIS_SECRET", process.env.IRIS_SECRET, [
+  "iris-dev-secret-change-me",
+  "change-this-secret-in-production",
+]);
 const COOKIE_SECURE = String(process.env.COOKIE_SECURE || "false") === "true";
 const MAX_BODY = Number(process.env.MAX_BODY_MB || 25) * 1024 * 1024;
 const COMPILE_TIMEOUT_MS = Number(process.env.COMPILE_TIMEOUT_MS || 30000);
@@ -90,14 +93,11 @@ function positiveIntEnv(name, fallback) {
   return Number.isInteger(value) && value > 0 ? value : fallback;
 }
 
-function sessionSecret(value) {
-  const secret = String(value || "").trim();
-  const insecure = new Set([
-    "iris-dev-secret-change-me",
-    "change-this-secret-in-production",
-  ]);
-  if (!secret || insecure.has(secret)) {
-    throw new Error("IRIS_SECRET must be set to a secure, non-default value");
+function requiredSecret(name, value, insecureValues = []) {
+  const secret = String(value || "");
+  const normalized = secret.trim();
+  if (!normalized || insecureValues.includes(normalized)) {
+    throw new Error(`${name} must be set to a secure, non-default value`);
   }
   return secret;
 }

@@ -103,15 +103,19 @@ Install the Node.js dependencies:
 npm install
 ```
 
-Create the local configuration file and generate a session secret:
+Create the local configuration file and generate a session secret and database
+passwords:
 
 ```sh
 cp .env.example .env
-openssl rand -hex 32
+for name in IRIS_SECRET DB_PASSWORD MARIADB_ROOT_PASSWORD; do
+  printf '%s=%s\n' "$name" "$(openssl rand -hex 32)"
+done
 ```
 
-Paste the generated value into `IRIS_SECRET` in `.env`. Iris refuses to start
-without a non-default session secret.
+Replace the corresponding blank lines in `.env` with the three generated lines.
+Iris refuses to start without a non-default session secret and application
+database password; Compose also requires the MariaDB root password.
 
 Start MariaDB with Docker Compose:
 
@@ -119,8 +123,9 @@ Start MariaDB with Docker Compose:
 docker compose up -d mariadb
 ```
 
-The defaults in `.env.example` match the development database exposed by the
-Compose service. Iris creates or updates its tables during startup.
+The non-secret database settings in `.env.example` match the development
+database exposed by the Compose service. The published database port is bound
+to localhost only. Iris creates or updates its tables during startup.
 
 Start the application:
 
@@ -158,14 +163,17 @@ works when the database user has the required server-level permission.
 
 ## Running with Docker Compose
 
-Create `.env` and generate a secret:
+Create `.env` and generate the three required secrets:
 
 ```sh
 cp .env.example .env
-openssl rand -hex 32
+for name in IRIS_SECRET DB_PASSWORD MARIADB_ROOT_PASSWORD; do
+  printf '%s=%s\n' "$name" "$(openssl rand -hex 32)"
+done
 ```
 
-Paste the generated value into `IRIS_SECRET`, then start both services:
+Replace the corresponding blank lines in `.env` with the generated lines, then
+start both services:
 
 ```sh
 docker compose up --build
@@ -173,7 +181,15 @@ docker compose up --build
 
 The application is available at
 [http://localhost:3000](http://localhost:3000). MariaDB data and project files
-are stored in the named volumes `mariadb-data` and `project-data`.
+are stored in the named volumes `mariadb-data` and `project-data`. Both
+published ports listen on localhost only; place a reverse proxy on the same host
+in front of Iris when exposing it externally.
+
+MariaDB initialization variables only apply when the data directory is empty.
+If `mariadb-data` already exists, update the existing database user's password
+before changing `DB_PASSWORD`. For disposable development data, you can instead
+recreate the volume with `docker compose down -v`, which permanently deletes
+the database and project volumes.
 
 To retrieve the initial administrator password from a detached deployment:
 
@@ -362,9 +378,12 @@ already present in the process environment.
 | `DB_HOST` | `127.0.0.1` | MariaDB host. |
 | `DB_PORT` | `3306` | MariaDB port. |
 | `DB_USER` | `iris` | MariaDB user. |
-| `DB_PASSWORD` | `iris` | MariaDB password. |
+| `DB_PASSWORD` | none | Required non-default MariaDB application password. |
 | `DB_NAME` | `iris` | MariaDB database. |
 | `DB_CONNECT_TIMEOUT_MS` | `5000` | Connection and acquisition timeout. |
+
+`MARIADB_ROOT_PASSWORD` is also required by the supplied Compose configuration
+and is used only to initialize its MariaDB service.
 
 ### Compilers
 
@@ -428,9 +447,9 @@ For a production deployment, also:
 
 - use HTTPS and set `COOKIE_SECURE=true`;
 - place Iris behind a properly configured reverse proxy;
-- replace all sample database credentials;
+- generate unique `DB_PASSWORD` and `MARIADB_ROOT_PASSWORD` values;
 - restrict MariaDB to the application network instead of publishing it;
-- keep `IRIS_SECRET` and OIDC credentials outside version control; and
+- keep session, database, and OIDC secrets outside version control; and
 - back up and test restoration of both persistence layers.
 
 ## Development

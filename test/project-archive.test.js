@@ -5,6 +5,7 @@ const os = require("node:os");
 const path = require("node:path");
 
 process.env.IRIS_SECRET = "test-only-secret-with-sufficient-entropy";
+process.env.DB_PASSWORD = "test-only-database-password";
 
 const { buildProjectArchive, parseProjectArchive } = require("../src/server");
 const { createZip, extractZip, safeZipPath } = require("../src/zip");

@@ -1,18 +1,18 @@
 services:
   webapp:
     build: .
-    container_name: iris-webapp
     restart: unless-stopped
+    init: true
     depends_on:
       mariadb:
         condition: service_healthy
     environment:
-      PORT: 3000
-      IRIS_SECRET: ${IRIS_SECRET:?Imposta IRIS_SECRET con un valore casuale sicuro}
+      PORT: "3000"
+      IRIS_SECRET: "${IRIS_SECRET:?Set IRIS_SECRET to a secure random value}"
       DB_HOST: mariadb
-      DB_PORT: 3306
+      DB_PORT: "3306"
       DB_USER: iris
-      DB_PASSWORD: iris
+      DB_PASSWORD: "${DB_PASSWORD:?Set DB_PASSWORD to a secure random value}"
       DB_NAME: iris
       DATA_DIR: /app/data/projects
       APP_BASE_URL: http://localhost:3000
@@ -38,7 +38,7 @@ services:
       # ARGON2_TIME_COST: 3
       # ARGON2_PARALLELISM: 1
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     volumes:
       - project-data:/app/data
       # Monta qui distribuzioni LaTeX e LilyPond compatibili con il container.
@@ -54,19 +54,18 @@ services:
 
   mariadb:
     image: mariadb:11.4.10-noble
-    container_name: iris-mariadb
     restart: unless-stopped
     environment:
-      MARIADB_ROOT_PASSWORD: iris-root
+      MARIADB_ROOT_PASSWORD: "${MARIADB_ROOT_PASSWORD:?Set MARIADB_ROOT_PASSWORD to a secure random value}"
       MARIADB_DATABASE: iris
       MARIADB_USER: iris
-      MARIADB_PASSWORD: iris
+      MARIADB_PASSWORD: "${DB_PASSWORD:?Set DB_PASSWORD to a secure random value}"
     ports:
-      - "3306:3306"
+      - "127.0.0.1:3306:3306"
     volumes:
       - mariadb-data:/var/lib/mysql
     healthcheck:
-      test: ["CMD", "mariadb-admin", "ping", "-h", "127.0.0.1", "-uiris", "-piris"]
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
       interval: 5s
       timeout: 3s
       retries: 20
