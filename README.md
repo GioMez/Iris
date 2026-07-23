@@ -1,10 +1,10 @@
 <h1 align="center">
-  <img alt="" src="branding/iris_logo.svg" width="128">
+  <img alt="" src="branding/iris_logo.svg" width="240">
   <br>
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="branding/iris_text_logo_b_bg_w_fg.svg">
-    <source media="(prefers-color-scheme: light)" srcset="branding/iris_text_logo_w_bg.svg">
-    <img alt="Iris" src="branding/iris_text_logo.svg" width="300">
+    <source media="(prefers-color-scheme: dark)" srcset="branding/iris_text_logo_b_bg_w_fg.svg" width="160>
+    <source media="(prefers-color-scheme: light)" srcset="branding/iris_text_logo_w_bg.svg" width="160>
+    <img alt="Iris" src="branding/iris_text_logo.svg" width="160">
   </picture>
 </h1>
 
