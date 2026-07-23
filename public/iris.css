@@ -215,8 +215,13 @@ button{font-family:inherit;color:inherit}
 .ol-item{display:flex;gap:9px;align-items:baseline;min-height:32px;padding:6px 8px;border-radius:6px;cursor:pointer;color:var(--txt-dim)}
 .ol-item:hover{background:#ffffff0a;color:var(--txt)}
 .ol-item .num{font-family:var(--font-code);font-size:11px;color:var(--accent);min-width:26px}
-.ol-item.lvl2{padding-left:30px;color:var(--txt-mut);font-size:12.5px}
-.ol-item.lvl2 .num{color:var(--txt-mut)}
+.ol-item .num:empty{display:none}
+.ol-item .label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ol-item.lvl2,.ol-item.lvl3,.ol-item.lvl4{color:var(--txt-mut);font-size:12.5px}
+.ol-item.lvl2{padding-left:30px}
+.ol-item.lvl3{padding-left:46px}
+.ol-item.lvl4{padding-left:62px}
+.ol-item.lvl2 .num,.ol-item.lvl3 .num,.ol-item.lvl4 .num{color:var(--txt-mut)}
 .ol-empty{color:var(--txt-mut);font-size:12.5px;padding:12px 10px;text-align:center}
 
 /* ===================== editor ===================== */

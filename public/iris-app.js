@@ -1052,10 +1052,18 @@
     box.innerHTML = "";
     items.forEach((it) => {
       const el = document.createElement("div");
-      el.className = "ol-item" + (it.level === 2 ? " lvl2" : "");
+      const level = Math.max(1, Math.min(4, Number(it.level) || 1));
+      el.className = "ol-item" + (level > 1 ? ` lvl${level}` : "");
       el.setAttribute("role", "button");
       el.tabIndex = 0;
-      el.innerHTML = `<span class="num">${it.num}</span><span>${it.title}</span>`;
+      const num = document.createElement("span");
+      num.className = "num";
+      num.textContent = it.num || "";
+      const label = document.createElement("span");
+      label.className = "label";
+      label.textContent = it.title;
+      label.title = it.title;
+      el.append(num, label);
       el.addEventListener("click", () => gotoSection(it));
       activateOnKeyboard(el, () => gotoSection(it));
       box.appendChild(el);
