@@ -12,6 +12,7 @@ services:
       DB_HOST: mariadb
       DB_PORT: "3306"
       DB_USER: iris
+      # Password for the restricted MariaDB user used by the application.
       DB_PASSWORD: "${DB_PASSWORD:?Set DB_PASSWORD to a secure random value}"
       DB_NAME: iris
       DATA_DIR: /app/data/projects
@@ -22,7 +23,7 @@ services:
       LILYPOND_PATH_LOCKED: "true"
       COMPILE_TIMEOUT_MS: 30000
       COOKIE_SECURE: "false"
-      # OAuth 2.0 / OIDC SSO, ad esempio Authentik.
+      # OAuth 2.0 / OIDC SSO, for example Authentik.
       # OAUTH_ISSUER_URL: https://auth.example.org/application/o/iris
       # OAUTH_AUTHORIZATION_URL: https://auth.example.org/application/o/authorize/
       # OAUTH_TOKEN_URL: https://auth.example.org/application/o/token/
@@ -41,7 +42,7 @@ services:
       - "127.0.0.1:3000:3000"
     volumes:
       - project-data:/app/data
-      # Monta qui distribuzioni LaTeX e LilyPond compatibili con il container.
+      # Mount container-compatible LaTeX and LilyPond distributions here.
       # - ./texlive/bin:/usr/local/texlive/bin/x86_64-linux:ro
       # - ./lilypond/bin/lilypond:/usr/bin/lilypond:ro
     read_only: true
@@ -56,9 +57,12 @@ services:
     image: mariadb:11.4.10-noble
     restart: unless-stopped
     environment:
+      # Root is only for MariaDB initialization and administration. The webapp
+      # never receives this credential and must not connect as root.
       MARIADB_ROOT_PASSWORD: "${MARIADB_ROOT_PASSWORD:?Set MARIADB_ROOT_PASSWORD to a secure random value}"
       MARIADB_DATABASE: iris
       MARIADB_USER: iris
+      # Initializes the restricted user with the same DB_PASSWORD used above.
       MARIADB_PASSWORD: "${DB_PASSWORD:?Set DB_PASSWORD to a secure random value}"
     ports:
       - "127.0.0.1:3306:3306"
