@@ -8,6 +8,15 @@
   </picture>
 </h1>
 
+LaTeX produces gorgeous typography, and LilyPond does the same for engraved
+music. The price of admission is gigabytes of toolchain installed on every
+machine where you want to compile a source and, however long I searched, I
+never found a good web editor for LilyPond that handled compilation, font
+management, and preview all from a browser tab (and could run on a server of my
+own).
+
+*So… I vibe coded it.*
+
 Iris is a self-hosted, browser-based writing and compilation environment for
 LaTeX documents and LilyPond scores. It combines a project-oriented source
 editor, server-side compilation, output preview, and authenticated storage in a
@@ -476,3 +485,19 @@ Iris is distributed under the GNU General Public License v3.0 or later. See
 [`LICENSE`](LICENSE) for the complete terms and
 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for bundled third-party
 components.
+
+## Scope, and a note on how Iris was built
+
+Iris is meant to stay simple, and to keep its ambitions modest. It is **not** a
+WYSIWYG editor and does not try to become one: no snippet libraries, no shortcut
+cheat sheets, no buttons that drop in ready-made constructs. It bets instead on
+compatibility, speed, being yours to self-host, and the plain convenience of
+having editing, compilation, fonts, attachments and preview together on a single
+web page.
+
+And yes — Iris was vibe coded, though *agentic coding* is the more honest name
+for it. That label gets dismissed a lot, and usually unfairly: done carelessly
+it shows, but done with care it is simply another way to write software. This
+codebase is reviewed, cross-checked across more than one model, and tested. And,
+not least, it is used by me — who, however small the need, is exactly the person
+who wanted it to exist.
