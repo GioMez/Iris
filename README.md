@@ -1,4 +1,12 @@
-# Iris
+<h1 align="center">
+  <img alt="" src="branding/iris_logo.svg" width="128">
+  <br>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="branding/iris_text_logo_b_bg_w_fg.svg">
+    <source media="(prefers-color-scheme: light)" srcset="branding/iris_text_logo_w_bg.svg">
+    <img alt="Iris" src="branding/iris_text_logo.svg" width="300">
+  </picture>
+</h1>
 
 Iris is a self-hosted, browser-based writing and compilation environment for
 LaTeX documents and LilyPond scores. It combines a project-oriented source
