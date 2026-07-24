@@ -27,6 +27,17 @@ single web application.
 
 > **Release status:** Beta 1 (`1.0.0-beta.1`)
 
+> **Beta software and stability:** Iris is provided **as is**, without warranty,
+> as described in the [GNU GPL v3](LICENSE). Beta 1 is the first public
+> prerelease, not a promise that the next release will be stable: the beta
+> series will continue for as many releases as needed. Until a stable release,
+> breaking changes may affect configuration, deployment, data formats, APIs,
+> and user-facing workflows. Back up both PostgreSQL and `DATA_DIR`, review the
+> release notes, and test upgrades before applying them to an important
+> installation. Backward compatibility between prereleases is not guaranteed.
+> Face each change with the joy of pioneers and the perseverance of the
+> frontier. 🤠
+
 Iris is not a client-only editor. Projects are stored on the server as real
 files, associated with individual user accounts, and compiled by toolchains
 installed on the host running the backend. The browser provides the workspace;
