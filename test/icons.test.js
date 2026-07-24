@@ -28,6 +28,14 @@ test("the icon runtime loads before UI modules", () => {
   assert.ok(html.indexOf('src="iris-icons.js"') < html.indexOf('src="iris-projects.js"'));
 });
 
+test("the sidebar toggle uses complementary icons for its open and closed states", () => {
+  const icons = read("public/iris-icons.js");
+  const app = read("public/iris-app.js");
+  assert.match(icons, /"layout-sidebar-left-collapse":/);
+  assert.match(icons, /"layout-sidebar-left-expand":/);
+  assert.match(app, /open \? "layout-sidebar-left-collapse" : "layout-sidebar-left-expand"/);
+});
+
 test("legacy interface glyphs are no longer used as icons", () => {
   const sources = ["public/Iris.html", "public/iris-app.js", "public/iris-projects.js"]
     .map(read)

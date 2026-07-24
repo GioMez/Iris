@@ -2140,8 +2140,15 @@
   function updateSidebarToggle() {
     const body = document.querySelector(".body");
     const open = drawerMedia.matches ? body.classList.contains("drawer-open") : !body.classList.contains("side-collapsed");
-    $("btnSidebar").classList.toggle("on", open);
-    $("btnSidebar").setAttribute("aria-expanded", open ? "true" : "false");
+    const button = $("btnSidebar");
+    const iconHost = button.querySelector("[data-icon]");
+    const iconName = open ? "layout-sidebar-left-collapse" : "layout-sidebar-left-expand";
+    if (iconHost.dataset.icon !== iconName) {
+      iconHost.dataset.icon = iconName;
+      iconHost.innerHTML = ti(iconName);
+    }
+    button.classList.toggle("on", open);
+    button.setAttribute("aria-expanded", open ? "true" : "false");
   }
   function syncResponsiveLayout() {
     const body = document.querySelector(".body");
