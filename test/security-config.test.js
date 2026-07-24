@@ -43,10 +43,21 @@ test("server requires non-default session and database secrets", () => {
 
 test("Compose requires secrets and does not expose default credentials", () => {
   const compose = fs.readFileSync(path.join(root, "docker-compose.yml"), "utf8");
+  const postgresInit = fs.readFileSync(path.join(root, "db/init/01-create-iris-user.sh"), "utf8");
   assert.match(compose, /IRIS_SECRET: "\$\{IRIS_SECRET:\?/);
   assert.match(compose, /DB_PASSWORD: "\$\{DB_PASSWORD:\?/);
-  assert.match(compose, /MARIADB_ROOT_PASSWORD: "\$\{MARIADB_ROOT_PASSWORD:\?/);
-  assert.match(compose, /MARIADB_PASSWORD: "\$\{DB_PASSWORD:\?/);
-  assert.match(compose, /healthcheck\.sh.*--connect.*--innodb_initialized/);
+  assert.match(compose, /POSTGRES_PASSWORD: "\$\{POSTGRES_ADMIN_PASSWORD:\?/);
+  assert.match(compose, /pg_isready.*-U.*postgres.*-d.*postgres/);
+  assert.doesNotMatch(compose, /POSTGRES_PASSWORD:\s*(iris|postgres)\s*$/m);
+  assert.match(postgresInit, /CREATE ROLE iris WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE/);
+  assert.match(postgresInit, /CREATE DATABASE iris OWNER iris/);
   assert.doesNotMatch(compose, /iris-root|-piris/);
+});
+
+test("the PostgreSQL runtime image includes versioned migrations", () => {
+  const packageJson = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+  const dockerfile = fs.readFileSync(path.join(root, "Dockerfile"), "utf8");
+  assert.ok(packageJson.dependencies.pg);
+  assert.match(dockerfile, /npm ci --omit=dev/);
+  assert.match(dockerfile, /COPY db\/migrations \.\/db\/migrations/);
 });

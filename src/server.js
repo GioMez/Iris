@@ -6,14 +6,14 @@ const crypto = require("node:crypto");
 const { spawn } = require("node:child_process");
 const { URL } = require("node:url");
 const argon2 = require("argon2");
-const mariadb = require("mariadb");
+const { createDatabase } = require("./database");
 const { createZip, extractZip } = require("./zip");
 
 loadDotEnv(path.resolve(".env"));
 
 const PORT = Number(process.env.PORT || 3000);
 const DB_HOST = process.env.DB_HOST || "127.0.0.1";
-const DB_PORT = Number(process.env.DB_PORT || 3306);
+const DB_PORT = Number(process.env.DB_PORT || 5432);
 const DB_USER = process.env.DB_USER || "iris";
 const DB_PASSWORD = requiredSecret("DB_PASSWORD", process.env.DB_PASSWORD, ["iris"]);
 const DB_NAME = process.env.DB_NAME || "iris";
@@ -52,7 +52,7 @@ const LILYPOND_COMPILE_TOOLS = new Set(["lilypond"]);
 const LILYPOND_OUTPUT_FORMATS = new Set(["pdf", "png", "svg", "ps", "eps"]);
 const PDFJS_BUILD_DIR = path.join(path.dirname(require.resolve("pdfjs-dist/package.json")), "build");
 
-let pool;
+let db;
 let oauthDiscoveryCache = null;
 let initialAdminCredentials = null;
 
@@ -340,21 +340,21 @@ async function availableUsername(base) {
   const clean = cleanUsername(base);
   for (let i = 0; i < 100; i++) {
     const candidate = i ? `${clean}-${i + 1}`.slice(0, 80) : clean.slice(0, 80);
-    const rows = await pool.query("SELECT id FROM users WHERE username = ? LIMIT 1", [candidate]);
+    const { rows } = await db.query("SELECT id FROM users WHERE LOWER(username) = LOWER($1) LIMIT 1", [candidate]);
     if (!rows.length) return candidate;
   }
   return `${clean.slice(0, 48)}-${crypto.randomBytes(4).toString("hex")}`;
 }
 
 async function userFromOAuthProfile(profile) {
-  const rows = await pool.query(
-    "SELECT id, username, email, display_name, role, password_hash FROM users WHERE LOWER(email) = ? LIMIT 1",
+  const { rows } = await db.query(
+    "SELECT id, username, email, display_name, role, password_hash FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1",
     [profile.email]
   );
   if (rows[0]) {
     const nextName = profile.name || rows[0].display_name;
     if (nextName && nextName !== rows[0].display_name) {
-      await pool.query("UPDATE users SET display_name = ? WHERE id = ?", [nextName, rows[0].id]);
+      await db.query("UPDATE users SET display_name = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2", [nextName, rows[0].id]);
       rows[0].display_name = nextName;
     }
     return rows[0];
@@ -368,94 +368,42 @@ async function userFromOAuthProfile(profile) {
   const username = await availableUsername(profile.preferredUsername || profile.email);
   const displayName = profile.name || profile.email;
   try {
-    const result = await pool.query(
-      "INSERT INTO users (username, email, display_name, role, password_hash) VALUES (?, ?, ?, 'user', NULL)",
+    const result = await db.query(
+      "INSERT INTO users (username, email, display_name, role, password_hash) VALUES ($1, $2, $3, 'user', NULL) RETURNING id",
       [username, profile.email, displayName]
     );
-    const id = String(result.insertId);
+    const id = String(result.rows[0].id);
     return { id, username, email: profile.email, display_name: displayName, role: "user", password_hash: null };
   } catch (err) {
-    if (err.code !== "ER_DUP_ENTRY") throw err;
-    const retry = await pool.query(
-      "SELECT id, username, email, display_name, role, password_hash FROM users WHERE LOWER(email) = ? LIMIT 1",
+    if (err.code !== "23505") throw err;
+    const retry = await db.query(
+      "SELECT id, username, email, display_name, role, password_hash FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1",
       [profile.email]
     );
-    if (retry[0]) return retry[0];
+    if (retry.rows[0]) return retry.rows[0];
     throw err;
   }
 }
 
-function safeDbName(name) {
-  if (!/^[a-zA-Z0-9_$]+$/.test(name)) throw new Error("DB_NAME must contain only letters, numbers, _ or $");
-  return `\`${name}\``;
-}
-
 async function initDb() {
-  const poolOptions = (database) => ({
+  db = await createDatabase({
     host: DB_HOST,
     port: DB_PORT,
     user: DB_USER,
     password: DB_PASSWORD,
-    ...(database ? { database } : {}),
-    connectionLimit: database ? 8 : 1,
+    database: DB_NAME,
     connectTimeout: DB_CONNECT_TIMEOUT,
-    acquireTimeout: DB_CONNECT_TIMEOUT,
   });
-
-  pool = mariadb.createPool(poolOptions(DB_NAME));
-  try {
-    await pool.query("SELECT 1");
-  } catch (err) {
-    await pool.end().catch(() => {});
-    if (err.errno !== 1049 && err.code !== "ER_BAD_DB_ERROR") throw err;
-    const admin = mariadb.createPool(poolOptions(null));
-    await admin.query(`CREATE DATABASE IF NOT EXISTS ${safeDbName(DB_NAME)} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`);
-    await admin.end();
-    pool = mariadb.createPool(poolOptions(DB_NAME));
-  }
-
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS users (
-      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-      username VARCHAR(80) NOT NULL,
-      email VARCHAR(190) NOT NULL,
-      display_name VARCHAR(190) NOT NULL,
-      role ENUM('admin','user') NOT NULL DEFAULT 'user',
-      password_hash VARCHAR(255) NULL,
-      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-      PRIMARY KEY (id),
-      UNIQUE KEY uq_users_username (username),
-      UNIQUE KEY uq_users_email (email)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-  `);
-  await pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS role ENUM('admin','user') NOT NULL DEFAULT 'user' AFTER display_name");
-  await pool.query("ALTER TABLE users MODIFY password_hash VARCHAR(255) NULL");
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS projects (
-      id CHAR(32) NOT NULL,
-      user_id BIGINT UNSIGNED NOT NULL,
-      name VARCHAR(160) NOT NULL,
-      storage_path VARCHAR(512) NOT NULL,
-      created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-      updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
-      PRIMARY KEY (id),
-      KEY idx_projects_user_updated (user_id, updated_at),
-      CONSTRAINT fk_projects_user
-        FOREIGN KEY (user_id) REFERENCES users (id)
-        ON DELETE CASCADE
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-  `);
   await fs.mkdir(DATA_DIR, { recursive: true });
   await seedUsers();
 }
 
 async function seedUsers() {
-  const rows = await pool.query("SELECT COUNT(*) AS n FROM users");
+  const { rows } = await db.query("SELECT COUNT(*) AS n FROM users");
   if (Number(rows[0].n) > 0) return;
   const password = crypto.randomBytes(18).toString("base64url");
-  await pool.query(
-    "INSERT INTO users (username, email, display_name, role, password_hash) VALUES (?, ?, ?, 'admin', ?)",
+  await db.query(
+    "INSERT INTO users (username, email, display_name, role, password_hash) VALUES ($1, $2, $3, 'admin', $4)",
     ["admin", "admin@iris.local", "Iris Admin", await hashPassword(password)]
   );
   initialAdminCredentials = { username: "admin", password };
@@ -1023,8 +971,8 @@ async function buildProjectArchive(storagePath, projectName) {
 }
 
 async function projectForUser(id, userId) {
-  const rows = await pool.query(
-    "SELECT id, name, storage_path, created_at, updated_at FROM projects WHERE id = ? AND user_id = ?",
+  const { rows } = await db.query(
+    "SELECT id, name, storage_path, created_at, updated_at FROM projects WHERE id = $1 AND user_id = $2",
     [id, userId]
   );
   if (!rows.length) {
@@ -1034,8 +982,8 @@ async function projectForUser(id, userId) {
 }
 
 async function listProjects(req, res, user) {
-  const rows = await pool.query(
-    "SELECT id, name, storage_path, created_at, updated_at FROM projects WHERE user_id = ? ORDER BY updated_at DESC",
+  const { rows } = await db.query(
+    "SELECT id, name, storage_path, created_at, updated_at FROM projects WHERE user_id = $1 ORDER BY updated_at DESC",
     [user.sub]
   );
   const projects = await Promise.all(rows.map(async (row) => {
@@ -1083,8 +1031,8 @@ async function createProject(req, res, user) {
   data.createdAt = now;
   data.updatedAt = now;
   await writeProjectFile(storagePath, data);
-  await pool.query(
-    "INSERT INTO projects (id, user_id, name, storage_path) VALUES (?, ?, ?, ?)",
+  await db.query(
+    "INSERT INTO projects (id, user_id, name, storage_path) VALUES ($1, $2, $3, $4)",
     [id, user.sub, name, storagePath]
   );
   json(res, 201, {
@@ -1111,7 +1059,7 @@ async function updateProject(req, res, user, id) {
   data.createdAt = toMillis(row.created_at);
   data.updatedAt = Date.now();
   await writeProjectFile(row.storage_path, data);
-  await pool.query("UPDATE projects SET name = ?, updated_at = CURRENT_TIMESTAMP(3) WHERE id = ? AND user_id = ?", [name, id, user.sub]);
+  await db.query("UPDATE projects SET name = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 AND user_id = $3", [name, id, user.sub]);
   json(res, 200, {
     project: { id, name, projectType: data.projectType, createdAt: data.createdAt, updatedAt: data.updatedAt, fileCount: countFiles(data) },
     data: { id, ...data },
@@ -1120,7 +1068,7 @@ async function updateProject(req, res, user, id) {
 
 async function deleteProject(req, res, user, id) {
   const row = await projectForUser(id, user.sub);
-  await pool.query("DELETE FROM projects WHERE id = ? AND user_id = ?", [id, user.sub]);
+  await db.query("DELETE FROM projects WHERE id = $1 AND user_id = $2", [id, user.sub]);
   await fs.rm(row.storage_path, { recursive: true, force: true });
   json(res, 200, { ok: true });
 }
@@ -1247,8 +1195,8 @@ async function importProjectArchive(req, res, user, url) {
       throw invalidProjectArchive();
     }
     await writeProjectManifest(storagePath, data);
-    await pool.query(
-      "INSERT INTO projects (id, user_id, name, storage_path) VALUES (?, ?, ?, ?)",
+    await db.query(
+      "INSERT INTO projects (id, user_id, name, storage_path) VALUES ($1, $2, $3, $4)",
       [id, user.sub, name, storagePath]
     );
   } catch (err) {
@@ -1740,7 +1688,7 @@ async function compileProject(req, res, user, id) {
   data.createdAt = toMillis(row.created_at);
   data.updatedAt = Date.now();
   await writeProjectFile(row.storage_path, data);
-  await pool.query("UPDATE projects SET name = ?, updated_at = CURRENT_TIMESTAMP(3) WHERE id = ? AND user_id = ?", [name, id, user.sub]);
+  await db.query("UPDATE projects SET name = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 AND user_id = $3", [name, id, user.sub]);
 
   const jobname = path.basename(mainPath).replace(/\.[^.]+$/, "");
   const outputName = `${jobname}.${outputFormat}`;
@@ -1848,8 +1796,8 @@ async function handleApi(req, res, url) {
     const login = String(body.username || "").trim().toLowerCase();
     const password = String(body.password || "");
     if (!login || !password) return errorJson(res, 400, "AUTH_REQUIRED_FIELDS");
-    const rows = await pool.query(
-      "SELECT id, username, email, display_name, role, password_hash FROM users WHERE LOWER(username) = ? OR LOWER(email) = ? LIMIT 1",
+    const { rows } = await db.query(
+      "SELECT id, username, email, display_name, role, password_hash FROM users WHERE LOWER(username) = LOWER($1) OR LOWER(email) = LOWER($2) LIMIT 1",
       [login, login]
     );
     const user = rows[0];
@@ -1862,7 +1810,7 @@ async function handleApi(req, res, url) {
     }
     if (passwordCheck.needsRehash) {
       const passwordHash = await hashPassword(password);
-      await pool.query("UPDATE users SET password_hash = ? WHERE id = ?", [passwordHash, user.id]);
+      await db.query("UPDATE users SET password_hash = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2", [passwordHash, user.id]);
       user.password_hash = passwordHash;
     }
     return json(res, 200, { user: publicUser(user) }, {
@@ -1882,8 +1830,8 @@ async function handleApi(req, res, url) {
     if (newPassword.length < 10) return errorJson(res, 400, "PASSWORD_TOO_SHORT");
     if (currentPassword === newPassword) return errorJson(res, 400, "PASSWORD_MUST_DIFFER");
 
-    const rows = await pool.query(
-      "SELECT id, username, email, display_name, role, password_hash FROM users WHERE id = ? LIMIT 1",
+    const { rows } = await db.query(
+      "SELECT id, username, email, display_name, role, password_hash FROM users WHERE id = $1 LIMIT 1",
       [sessionUser.sub]
     );
     const user = rows[0];
@@ -1894,7 +1842,7 @@ async function handleApi(req, res, url) {
     if (!passwordCheck.valid) return errorJson(res, 401, "PASSWORD_CURRENT_INCORRECT");
 
     const passwordHash = await hashPassword(newPassword);
-    await pool.query("UPDATE users SET password_hash = ? WHERE id = ?", [passwordHash, user.id]);
+    await db.query("UPDATE users SET password_hash = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2", [passwordHash, user.id]);
     user.password_hash = passwordHash;
     return json(res, 200, { ok: true, user: publicUser({ ...user, authMethod: "local" }) }, {
       "set-cookie": cookie("iris_session", makeToken(user, "local"), { maxAge: 60 * 60 * 24 * 7 }),

@@ -1,6 +1,6 @@
 /* ===================== Iris · projects ===================== */
 /* Schermata di scelta progetti + persistenza backend.
-   Il backend tiene auth/metadati in MariaDB e salva lo snapshot del progetto
+   Il backend tiene auth/metadati in PostgreSQL e salva lo snapshot del progetto
    in una cartella dedicata sul filesystem. */
 (function () {
   const $ = (id) => document.getElementById(id);

@@ -4,15 +4,15 @@ services:
     restart: unless-stopped
     init: true
     depends_on:
-      mariadb:
+      postgres:
         condition: service_healthy
     environment:
       PORT: "3000"
       IRIS_SECRET: "${IRIS_SECRET:?Set IRIS_SECRET to a secure random value}"
-      DB_HOST: mariadb
-      DB_PORT: "3306"
+      DB_HOST: postgres
+      DB_PORT: "5432"
       DB_USER: iris
-      # Password for the restricted MariaDB user used by the application.
+      # Password for the restricted PostgreSQL user used by the application.
       DB_PASSWORD: "${DB_PASSWORD:?Set DB_PASSWORD to a secure random value}"
       DB_NAME: iris
       DATA_DIR: /app/data/projects
@@ -53,27 +53,27 @@ services:
     security_opt:
       - no-new-privileges:true
 
-  mariadb:
-    image: mariadb:11.4.10-noble
+  postgres:
+    image: postgres:17-bookworm
     restart: unless-stopped
     environment:
-      # Root is only for MariaDB initialization and administration. The webapp
-      # never receives this credential and must not connect as root.
-      MARIADB_ROOT_PASSWORD: "${MARIADB_ROOT_PASSWORD:?Set MARIADB_ROOT_PASSWORD to a secure random value}"
-      MARIADB_DATABASE: iris
-      MARIADB_USER: iris
-      # Initializes the restricted user with the same DB_PASSWORD used above.
-      MARIADB_PASSWORD: "${DB_PASSWORD:?Set DB_PASSWORD to a secure random value}"
+      POSTGRES_DB: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: "${POSTGRES_ADMIN_PASSWORD:?Set POSTGRES_ADMIN_PASSWORD to a secure random value}"
+      # Used only by the initialization script to create the restricted role.
+      DB_PASSWORD: "${DB_PASSWORD:?Set DB_PASSWORD to a secure random value}"
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
     ports:
-      - "127.0.0.1:3306:3306"
+      - "127.0.0.1:5432:5432"
     volumes:
-      - mariadb-data:/var/lib/mysql
+      - postgres-data:/var/lib/postgresql/data
+      - ./db/init/01-create-iris-user.sh:/docker-entrypoint-initdb.d/01-create-iris-user.sh:ro
     healthcheck:
-      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "postgres"]
       interval: 5s
       timeout: 3s
       retries: 20
 
 volumes:
-  mariadb-data:
+  postgres-data:
   project-data:

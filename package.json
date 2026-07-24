@@ -7,12 +7,13 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node src/server.js",
-    "test": "node --test"
+    "test": "node --test",
+    "test:integration": "node --test test/postgresql.integration.test.js"
   },
   "dependencies": {
     "argon2": "0.44.0",
-    "mariadb": "3.5.2",
-    "pdfjs-dist": "6.1.200"
+    "pdfjs-dist": "6.1.200",
+    "pg": "8.22.0"
   },
   "engines": {
     "node": ">=24"

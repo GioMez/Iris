@@ -74,7 +74,7 @@ Browser
   │  static UI + same-origin JSON API
   ▼
 Node.js backend
-  ├── MariaDB      users, project ownership, timestamps
+  ├── PostgreSQL   users, project ownership, timestamps
   ├── DATA_DIR     source files, assets, fonts, project state, outputs
   └── Toolchains   LaTeX / BibTeX / Biber / MakeIndex / LilyPond
 ```
@@ -92,14 +92,14 @@ A typical session follows this sequence:
 6. Generated files are written to the project's `output/` directory and sent
    back to the browser for preview or download.
 
-MariaDB stores account and project index data. The filesystem stores the actual
+PostgreSQL stores account and project index data. The filesystem stores the actual
 project content, so a complete backup must include both the database and
 `DATA_DIR`.
 
 ## Requirements
 
 - Node.js 24 or later.
-- MariaDB.
+- PostgreSQL 17 or later.
 - A LaTeX distribution for LaTeX compilation.
 - LilyPond for score compilation.
 
@@ -120,24 +120,25 @@ passwords:
 
 ```sh
 cp .env.example .env
-for name in IRIS_SECRET DB_PASSWORD MARIADB_ROOT_PASSWORD; do
+for name in IRIS_SECRET DB_PASSWORD POSTGRES_ADMIN_PASSWORD; do
   printf '%s=%s\n' "$name" "$(openssl rand -hex 32)"
 done
 ```
 
 Replace the corresponding blank lines in `.env` with the three generated lines.
 Iris refuses to start without a non-default session secret and application
-database password; Compose also requires the MariaDB root password.
+database password. Compose additionally requires the PostgreSQL administrator
+password, which is not exposed to the application container.
 
-Start MariaDB with Docker Compose:
+Start PostgreSQL with Docker Compose:
 
 ```sh
-docker compose up -d mariadb
+docker compose up -d postgres
 ```
 
 The non-secret database settings in `.env.example` match the development
 database exposed by the Compose service. The published database port is bound
-to localhost only. Iris creates or updates its tables during startup.
+to localhost only. Iris applies pending versioned migrations during startup.
 
 Start the application:
 
@@ -156,22 +157,19 @@ local administrator account with:
 
 Save that password immediately. Only its Argon2id hash is stored.
 
-### Using an existing MariaDB server
+### Using an existing PostgreSQL server
 
 Create a database and a dedicated user, then update the `DB_*` values in `.env`:
 
 ```sql
-CREATE DATABASE IF NOT EXISTS iris
-  CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-CREATE USER IF NOT EXISTS 'iris'@'localhost'
-  IDENTIFIED BY 'replace-with-a-strong-password';
-GRANT ALL PRIVILEGES ON iris.* TO 'iris'@'localhost';
-FLUSH PRIVILEGES;
+CREATE USER iris WITH LOGIN PASSWORD 'replace-with-a-strong-password';
+CREATE DATABASE iris OWNER iris;
 ```
 
-The database user needs permission to create and alter Iris tables. If the
-configured database does not exist, Iris also attempts to create it; that only
-works when the database user has the required server-level permission.
+The commands must be run by a PostgreSQL administrator. The configured database
+must already exist and the application user must own it, or otherwise have
+permission to create and alter tables and indexes. Iris does not create the
+database itself.
 
 ## Running with Docker Compose
 
@@ -179,7 +177,7 @@ Create `.env` and generate the three required secrets:
 
 ```sh
 cp .env.example .env
-for name in IRIS_SECRET DB_PASSWORD MARIADB_ROOT_PASSWORD; do
+for name in IRIS_SECRET DB_PASSWORD POSTGRES_ADMIN_PASSWORD; do
   printf '%s=%s\n' "$name" "$(openssl rand -hex 32)"
 done
 ```
@@ -192,13 +190,13 @@ docker compose up --build
 ```
 
 The application is available at
-[http://localhost:3000](http://localhost:3000). MariaDB data and project files
-are stored in the named volumes `mariadb-data` and `project-data`. Both
+[http://localhost:3000](http://localhost:3000). PostgreSQL data and project files
+are stored in the named volumes `postgres-data` and `project-data`. Both
 published ports listen on localhost only; place a reverse proxy on the same host
 in front of Iris when exposing it externally.
 
-MariaDB initialization variables only apply when the data directory is empty.
-If `mariadb-data` already exists, update the existing database user's password
+PostgreSQL initialization variables only apply when the data directory is empty.
+If `postgres-data` already exists, update the existing database user's password
 before changing `DB_PASSWORD`. For disposable development data, you can instead
 recreate the volume with `docker compose down -v`, which permanently deletes
 the database and project volumes.
@@ -387,15 +385,17 @@ already present in the process environment.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `DB_HOST` | `127.0.0.1` | MariaDB host. |
-| `DB_PORT` | `3306` | MariaDB port. |
-| `DB_USER` | `iris` | MariaDB user. |
-| `DB_PASSWORD` | none | Required non-default MariaDB application password. |
-| `DB_NAME` | `iris` | MariaDB database. |
-| `DB_CONNECT_TIMEOUT_MS` | `5000` | Connection and acquisition timeout. |
+| `DB_HOST` | `127.0.0.1` | PostgreSQL host. |
+| `DB_PORT` | `5432` | PostgreSQL port. |
+| `DB_USER` | `iris` | PostgreSQL user. |
+| `DB_PASSWORD` | none | Required non-default PostgreSQL application password. |
+| `DB_NAME` | `iris` | PostgreSQL database. |
+| `DB_CONNECT_TIMEOUT_MS` | `5000` | PostgreSQL connection timeout. |
 
-`MARIADB_ROOT_PASSWORD` is also required by the supplied Compose configuration
-and is used only to initialize its MariaDB service.
+`POSTGRES_ADMIN_PASSWORD` is also required by the supplied Compose configuration
+and initializes the PostgreSQL `postgres` account. A startup script uses
+`DB_PASSWORD` to create `iris` as `NOSUPERUSER`, `NOCREATEDB`, and `NOCREATEROLE`.
+The web application receives only the restricted `iris` credential.
 
 ### Compilers
 
@@ -433,7 +433,7 @@ DATA_DIR/
 it does not duplicate source file contents. Uploaded assets and fonts remain
 ordinary files.
 
-Back up MariaDB and `DATA_DIR` together. The database records project ownership
+Back up PostgreSQL and `DATA_DIR` together. The database records project ownership
 and absolute storage paths, while the filesystem contains the data itself.
 
 ## Security notes
@@ -459,8 +459,8 @@ For a production deployment, also:
 
 - use HTTPS and set `COOKIE_SECURE=true`;
 - place Iris behind a properly configured reverse proxy;
-- generate unique `DB_PASSWORD` and `MARIADB_ROOT_PASSWORD` values;
-- restrict MariaDB to the application network instead of publishing it;
+- generate unique `DB_PASSWORD` and `POSTGRES_ADMIN_PASSWORD` values;
+- restrict PostgreSQL to the application network instead of publishing it;
 - keep session, database, and OIDC secrets outside version control; and
 - back up and test restoration of both persistence layers.
 
@@ -472,12 +472,26 @@ Run the test suite with:
 npm test
 ```
 
+Database migrations live in `db/migrations/` and are applied atomically at
+startup. Applied filenames and SHA-256 checksums are recorded in
+`schema_migrations`; never edit a migration that has already shipped—add the
+next numbered SQL file instead.
+
+The PostgreSQL integration test creates and removes an isolated schema in a
+real test database. The configured user therefore needs `CREATE` permission on
+that database:
+
+```sh
+TEST_DATABASE_URL=postgresql://iris:password@127.0.0.1:5432/iris \
+  npm run test:integration
+```
+
 Repository layout:
 
 ```text
 public/   browser UI and frontend assets
 src/      Node.js HTTP server, API, persistence, and compiler orchestration
-db/       reference SQL schema
+db/       versioned PostgreSQL migrations
 test/     Node.js test suite
 data/     local project data, excluded from Git
 ```
