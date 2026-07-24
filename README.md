@@ -1,5 +1,7 @@
 <h1 align="center">
-  <img alt="" src="branding/iris_logo.svg" width="240" margin="25px">
+  <img alt="" src="branding/iris_logo.svg" width="240">
+  <br>
+  <sub>&nbsp;</sub>
   <br>
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="branding/iris_text_logo_w.svg" width="160">
@@ -9,9 +11,10 @@
 </h1>
 
 LaTeX produces gorgeous typography, and LilyPond does the same for engraved
-music. The price of admission is gigabytes of toolchain installed on every
-machine where you want to compile a source and, however long I searched, I
-never found a good web editor for LilyPond that handled compilation, font
+music and I use and love them both. But working with both usually means
+juggling more than one editor, and the price of admission is gigabytes of
+toolchain installed on every machine where you want to compile a source. In the
+end, I never found a good web editor for LilyPond that handled compilation, font
 management, and preview all from a browser tab (and could run on a server of my
 own).
 
@@ -499,5 +502,5 @@ And yes — Iris was vibe coded, though *agentic coding* is the more honest name
 for it. That label gets dismissed a lot, and usually unfairly: done carelessly
 it shows, but done with care it is simply another way to write software. This
 codebase is reviewed, cross-checked across more than one model, and tested. And,
-not least, it is used by me — who, however small the need, is exactly the person
+not least, it is used by me — who, for what it's worth, is exactly the person
 who wanted it to exist.
