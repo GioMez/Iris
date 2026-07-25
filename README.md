@@ -453,6 +453,15 @@ in the database, so it can change without moving any data. `projects.storage_pat
 records the location relative to `DATA_DIR`, which keeps a dump restorable next
 to a filesystem backup mounted at a different path.
 
+Each source file also has a stable identity in `project_files`: a UUIDv7 that
+survives renames and moves, so history can be keyed to a file rather than to its
+path. The database is authoritative for this identity; on every save the server
+reconciles the tree against the ledger, updating a row's path on a rename and
+soft-deleting a removed file so its history is never erased. The bytes on disk
+continue to be written by path — the ledger tracks identity, it does not move
+files. A project's files are populated in the ledger on its first save after this
+schema is applied.
+
 Back up PostgreSQL and `DATA_DIR` together: the database holds accounts,
 ownership and the audit trail, while the filesystem holds the content itself.
 

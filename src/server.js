@@ -11,6 +11,7 @@ const { loadDotEnv } = require("./env");
 const { uuidv7, isUuid, UUID_PATTERN } = require("./ids");
 const { lifecycleGate, healthStatus, isMutatingMethod, HEALTH_PATH } = require("./lifecycle");
 const { recordAuditEvent } = require("./audit");
+const { collectProjectFiles, reconcileProjectFiles } = require("./project-files");
 const { projectStorageKey, resolveProjectStorageDir, relocateProjectStorage } = require("./project-storage");
 const { createZip, extractZip } = require("./zip");
 
@@ -1073,6 +1074,52 @@ async function getProject(req, res, user, id) {
   json(res, 200, { id: row.id, ...data });
 }
 
+// Reconciles the file-identity ledger against the tree about to be written and
+// stamps each source file node with its canonical UUIDv7 id, so the persisted
+// manifest carries the stable identity. Runs before the manifest is written; it
+// tracks identity only and never moves files on disk.
+async function syncProjectFiles(projectId, data) {
+  const nodes = data && data.project && Array.isArray(data.project.nodes) ? data.project.nodes : [];
+  const entries = collectProjectFiles(nodes);
+  const incoming = entries.map((entry) => ({ nodeId: entry.nodeId, path: entry.path, kind: entry.kind }));
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query(
+      "SELECT id, client_ref, path, kind FROM project_files WHERE project_id = $1 AND deleted_at IS NULL ORDER BY created_at, id FOR UPDATE",
+      [projectId]
+    );
+    const plan = reconcileProjectFiles(rows, incoming, { generateId: uuidv7 });
+    // Free paths before they are reused: soft-deletes and renames run before
+    // inserts so the live-path unique index never sees a transient collision.
+    for (const id of plan.softDeletes) {
+      await client.query(
+        "UPDATE project_files SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = $1",
+        [id]
+      );
+    }
+    for (const update of plan.updates) {
+      await client.query(
+        "UPDATE project_files SET path = $2, kind = $3, updated_at = CURRENT_TIMESTAMP WHERE id = $1",
+        [update.id, update.path, update.kind]
+      );
+    }
+    for (const insert of plan.inserts) {
+      await client.query(
+        "INSERT INTO project_files (id, project_id, client_ref, path, kind) VALUES ($1, $2, $3, $4, $5)",
+        [insert.id, projectId, insert.client_ref, insert.path, insert.kind]
+      );
+    }
+    await client.query("COMMIT");
+    entries.forEach((entry, index) => { entry.node.id = plan.resolved[index].canonicalId; });
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 async function createProject(req, res, user) {
   const body = await readBody(req);
   const name = cleanName(body.name);
@@ -1088,11 +1135,21 @@ async function createProject(req, res, user) {
   data.lilypondFormat = data.projectType === "lilypond" ? normalizeLilypondFormat(data.lilypondFormat) : "pdf";
   data.createdAt = now;
   data.updatedAt = now;
-  await writeProjectFile(storagePath, data);
+  // The project row must exist before the ledger references it, and the manifest
+  // must be written after ids are stamped. On any failure the whole project is
+  // rolled back so a half-created project never lingers.
   await db.query(
     "INSERT INTO projects (id, user_id, name, storage_path) VALUES ($1, $2, $3, $4)",
     [id, user.sub, name, storageKey]
   );
+  try {
+    await syncProjectFiles(id, data);
+    await writeProjectFile(storagePath, data);
+  } catch (err) {
+    await db.query("DELETE FROM projects WHERE id = $1", [id]).catch(() => {});
+    await fs.rm(storagePath, { recursive: true, force: true }).catch(() => {});
+    throw err;
+  }
   await audit({
     ...sessionActor(req, user),
     action: "project.created",
@@ -1123,6 +1180,7 @@ async function updateProject(req, res, user, id) {
   }
   data.createdAt = toMillis(row.created_at);
   data.updatedAt = Date.now();
+  await syncProjectFiles(id, data);
   await writeProjectFile(row.storageDir, data);
   await db.query("UPDATE projects SET name = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 AND user_id = $3", [name, id, user.sub]);
   json(res, 200, {
@@ -1267,12 +1325,16 @@ async function importProjectArchive(req, res, user, url) {
     } catch {
       throw invalidProjectArchive();
     }
-    await writeProjectManifest(storagePath, data);
+    // The project row precedes the ledger it is referenced by; the ledger sync
+    // stamps canonical ids into the tree, then the manifest is persisted with them.
     await db.query(
       "INSERT INTO projects (id, user_id, name, storage_path) VALUES ($1, $2, $3, $4)",
       [id, user.sub, name, storageKey]
     );
+    await syncProjectFiles(id, data);
+    await writeProjectManifest(storagePath, data);
   } catch (err) {
+    await db.query("DELETE FROM projects WHERE id = $1", [id]).catch(() => {});
     await fs.rm(storagePath, { recursive: true, force: true }).catch(() => {});
     throw err;
   }
@@ -1767,6 +1829,7 @@ async function compileProject(req, res, user, id) {
   data.lilypondFormat = outputFormat;
   data.createdAt = toMillis(row.created_at);
   data.updatedAt = Date.now();
+  await syncProjectFiles(id, data);
   await writeProjectFile(row.storageDir, data);
   await db.query("UPDATE projects SET name = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 AND user_id = $3", [name, id, user.sub]);
 

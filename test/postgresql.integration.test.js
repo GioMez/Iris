@@ -17,6 +17,7 @@ const ALL_MIGRATIONS = [
   "003_audit_events.sql",
   "004_uuidv7_identifiers.sql",
   "005_consolidation_invariants.sql",
+  "006_project_files.sql",
 ];
 const silentLogger = { log() {}, warn() {}, error() {} };
 
@@ -172,6 +173,59 @@ test("the audit trail outlives the accounts it describes", { skip: !connectionSt
     metadata: { name: "Score" },
   });
   assert.equal(events.rows[1].actor_label, "unknown");
+});
+
+test("the file-identity ledger enforces its invariants", { skip: !connectionString }, async (t) => {
+  const pool = await isolatedSchema(t);
+  await runMigrations(pool);
+  const userId = await insertUser(pool, "gio", "gio@example.org");
+  const projectId = uuidv7();
+  await pool.query(
+    "INSERT INTO projects (id, user_id, name, storage_path) VALUES ($1, $2, $3, $4)",
+    [projectId, userId, "Score", projectStorageKey(projectId)]
+  );
+
+  const insertFile = (id, path, kind = "tex") => pool.query(
+    "INSERT INTO project_files (id, project_id, client_ref, path, kind) VALUES ($1, $2, $3, $4, $5)",
+    [id, projectId, id, path, kind]
+  );
+
+  const fileA = uuidv7();
+  await insertFile(fileA, "main.tex");
+  // A second live file cannot claim the same path.
+  await assert.rejects(insertFile(uuidv7(), "main.tex"), (error) => error.code === "23505");
+
+  // A rename is an update on the same identity, and it frees the old path.
+  await pool.query("UPDATE project_files SET path = 'renamed.tex' WHERE id = $1", [fileA]);
+  const reused = uuidv7();
+  await insertFile(reused, "main.tex");
+  const live = await pool.query(
+    "SELECT id, path FROM project_files WHERE project_id = $1 AND deleted_at IS NULL ORDER BY path",
+    [projectId]
+  );
+  assert.deepEqual(live.rows, [{ id: reused, path: "main.tex" }, { id: fileA, path: "renamed.tex" }]);
+
+  // Soft-deleting frees the path for a genuinely new file without erasing history.
+  await pool.query("UPDATE project_files SET deleted_at = CURRENT_TIMESTAMP WHERE id = $1", [fileA]);
+  const successor = uuidv7();
+  await insertFile(successor, "renamed.tex");
+  const total = await pool.query("SELECT COUNT(*) AS n FROM project_files WHERE project_id = $1", [projectId]);
+  assert.equal(Number(total.rows[0].n), 3);
+
+  // Malformed and unsafe paths are refused.
+  for (const badPath of ["", "/abs.tex", "a/../b.tex"]) {
+    await assert.rejects(insertFile(uuidv7(), badPath), (error) => error.code === "23514");
+  }
+  // A malformed id is refused by the uuid type.
+  await assert.rejects(
+    pool.query("INSERT INTO project_files (id, project_id, path) VALUES ($1, $2, $3)", ["not-a-uuid", projectId, "x.tex"]),
+    (error) => error.code === "22P02"
+  );
+
+  // Deleting the project removes its files.
+  await pool.query("DELETE FROM projects WHERE id = $1", [projectId]);
+  const orphans = await pool.query("SELECT COUNT(*) AS n FROM project_files");
+  assert.equal(Number(orphans.rows[0].n), 0);
 });
 
 test("upgrading a pre-002 database relocates project data", { skip: !connectionString }, async (t) => {
