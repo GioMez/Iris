@@ -21,7 +21,7 @@ async function main() {
     console.log(`Relocating project storage into ${dataDir}`);
     const summary = await relocateProjectStorage({ db, dataDir });
     console.log(
-      `Done: ${summary.moved} moved, ${summary.alreadyRelocated} already in place, ${summary.missing} without data on disk.`
+      `Done: ${summary.moved} moved, ${summary.alreadyRelocated} already in place, ${summary.missing} missing and left pending.`
     );
   } finally {
     await db.end().catch(() => {});

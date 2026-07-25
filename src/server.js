@@ -9,6 +9,7 @@ const argon2 = require("argon2");
 const { createDatabase } = require("./database");
 const { loadDotEnv } = require("./env");
 const { uuidv7, isUuid, UUID_PATTERN } = require("./ids");
+const { lifecycleGate, healthStatus, isMutatingMethod, HEALTH_PATH } = require("./lifecycle");
 const { recordAuditEvent } = require("./audit");
 const { projectStorageKey, resolveProjectStorageDir, relocateProjectStorage } = require("./project-storage");
 const { createZip, extractZip } = require("./zip");
@@ -22,7 +23,7 @@ const DB_USER = process.env.DB_USER || "iris";
 const DB_PASSWORD = requiredSecret("DB_PASSWORD", process.env.DB_PASSWORD, ["iris"]);
 const DB_NAME = process.env.DB_NAME || "iris";
 const DB_CONNECT_TIMEOUT = Number(process.env.DB_CONNECT_TIMEOUT_MS || 5000);
-const DATA_DIR = path.resolve(process.env.DATA_DIR || "./data/projects");
+const DATA_DIR = path.resolve(process.env.DATA_DIR || "./data");
 const PUBLIC_DIR = path.resolve(process.env.PUBLIC_DIR || "./public");
 const TEX_BIN_PATH = process.env.TEX_BIN_PATH || "";
 const TEX_PATH_LOCKED = String(process.env.TEX_PATH_LOCKED || "false") === "true";
@@ -34,6 +35,13 @@ const SECRET = requiredSecret("IRIS_SECRET", process.env.IRIS_SECRET, [
 ]);
 const COOKIE_SECURE = String(process.env.COOKIE_SECURE || "false") === "true";
 const TRUST_PROXY = String(process.env.TRUST_PROXY || "false") === "true";
+// Presence of this file puts Iris into maintenance mode without a restart: the
+// operator creates it to open a consistent backup or restore window and removes
+// it to reopen writes. Kept at the DATA_DIR root, a sibling of projects/.
+const MAINTENANCE_FILE = process.env.MAINTENANCE_FILE || path.join(DATA_DIR, ".maintenance");
+// How long a graceful shutdown waits for in-flight requests before forcing the
+// remaining connections closed.
+const SHUTDOWN_TIMEOUT_MS = positiveIntEnv("SHUTDOWN_TIMEOUT_MS", 15000);
 const MAX_BODY = Number(process.env.MAX_BODY_MB || 25) * 1024 * 1024;
 const COMPILE_TIMEOUT_MS = Number(process.env.COMPILE_TIMEOUT_MS || 30000);
 const COMPILE_LOG_LIMIT = Number(process.env.COMPILE_LOG_LIMIT || 1024 * 1024);
@@ -60,6 +68,14 @@ const PDFJS_BUILD_DIR = path.join(path.dirname(require.resolve("pdfjs-dist/packa
 let db;
 let oauthDiscoveryCache = null;
 let initialAdminCredentials = null;
+let shuttingDown = false;
+let inFlight = 0;
+let inFlightMutations = 0;
+
+// Cheap, synchronous check on the mutation path, which is far rarer than reads.
+function maintenanceActive() {
+  return fsSync.existsSync(MAINTENANCE_FILE);
+}
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -2015,9 +2031,43 @@ async function serveStatic(req, res, url) {
   res.end(body);
 }
 
+function healthPayload() {
+  return {
+    status: healthStatus({ shuttingDown, maintenance: maintenanceActive() }),
+    maintenance: maintenanceActive(),
+    pendingWrites: inFlightMutations,
+  };
+}
+
 async function handle(req, res) {
   const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+  inFlight += 1;
+  // Counted only once the request passes the gate, so refused mutations during a
+  // maintenance window do not appear as pending writes the operator waits on.
+  let countedWrite = false;
+  res.on("close", () => {
+    inFlight -= 1;
+    if (countedWrite) inFlightMutations -= 1;
+  });
   try {
+    if (url.pathname === HEALTH_PATH) return json(res, 200, healthPayload());
+
+    const gate = lifecycleGate({
+      method: req.method,
+      pathname: url.pathname,
+      shuttingDown,
+      maintenance: maintenanceActive(),
+    });
+    if (gate) {
+      if (url.pathname.startsWith("/api/")) return errorJson(res, gate.status, gate.code);
+      return text(res, gate.status, gate.code === "MAINTENANCE_MODE" ? "Iris is in maintenance" : "Iris is shutting down");
+    }
+
+    if (isMutatingMethod(req.method) && url.pathname.startsWith("/api/")) {
+      countedWrite = true;
+      inFlightMutations += 1;
+    }
+
     if (url.pathname.startsWith("/api/")) return await handleApi(req, res, url);
     if (req.method !== "GET" && req.method !== "HEAD") return text(res, 405, "Method not allowed");
     return await serveStatic(req, res, url);
@@ -2031,9 +2081,33 @@ async function handle(req, res) {
   }
 }
 
+function startGracefulShutdown(signal, server) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`Received ${signal}; refusing new work and draining in-flight requests`);
+  server.close(() => {});
+  if (typeof server.closeIdleConnections === "function") server.closeIdleConnections();
+
+  const deadline = Date.now() + SHUTDOWN_TIMEOUT_MS;
+  const finish = async () => {
+    if (inFlight > 0 && typeof server.closeAllConnections === "function") server.closeAllConnections();
+    await db.end().catch(() => {});
+    console.log("Shutdown complete");
+    process.exit(0);
+  };
+  const tick = () => {
+    if (inFlight <= 0 || Date.now() >= deadline) return void finish();
+    setTimeout(tick, 100);
+  };
+  tick();
+}
+
 if (require.main === module) initDb()
   .then(() => {
-    http.createServer(handle).listen(PORT, () => {
+    const server = http.createServer(handle);
+    process.on("SIGTERM", () => startGracefulShutdown("SIGTERM", server));
+    process.on("SIGINT", () => startGracefulShutdown("SIGINT", server));
+    server.listen(PORT, () => {
       console.log(`Iris listening on http://localhost:${PORT}`);
       console.log(`Static files dir: ${PUBLIC_DIR}`);
       console.log(`Projects data dir: ${DATA_DIR}`);

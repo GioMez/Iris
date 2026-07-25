@@ -5,6 +5,22 @@ const { Pool } = require("pg");
 
 const DEFAULT_MIGRATIONS_DIR = path.resolve(__dirname, "../db/migrations");
 const MIGRATION_FILE = /^\d+_[a-z0-9_-]+\.sql$/;
+const MINIMUM_POSTGRES_MAJOR = 18;
+
+// A minimum, not an exact match: a newer major is allowed until one is proven
+// incompatible, so a routine database upgrade never blocks the application from
+// starting. The floor stays at 18 because that is the baseline the schema and
+// its tests are exercised against.
+function assertSupportedPostgresVersion(versionNumber) {
+  const numeric = Number(versionNumber);
+  const major = Number.isInteger(numeric) && numeric > 0 ? Math.floor(numeric / 10000) : null;
+  if (major === null || major < MINIMUM_POSTGRES_MAJOR) {
+    throw new Error(
+      `PostgreSQL ${MINIMUM_POSTGRES_MAJOR} or later is required; server reported version number ${versionNumber}`
+    );
+  }
+  return major;
+}
 
 async function readMigrations(migrationsDir) {
   const names = (await fs.readdir(migrationsDir))
@@ -71,7 +87,8 @@ async function createDatabase(options) {
   pool.on("error", (err) => console.error("Unexpected PostgreSQL pool error", err));
 
   try {
-    await pool.query("SELECT 1");
+    const version = await pool.query("SHOW server_version_num");
+    assertSupportedPostgresVersion(version.rows[0] && version.rows[0].server_version_num);
     await runMigrations(pool, options.migrationsDir || DEFAULT_MIGRATIONS_DIR);
     return pool;
   } catch (err) {
@@ -81,6 +98,7 @@ async function createDatabase(options) {
 }
 
 module.exports = {
+  assertSupportedPostgresVersion,
   createDatabase,
   readMigrations,
   runMigrations,

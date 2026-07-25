@@ -16,6 +16,7 @@ const ALL_MIGRATIONS = [
   "002_project_storage_relative.sql",
   "003_audit_events.sql",
   "004_uuidv7_identifiers.sql",
+  "005_consolidation_invariants.sql",
 ];
 const silentLogger = { log() {}, warn() {}, error() {} };
 
@@ -27,7 +28,7 @@ async function isolatedSchema(t) {
   await admin.query(`CREATE SCHEMA ${schema}`);
   t.after(async () => {
     await pool.end();
-    await admin.query(`DROP SCHEMA ${schema} CASCADE`);
+    await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
     await admin.end();
   });
   return pool;
@@ -87,6 +88,13 @@ test("PostgreSQL migrations enforce Iris data invariants", { skip: !connectionSt
       (error) => error.code === "23514"
     );
   }
+  await assert.rejects(
+    pool.query(
+      "INSERT INTO projects (id, user_id, name, storage_path) VALUES ($1, $2, $3, $4)",
+      [uuidv7(), userId, "Mismatched", projectStorageKey(projectId)]
+    ),
+    (error) => error.code === "23514"
+  );
   // The uuid type rejects malformed identifiers without a CHECK constraint.
   await assert.rejects(
     pool.query(
@@ -133,6 +141,22 @@ test("the audit trail outlives the accounts it describes", { skip: !connectionSt
     pool.query(
       "INSERT INTO audit_events (action, actor_label, target_type, metadata) VALUES ('user.created', 'lucia', 'user', $1::jsonb)",
       ['"a string"']
+    ),
+    (error) => error.code === "23514"
+  );
+  for (const metadata of [{ nested: { value: 1 } }, { list: [1, 2] }, { empty: null }]) {
+    await assert.rejects(
+      pool.query(
+        "INSERT INTO audit_events (action, actor_label, target_type, metadata) VALUES ('user.created', 'lucia', 'user', $1::jsonb)",
+        [JSON.stringify(metadata)]
+      ),
+      (error) => error.code === "23514"
+    );
+  }
+  await assert.rejects(
+    pool.query(
+      "INSERT INTO audit_events (action, actor_label, target_type, metadata) VALUES ('user.created', 'lucia', 'user', $1::jsonb)",
+      [JSON.stringify({ value: "x".repeat(9000) })]
     ),
     (error) => error.code === "23514"
   );
@@ -261,8 +285,12 @@ test("migration 004 rewrites every identifier and its references", { skip: !conn
     pool.query("INSERT INTO projects (id, user_id, name, storage_path) VALUES ($1, $2, 'x', '/absolute')", [uuidv7(), user.id]),
     (error) => error.code === "23514"
   );
+  const orphanProjectId = uuidv7();
   await assert.rejects(
-    pool.query("INSERT INTO projects (id, user_id, name, storage_path) VALUES ($1, $2, 'x', 'projects/x')", [uuidv7(), uuidv7()]),
+    pool.query(
+      "INSERT INTO projects (id, user_id, name, storage_path) VALUES ($1, $2, 'x', $3)",
+      [orphanProjectId, uuidv7(), projectStorageKey(orphanProjectId)]
+    ),
     (error) => error.code === "23503"
   );
 

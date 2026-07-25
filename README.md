@@ -110,9 +110,8 @@ database and `DATA_DIR`.
 ## Requirements
 
 - Node.js 24 or later.
-- PostgreSQL 17 or later. The supplied Compose file ships PostgreSQL 18; keep the
-  development and deployment majors aligned, and note that raising the major on an
-  existing volume requires `pg_upgrade` or a dump and restore.
+- PostgreSQL 18 or later. 18 is the baseline the schema is tested against; a newer
+  major is accepted and does not block startup. The supplied Compose file ships 18.
 - A LaTeX distribution for LaTeX compilation.
 - LilyPond for score compilation.
 
@@ -394,6 +393,8 @@ already present in the process environment.
 | `MAX_BODY_MB` | `25` | Maximum JSON request body size in MiB. |
 | `COOKIE_SECURE` | `false` | Set `true` when Iris is served over HTTPS. |
 | `TRUST_PROXY` | `false` | Set `true` only behind a reverse proxy that rewrites `X-Forwarded-For`, so audit events record the client address instead of the proxy. |
+| `MAINTENANCE_FILE` | `DATA_DIR/.maintenance` | Path whose presence puts Iris into maintenance mode: writes are refused, reads continue. |
+| `SHUTDOWN_TIMEOUT_MS` | `15000` | How long a graceful shutdown waits for in-flight requests before forcing connections closed. |
 
 ### Database
 
@@ -427,8 +428,8 @@ above and listed together in [`.env.example`](.env.example).
 
 ## Persistence and backups
 
-Each project is stored below `DATA_DIR` in a user-specific directory. Its layout
-is broadly:
+Each project is stored below `DATA_DIR` in a directory derived exclusively from
+its immutable project id. Its layout is broadly:
 
 ```text
 DATA_DIR/
@@ -454,8 +455,44 @@ to a filesystem backup mounted at a different path.
 
 Back up PostgreSQL and `DATA_DIR` together: the database holds accounts,
 ownership and the audit trail, while the filesystem holds the content itself.
-Restore both from the same point in time, then start Iris and confirm that the
-project list matches.
+
+### Maintenance window for backup and restore
+
+A consistent backup requires that no write lands between the database dump and
+the filesystem copy. Iris provides two mechanisms so the operator controls that
+window; it intentionally does not prescribe a dump, snapshot or copy tool.
+
+**Maintenance mode** is a reversible, no-restart window. When the file named by
+`MAINTENANCE_FILE` (default `DATA_DIR/.maintenance`) exists, every request that
+would write is refused with `503`, while reads keep working. Create the file,
+wait for in-flight writes to drain, take the backup, then remove it:
+
+```sh
+touch "$DATA_DIR/.maintenance"
+# Wait until no write is still in progress:
+while [ "$(curl -sf localhost:3000/api/health | jq .pendingWrites)" != "0" ]; do sleep 1; done
+# Back up both layers at a mutually consistent point, then reopen writes:
+rm "$DATA_DIR/.maintenance"
+```
+
+`GET /api/health` needs no authentication and reports
+`{ "status", "maintenance", "pendingWrites" }`, so a script or load balancer can
+observe the state. `pendingWrites` counts write requests still being served; once
+it reaches `0` inside the window, the two layers can be copied consistently.
+
+**Graceful shutdown** covers a clean stop, which is the safe way to restore.
+On `SIGTERM` or `SIGINT` Iris stops accepting requests, waits up to
+`SHUTDOWN_TIMEOUT_MS` for in-flight requests to finish, closes the database pool
+and exits. Restore both layers while the process is down, then start Iris: it
+reconciles pending migrations and relocations on startup.
+
+A backup taken inside maintenance mode may include the `.maintenance` marker. If
+it does, a restored instance starts in maintenance — a safe default that lets you
+verify the restore before reopening writes. Remove the marker to resume.
+
+Keep Iris stopped until both persistence layers have been handled. After a
+restore, run `npm run migrate:storage` while the application is still stopped,
+then start Iris and verify that every project listed by the application opens.
 
 Databases created before this layout stored absolute paths under a per-user
 directory. Migration `002` rewrites those rows and Iris relocates the
@@ -466,9 +503,12 @@ run the same step with the server stopped:
 npm run migrate:storage
 ```
 
-It is safe to repeat and resumes an interrupted run. If a project has data at
-both the old and the new location it stops and names the project rather than
-guessing which copy to keep.
+It is safe to repeat. A missing legacy directory remains pending so a temporarily
+unavailable mount can be retried later. Same-filesystem moves are atomic; the
+cross-filesystem fallback compares directory structure, file sizes and SHA-256
+content hashes before removing the source. If an interrupted copy leaves data at
+both locations, the command stops and names the project for manual comparison
+rather than guessing which copy to keep.
 
 ## Audit trail
 

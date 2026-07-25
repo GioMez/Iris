@@ -48,6 +48,9 @@ test("Compose requires secrets and does not expose default credentials", () => {
   assert.match(compose, /DB_PASSWORD: "\$\{DB_PASSWORD:\?/);
   assert.match(compose, /POSTGRES_PASSWORD: "\$\{POSTGRES_ADMIN_PASSWORD:\?/);
   assert.match(compose, /pg_isready.*-U.*postgres.*-d.*postgres/);
+  assert.match(compose, /image:\s*postgres:18\s*$/m);
+  assert.match(compose, /postgres-data:\/var\/lib\/postgresql\s*$/m);
+  assert.doesNotMatch(compose, /postgres-data:\/var\/lib\/postgresql\/data\s*$/m);
   assert.doesNotMatch(compose, /POSTGRES_PASSWORD:\s*(iris|postgres)\s*$/m);
   assert.match(postgresInit, /CREATE ROLE iris WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE/);
   assert.match(postgresInit, /CREATE DATABASE iris OWNER iris/);
