@@ -23,6 +23,8 @@ services:
       LILYPOND_PATH_LOCKED: "true"
       COMPILE_TIMEOUT_MS: 30000
       COOKIE_SECURE: "false"
+      # Enable only behind a reverse proxy that rewrites X-Forwarded-For.
+      TRUST_PROXY: "false"
       # OAuth 2.0 / OIDC SSO, for example Authentik.
       # OAUTH_ISSUER_URL: https://auth.example.org/application/o/iris
       # OAUTH_AUTHORIZATION_URL: https://auth.example.org/application/o/authorize/
@@ -54,7 +56,10 @@ services:
       - no-new-privileges:true
 
   postgres:
-    image: postgres:17-bookworm
+    # Iris runs on PostgreSQL 17 or later. Bumping this major version on an
+    # existing postgres-data volume requires pg_upgrade or a dump and restore:
+    # the server refuses to start on a data directory written by an older major.
+    image: postgres:18
     restart: unless-stopped
     environment:
       POSTGRES_DB: postgres

@@ -17,6 +17,7 @@ RUN npm ci --omit=dev --omit=optional
 
 COPY src ./src
 COPY db/migrations ./db/migrations
+COPY scripts ./scripts
 COPY public ./public
 
 RUN mkdir -p /app/data/projects && chown -R node:node /app/data

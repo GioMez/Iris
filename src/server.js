@@ -7,6 +7,10 @@ const { spawn } = require("node:child_process");
 const { URL } = require("node:url");
 const argon2 = require("argon2");
 const { createDatabase } = require("./database");
+const { loadDotEnv } = require("./env");
+const { uuidv7, isUuid, UUID_PATTERN } = require("./ids");
+const { recordAuditEvent } = require("./audit");
+const { projectStorageKey, resolveProjectStorageDir, relocateProjectStorage } = require("./project-storage");
 const { createZip, extractZip } = require("./zip");
 
 loadDotEnv(path.resolve(".env"));
@@ -29,6 +33,7 @@ const SECRET = requiredSecret("IRIS_SECRET", process.env.IRIS_SECRET, [
   "change-this-secret-in-production",
 ]);
 const COOKIE_SECURE = String(process.env.COOKIE_SECURE || "false") === "true";
+const TRUST_PROXY = String(process.env.TRUST_PROXY || "false") === "true";
 const MAX_BODY = Number(process.env.MAX_BODY_MB || 25) * 1024 * 1024;
 const COMPILE_TIMEOUT_MS = Number(process.env.COMPILE_TIMEOUT_MS || 30000);
 const COMPILE_LOG_LIMIT = Number(process.env.COMPILE_LOG_LIMIT || 1024 * 1024);
@@ -70,23 +75,6 @@ const MIME = {
   ".webp": "image/webp",
   ".ico": "image/x-icon",
 };
-
-function loadDotEnv(file) {
-  if (!fsSync.existsSync(file)) return;
-  const lines = fsSync.readFileSync(file, "utf8").split(/\r?\n/);
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-    const i = trimmed.indexOf("=");
-    if (i < 0) continue;
-    const key = trimmed.slice(0, i).trim();
-    let value = trimmed.slice(i + 1).trim();
-    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-      value = value.slice(1, -1);
-    }
-    if (key && process.env[key] == null) process.env[key] = value;
-  }
-}
 
 function positiveIntEnv(name, fallback) {
   const value = Number(process.env[name]);
@@ -197,6 +185,10 @@ function makeToken(user, authMethod = "local") {
 function verifyToken(token) {
   const payload = verifySignedJson(token);
   if (!payload || !payload.exp) return null;
+  // Sessions issued before migration 004 carry a numeric subject. Rejecting them
+  // here turns a stale cookie into a clean re-login instead of a malformed uuid
+  // reaching PostgreSQL.
+  if (!isUuid(payload.sub)) return null;
   return payload;
 }
 
@@ -250,6 +242,30 @@ function requestBaseUrl(req) {
 
 function oauthRedirectUri(req) {
   return OAUTH_REDIRECT_URI || `${requestBaseUrl(req)}/api/auth/sso/callback`;
+}
+
+// x-forwarded-for is caller-controlled, so it is honoured only where the
+// deployment declares that a trusted proxy rewrites it.
+function clientIp(req) {
+  if (TRUST_PROXY) {
+    const forwarded = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
+    if (forwarded) return forwarded;
+  }
+  return req.socket && req.socket.remoteAddress ? req.socket.remoteAddress : null;
+}
+
+// The audit trail records what happened; it must never be the reason a request
+// fails, so a failed write is logged and swallowed.
+async function audit(event) {
+  try {
+    await recordAuditEvent(db, event);
+  } catch (err) {
+    console.error("Unable to record audit event", event && event.action, err.message || err);
+  }
+}
+
+function sessionActor(req, user) {
+  return { actorId: user.sub, actorLabel: user.username || user.email || `user:${user.sub}`, ip: clientIp(req) };
 }
 
 async function oauthEndpoints() {
@@ -346,7 +362,7 @@ async function availableUsername(base) {
   return `${clean.slice(0, 48)}-${crypto.randomBytes(4).toString("hex")}`;
 }
 
-async function userFromOAuthProfile(profile) {
+async function userFromOAuthProfile(profile, ip = null) {
   const { rows } = await db.query(
     "SELECT id, username, email, display_name, role, password_hash FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1",
     [profile.email]
@@ -369,10 +385,19 @@ async function userFromOAuthProfile(profile) {
   const displayName = profile.name || profile.email;
   try {
     const result = await db.query(
-      "INSERT INTO users (username, email, display_name, role, password_hash) VALUES ($1, $2, $3, 'user', NULL) RETURNING id",
-      [username, profile.email, displayName]
+      "INSERT INTO users (id, username, email, display_name, role, password_hash) VALUES ($1, $2, $3, $4, 'user', NULL) RETURNING id",
+      [uuidv7(), username, profile.email, displayName]
     );
     const id = String(result.rows[0].id);
+    await audit({
+      action: "user.created",
+      actorId: id,
+      actorLabel: username,
+      ip,
+      targetType: "user",
+      targetId: id,
+      metadata: { authSource: "oidc", autoRegistered: true, email: profile.email },
+    });
     return { id, username, email: profile.email, display_name: displayName, role: "user", password_hash: null };
   } catch (err) {
     if (err.code !== "23505") throw err;
@@ -395,6 +420,9 @@ async function initDb() {
     connectTimeout: DB_CONNECT_TIMEOUT,
   });
   await fs.mkdir(DATA_DIR, { recursive: true });
+  // Migration 002 rewrote the recorded storage locations: the directories they
+  // now name must hold the project data before the first request is served.
+  await relocateProjectStorage({ db, dataDir: DATA_DIR });
   await seedUsers();
 }
 
@@ -402,11 +430,18 @@ async function seedUsers() {
   const { rows } = await db.query("SELECT COUNT(*) AS n FROM users");
   if (Number(rows[0].n) > 0) return;
   const password = crypto.randomBytes(18).toString("base64url");
-  await db.query(
-    "INSERT INTO users (username, email, display_name, role, password_hash) VALUES ($1, $2, $3, 'admin', $4)",
-    ["admin", "admin@iris.local", "Iris Admin", await hashPassword(password)]
+  const created = await db.query(
+    "INSERT INTO users (id, username, email, display_name, role, password_hash) VALUES ($1, $2, $3, $4, 'admin', $5) RETURNING id",
+    [uuidv7(), "admin", "admin@iris.local", "Iris Admin", await hashPassword(password)]
   );
   initialAdminCredentials = { username: "admin", password };
+  await audit({
+    action: "user.created",
+    actorLabel: "system",
+    targetType: "user",
+    targetId: created.rows[0].id,
+    metadata: { username: "admin", role: "admin", reason: "initial_admin" },
+  });
 }
 
 async function readRequestBuffer(req) {
@@ -970,6 +1005,12 @@ async function buildProjectArchive(storagePath, projectName) {
   return createZip(await collectProjectArchiveEntries(storagePath, projectName));
 }
 
+// storage_path is relative to DATA_DIR; every caller works with the absolute
+// directory, so it is resolved once here.
+function withStorageDir(row) {
+  return { ...row, storageDir: resolveProjectStorageDir(DATA_DIR, row.storage_path) };
+}
+
 async function projectForUser(id, userId) {
   const { rows } = await db.query(
     "SELECT id, name, storage_path, created_at, updated_at FROM projects WHERE id = $1 AND user_id = $2",
@@ -978,7 +1019,7 @@ async function projectForUser(id, userId) {
   if (!rows.length) {
     throw requestError("PROJECT_NOT_FOUND", 404);
   }
-  return rows[0];
+  return withStorageDir(rows[0]);
 }
 
 async function listProjects(req, res, user) {
@@ -990,7 +1031,7 @@ async function listProjects(req, res, user) {
     let fileCount = 0;
     let projectType = "latex";
     try {
-      const manifest = await readProjectManifest(row.storage_path);
+      const manifest = await readProjectManifest(resolveProjectStorageDir(DATA_DIR, row.storage_path));
       fileCount = countFiles(manifest);
       projectType = inferProjectType(manifest);
     } catch {}
@@ -1008,7 +1049,7 @@ async function listProjects(req, res, user) {
 
 async function getProject(req, res, user, id) {
   const row = await projectForUser(id, user.sub);
-  const data = await readProjectFile(row.storage_path);
+  const data = await readProjectFile(row.storageDir);
   if (!data.project) data.project = { name: row.name, nodes: [] };
   data.project.name = row.name;
   data.createdAt = toMillis(row.created_at);
@@ -1019,8 +1060,9 @@ async function getProject(req, res, user, id) {
 async function createProject(req, res, user) {
   const body = await readBody(req);
   const name = cleanName(body.name);
-  const id = crypto.randomBytes(16).toString("hex");
-  const storagePath = path.join(DATA_DIR, String(user.sub), `${id}-${slugify(name)}`);
+  const id = uuidv7();
+  const storageKey = projectStorageKey(id);
+  const storagePath = resolveProjectStorageDir(DATA_DIR, storageKey);
   const now = Date.now();
   const data = body.data && typeof body.data === "object" ? body.data : {};
   data.project = data.project && Array.isArray(data.project.nodes) ? data.project : { nodes: [] };
@@ -1033,8 +1075,15 @@ async function createProject(req, res, user) {
   await writeProjectFile(storagePath, data);
   await db.query(
     "INSERT INTO projects (id, user_id, name, storage_path) VALUES ($1, $2, $3, $4)",
-    [id, user.sub, name, storagePath]
+    [id, user.sub, name, storageKey]
   );
+  await audit({
+    ...sessionActor(req, user),
+    action: "project.created",
+    targetType: "project",
+    targetId: id,
+    metadata: { name, projectType: data.projectType },
+  });
   json(res, 201, {
     project: { id, name, projectType: data.projectType, createdAt: now, updatedAt: now, fileCount: countFiles(data) },
     data: { id, ...data },
@@ -1047,7 +1096,7 @@ async function updateProject(req, res, user, id) {
   const name = body.name == null ? row.name : cleanName(body.name);
   let data;
   if (body.data && typeof body.data === "object") data = body.data;
-  else data = await readProjectFile(row.storage_path);
+  else data = await readProjectFile(row.storageDir);
   data.project = data.project && Array.isArray(data.project.nodes) ? data.project : { nodes: [] };
   data.project.name = name;
   data.projectType = inferProjectType(data);
@@ -1058,7 +1107,7 @@ async function updateProject(req, res, user, id) {
   }
   data.createdAt = toMillis(row.created_at);
   data.updatedAt = Date.now();
-  await writeProjectFile(row.storage_path, data);
+  await writeProjectFile(row.storageDir, data);
   await db.query("UPDATE projects SET name = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 AND user_id = $3", [name, id, user.sub]);
   json(res, 200, {
     project: { id, name, projectType: data.projectType, createdAt: data.createdAt, updatedAt: data.updatedAt, fileCount: countFiles(data) },
@@ -1069,13 +1118,20 @@ async function updateProject(req, res, user, id) {
 async function deleteProject(req, res, user, id) {
   const row = await projectForUser(id, user.sub);
   await db.query("DELETE FROM projects WHERE id = $1 AND user_id = $2", [id, user.sub]);
-  await fs.rm(row.storage_path, { recursive: true, force: true });
+  await fs.rm(row.storageDir, { recursive: true, force: true });
+  await audit({
+    ...sessionActor(req, user),
+    action: "project.deleted",
+    targetType: "project",
+    targetId: id,
+    metadata: { name: row.name },
+  });
   json(res, 200, { ok: true });
 }
 
 async function downloadProjectFile(req, res, user, id, url) {
   const row = await projectForUser(id, user.sub);
-  const file = await resolveProjectFile(row.storage_path, url.searchParams.get("path"));
+  const file = await resolveProjectFile(row.storageDir, url.searchParams.get("path"));
   const fallbackName = file.name.replace(/[^A-Za-z0-9._-]/g, "_") || "download";
   res.writeHead(200, {
     "content-type": file.mimeType,
@@ -1094,7 +1150,7 @@ async function downloadProjectFile(req, res, user, id, url) {
 
 async function downloadProjectArchive(req, res, user, id) {
   const row = await projectForUser(id, user.sub);
-  const archive = await buildProjectArchive(row.storage_path, row.name);
+  const archive = await buildProjectArchive(row.storageDir, row.name);
   const fileName = `${slugify(row.name)}.zip`;
   res.writeHead(200, {
     "content-type": "application/zip",
@@ -1167,8 +1223,9 @@ async function importProjectArchive(req, res, user, url) {
 
   const uploadedName = path.basename(String(url.searchParams.get("filename") || ""), path.extname(String(url.searchParams.get("filename") || "")));
   const name = cleanName((data.project && data.project.name) || uploadedName || "Imported project");
-  const id = crypto.randomBytes(16).toString("hex");
-  const storagePath = path.join(DATA_DIR, String(user.sub), `${id}-${slugify(name)}`);
+  const id = uuidv7();
+  const storageKey = projectStorageKey(id);
+  const storagePath = resolveProjectStorageDir(DATA_DIR, storageKey);
   const now = Date.now();
   try {
     normalizeImportedProject(data, name, now);
@@ -1197,13 +1254,20 @@ async function importProjectArchive(req, res, user, url) {
     await writeProjectManifest(storagePath, data);
     await db.query(
       "INSERT INTO projects (id, user_id, name, storage_path) VALUES ($1, $2, $3, $4)",
-      [id, user.sub, name, storagePath]
+      [id, user.sub, name, storageKey]
     );
   } catch (err) {
     await fs.rm(storagePath, { recursive: true, force: true }).catch(() => {});
     throw err;
   }
 
+  await audit({
+    ...sessionActor(req, user),
+    action: "project.imported",
+    targetType: "project",
+    targetId: id,
+    metadata: { name, projectType: data.projectType, fileCount: countFiles(data) },
+  });
   json(res, 201, {
     project: { id, name, projectType: data.projectType, createdAt: now, updatedAt: now, fileCount: countFiles(data) },
     data: { id, ...data },
@@ -1659,7 +1723,7 @@ async function compileProject(req, res, user, id) {
   const body = await readBody(req);
   const row = await projectForUser(id, user.sub);
   const name = body.name == null ? row.name : cleanName(body.name);
-  const data = body.data && typeof body.data === "object" ? body.data : await readProjectFile(row.storage_path);
+  const data = body.data && typeof body.data === "object" ? body.data : await readProjectFile(row.storageDir);
   data.project = data.project && Array.isArray(data.project.nodes) ? data.project : { nodes: [] };
   data.project.name = name;
   const projectType = inferProjectType(data);
@@ -1687,22 +1751,22 @@ async function compileProject(req, res, user, id) {
   data.lilypondFormat = outputFormat;
   data.createdAt = toMillis(row.created_at);
   data.updatedAt = Date.now();
-  await writeProjectFile(row.storage_path, data);
+  await writeProjectFile(row.storageDir, data);
   await db.query("UPDATE projects SET name = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 AND user_id = $3", [name, id, user.sub]);
 
   const jobname = path.basename(mainPath).replace(/\.[^.]+$/, "");
   const outputName = `${jobname}.${outputFormat}`;
-  const outputDir = path.join(row.storage_path, "output");
+  const outputDir = path.join(row.storageDir, "output");
   await fs.mkdir(outputDir, { recursive: true });
   const formatsToClean = projectType === "lilypond" ? Array.from(LILYPOND_OUTPUT_FORMATS) : ["pdf"];
   await Promise.all(formatsToClean.map((format) => removePriorCompileArtifacts(outputDir, jobname, format)));
-  const fontDir = path.join(row.storage_path, "fonts");
-  const texmfVar = path.join(row.storage_path, ".iris", "texmf-var");
+  const fontDir = path.join(row.storageDir, "fonts");
+  const texmfVar = path.join(row.storageDir, ".iris", "texmf-var");
   await fs.mkdir(texmfVar, { recursive: true });
   const preLog = /^(xelatex|lualatex)$/i.test(engine) ? await refreshFontCache(fontDir) : "";
-  const result = await runCompilePipeline({ profile: compileProfile, binPath, cwd: row.storage_path, fontDir, texmfVar, preLog });
+  const result = await runCompilePipeline({ profile: compileProfile, binPath, cwd: row.storageDir, fontDir, texmfVar, preLog });
   const artifacts = await readCompileArtifacts(outputDir, jobname, outputFormat);
-  const outputTree = await generatedOutputTree(row.storage_path);
+  const outputTree = await generatedOutputTree(row.storageDir);
   const primaryArtifact = artifacts[0] || null;
   const pdfArtifact = outputFormat === "pdf" ? primaryArtifact : null;
   const success = result.code === 0 && artifacts.length > 0;
@@ -1731,6 +1795,11 @@ async function compileProject(req, res, user, id) {
     errors: result.errors,
   });
 }
+
+const PROJECT_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})$`);
+const PROJECT_COMPILE_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/compile$`);
+const PROJECT_ARCHIVE_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/archive$`);
+const PROJECT_FILE_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/files/download$`);
 
 async function handleApi(req, res, url) {
   if (req.method === "GET" && url.pathname === "/api/config") {
@@ -1778,7 +1847,16 @@ async function handleApi(req, res, url) {
       }
       const token = await oauthTokenRequest(code, oauthRedirectUri(req));
       const profile = await oauthUserInfo(token.access_token);
-      const user = await userFromOAuthProfile(profile);
+      const user = await userFromOAuthProfile(profile, clientIp(req));
+      await audit({
+        action: "auth.login_succeeded",
+        actorId: user.id,
+        actorLabel: user.username,
+        ip: clientIp(req),
+        targetType: "user",
+        targetId: user.id,
+        metadata: { authMethod: "sso" },
+      });
       return redirect(res, "/", {
         "set-cookie": [
           clearState,
@@ -1787,6 +1865,14 @@ async function handleApi(req, res, url) {
       });
     } catch (err) {
       console.error("SSO callback failed", err.message || err);
+      await audit({
+        action: "auth.login_failed",
+        outcome: "failure",
+        actorLabel: "unknown",
+        ip: clientIp(req),
+        targetType: "user",
+        metadata: { authMethod: "sso", reason: err.message || "sso_error" },
+      });
       return redirect(res, "/?auth_error=sso", { "set-cookie": clearState });
     }
   }
@@ -1801,11 +1887,23 @@ async function handleApi(req, res, url) {
       [login, login]
     );
     const user = rows[0];
+    const failedLogin = async (reason) => audit({
+      action: "auth.login_failed",
+      outcome: "failure",
+      actorId: user ? user.id : null,
+      actorLabel: user ? user.username : login,
+      ip: clientIp(req),
+      targetType: "user",
+      targetId: user ? user.id : null,
+      metadata: { authMethod: "local", reason },
+    });
     if (user && !user.password_hash) {
+      await failedLogin("sso_account");
       return errorJson(res, 401, "AUTH_SSO_ACCOUNT");
     }
     const passwordCheck = user ? await verifyPassword(password, user.password_hash) : { valid: false, needsRehash: false };
     if (!user || !passwordCheck.valid) {
+      await failedLogin(user ? "invalid_password" : "unknown_account");
       return errorJson(res, 401, "AUTH_INVALID_CREDENTIALS");
     }
     if (passwordCheck.needsRehash) {
@@ -1813,6 +1911,15 @@ async function handleApi(req, res, url) {
       await db.query("UPDATE users SET password_hash = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2", [passwordHash, user.id]);
       user.password_hash = passwordHash;
     }
+    await audit({
+      action: "auth.login_succeeded",
+      actorId: user.id,
+      actorLabel: user.username,
+      ip: clientIp(req),
+      targetType: "user",
+      targetId: user.id,
+      metadata: { authMethod: "local" },
+    });
     return json(res, 200, { user: publicUser(user) }, {
       "set-cookie": cookie("iris_session", makeToken(user, "local"), { maxAge: 60 * 60 * 24 * 7 }),
     });
@@ -1844,6 +1951,12 @@ async function handleApi(req, res, url) {
     const passwordHash = await hashPassword(newPassword);
     await db.query("UPDATE users SET password_hash = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2", [passwordHash, user.id]);
     user.password_hash = passwordHash;
+    await audit({
+      ...sessionActor(req, sessionUser),
+      action: "user.password_changed",
+      targetType: "user",
+      targetId: user.id,
+    });
     return json(res, 200, { ok: true, user: publicUser({ ...user, authMethod: "local" }) }, {
       "set-cookie": cookie("iris_session", makeToken(user, "local"), { maxAge: 60 * 60 * 24 * 7 }),
     });
@@ -1864,16 +1977,16 @@ async function handleApi(req, res, url) {
   if (req.method === "POST" && url.pathname === "/api/projects/import") return importProjectArchive(req, res, user, url);
   if (req.method === "POST" && url.pathname === "/api/projects") return createProject(req, res, user);
 
-  const compileMatch = url.pathname.match(/^\/api\/projects\/([a-f0-9]{32})\/compile$/);
+  const compileMatch = url.pathname.match(PROJECT_COMPILE_ROUTE);
   if (compileMatch && req.method === "POST") return compileProject(req, res, user, compileMatch[1]);
 
-  const archiveMatch = url.pathname.match(/^\/api\/projects\/([a-f0-9]{32})\/archive$/);
+  const archiveMatch = url.pathname.match(PROJECT_ARCHIVE_ROUTE);
   if (archiveMatch && req.method === "GET") return downloadProjectArchive(req, res, user, archiveMatch[1]);
 
-  const fileDownloadMatch = url.pathname.match(/^\/api\/projects\/([a-f0-9]{32})\/files\/download$/);
+  const fileDownloadMatch = url.pathname.match(PROJECT_FILE_ROUTE);
   if (fileDownloadMatch && req.method === "GET") return downloadProjectFile(req, res, user, fileDownloadMatch[1], url);
 
-  const match = url.pathname.match(/^\/api\/projects\/([a-f0-9]{32})$/);
+  const match = url.pathname.match(PROJECT_ROUTE);
   if (match) {
     if (req.method === "GET") return getProject(req, res, user, match[1]);
     if (req.method === "PUT") return updateProject(req, res, user, match[1]);
