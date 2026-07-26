@@ -18,6 +18,7 @@ const ALL_MIGRATIONS = [
   "004_uuidv7_identifiers.sql",
   "005_consolidation_invariants.sql",
   "006_project_files.sql",
+  "007_document_versions.sql",
 ];
 const silentLogger = { log() {}, warn() {}, error() {} };
 
@@ -226,6 +227,71 @@ test("the file-identity ledger enforces its invariants", { skip: !connectionStri
   await pool.query("DELETE FROM projects WHERE id = $1", [projectId]);
   const orphans = await pool.query("SELECT COUNT(*) AS n FROM project_files");
   assert.equal(Number(orphans.rows[0].n), 0);
+});
+
+test("document versions form an append-only history keyed to a stable file id", { skip: !connectionString }, async (t) => {
+  const pool = await isolatedSchema(t);
+  await runMigrations(pool);
+  const userId = await insertUser(pool, "gio", "gio@example.org");
+  const projectId = uuidv7();
+  await pool.query(
+    "INSERT INTO projects (id, user_id, name, storage_path) VALUES ($1, $2, $3, $4)",
+    [projectId, userId, "Score", projectStorageKey(projectId)]
+  );
+  const fileId = uuidv7();
+  await pool.query(
+    "INSERT INTO project_files (id, project_id, client_ref, path, kind) VALUES ($1, $2, $3, $4, $5)",
+    [fileId, projectId, fileId, "main.tex", "tex"]
+  );
+
+  // A separate author who does not own the project, so deleting the author does
+  // not cascade the project away and the SET NULL behaviour can be observed.
+  const authorId = await insertUser(pool, "author", "author@example.org");
+  const addVersion = async (parent, reason, content) => {
+    const id = uuidv7();
+    await pool.query(
+      `INSERT INTO document_versions (id, file_id, parent_version_id, author_id, author_label, reason, content_hash, content, size)
+       VALUES ($1, $2, $3, $4, 'author', $5, $6, $7, $8)`,
+      [id, fileId, parent, authorId, reason, crypto.createHash("sha256").update(content).digest("hex"), content, Buffer.byteLength(content)]
+    );
+    return id;
+  };
+
+  const v1 = await addVersion(null, "compile", "one");
+  const v2 = await addVersion(v1, "compile", "two");
+  // A rollback appends a revision with older content; it never deletes v2.
+  const v3 = await addVersion(v2, "rollback", "one");
+  const chain = await pool.query(
+    "SELECT id, parent_version_id, reason, content FROM document_versions WHERE file_id = $1 ORDER BY created_at, id",
+    [fileId]
+  );
+  assert.equal(chain.rows.length, 3);
+  assert.equal(chain.rows[2].parent_version_id, v2, "rollback parents the latest, not the source");
+  assert.equal(chain.rows[2].content, "one");
+
+  // The reason vocabulary and non-empty author label are enforced.
+  await assert.rejects(addVersion(null, "whatever", "x"), (error) => error.code === "23514");
+  await assert.rejects(
+    pool.query(
+      "INSERT INTO document_versions (id, file_id, author_label, reason, content_hash, content, size) VALUES ($1, $2, '', 'manual', 'h', 'c', 1)",
+      [uuidv7(), fileId]
+    ),
+    (error) => error.code === "23514"
+  );
+
+  // Attribution outlives the author: deleting the (non-owner) author keeps the
+  // history and its readable label.
+  await pool.query("DELETE FROM users WHERE id = $1", [authorId]);
+  const afterUser = await pool.query("SELECT author_id, author_label FROM document_versions WHERE id = $1", [v1]);
+  assert.deepEqual(afterUser.rows[0], { author_id: null, author_label: "author" });
+
+  // Soft-deleting the file keeps its history; deleting the project cascades it away.
+  await pool.query("UPDATE project_files SET deleted_at = CURRENT_TIMESTAMP WHERE id = $1", [fileId]);
+  const afterSoftDelete = await pool.query("SELECT COUNT(*) AS n FROM document_versions WHERE file_id = $1", [fileId]);
+  assert.equal(Number(afterSoftDelete.rows[0].n), 3);
+  await pool.query("DELETE FROM projects WHERE id = $1", [projectId]);
+  const afterProject = await pool.query("SELECT COUNT(*) AS n FROM document_versions");
+  assert.equal(Number(afterProject.rows[0].n), 0);
 });
 
 test("upgrading a pre-002 database relocates project data", { skip: !connectionString }, async (t) => {

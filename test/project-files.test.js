@@ -80,7 +80,7 @@ test("a rename keeps the id and updates the path (by client_ref, same session)",
   const live = [{ id: "gen-1", client_ref: "file_1", path: "main.tex", kind: "tex" }];
   const plan = reconcileProjectFiles(live, [{ nodeId: "file_1", path: "renamed.tex", kind: "tex" }], { generateId: counter() });
   assert.deepEqual(plan.resolved, [{ canonicalId: "gen-1" }]);
-  assert.deepEqual(plan.updates, [{ id: "gen-1", path: "renamed.tex", kind: "tex" }]);
+  assert.deepEqual(plan.updates, [{ id: "gen-1", fromPath: "main.tex", path: "renamed.tex", kind: "tex" }]);
   assert.deepEqual(plan.inserts, []);
   assert.deepEqual(plan.softDeletes, []);
 });
@@ -89,7 +89,7 @@ test("after reload the file matches by its adopted UUID and a move is tracked", 
   const live = [{ id: UUID_A, client_ref: "file_1", path: "main.tex", kind: "tex" }];
   const plan = reconcileProjectFiles(live, [{ nodeId: UUID_A, path: "chapters/main.tex", kind: "tex" }], { generateId: counter() });
   assert.deepEqual(plan.resolved, [{ canonicalId: UUID_A }]);
-  assert.deepEqual(plan.updates, [{ id: UUID_A, path: "chapters/main.tex", kind: "tex" }]);
+  assert.deepEqual(plan.updates, [{ id: UUID_A, fromPath: "main.tex", path: "chapters/main.tex", kind: "tex" }]);
 });
 
 test("a removed file is soft-deleted, never resurrected on re-add", () => {
@@ -146,5 +146,5 @@ test("duplicate client refs do not let two files share one identity", () => {
 test("a kind change on a matched file is recorded", () => {
   const live = [{ id: "gen-1", client_ref: "file_1", path: "notes.txt", kind: "text" }];
   const plan = reconcileProjectFiles(live, [{ nodeId: "file_1", path: "notes.txt", kind: "tex" }], { generateId: counter() });
-  assert.deepEqual(plan.updates, [{ id: "gen-1", path: "notes.txt", kind: "tex" }]);
+  assert.deepEqual(plan.updates, [{ id: "gen-1", fromPath: "notes.txt", path: "notes.txt", kind: "tex" }]);
 });

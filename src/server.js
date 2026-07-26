@@ -12,6 +12,7 @@ const { uuidv7, isUuid, UUID_PATTERN } = require("./ids");
 const { lifecycleGate, healthStatus, isMutatingMethod, HEALTH_PATH } = require("./lifecycle");
 const { recordAuditEvent } = require("./audit");
 const { collectProjectFiles, reconcileProjectFiles } = require("./project-files");
+const { hashContent, isVersionableText, contentChanged } = require("./versions");
 const { projectStorageKey, resolveProjectStorageDir, relocateProjectStorage } = require("./project-storage");
 const { createZip, extractZip } = require("./zip");
 
@@ -975,10 +976,39 @@ async function writeProjectManifest(storagePath, data) {
   await fs.rename(tmp, file);
 }
 
-async function writeProjectFile(storagePath, data) {
+// Moves the bytes of renamed or relocated files on disk before the tree is
+// written, so a rename preserves the file instead of deleting and recreating it.
+// A pure optimization over the delete-plus-create path: on any obstacle it does
+// nothing and lets writeProjectNodes/pruneProjectFiles produce the same result
+// they did before, so it can never lose data the old path would have kept.
+async function applyProjectRenames(storagePath, renames) {
+  const moves = (renames || []).filter((move) => move.from !== move.to);
+  if (!moves.length) return;
+  const sources = new Set(moves.map((move) => move.from));
+  for (const move of moves) {
+    // Skip the pathological chain or swap where the destination is itself a file
+    // still waiting to move; delete-plus-create handles those exactly as before.
+    if (sources.has(move.to)) continue;
+    const src = path.join(storagePath, move.from);
+    const dest = path.join(storagePath, move.to);
+    try {
+      await fs.mkdir(path.dirname(dest), { recursive: true });
+      await fs.rename(src, dest);
+    } catch (err) {
+      // Source not on disk yet, or any other obstacle: fall back silently to the
+      // normal write path. ENOENT is the common, expected case for a new file.
+      if (err.code !== "ENOENT") {
+        console.error(`Could not relocate ${move.from} -> ${move.to} in ${storagePath}`, err.message || err);
+      }
+    }
+  }
+}
+
+async function writeProjectFile(storagePath, data, renames = []) {
   await fs.mkdir(storagePath, { recursive: true });
   reconcileProjectFonts(data);
   await ensureProjectDirs(storagePath, data);
+  await applyProjectRenames(storagePath, renames);
   const expectedFiles = await writeProjectNodes(storagePath, data);
   await writeProjectFonts(storagePath, data, expectedFiles);
   await pruneProjectFiles(storagePath, expectedFiles);
@@ -1112,12 +1142,172 @@ async function syncProjectFiles(projectId, data) {
     }
     await client.query("COMMIT");
     entries.forEach((entry, index) => { entry.node.id = plan.resolved[index].canonicalId; });
+    // Renames the disk layer can carry out as a move instead of delete+create.
+    return { renames: plan.updates.filter((u) => u.fromPath !== u.path).map((u) => ({ from: u.fromPath, to: u.path })) };
   } catch (err) {
     await client.query("ROLLBACK").catch(() => {});
     throw err;
   } finally {
     client.release();
   }
+}
+
+function versionAuthorLabel(user) {
+  return user.username || user.email || `user:${user.sub}`;
+}
+
+async function latestVersion(fileId) {
+  const { rows } = await db.query(
+    "SELECT id, content_hash FROM document_versions WHERE file_id = $1 ORDER BY created_at DESC, id DESC LIMIT 1",
+    [fileId]
+  );
+  return rows[0] || null;
+}
+
+async function insertVersion({ fileId, parentId, user, reason, content }) {
+  const id = uuidv7();
+  await db.query(
+    `INSERT INTO document_versions (id, file_id, parent_version_id, author_id, author_label, reason, content_hash, content, size)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+    [id, fileId, parentId, user.sub, versionAuthorLabel(user), reason, hashContent(content), content, Buffer.byteLength(content, "utf8")]
+  );
+  return id;
+}
+
+// Records a revision of one file if its on-disk content is versionable text and
+// differs from its latest revision. Returns the new version id or null.
+async function snapshotFileIfChanged({ storageDir, file, user, reason }) {
+  const buffer = await fs.readFile(path.join(storageDir, file.path)).catch(() => null);
+  if (!isVersionableText(buffer, file.kind)) return null;
+  const content = buffer.toString("utf8");
+  const previous = await latestVersion(file.id);
+  if (!contentChanged(previous ? previous.content_hash : null, hashContent(content))) return null;
+  return insertVersion({ fileId: file.id, parentId: previous ? previous.id : null, user, reason, content });
+}
+
+// Snapshots every live text file of a project at a checkpoint (a compile or a
+// manual request). Unchanged files are skipped, so the history stays meaningful.
+async function captureProjectCheckpoint({ projectId, storageDir, user, reason }) {
+  const { rows: files } = await db.query(
+    "SELECT id, path, kind FROM project_files WHERE project_id = $1 AND deleted_at IS NULL ORDER BY path",
+    [projectId]
+  );
+  let created = 0;
+  for (const file of files) {
+    if (await snapshotFileIfChanged({ storageDir, file, user, reason })) created += 1;
+  }
+  return { created };
+}
+
+async function fileForProject(projectId, fileId) {
+  const { rows } = await db.query(
+    "SELECT id, path, kind, deleted_at FROM project_files WHERE id = $1 AND project_id = $2",
+    [fileId, projectId]
+  );
+  if (!rows.length) throw requestError("FILE_NOT_FOUND", 404);
+  return rows[0];
+}
+
+async function checkpointProject(req, res, user, id) {
+  const row = await projectForUser(id, user.sub);
+  const body = await readBody(req);
+  // Persist the editor state first when provided, so the checkpoint reflects it.
+  if (body.data && typeof body.data === "object") {
+    const data = body.data;
+    data.project = data.project && Array.isArray(data.project.nodes) ? data.project : { nodes: [] };
+    data.project.name = row.name;
+    data.projectType = inferProjectType(data);
+    const { renames } = await syncProjectFiles(id, data);
+    await writeProjectFile(row.storageDir, data, renames);
+    await db.query("UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = $1 AND user_id = $2", [id, user.sub]);
+  }
+  const { created } = await captureProjectCheckpoint({ projectId: id, storageDir: row.storageDir, user, reason: "manual" });
+  await audit({
+    ...sessionActor(req, user),
+    action: "revision.checkpoint",
+    targetType: "project",
+    targetId: id,
+    metadata: { reason: "manual", created },
+  });
+  json(res, 200, { ok: true, created });
+}
+
+async function listFileVersions(req, res, user, projectId, fileId) {
+  await projectForUser(projectId, user.sub);
+  await fileForProject(projectId, fileId);
+  const { rows } = await db.query(
+    `SELECT id, parent_version_id, author_id, author_label, created_at, reason, content_hash, size
+     FROM document_versions WHERE file_id = $1 ORDER BY created_at DESC, id DESC`,
+    [fileId]
+  );
+  json(res, 200, {
+    versions: rows.map((row) => ({
+      id: row.id,
+      parentId: row.parent_version_id,
+      authorId: row.author_id,
+      author: row.author_label,
+      createdAt: toMillis(row.created_at),
+      reason: row.reason,
+      contentHash: row.content_hash,
+      size: row.size,
+    })),
+  });
+}
+
+async function getFileVersion(req, res, user, projectId, fileId, versionId) {
+  await projectForUser(projectId, user.sub);
+  await fileForProject(projectId, fileId);
+  const { rows } = await db.query(
+    "SELECT id, created_at, reason, author_label, content_hash, size, content FROM document_versions WHERE id = $1 AND file_id = $2",
+    [versionId, fileId]
+  );
+  if (!rows.length) throw requestError("VERSION_NOT_FOUND", 404);
+  const version = rows[0];
+  json(res, 200, {
+    id: version.id,
+    createdAt: toMillis(version.created_at),
+    reason: version.reason,
+    author: version.author_label,
+    contentHash: version.content_hash,
+    size: version.size,
+    content: version.content,
+  });
+}
+
+async function restoreFileVersion(req, res, user, projectId, fileId, versionId) {
+  const project = await projectForUser(projectId, user.sub);
+  const file = await fileForProject(projectId, fileId);
+  if (file.deleted_at) throw requestError("FILE_NOT_FOUND", 404);
+  const { rows } = await db.query(
+    "SELECT id, content, content_hash FROM document_versions WHERE id = $1 AND file_id = $2",
+    [versionId, fileId]
+  );
+  if (!rows.length) throw requestError("VERSION_NOT_FOUND", 404);
+  const target = rows[0];
+
+  // Capture the current state before overwriting it, so a rollback never loses
+  // uncommitted work, then append the rollback revision. History is only added to.
+  await snapshotFileIfChanged({ storageDir: project.storageDir, file, user, reason: "manual" });
+  const abs = path.join(project.storageDir, file.path);
+  await fs.mkdir(path.dirname(abs), { recursive: true });
+  await fs.writeFile(abs, target.content, "utf8");
+  const previous = await latestVersion(fileId);
+  const newVersionId = await insertVersion({
+    fileId,
+    parentId: previous ? previous.id : null,
+    user,
+    reason: "rollback",
+    content: target.content,
+  });
+  await db.query("UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = $1 AND user_id = $2", [projectId, user.sub]);
+  await audit({
+    ...sessionActor(req, user),
+    action: "revision.restored",
+    targetType: "revision",
+    targetId: newVersionId,
+    metadata: { fileId, fromVersion: versionId, path: file.path },
+  });
+  json(res, 200, { ok: true, versionId: newVersionId, content: target.content });
 }
 
 async function createProject(req, res, user) {
@@ -1180,8 +1370,8 @@ async function updateProject(req, res, user, id) {
   }
   data.createdAt = toMillis(row.created_at);
   data.updatedAt = Date.now();
-  await syncProjectFiles(id, data);
-  await writeProjectFile(row.storageDir, data);
+  const { renames } = await syncProjectFiles(id, data);
+  await writeProjectFile(row.storageDir, data, renames);
   await db.query("UPDATE projects SET name = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 AND user_id = $3", [name, id, user.sub]);
   json(res, 200, {
     project: { id, name, projectType: data.projectType, createdAt: data.createdAt, updatedAt: data.updatedAt, fileCount: countFiles(data) },
@@ -1829,9 +2019,12 @@ async function compileProject(req, res, user, id) {
   data.lilypondFormat = outputFormat;
   data.createdAt = toMillis(row.created_at);
   data.updatedAt = Date.now();
-  await syncProjectFiles(id, data);
-  await writeProjectFile(row.storageDir, data);
+  const { renames } = await syncProjectFiles(id, data);
+  await writeProjectFile(row.storageDir, data, renames);
   await db.query("UPDATE projects SET name = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 AND user_id = $3", [name, id, user.sub]);
+  // Checkpoint the sources that produced this build, so a compilation is a point
+  // in history and phase 4 can link an output to the revision it came from.
+  await captureProjectCheckpoint({ projectId: id, storageDir: row.storageDir, user, reason: "compile" });
 
   const jobname = path.basename(mainPath).replace(/\.[^.]+$/, "");
   const outputName = `${jobname}.${outputFormat}`;
@@ -1879,6 +2072,10 @@ const PROJECT_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})$`);
 const PROJECT_COMPILE_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/compile$`);
 const PROJECT_ARCHIVE_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/archive$`);
 const PROJECT_FILE_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/files/download$`);
+const PROJECT_CHECKPOINT_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/checkpoint$`);
+const FILE_VERSIONS_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/files/(${UUID_PATTERN})/versions$`);
+const FILE_VERSION_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/files/(${UUID_PATTERN})/versions/(${UUID_PATTERN})$`);
+const FILE_VERSION_RESTORE_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/files/(${UUID_PATTERN})/versions/(${UUID_PATTERN})/restore$`);
 
 async function handleApi(req, res, url) {
   if (req.method === "GET" && url.pathname === "/api/config") {
@@ -2064,6 +2261,24 @@ async function handleApi(req, res, url) {
 
   const fileDownloadMatch = url.pathname.match(PROJECT_FILE_ROUTE);
   if (fileDownloadMatch && req.method === "GET") return downloadProjectFile(req, res, user, fileDownloadMatch[1], url);
+
+  const checkpointMatch = url.pathname.match(PROJECT_CHECKPOINT_ROUTE);
+  if (checkpointMatch && req.method === "POST") return checkpointProject(req, res, user, checkpointMatch[1]);
+
+  const versionRestoreMatch = url.pathname.match(FILE_VERSION_RESTORE_ROUTE);
+  if (versionRestoreMatch && req.method === "POST") {
+    return restoreFileVersion(req, res, user, versionRestoreMatch[1], versionRestoreMatch[2], versionRestoreMatch[3]);
+  }
+
+  const versionMatch = url.pathname.match(FILE_VERSION_ROUTE);
+  if (versionMatch && req.method === "GET") {
+    return getFileVersion(req, res, user, versionMatch[1], versionMatch[2], versionMatch[3]);
+  }
+
+  const versionsMatch = url.pathname.match(FILE_VERSIONS_ROUTE);
+  if (versionsMatch && req.method === "GET") {
+    return listFileVersions(req, res, user, versionsMatch[1], versionsMatch[2]);
+  }
 
   const match = url.pathname.match(PROJECT_ROUTE);
   if (match) {

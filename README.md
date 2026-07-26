@@ -457,10 +457,30 @@ Each source file also has a stable identity in `project_files`: a UUIDv7 that
 survives renames and moves, so history can be keyed to a file rather than to its
 path. The database is authoritative for this identity; on every save the server
 reconciles the tree against the ledger, updating a row's path on a rename and
-soft-deleting a removed file so its history is never erased. The bytes on disk
-continue to be written by path — the ledger tracks identity, it does not move
-files. A project's files are populated in the ledger on its first save after this
-schema is applied.
+soft-deleting a removed file so its history is never erased. On a rename the bytes
+are moved on disk rather than rewritten. A project's files are populated in the
+ledger on its first save after this schema is applied.
+
+### File history and rollback
+
+Text source files carry a revision history in `document_versions`, anchored to the
+stable file id. A revision is captured on a compilation and on an explicit
+checkpoint, and only when the content actually changed since the file's previous
+revision, so the history stays meaningful rather than recording every keystroke.
+Binary assets and generated output are not versioned.
+
+History is append-only. A rollback does not delete the revisions in between: it
+first snapshots the current state so nothing uncommitted is lost, then writes the
+chosen revision back to the file and records it as a new `rollback` revision. Each
+revision is attributed to a user, and the attribution — like the audit trail —
+outlives a deleted account through a denormalized label. Deleting a project
+cascades its history away; soft-deleting a file keeps it.
+
+The relevant endpoints are `POST /api/projects/:id/checkpoint`,
+`GET /api/projects/:id/files/:fileId/versions`,
+`GET …/versions/:versionId` for a revision's content, and
+`POST …/versions/:versionId/restore`. Retention and garbage collection of old
+revisions are deferred to a later phase.
 
 Back up PostgreSQL and `DATA_DIR` together: the database holds accounts,
 ownership and the audit trail, while the filesystem holds the content itself.
@@ -488,6 +508,11 @@ rm "$DATA_DIR/.maintenance"
 `{ "status", "maintenance", "pendingWrites" }`, so a script or load balancer can
 observe the state. `pendingWrites` counts write requests still being served; once
 it reaches `0` inside the window, the two layers can be copied consistently.
+
+Direct control through `MAINTENANCE_FILE` is the transitional operator interface.
+When server roles and the administration console are introduced, entering and
+leaving maintenance will become an authenticated, audited action reserved for
+active Iris administrators; backup and restore tooling will remain outside Iris.
 
 **Graceful shutdown** covers a clean stop, which is the safe way to restore.
 On `SIGTERM` or `SIGINT` Iris stops accepting requests, waits up to

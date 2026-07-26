@@ -74,7 +74,9 @@ function reconcileProjectFiles(liveRows, incoming, { generateId = uuidv7 } = {})
     if (row) {
       claimed.add(row.id);
       if (row.path !== file.path || (row.kind || null) !== (file.kind || null)) {
-        updates.push({ id: row.id, path: file.path, kind: file.kind });
+        // fromPath lets the disk layer move the bytes on a rename instead of
+        // deleting and recreating them; it equals path when only the kind changed.
+        updates.push({ id: row.id, fromPath: row.path, path: file.path, kind: file.kind });
       }
       resolved.push({ canonicalId: row.id });
       continue;
