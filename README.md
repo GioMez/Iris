@@ -544,11 +544,48 @@ content hashes before removing the source. If an interrupted copy leaves data at
 both locations, the command stops and names the project for manual comparison
 rather than guessing which copy to keep.
 
+## Server administration
+
+Iris distinguishes two authorization levels. The **server role** (`admin` or
+`regular`) governs account management; a project role will govern project contents
+in a later release. A server admin is not automatically granted access to any
+project's contents.
+
+Admins manage the ordinary account lifecycle over `/api/admin/users`, so it no
+longer requires direct database access:
+
+- `GET /api/admin/users` — list, with `q`, `status` and `role` filters.
+- `POST /api/admin/users` — create a local account; a one-time temporary password
+  is returned and only its Argon2id hash is stored.
+- `PATCH /api/admin/users/:id` — update the profile, promote/demote the server
+  role, or deactivate/reactivate the account.
+- `POST /api/admin/users/:id/reset-password` — issue a new one-time password for a
+  local account and end its existing sessions.
+
+Accounts are **deactivated, not deleted**, in this release: a disabled account
+loses access immediately while its projects, history, attributions and audit are
+preserved, and it can be reactivated. Physical deletion, which requires
+transferring or anonymizing owned content, is deferred.
+
+Two invariants are enforced: at least one active admin must always remain (the
+last one cannot be demoted or disabled, including by themselves), and role or
+status changes take effect on live sessions at once. Because sessions are stateless
+tokens validated against the database on every request, a demotion applies on the
+next request without a forced logout, while a deactivation or a password reset ends
+existing sessions immediately. Every administrative change is written to the audit
+trail.
+
+For OIDC accounts, Iris does not replace the identity provider: the durable
+identity is the `issuer` + `subject` pair, and email is only a searchable
+attribute. The console governs the account's server role and enabled state, while
+name and credentials may remain under the provider.
+
 ## Audit trail
 
 Administrative and destructive actions are appended to the `audit_events` table:
-sign-ins and failed sign-in attempts, account creation, password changes, and
-project creation, import and deletion.
+sign-ins and failed sign-in attempts, account creation, role and status changes,
+password changes and resets, project creation, import and deletion, and file
+checkpoints and rollbacks.
 
 Each event records the action, its outcome, the actor, the target, the client
 address and a small JSON object of context. Attribution is meant to outlive the

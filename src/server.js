@@ -13,6 +13,7 @@ const { lifecycleGate, healthStatus, isMutatingMethod, HEALTH_PATH } = require("
 const { recordAuditEvent } = require("./audit");
 const { collectProjectFiles, reconcileProjectFiles } = require("./project-files");
 const { hashContent, isVersionableText, contentChanged } = require("./versions");
+const { isSystemRole, isUserStatus, leavesNoActiveAdmin, normalizeSearch } = require("./admin");
 const { projectStorageKey, resolveProjectStorageDir, relocateProjectStorage } = require("./project-storage");
 const { createZip, extractZip } = require("./zip");
 
@@ -192,7 +193,7 @@ function makeToken(user, authMethod = "local") {
     username: user.username,
     name: user.display_name,
     email: user.email,
-    role: user.role || "user",
+    role: user.system_role || user.role || "regular",
     authMethod,
     iat: Math.floor(Date.now() / 1000),
     exp: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 7,
@@ -211,14 +212,15 @@ function verifyToken(token) {
 }
 
 function publicUser(rowOrToken) {
+  const authMethod = rowOrToken.authMethod || rowOrToken.auth_method || (rowOrToken.auth_source === "oidc" ? "sso" : "local");
   return {
     id: String(rowOrToken.id || rowOrToken.sub),
     username: rowOrToken.username,
     name: rowOrToken.display_name || rowOrToken.name,
     email: rowOrToken.email,
-    role: rowOrToken.role || "user",
-    authMethod: rowOrToken.authMethod || rowOrToken.auth_method || "local",
-    canChangePassword: (rowOrToken.authMethod || rowOrToken.auth_method || "local") === "local",
+    role: rowOrToken.system_role || rowOrToken.role || "regular",
+    authMethod,
+    canChangePassword: (rowOrToken.auth_source || authMethod) === "local",
   };
 }
 
@@ -356,6 +358,7 @@ async function oauthUserInfo(accessToken) {
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw new Error("The SSO provider did not return a valid email address");
   return {
     email,
+    subject: String(data.sub || "").trim(),
     name: String(data.name || data.preferred_username || email).trim(),
     preferredUsername: String(data.preferred_username || email.split("@")[0]).trim(),
   };
@@ -380,19 +383,55 @@ async function availableUsername(base) {
   return `${clean.slice(0, 48)}-${crypto.randomBytes(4).toString("hex")}`;
 }
 
+const OAUTH_USER_COLUMNS =
+  "id, username, email, display_name, system_role, status, auth_source, oidc_issuer, oidc_subject, session_epoch, password_hash";
+
+function disabledAccountError() {
+  const err = new Error("Account disabled");
+  err.status = 403;
+  err.errorCode = "AUTH_ACCOUNT_DISABLED";
+  return err;
+}
+
 async function userFromOAuthProfile(profile, ip = null) {
-  const { rows } = await db.query(
-    "SELECT id, username, email, display_name, role, password_hash FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1",
-    [profile.email]
-  );
-  if (rows[0]) {
-    const nextName = profile.name || rows[0].display_name;
-    if (nextName && nextName !== rows[0].display_name) {
-      await db.query("UPDATE users SET display_name = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2", [nextName, rows[0].id]);
-      rows[0].display_name = nextName;
-    }
-    return rows[0];
+  const issuer = OAUTH_ISSUER_URL || null;
+  const subject = profile.subject || null;
+
+  // The durable identity is the issuer + subject pair; email is only a fallback
+  // for accounts provisioned before the pair was recorded, since email can change.
+  let existing = null;
+  if (issuer && subject) {
+    const byOidc = await db.query(
+      `SELECT ${OAUTH_USER_COLUMNS} FROM users WHERE oidc_issuer = $1 AND oidc_subject = $2 LIMIT 1`,
+      [issuer, subject]
+    );
+    existing = byOidc.rows[0] || null;
   }
+  if (!existing) {
+    const byEmail = await db.query(
+      `SELECT ${OAUTH_USER_COLUMNS} FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1`,
+      [profile.email]
+    );
+    existing = byEmail.rows[0] || null;
+  }
+
+  if (existing) {
+    if (existing.status !== "active") throw disabledAccountError();
+    const nextName = profile.name || existing.display_name;
+    if (nextName && nextName !== existing.display_name) {
+      await db.query("UPDATE users SET display_name = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2", [nextName, existing.id]);
+      existing.display_name = nextName;
+    }
+    // Attach the issuer+subject identity to an account first matched by email.
+    if (issuer && subject && (!existing.oidc_issuer || !existing.oidc_subject)) {
+      await db.query(
+        "UPDATE users SET oidc_issuer = $1, oidc_subject = $2, auth_source = 'oidc', updated_at = CURRENT_TIMESTAMP WHERE id = $3",
+        [issuer, subject, existing.id]
+      );
+    }
+    return existing;
+  }
+
   if (!OAUTH_AUTO_REGISTER) {
     const err = new Error("Unauthorized SSO user");
     err.status = 403;
@@ -403,8 +442,9 @@ async function userFromOAuthProfile(profile, ip = null) {
   const displayName = profile.name || profile.email;
   try {
     const result = await db.query(
-      "INSERT INTO users (id, username, email, display_name, role, password_hash) VALUES ($1, $2, $3, $4, 'user', NULL) RETURNING id",
-      [uuidv7(), username, profile.email, displayName]
+      `INSERT INTO users (id, username, email, display_name, system_role, password_hash, auth_source, oidc_issuer, oidc_subject)
+       VALUES ($1, $2, $3, $4, 'regular', NULL, 'oidc', $5, $6) RETURNING id`,
+      [uuidv7(), username, profile.email, displayName, issuer, subject]
     );
     const id = String(result.rows[0].id);
     await audit({
@@ -416,14 +456,17 @@ async function userFromOAuthProfile(profile, ip = null) {
       targetId: id,
       metadata: { authSource: "oidc", autoRegistered: true, email: profile.email },
     });
-    return { id, username, email: profile.email, display_name: displayName, role: "user", password_hash: null };
+    return { id, username, email: profile.email, display_name: displayName, system_role: "regular", status: "active", auth_source: "oidc", password_hash: null };
   } catch (err) {
     if (err.code !== "23505") throw err;
     const retry = await db.query(
-      "SELECT id, username, email, display_name, role, password_hash FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1",
+      `SELECT ${OAUTH_USER_COLUMNS} FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1`,
       [profile.email]
     );
-    if (retry.rows[0]) return retry.rows[0];
+    if (retry.rows[0]) {
+      if (retry.rows[0].status !== "active") throw disabledAccountError();
+      return retry.rows[0];
+    }
     throw err;
   }
 }
@@ -449,7 +492,7 @@ async function seedUsers() {
   if (Number(rows[0].n) > 0) return;
   const password = crypto.randomBytes(18).toString("base64url");
   const created = await db.query(
-    "INSERT INTO users (id, username, email, display_name, role, password_hash) VALUES ($1, $2, $3, $4, 'admin', $5) RETURNING id",
+    "INSERT INTO users (id, username, email, display_name, system_role, password_hash, auth_source) VALUES ($1, $2, $3, $4, 'admin', $5, 'local') RETURNING id",
     [uuidv7(), "admin", "admin@iris.local", "Iris Admin", await hashPassword(password)]
   );
   initialAdminCredentials = { username: "admin", password };
@@ -485,13 +528,41 @@ async function readBody(req) {
   }
 }
 
-function requireUser(req) {
+// Authenticates against the current database state on every request, not just
+// the signed token. This is what makes an account change take effect at once: a
+// disabled account, a bumped session epoch (a forced sign-out or password reset)
+// or a role change is honoured on the very next request rather than lingering
+// until the token expires.
+async function requireUser(req) {
   const token = parseCookies(req).iris_session;
   const payload = verifyToken(token);
-  if (!payload) {
-    throw requestError("NOT_AUTHENTICATED", 401);
-  }
-  return payload;
+  if (!payload) throw requestError("NOT_AUTHENTICATED", 401);
+
+  const { rows } = await db.query(
+    "SELECT id, username, email, display_name, system_role, status, auth_source, session_epoch FROM users WHERE id = $1 LIMIT 1",
+    [payload.sub]
+  );
+  const row = rows[0];
+  if (!row || row.status !== "active") throw requestError("NOT_AUTHENTICATED", 401);
+  const epochSeconds = Math.floor(new Date(row.session_epoch).getTime() / 1000);
+  if (typeof payload.iat === "number" && payload.iat < epochSeconds) throw requestError("NOT_AUTHENTICATED", 401);
+
+  return {
+    sub: String(row.id),
+    username: row.username,
+    email: row.email,
+    name: row.display_name,
+    role: row.system_role,
+    status: row.status,
+    auth_source: row.auth_source,
+    authMethod: payload.authMethod || (row.auth_source === "oidc" ? "sso" : "local"),
+    iat: payload.iat,
+  };
+}
+
+function requireAdmin(user) {
+  if (!user || user.role !== "admin") throw requestError("ADMIN_REQUIRED", 403);
+  return user;
 }
 
 function cleanName(name) {
@@ -2072,10 +2143,215 @@ const PROJECT_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})$`);
 const PROJECT_COMPILE_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/compile$`);
 const PROJECT_ARCHIVE_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/archive$`);
 const PROJECT_FILE_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/files/download$`);
+const ADMIN_USERS_ROUTE = "/api/admin/users";
+const ADMIN_USER_ROUTE = new RegExp(`^/api/admin/users/(${UUID_PATTERN})$`);
+const ADMIN_USER_RESET_ROUTE = new RegExp(`^/api/admin/users/(${UUID_PATTERN})/reset-password$`);
 const PROJECT_CHECKPOINT_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/checkpoint$`);
 const FILE_VERSIONS_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/files/(${UUID_PATTERN})/versions$`);
 const FILE_VERSION_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/files/(${UUID_PATTERN})/versions/(${UUID_PATTERN})$`);
 const FILE_VERSION_RESTORE_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/files/(${UUID_PATTERN})/versions/(${UUID_PATTERN})/restore$`);
+
+// Serializes every operation that can affect the "at least one active admin"
+// invariant, so two concurrent demotions cannot race past the count check.
+const ADMIN_INVARIANT_LOCK = 49524954;
+
+function validAdminUsername(value) {
+  const username = cleanUsername(value);
+  if (username.length < 3 || String(value || "").trim().toLowerCase() !== username) {
+    throw requestError("ADMIN_USERNAME_INVALID", 400);
+  }
+  return username;
+}
+
+function validEmail(value) {
+  const email = String(value || "").trim().toLowerCase();
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw requestError("ADMIN_EMAIL_INVALID", 400);
+  return email;
+}
+
+function adminUserView(row) {
+  return {
+    id: row.id,
+    username: row.username,
+    email: row.email,
+    name: row.display_name,
+    role: row.system_role,
+    status: row.status,
+    authSource: row.auth_source,
+    createdAt: toMillis(row.created_at),
+    lastLoginAt: row.last_login_at ? toMillis(row.last_login_at) : null,
+    disabledAt: row.disabled_at ? toMillis(row.disabled_at) : null,
+  };
+}
+
+const ADMIN_USER_FIELDS =
+  "id, username, email, display_name, system_role, status, auth_source, created_at, last_login_at, disabled_at";
+
+async function adminListUsers(req, res, url) {
+  const term = normalizeSearch(url.searchParams.get("q"));
+  const clauses = [];
+  const params = [];
+  if (term) {
+    params.push(`%${term}%`);
+    clauses.push(`(LOWER(username) LIKE $${params.length} OR LOWER(email) LIKE $${params.length} OR LOWER(display_name) LIKE $${params.length})`);
+  }
+  const statusFilter = url.searchParams.get("status");
+  if (isUserStatus(statusFilter)) {
+    params.push(statusFilter);
+    clauses.push(`status = $${params.length}`);
+  }
+  const roleFilter = url.searchParams.get("role");
+  if (isSystemRole(roleFilter)) {
+    params.push(roleFilter);
+    clauses.push(`system_role = $${params.length}`);
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+  const { rows } = await db.query(
+    `SELECT ${ADMIN_USER_FIELDS} FROM users ${where} ORDER BY created_at DESC LIMIT 500`,
+    params
+  );
+  json(res, 200, { users: rows.map(adminUserView) });
+}
+
+async function adminCreateUser(req, res, actor) {
+  const body = await readBody(req);
+  const username = validAdminUsername(body.username);
+  const email = validEmail(body.email);
+  const displayName = String(body.name || "").trim().slice(0, 190) || username;
+  const role = body.role == null ? "regular" : String(body.role);
+  if (!isSystemRole(role)) throw requestError("ADMIN_ROLE_INVALID", 400);
+
+  const id = uuidv7();
+  const password = crypto.randomBytes(18).toString("base64url");
+  try {
+    await db.query(
+      `INSERT INTO users (id, username, email, display_name, system_role, password_hash, auth_source)
+       VALUES ($1, $2, $3, $4, $5, $6, 'local')`,
+      [id, username, email, displayName, role, await hashPassword(password)]
+    );
+  } catch (err) {
+    if (err.code === "23505") throw requestError("ADMIN_USER_EXISTS", 409);
+    throw err;
+  }
+  await audit({
+    ...sessionActor(req, actor),
+    action: "user.created",
+    targetType: "user",
+    targetId: id,
+    metadata: { username, role, authSource: "local" },
+  });
+  const { rows } = await db.query(`SELECT ${ADMIN_USER_FIELDS} FROM users WHERE id = $1`, [id]);
+  json(res, 201, { user: adminUserView(rows[0]), temporaryPassword: password });
+}
+
+async function adminUpdateUser(req, res, actor, targetId) {
+  const body = await readBody(req);
+  const wantsRole = body.role != null;
+  const wantsStatus = body.status != null;
+  const nextRole = wantsRole ? String(body.role) : null;
+  const nextStatus = wantsStatus ? String(body.status) : null;
+  if (wantsRole && !isSystemRole(nextRole)) throw requestError("ADMIN_ROLE_INVALID", 400);
+  if (wantsStatus && !isUserStatus(nextStatus)) throw requestError("ADMIN_STATUS_INVALID", 400);
+  const nextEmail = body.email != null ? validEmail(body.email) : null;
+  const nextName = body.name != null ? (String(body.name).trim().slice(0, 190) || null) : null;
+
+  const client = await db.connect();
+  let before;
+  let after;
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock($1)", [ADMIN_INVARIANT_LOCK]);
+    const current = await client.query(
+      "SELECT id, username, email, display_name, system_role, status, auth_source FROM users WHERE id = $1 FOR UPDATE",
+      [targetId]
+    );
+    if (!current.rows.length) throw requestError("ADMIN_USER_NOT_FOUND", 404);
+    before = current.rows[0];
+
+    // Protect the last active admin: any change that would drop the active-admin
+    // count to zero is refused, whoever requests it.
+    if (wantsRole || wantsStatus) {
+      const others = await client.query(
+        "SELECT COUNT(*) AS n FROM users WHERE system_role = 'admin' AND status = 'active' AND id <> $1",
+        [targetId]
+      );
+      const wouldStrand = leavesNoActiveAdmin(
+        before,
+        { system_role: nextRole ?? undefined, status: nextStatus ?? undefined },
+        Number(others.rows[0].n)
+      );
+      if (wouldStrand) throw requestError("ADMIN_LAST_ADMIN", 409);
+    }
+
+    const sets = ["updated_at = CURRENT_TIMESTAMP"];
+    const params = [];
+    const add = (fragment, value) => { params.push(value); sets.push(fragment.replace("?", `$${params.length}`)); };
+    if (nextName) add("display_name = ?", nextName);
+    if (nextEmail) add("email = ?", nextEmail);
+    if (wantsRole) add("system_role = ?", nextRole);
+    if (wantsStatus) {
+      add("status = ?", nextStatus);
+      sets.push(nextStatus === "disabled" ? "disabled_at = CURRENT_TIMESTAMP" : "disabled_at = NULL");
+    }
+    // Role and status changes are honoured immediately without a forced logout:
+    // requireUser reads the fresh role on every request, and a disabled account is
+    // refused by the status check. Disabling still bumps the epoch so any parallel
+    // in-flight session is cut at once rather than lingering for one request.
+    if (wantsStatus && nextStatus === "disabled") {
+      sets.push("session_epoch = CURRENT_TIMESTAMP");
+    }
+    params.push(targetId);
+    try {
+      await client.query(`UPDATE users SET ${sets.join(", ")} WHERE id = $${params.length}`, params);
+    } catch (err) {
+      if (err.code === "23505") throw requestError("ADMIN_USER_EXISTS", 409);
+      throw err;
+    }
+    const updated = await client.query(`SELECT ${ADMIN_USER_FIELDS} FROM users WHERE id = $1`, [targetId]);
+    after = updated.rows[0];
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+
+  if (wantsRole && nextRole !== before.system_role) {
+    await audit({ ...sessionActor(req, actor), action: "user.role_changed", targetType: "user", targetId, metadata: { from: before.system_role, to: nextRole } });
+  }
+  if (wantsStatus && nextStatus !== before.status) {
+    await audit({ ...sessionActor(req, actor), action: "user.status_changed", targetType: "user", targetId, metadata: { from: before.status, to: nextStatus } });
+  }
+  json(res, 200, { user: adminUserView(after) });
+}
+
+async function adminResetPassword(req, res, actor, targetId) {
+  const { rows } = await db.query("SELECT id, username, auth_source FROM users WHERE id = $1", [targetId]);
+  if (!rows.length) throw requestError("ADMIN_USER_NOT_FOUND", 404);
+  if (rows[0].auth_source !== "local") throw requestError("ADMIN_NOT_LOCAL_ACCOUNT", 400);
+  const password = crypto.randomBytes(18).toString("base64url");
+  // Bump the epoch so the account's existing sessions end at once.
+  await db.query(
+    "UPDATE users SET password_hash = $1, session_epoch = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = $2",
+    [await hashPassword(password), targetId]
+  );
+  await audit({ ...sessionActor(req, actor), action: "user.password_reset", targetType: "user", targetId });
+  json(res, 200, { ok: true, temporaryPassword: password });
+}
+
+async function handleAdminApi(req, res, url, actor) {
+  requireAdmin(actor);
+  if (url.pathname === ADMIN_USERS_ROUTE) {
+    if (req.method === "GET") return adminListUsers(req, res, url);
+    if (req.method === "POST") return adminCreateUser(req, res, actor);
+  }
+  const resetMatch = url.pathname.match(ADMIN_USER_RESET_ROUTE);
+  if (resetMatch && req.method === "POST") return adminResetPassword(req, res, actor, resetMatch[1]);
+  const userMatch = url.pathname.match(ADMIN_USER_ROUTE);
+  if (userMatch && req.method === "PATCH") return adminUpdateUser(req, res, actor, userMatch[1]);
+  errorJson(res, 404, "ENDPOINT_NOT_FOUND");
+}
 
 async function handleApi(req, res, url) {
   if (req.method === "GET" && url.pathname === "/api/config") {
@@ -2159,7 +2435,7 @@ async function handleApi(req, res, url) {
     const password = String(body.password || "");
     if (!login || !password) return errorJson(res, 400, "AUTH_REQUIRED_FIELDS");
     const { rows } = await db.query(
-      "SELECT id, username, email, display_name, role, password_hash FROM users WHERE LOWER(username) = LOWER($1) OR LOWER(email) = LOWER($2) LIMIT 1",
+      "SELECT id, username, email, display_name, system_role, status, auth_source, session_epoch, password_hash FROM users WHERE LOWER(username) = LOWER($1) OR LOWER(email) = LOWER($2) LIMIT 1",
       [login, login]
     );
     const user = rows[0];
@@ -2182,11 +2458,18 @@ async function handleApi(req, res, url) {
       await failedLogin(user ? "invalid_password" : "unknown_account");
       return errorJson(res, 401, "AUTH_INVALID_CREDENTIALS");
     }
+    // A disabled account is refused only after the password is verified, so the
+    // response does not reveal which accounts exist.
+    if (user.status !== "active") {
+      await failedLogin("account_disabled");
+      return errorJson(res, 403, "AUTH_ACCOUNT_DISABLED");
+    }
     if (passwordCheck.needsRehash) {
       const passwordHash = await hashPassword(password);
       await db.query("UPDATE users SET password_hash = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2", [passwordHash, user.id]);
       user.password_hash = passwordHash;
     }
+    await db.query("UPDATE users SET last_login_at = CURRENT_TIMESTAMP WHERE id = $1", [user.id]);
     await audit({
       action: "auth.login_succeeded",
       actorId: user.id,
@@ -2202,7 +2485,7 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === "POST" && url.pathname === "/api/auth/password") {
-    const sessionUser = requireUser(req);
+    const sessionUser = await requireUser(req);
     if (sessionUser.authMethod !== "local") {
       return errorJson(res, 403, "PASSWORD_LOCAL_LOGIN_REQUIRED");
     }
@@ -2214,7 +2497,7 @@ async function handleApi(req, res, url) {
     if (currentPassword === newPassword) return errorJson(res, 400, "PASSWORD_MUST_DIFFER");
 
     const { rows } = await db.query(
-      "SELECT id, username, email, display_name, role, password_hash FROM users WHERE id = $1 LIMIT 1",
+      "SELECT id, username, email, display_name, system_role, status, auth_source, session_epoch, password_hash FROM users WHERE id = $1 LIMIT 1",
       [sessionUser.sub]
     );
     const user = rows[0];
@@ -2243,11 +2526,13 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === "GET" && url.pathname === "/api/auth/session") {
-    const user = requireUser(req);
+    const user = await requireUser(req);
     return json(res, 200, { user: publicUser(user) });
   }
 
-  const user = requireUser(req);
+  const user = await requireUser(req);
+
+  if (url.pathname.startsWith("/api/admin/")) return handleAdminApi(req, res, url, user);
 
   if (req.method === "GET" && url.pathname === "/api/projects") return listProjects(req, res, user);
   if (req.method === "POST" && url.pathname === "/api/projects/import") return importProjectArchive(req, res, user, url);

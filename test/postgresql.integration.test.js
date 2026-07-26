@@ -19,6 +19,7 @@ const ALL_MIGRATIONS = [
   "005_consolidation_invariants.sql",
   "006_project_files.sql",
   "007_document_versions.sql",
+  "008_server_administration.sql",
 ];
 const silentLogger = { log() {}, warn() {}, error() {} };
 
@@ -44,7 +45,7 @@ async function tempDir(t, prefix) {
 
 async function insertUser(pool, username, email) {
   const { rows } = await pool.query(
-    "INSERT INTO users (id, username, email, display_name, role, password_hash) VALUES ($1, $2, $3, $2, 'admin', 'hash') RETURNING id",
+    "INSERT INTO users (id, username, email, display_name, system_role, password_hash) VALUES ($1, $2, $3, $2, 'admin', 'hash') RETURNING id",
     [uuidv7(), username, email]
   );
   return rows[0].id;
@@ -227,6 +228,57 @@ test("the file-identity ledger enforces its invariants", { skip: !connectionStri
   await pool.query("DELETE FROM projects WHERE id = $1", [projectId]);
   const orphans = await pool.query("SELECT COUNT(*) AS n FROM project_files");
   assert.equal(Number(orphans.rows[0].n), 0);
+});
+
+test("server administration schema enforces roles, status and OIDC identity", { skip: !connectionString }, async (t) => {
+  const pool = await isolatedSchema(t);
+  await runMigrations(pool);
+
+  // The role column was renamed and its vocabulary changed.
+  await assert.rejects(
+    pool.query("INSERT INTO users (id, username, email, display_name, system_role, password_hash) VALUES ($1, 'x', 'x@e.org', 'x', 'user', 'h')", [uuidv7()]),
+    (error) => error.code === "23514"
+  );
+  for (const [column, value] of [["status", "deleted"], ["auth_source", "ldap"]]) {
+    await assert.rejects(
+      pool.query(
+        `INSERT INTO users (id, username, email, display_name, password_hash, ${column}) VALUES ($1, 'y', 'y@e.org', 'y', 'h', $2)`,
+        [uuidv7(), value]
+      ),
+      (error) => error.code === "23514"
+    );
+  }
+
+  // Defaults: a plain insert is an active, regular, local account.
+  const id = uuidv7();
+  await pool.query("INSERT INTO users (id, username, email, display_name, password_hash) VALUES ($1, 'gio', 'gio@e.org', 'gio', 'h')", [id]);
+  const row = await pool.query("SELECT system_role, status, auth_source, session_epoch FROM users WHERE id = $1", [id]);
+  assert.deepEqual(
+    { role: row.rows[0].system_role, status: row.rows[0].status, source: row.rows[0].auth_source },
+    { role: "regular", status: "active", source: "local" }
+  );
+  assert.ok(row.rows[0].session_epoch, "session_epoch defaults to now");
+
+  // The issuer + subject identity is unique when both are present.
+  await pool.query(
+    "INSERT INTO users (id, username, email, display_name, auth_source, oidc_issuer, oidc_subject) VALUES ($1, 'a', 'a@e.org', 'a', 'oidc', 'https://idp', 'sub-1')",
+    [uuidv7()]
+  );
+  await assert.rejects(
+    pool.query(
+      "INSERT INTO users (id, username, email, display_name, auth_source, oidc_issuer, oidc_subject) VALUES ($1, 'b', 'b@e.org', 'b', 'oidc', 'https://idp', 'sub-1')",
+      [uuidv7()]
+    ),
+    (error) => error.code === "23505"
+  );
+  // A different subject at the same issuer is fine, and two local accounts with
+  // NULL issuer/subject do not collide.
+  await pool.query(
+    "INSERT INTO users (id, username, email, display_name, auth_source, oidc_issuer, oidc_subject) VALUES ($1, 'c', 'c@e.org', 'c', 'oidc', 'https://idp', 'sub-2')",
+    [uuidv7()]
+  );
+  await pool.query("INSERT INTO users (id, username, email, display_name, password_hash) VALUES ($1, 'd', 'd@e.org', 'd', 'h')", [uuidv7()]);
+  await pool.query("INSERT INTO users (id, username, email, display_name, password_hash) VALUES ($1, 'e', 'e@e.org', 'e', 'h')", [uuidv7()]);
 });
 
 test("document versions form an append-only history keyed to a stable file id", { skip: !connectionString }, async (t) => {
