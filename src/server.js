@@ -14,6 +14,7 @@ const { recordAuditEvent } = require("./audit");
 const { collectProjectFiles, reconcileProjectFiles } = require("./project-files");
 const { hashContent, isVersionableText, contentChanged } = require("./versions");
 const { isSystemRole, isUserStatus, leavesNoActiveAdmin, normalizeSearch } = require("./admin");
+const { isProjectRole, roleHasCapability, leavesNoOwner } = require("./project-access");
 const { projectStorageKey, resolveProjectStorageDir, relocateProjectStorage } = require("./project-storage");
 const { createZip, extractZip } = require("./zip");
 
@@ -1129,20 +1130,30 @@ function withStorageDir(row) {
   return { ...row, storageDir: resolveProjectStorageDir(DATA_DIR, row.storage_path) };
 }
 
-async function projectForUser(id, userId) {
+// The single authorization chokepoint for a project. Membership is the authority:
+// a non-member cannot tell the project apart from one that does not exist (404),
+// while a member who lacks the capability for this action is told plainly (403).
+// The caller receives the project row, its resolved storage directory and the
+// requester's role. A permission change takes effect at once because this runs on
+// every request, exactly like the per-request account check in requireUser.
+async function authorizeProject(id, user, capability) {
   const { rows } = await db.query(
-    "SELECT id, name, storage_path, created_at, updated_at FROM projects WHERE id = $1 AND user_id = $2",
-    [id, userId]
+    `SELECT p.id, p.name, p.storage_path, p.created_at, p.updated_at, m.role
+     FROM projects p JOIN project_members m ON m.project_id = p.id
+     WHERE p.id = $1 AND m.user_id = $2`,
+    [id, user.sub]
   );
-  if (!rows.length) {
-    throw requestError("PROJECT_NOT_FOUND", 404);
-  }
-  return withStorageDir(rows[0]);
+  if (!rows.length) throw requestError("PROJECT_NOT_FOUND", 404);
+  const row = rows[0];
+  if (!roleHasCapability(row.role, capability)) throw requestError("PROJECT_FORBIDDEN", 403);
+  return { ...withStorageDir(row), role: row.role };
 }
 
 async function listProjects(req, res, user) {
   const { rows } = await db.query(
-    "SELECT id, name, storage_path, created_at, updated_at FROM projects WHERE user_id = $1 ORDER BY updated_at DESC",
+    `SELECT p.id, p.name, p.storage_path, p.created_at, p.updated_at, m.role
+     FROM projects p JOIN project_members m ON m.project_id = p.id
+     WHERE m.user_id = $1 ORDER BY p.updated_at DESC`,
     [user.sub]
   );
   const projects = await Promise.all(rows.map(async (row) => {
@@ -1156,6 +1167,7 @@ async function listProjects(req, res, user) {
     return {
       id: row.id,
       name: row.name,
+      role: row.role,
       createdAt: toMillis(row.created_at),
       updatedAt: toMillis(row.updated_at),
       fileCount,
@@ -1165,8 +1177,160 @@ async function listProjects(req, res, user) {
   json(res, 200, { projects });
 }
 
+// Serializes owner-invariant changes per project, so concurrent role changes on
+// the same project cannot race past the last-owner check.
+const PROJECT_OWNER_LOCK = 4952;
+
+// First release: sharing targets accounts that already exist, found by exact
+// username or email. A missing user is reported so the owner can ask an admin to
+// provision the account; pending invitations for strangers are a later evolution.
+async function resolveMemberUser(identifier) {
+  const value = String(identifier || "").trim();
+  if (!value) throw requestError("MEMBER_IDENTIFIER_REQUIRED", 400);
+  const { rows } = await db.query(
+    "SELECT id, username, email, display_name FROM users WHERE LOWER(username) = LOWER($1) OR LOWER(email) = LOWER($1) LIMIT 1",
+    [value]
+  );
+  if (!rows.length) throw requestError("MEMBER_USER_NOT_FOUND", 404);
+  return rows[0];
+}
+
+function memberView(row) {
+  return {
+    userId: row.user_id,
+    username: row.username,
+    name: row.display_name,
+    email: row.email,
+    role: row.role,
+    invitedBy: row.invited_by || null,
+    createdAt: toMillis(row.created_at),
+  };
+}
+
+async function listProjectMembers(req, res, user, projectId) {
+  await authorizeProject(projectId, user, "read");
+  const { rows } = await db.query(
+    `SELECT m.user_id, m.role, m.invited_by, m.created_at, u.username, u.email, u.display_name
+     FROM project_members m JOIN users u ON u.id = m.user_id
+     WHERE m.project_id = $1 ORDER BY (m.role <> 'owner'), u.username`,
+    [projectId]
+  );
+  json(res, 200, { members: rows.map(memberView) });
+}
+
+async function addProjectMember(req, res, user, projectId) {
+  await authorizeProject(projectId, user, "share");
+  const body = await readBody(req);
+  const role = String(body.role || "");
+  if (!isProjectRole(role)) throw requestError("MEMBER_ROLE_INVALID", 400);
+  const target = await resolveMemberUser(body.identifier);
+  try {
+    await db.query(
+      "INSERT INTO project_members (project_id, user_id, role, invited_by) VALUES ($1, $2, $3, $4)",
+      [projectId, target.id, role, user.sub]
+    );
+  } catch (err) {
+    if (err.code === "23505") throw requestError("MEMBER_ALREADY", 409);
+    throw err;
+  }
+  await audit({
+    ...sessionActor(req, user),
+    action: "project.shared",
+    targetType: "membership",
+    targetId: projectId,
+    metadata: { userId: target.id, username: target.username, role },
+  });
+  json(res, 201, {
+    member: memberView({ user_id: target.id, username: target.username, email: target.email, display_name: target.display_name, role, invited_by: user.sub, created_at: new Date() }),
+  });
+}
+
+async function updateProjectMember(req, res, user, projectId, memberId) {
+  await authorizeProject(projectId, user, "share");
+  const body = await readBody(req);
+  const nextRole = String(body.role || "");
+  if (!isProjectRole(nextRole)) throw requestError("MEMBER_ROLE_INVALID", 400);
+  let previousRole;
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock($1, hashtext($2))", [PROJECT_OWNER_LOCK, projectId]);
+    const current = await client.query(
+      "SELECT role FROM project_members WHERE project_id = $1 AND user_id = $2 FOR UPDATE",
+      [projectId, memberId]
+    );
+    if (!current.rows.length) throw requestError("MEMBER_NOT_FOUND", 404);
+    previousRole = current.rows[0].role;
+    const others = await client.query(
+      "SELECT COUNT(*) AS n FROM project_members WHERE project_id = $1 AND role = 'owner' AND user_id <> $2",
+      [projectId, memberId]
+    );
+    if (leavesNoOwner(previousRole, nextRole, Number(others.rows[0].n))) throw requestError("PROJECT_LAST_OWNER", 409);
+    await client.query(
+      "UPDATE project_members SET role = $3, updated_at = CURRENT_TIMESTAMP WHERE project_id = $1 AND user_id = $2",
+      [projectId, memberId, nextRole]
+    );
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+  if (nextRole !== previousRole) {
+    await audit({
+      ...sessionActor(req, user),
+      action: "project.member_role_changed",
+      targetType: "membership",
+      targetId: projectId,
+      metadata: { userId: memberId, from: previousRole, to: nextRole },
+    });
+  }
+  json(res, 200, { ok: true });
+}
+
+async function removeProjectMember(req, res, user, projectId, memberId) {
+  // Owners remove anyone; any member may remove themselves (leave the project).
+  const selfLeave = memberId === user.sub;
+  await authorizeProject(projectId, user, selfLeave ? "read" : "share");
+  const client = await db.connect();
+  let removed = false;
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock($1, hashtext($2))", [PROJECT_OWNER_LOCK, projectId]);
+    const current = await client.query(
+      "SELECT role FROM project_members WHERE project_id = $1 AND user_id = $2 FOR UPDATE",
+      [projectId, memberId]
+    );
+    if (!current.rows.length) throw requestError("MEMBER_NOT_FOUND", 404);
+    const others = await client.query(
+      "SELECT COUNT(*) AS n FROM project_members WHERE project_id = $1 AND role = 'owner' AND user_id <> $2",
+      [projectId, memberId]
+    );
+    if (leavesNoOwner(current.rows[0].role, null, Number(others.rows[0].n))) throw requestError("PROJECT_LAST_OWNER", 409);
+    await client.query("DELETE FROM project_members WHERE project_id = $1 AND user_id = $2", [projectId, memberId]);
+    removed = true;
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+  if (removed) {
+    await audit({
+      ...sessionActor(req, user),
+      action: selfLeave ? "project.left" : "project.unshared",
+      targetType: "membership",
+      targetId: projectId,
+      metadata: { userId: memberId },
+    });
+  }
+  json(res, 200, { ok: true });
+}
+
 async function getProject(req, res, user, id) {
-  const row = await projectForUser(id, user.sub);
+  const row = await authorizeProject(id, user, "read");
   const data = await readProjectFile(row.storageDir);
   if (!data.project) data.project = { name: row.name, nodes: [] };
   data.project.name = row.name;
@@ -1280,7 +1444,7 @@ async function fileForProject(projectId, fileId) {
 }
 
 async function checkpointProject(req, res, user, id) {
-  const row = await projectForUser(id, user.sub);
+  const row = await authorizeProject(id, user, "write");
   const body = await readBody(req);
   // Persist the editor state first when provided, so the checkpoint reflects it.
   if (body.data && typeof body.data === "object") {
@@ -1290,7 +1454,7 @@ async function checkpointProject(req, res, user, id) {
     data.projectType = inferProjectType(data);
     const { renames } = await syncProjectFiles(id, data);
     await writeProjectFile(row.storageDir, data, renames);
-    await db.query("UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = $1 AND user_id = $2", [id, user.sub]);
+    await db.query("UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = $1", [id]);
   }
   const { created } = await captureProjectCheckpoint({ projectId: id, storageDir: row.storageDir, user, reason: "manual" });
   await audit({
@@ -1304,7 +1468,7 @@ async function checkpointProject(req, res, user, id) {
 }
 
 async function listFileVersions(req, res, user, projectId, fileId) {
-  await projectForUser(projectId, user.sub);
+  await authorizeProject(projectId, user, "read");
   await fileForProject(projectId, fileId);
   const { rows } = await db.query(
     `SELECT id, parent_version_id, author_id, author_label, created_at, reason, content_hash, size
@@ -1326,7 +1490,7 @@ async function listFileVersions(req, res, user, projectId, fileId) {
 }
 
 async function getFileVersion(req, res, user, projectId, fileId, versionId) {
-  await projectForUser(projectId, user.sub);
+  await authorizeProject(projectId, user, "read");
   await fileForProject(projectId, fileId);
   const { rows } = await db.query(
     "SELECT id, created_at, reason, author_label, content_hash, size, content FROM document_versions WHERE id = $1 AND file_id = $2",
@@ -1346,7 +1510,7 @@ async function getFileVersion(req, res, user, projectId, fileId, versionId) {
 }
 
 async function restoreFileVersion(req, res, user, projectId, fileId, versionId) {
-  const project = await projectForUser(projectId, user.sub);
+  const project = await authorizeProject(projectId, user, "write");
   const file = await fileForProject(projectId, fileId);
   if (file.deleted_at) throw requestError("FILE_NOT_FOUND", 404);
   const { rows } = await db.query(
@@ -1370,7 +1534,7 @@ async function restoreFileVersion(req, res, user, projectId, fileId, versionId) 
     reason: "rollback",
     content: target.content,
   });
-  await db.query("UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = $1 AND user_id = $2", [projectId, user.sub]);
+  await db.query("UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = $1", [projectId]);
   await audit({
     ...sessionActor(req, user),
     action: "revision.restored",
@@ -1398,10 +1562,15 @@ async function createProject(req, res, user) {
   data.updatedAt = now;
   // The project row must exist before the ledger references it, and the manifest
   // must be written after ids are stamped. On any failure the whole project is
-  // rolled back so a half-created project never lingers.
+  // rolled back so a half-created project never lingers. The creator becomes the
+  // project's first owner through a membership row, the authority for access.
   await db.query(
-    "INSERT INTO projects (id, user_id, name, storage_path) VALUES ($1, $2, $3, $4)",
+    "INSERT INTO projects (id, created_by, name, storage_path) VALUES ($1, $2, $3, $4)",
     [id, user.sub, name, storageKey]
+  );
+  await db.query(
+    "INSERT INTO project_members (project_id, user_id, role, invited_by) VALUES ($1, $2, 'owner', $2)",
+    [id, user.sub]
   );
   try {
     await syncProjectFiles(id, data);
@@ -1426,7 +1595,7 @@ async function createProject(req, res, user) {
 
 async function updateProject(req, res, user, id) {
   const body = await readBody(req);
-  const row = await projectForUser(id, user.sub);
+  const row = await authorizeProject(id, user, "write");
   const name = body.name == null ? row.name : cleanName(body.name);
   let data;
   if (body.data && typeof body.data === "object") data = body.data;
@@ -1443,7 +1612,7 @@ async function updateProject(req, res, user, id) {
   data.updatedAt = Date.now();
   const { renames } = await syncProjectFiles(id, data);
   await writeProjectFile(row.storageDir, data, renames);
-  await db.query("UPDATE projects SET name = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 AND user_id = $3", [name, id, user.sub]);
+  await db.query("UPDATE projects SET name = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2", [name, id]);
   json(res, 200, {
     project: { id, name, projectType: data.projectType, createdAt: data.createdAt, updatedAt: data.updatedAt, fileCount: countFiles(data) },
     data: { id, ...data },
@@ -1451,8 +1620,8 @@ async function updateProject(req, res, user, id) {
 }
 
 async function deleteProject(req, res, user, id) {
-  const row = await projectForUser(id, user.sub);
-  await db.query("DELETE FROM projects WHERE id = $1 AND user_id = $2", [id, user.sub]);
+  const row = await authorizeProject(id, user, "delete");
+  await db.query("DELETE FROM projects WHERE id = $1", [id]);
   await fs.rm(row.storageDir, { recursive: true, force: true });
   await audit({
     ...sessionActor(req, user),
@@ -1465,7 +1634,7 @@ async function deleteProject(req, res, user, id) {
 }
 
 async function downloadProjectFile(req, res, user, id, url) {
-  const row = await projectForUser(id, user.sub);
+  const row = await authorizeProject(id, user, "read");
   const file = await resolveProjectFile(row.storageDir, url.searchParams.get("path"));
   const fallbackName = file.name.replace(/[^A-Za-z0-9._-]/g, "_") || "download";
   res.writeHead(200, {
@@ -1484,7 +1653,7 @@ async function downloadProjectFile(req, res, user, id, url) {
 }
 
 async function downloadProjectArchive(req, res, user, id) {
-  const row = await projectForUser(id, user.sub);
+  const row = await authorizeProject(id, user, "read");
   const archive = await buildProjectArchive(row.storageDir, row.name);
   const fileName = `${slugify(row.name)}.zip`;
   res.writeHead(200, {
@@ -1588,9 +1757,14 @@ async function importProjectArchive(req, res, user, url) {
     }
     // The project row precedes the ledger it is referenced by; the ledger sync
     // stamps canonical ids into the tree, then the manifest is persisted with them.
+    // The importer becomes the first owner.
     await db.query(
-      "INSERT INTO projects (id, user_id, name, storage_path) VALUES ($1, $2, $3, $4)",
+      "INSERT INTO projects (id, created_by, name, storage_path) VALUES ($1, $2, $3, $4)",
       [id, user.sub, name, storageKey]
+    );
+    await db.query(
+      "INSERT INTO project_members (project_id, user_id, role, invited_by) VALUES ($1, $2, 'owner', $2)",
+      [id, user.sub]
     );
     await syncProjectFiles(id, data);
     await writeProjectManifest(storagePath, data);
@@ -2060,7 +2234,7 @@ async function readCompileArtifacts(outputDir, jobname, format) {
 
 async function compileProject(req, res, user, id) {
   const body = await readBody(req);
-  const row = await projectForUser(id, user.sub);
+  const row = await authorizeProject(id, user, "compile");
   const name = body.name == null ? row.name : cleanName(body.name);
   const data = body.data && typeof body.data === "object" ? body.data : await readProjectFile(row.storageDir);
   data.project = data.project && Array.isArray(data.project.nodes) ? data.project : { nodes: [] };
@@ -2092,7 +2266,7 @@ async function compileProject(req, res, user, id) {
   data.updatedAt = Date.now();
   const { renames } = await syncProjectFiles(id, data);
   await writeProjectFile(row.storageDir, data, renames);
-  await db.query("UPDATE projects SET name = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 AND user_id = $3", [name, id, user.sub]);
+  await db.query("UPDATE projects SET name = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2", [name, id]);
   // Checkpoint the sources that produced this build, so a compilation is a point
   // in history and phase 4 can link an output to the revision it came from.
   await captureProjectCheckpoint({ projectId: id, storageDir: row.storageDir, user, reason: "compile" });
@@ -2146,6 +2320,8 @@ const PROJECT_FILE_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/files/do
 const ADMIN_USERS_ROUTE = "/api/admin/users";
 const ADMIN_USER_ROUTE = new RegExp(`^/api/admin/users/(${UUID_PATTERN})$`);
 const ADMIN_USER_RESET_ROUTE = new RegExp(`^/api/admin/users/(${UUID_PATTERN})/reset-password$`);
+const PROJECT_MEMBERS_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/members$`);
+const PROJECT_MEMBER_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/members/(${UUID_PATTERN})$`);
 const PROJECT_CHECKPOINT_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/checkpoint$`);
 const FILE_VERSIONS_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/files/(${UUID_PATTERN})/versions$`);
 const FILE_VERSION_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/files/(${UUID_PATTERN})/versions/(${UUID_PATTERN})$`);
@@ -2546,6 +2722,18 @@ async function handleApi(req, res, url) {
 
   const fileDownloadMatch = url.pathname.match(PROJECT_FILE_ROUTE);
   if (fileDownloadMatch && req.method === "GET") return downloadProjectFile(req, res, user, fileDownloadMatch[1], url);
+
+  const memberMatch = url.pathname.match(PROJECT_MEMBER_ROUTE);
+  if (memberMatch) {
+    if (req.method === "PATCH") return updateProjectMember(req, res, user, memberMatch[1], memberMatch[2]);
+    if (req.method === "DELETE") return removeProjectMember(req, res, user, memberMatch[1], memberMatch[2]);
+  }
+
+  const membersMatch = url.pathname.match(PROJECT_MEMBERS_ROUTE);
+  if (membersMatch) {
+    if (req.method === "GET") return listProjectMembers(req, res, user, membersMatch[1]);
+    if (req.method === "POST") return addProjectMember(req, res, user, membersMatch[1]);
+  }
 
   const checkpointMatch = url.pathname.match(PROJECT_CHECKPOINT_ROUTE);
   if (checkpointMatch && req.method === "POST") return checkpointProject(req, res, user, checkpointMatch[1]);

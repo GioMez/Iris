@@ -708,6 +708,62 @@ html:not(.iris-inproject) #projChip{display:none}
   .picker-user-txt{display:none}
 }
 
+/* ===================== Admin · users ===================== */
+/* The admin console is a peer overlay to the project chooser, revealed only for
+   the admin server role. Server-side authorization is the real gate; the class
+   hides the entry points from everyone else. */
+.admin-only{display:none}
+html[data-role="admin"] .admin-only{display:inline-flex}
+.admin-screen{position:fixed;inset:0;z-index:95;display:none;overflow-y:auto;padding:46px 30px 60px;
+  background:var(--bg);background-image:radial-gradient(circle at 1px 1px,#ffffff0a 1px,transparent 0);background-size:24px 24px}
+html.iris-inadmin[data-role="admin"] .admin-screen{display:block}
+#adminBack{border:1px solid var(--border)}
+
+.admin-filters{display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap}
+.admin-search{position:relative;flex:1 1 260px;display:flex;align-items:center}
+.admin-search .ic{position:absolute;left:11px;color:var(--txt-dim);pointer-events:none}
+.admin-search input{width:100%;height:40px;padding:0 12px 0 34px;background:var(--panel);border:1px solid var(--border);
+  border-radius:10px;color:var(--txt);font-size:13.5px}
+.admin-filters select{height:40px;flex:0 0 auto}
+.admin-search input:focus,.admin-filters select:focus{outline:none;border-color:rgba(125,207,255,.5)}
+
+.admin-table-wrap{border:1px solid var(--border);border-radius:13px;overflow:hidden;background:var(--panel)}
+.admin-table{width:100%;border-collapse:collapse;font-size:13px}
+.admin-table th{text-align:left;font-weight:600;color:var(--txt-mut);font-size:11.5px;text-transform:uppercase;
+  letter-spacing:.4px;padding:12px 14px;border-bottom:1px solid var(--border);background:var(--panel-2)}
+.admin-table td{padding:11px 14px;border-bottom:1px solid var(--border);vertical-align:middle}
+.admin-table tr:last-child td{border-bottom:0}
+.admin-table tbody tr{transition:background .12s}
+.admin-table tbody tr:hover{background:var(--panel-2)}
+.admin-col-actions{text-align:right;width:1%}
+.admin-user-cell{display:flex;align-items:center;gap:11px}
+.admin-user-cell .avatar{width:32px;height:32px;border-radius:9px;background:linear-gradient(145deg,var(--accent),#6a8cff);
+  color:#0d1326;display:grid;place-items:center;font-size:12px;font-weight:700;font-family:var(--font-code);flex:0 0 auto}
+.admin-user-name{color:var(--txt);font-weight:500}
+.admin-user-sub{color:var(--txt-mut);font-family:var(--font-code);font-size:11.5px}
+.admin-me-tag{color:var(--txt-dim);font-size:11px;font-family:var(--font-code)}
+.admin-badge{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:999px;font-size:11.5px;
+  font-weight:600;border:1px solid transparent;white-space:nowrap}
+.admin-badge.role-admin{background:rgba(125,207,255,.12);color:var(--accent);border-color:rgba(125,207,255,.22)}
+.admin-badge.role-regular{background:var(--panel-2);color:var(--txt-mut);border-color:var(--border)}
+.admin-badge.status-active{background:rgba(120,200,140,.12);color:var(--semantic-success);border-color:rgba(120,200,140,.22)}
+.admin-badge.status-disabled{background:rgba(230,120,120,.12);color:var(--semantic-danger);border-color:rgba(230,120,120,.22)}
+.admin-source{color:var(--txt-mut);font-family:var(--font-code);font-size:11.5px}
+.admin-time{color:var(--txt-mut);font-size:12px}
+.admin-row-edit{border:1px solid var(--border);background:transparent;color:var(--txt-mut);border-radius:8px;
+  height:30px;padding:0 11px;cursor:pointer;display:inline-flex;align-items:center;gap:6px;font-size:12px;transition:.12s}
+.admin-row-edit:hover{border-color:var(--accent);color:var(--txt)}
+.admin-edit-id{font-family:var(--font-code);font-size:12px;color:var(--txt-mut);margin-bottom:14px;word-break:break-all}
+.admin-reset{margin-top:16px;padding-top:14px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:6px;align-items:flex-start}
+.admin-creds{margin:12px 0;border:1px solid var(--border);border-radius:10px;overflow:hidden}
+.admin-creds-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 13px}
+.admin-creds-row+.admin-creds-row{border-top:1px solid var(--border)}
+.admin-creds-row code{font-family:var(--font-code);font-size:13px;color:var(--txt);user-select:all}
+.visually-hidden{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+@media(max-width:640px){
+  .admin-table th.admin-hide-sm,.admin-table td.admin-hide-sm{display:none}
+}
+
 /* Settings become a single-open accordion on narrow viewports. */
 @media(max-width:700px){
   .scrim:has(.settings-modal){padding:10px}

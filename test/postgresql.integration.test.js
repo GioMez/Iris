@@ -20,6 +20,7 @@ const ALL_MIGRATIONS = [
   "006_project_files.sql",
   "007_document_versions.sql",
   "008_server_administration.sql",
+  "009_project_members.sql",
 ];
 const silentLogger = { log() {}, warn() {}, error() {} };
 
@@ -78,14 +79,14 @@ test("PostgreSQL migrations enforce Iris data invariants", { skip: !connectionSt
 
   const projectId = uuidv7();
   await pool.query(
-    "INSERT INTO projects (id, user_id, name, storage_path) VALUES ($1, $2, $3, $4)",
+    "INSERT INTO projects (id, created_by, name, storage_path) VALUES ($1, $2, $3, $4)",
     [projectId, userId, "Score", projectStorageKey(projectId)]
   );
   // Storage locations must stay relative to DATA_DIR and inside it.
   for (const invalid of ["/srv/iris/data/projects/x", "", "projects/../escape", "C:\\iris\\projects"]) {
     await assert.rejects(
       pool.query(
-        "INSERT INTO projects (id, user_id, name, storage_path) VALUES ($1, $2, $3, $4)",
+        "INSERT INTO projects (id, created_by, name, storage_path) VALUES ($1, $2, $3, $4)",
         [uuidv7(), userId, "Bad", invalid]
       ),
       (error) => error.code === "23514"
@@ -93,7 +94,7 @@ test("PostgreSQL migrations enforce Iris data invariants", { skip: !connectionSt
   }
   await assert.rejects(
     pool.query(
-      "INSERT INTO projects (id, user_id, name, storage_path) VALUES ($1, $2, $3, $4)",
+      "INSERT INTO projects (id, created_by, name, storage_path) VALUES ($1, $2, $3, $4)",
       [uuidv7(), userId, "Mismatched", projectStorageKey(projectId)]
     ),
     (error) => error.code === "23514"
@@ -101,15 +102,18 @@ test("PostgreSQL migrations enforce Iris data invariants", { skip: !connectionSt
   // The uuid type rejects malformed identifiers without a CHECK constraint.
   await assert.rejects(
     pool.query(
-      "INSERT INTO projects (id, user_id, name, storage_path) VALUES ($1, $2, $3, $4)",
+      "INSERT INTO projects (id, created_by, name, storage_path) VALUES ($1, $2, $3, $4)",
       ["not-a-uuid", userId, "Bad", "projects/x"]
     ),
     (error) => error.code === "22P02"
   );
 
+  // Deleting the creator no longer removes the project: created_by is a historical
+  // pointer set to NULL, and the project lives on through its memberships.
   await pool.query("DELETE FROM users WHERE id = $1", [userId]);
-  const projects = await pool.query("SELECT COUNT(*) AS n FROM projects");
-  assert.equal(Number(projects.rows[0].n), 0);
+  const projects = await pool.query("SELECT id, created_by FROM projects");
+  assert.equal(projects.rows.length, 1);
+  assert.equal(projects.rows[0].created_by, null);
 });
 
 test("the audit trail outlives the accounts it describes", { skip: !connectionString }, async (t) => {
@@ -183,7 +187,7 @@ test("the file-identity ledger enforces its invariants", { skip: !connectionStri
   const userId = await insertUser(pool, "gio", "gio@example.org");
   const projectId = uuidv7();
   await pool.query(
-    "INSERT INTO projects (id, user_id, name, storage_path) VALUES ($1, $2, $3, $4)",
+    "INSERT INTO projects (id, created_by, name, storage_path) VALUES ($1, $2, $3, $4)",
     [projectId, userId, "Score", projectStorageKey(projectId)]
   );
 
@@ -228,6 +232,55 @@ test("the file-identity ledger enforces its invariants", { skip: !connectionStri
   await pool.query("DELETE FROM projects WHERE id = $1", [projectId]);
   const orphans = await pool.query("SELECT COUNT(*) AS n FROM project_files");
   assert.equal(Number(orphans.rows[0].n), 0);
+});
+
+test("project membership is the authority for ownership and cascades correctly", { skip: !connectionString }, async (t) => {
+  const pool = await isolatedSchema(t);
+  await runMigrations(pool);
+  const owner = await insertUser(pool, "owner", "owner@example.org");
+  const editor = await insertUser(pool, "editor", "editor@example.org");
+  const projectId = uuidv7();
+  await pool.query(
+    "INSERT INTO projects (id, created_by, name, storage_path) VALUES ($1, $2, 'Score', $3)",
+    [projectId, owner, projectStorageKey(projectId)]
+  );
+  await pool.query("INSERT INTO project_members (project_id, user_id, role, invited_by) VALUES ($1, $2, 'owner', $2)", [projectId, owner]);
+  await pool.query("INSERT INTO project_members (project_id, user_id, role, invited_by) VALUES ($1, $2, 'editor', $3)", [projectId, editor, owner]);
+
+  // A user has at most one role per project, and roles are constrained.
+  await assert.rejects(
+    pool.query("INSERT INTO project_members (project_id, user_id, role) VALUES ($1, $2, 'viewer')", [projectId, editor]),
+    (error) => error.code === "23505"
+  );
+  await assert.rejects(
+    pool.query("INSERT INTO project_members (project_id, user_id, role) VALUES ($1, $2, 'admin')", [projectId, uuidv7()]),
+    (error) => error.code === "23514"
+  );
+
+  // Removing a member (the editor) does not touch the project or the owner.
+  await pool.query("DELETE FROM users WHERE id = $1", [editor]);
+  const afterEditor = await pool.query("SELECT COUNT(*) AS n FROM project_members WHERE project_id = $1", [projectId]);
+  assert.equal(Number(afterEditor.rows[0].n), 1);
+  const projectStillThere = await pool.query("SELECT created_by FROM projects WHERE id = $1", [projectId]);
+  assert.equal(projectStillThere.rows[0].created_by, owner);
+
+  // Deleting the creator keeps the project (created_by → NULL) but removes their
+  // membership; ownership would need transfer first, which the app enforces.
+  await pool.query("DELETE FROM users WHERE id = $1", [owner]);
+  const afterOwner = await pool.query("SELECT created_by FROM projects WHERE id = $1", [projectId]);
+  assert.equal(afterOwner.rows.length, 1);
+  assert.equal(afterOwner.rows[0].created_by, null);
+  const members = await pool.query("SELECT COUNT(*) AS n FROM project_members WHERE project_id = $1", [projectId]);
+  assert.equal(Number(members.rows[0].n), 0);
+
+  // Deleting the project cascades whatever memberships remain.
+  const p2 = uuidv7();
+  const u2 = await insertUser(pool, "solo", "solo@example.org");
+  await pool.query("INSERT INTO projects (id, created_by, name, storage_path) VALUES ($1, $2, 'P2', $3)", [p2, u2, projectStorageKey(p2)]);
+  await pool.query("INSERT INTO project_members (project_id, user_id, role) VALUES ($1, $2, 'owner')", [p2, u2]);
+  await pool.query("DELETE FROM projects WHERE id = $1", [p2]);
+  const orphanMembers = await pool.query("SELECT COUNT(*) AS n FROM project_members WHERE project_id = $1", [p2]);
+  assert.equal(Number(orphanMembers.rows[0].n), 0);
 });
 
 test("server administration schema enforces roles, status and OIDC identity", { skip: !connectionString }, async (t) => {
@@ -287,7 +340,7 @@ test("document versions form an append-only history keyed to a stable file id", 
   const userId = await insertUser(pool, "gio", "gio@example.org");
   const projectId = uuidv7();
   await pool.query(
-    "INSERT INTO projects (id, user_id, name, storage_path) VALUES ($1, $2, $3, $4)",
+    "INSERT INTO projects (id, created_by, name, storage_path) VALUES ($1, $2, $3, $4)",
     [projectId, userId, "Score", projectStorageKey(projectId)]
   );
   const fileId = uuidv7();
@@ -423,7 +476,7 @@ test("migration 004 rewrites every identifier and its references", { skip: !conn
   await runMigrations(pool, MIGRATIONS_DIR);
 
   const user = (await pool.query("SELECT id, created_at FROM users")).rows[0];
-  const project = (await pool.query("SELECT id, user_id, storage_path, legacy_storage_path FROM projects")).rows[0];
+  const project = (await pool.query("SELECT id, created_by, storage_path, legacy_storage_path FROM projects")).rows[0];
 
   assert.ok(isUuid(user.id) && isUuid(project.id), "identifiers became uuids");
   assert.equal(user.id[14], "7", "user id is version 7");
@@ -431,8 +484,11 @@ test("migration 004 rewrites every identifier and its references", { skip: !conn
   // The backfilled id embeds the row's own creation time, so ids stay time-ordered.
   assert.equal(uuidTimestamp(user.id).getTime(), new Date(user.created_at).getTime());
 
-  assert.equal(project.user_id, user.id, "the foreign key follows the rewrite");
+  assert.equal(project.created_by, user.id, "the foreign key follows the rewrite");
   assert.equal(project.storage_path, projectStorageKey(project.id));
+  // Migration 009 seeded ownership from the migrated single-owner column.
+  const owner = await pool.query("SELECT role FROM project_members WHERE project_id = $1 AND user_id = $2", [project.id, user.id]);
+  assert.equal(owner.rows[0].role, "owner");
   assert.equal(project.legacy_storage_path, `projects/${legacyId}`);
 
   const events = await pool.query("SELECT action, actor_id, target_type, target_id FROM audit_events ORDER BY id");
@@ -448,19 +504,19 @@ test("migration 004 rewrites every identifier and its references", { skip: !conn
     "SELECT indexname FROM pg_indexes WHERE schemaname = current_schema() ORDER BY indexname"
   );
   const names = indexes.rows.map((row) => row.indexname);
-  for (const expected of ["idx_projects_user_updated", "idx_audit_events_actor", "uq_users_username_ci"]) {
+  for (const expected of ["idx_projects_created_by", "idx_audit_events_actor", "uq_users_username_ci"]) {
     assert.ok(names.includes(expected), `missing index ${expected}: ${names.join(", ")}`);
   }
 
   // Constraints survive the column swap.
   await assert.rejects(
-    pool.query("INSERT INTO projects (id, user_id, name, storage_path) VALUES ($1, $2, 'x', '/absolute')", [uuidv7(), user.id]),
+    pool.query("INSERT INTO projects (id, created_by, name, storage_path) VALUES ($1, $2, 'x', '/absolute')", [uuidv7(), user.id]),
     (error) => error.code === "23514"
   );
   const orphanProjectId = uuidv7();
   await assert.rejects(
     pool.query(
-      "INSERT INTO projects (id, user_id, name, storage_path) VALUES ($1, $2, 'x', $3)",
+      "INSERT INTO projects (id, created_by, name, storage_path) VALUES ($1, $2, 'x', $3)",
       [orphanProjectId, uuidv7(), projectStorageKey(orphanProjectId)]
     ),
     (error) => error.code === "23503"

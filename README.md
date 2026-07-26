@@ -544,6 +544,38 @@ content hashes before removing the source. If an interrupted copy leaves data at
 both locations, the command stops and names the project for manual comparison
 rather than guessing which copy to keep.
 
+## Project sharing
+
+A project is shared through memberships, each carrying a **project role**
+independent of the server role:
+
+| Role | Read / download | Edit | Compile | Manage sharing | Delete project |
+| --- | :---: | :---: | :---: | :---: | :---: |
+| Owner | yes | yes | yes | yes | yes |
+| Editor | yes | yes | yes | no | no |
+| Viewer | yes | no | no | no | no |
+
+Membership is the single authority for access: `project_members` decides who may
+do what, and `projects.created_by` is kept only as historical provenance.
+Endpoints check the required capability on every request, so a permission change
+takes effect immediately — a removed collaborator loses access on their next
+request. A non-member cannot tell a project apart from one that does not exist
+(the API answers `404`), while a member attempting an action above their role is
+told plainly (`403`). A server admin gets no automatic access to project contents.
+
+Projects can have several owners, with an invariant mirroring the last-admin rule:
+at least one owner always remains, so the last owner cannot be demoted or leave.
+Promoting someone to owner is an explicit, owner-only action. Sharing changes are
+recorded in the audit trail.
+
+Sharing targets accounts that already exist, found by exact username or verified
+email; the effective grant always references the user's immutable id. If no
+account matches, the owner is asked to have an administrator provision one — there
+are no public links and no pending invitations for strangers in this release.
+
+The sharing endpoints are `GET/POST /api/projects/:id/members` and
+`PATCH/DELETE /api/projects/:id/members/:userId`.
+
 ## Server administration
 
 Iris distinguishes two authorization levels. The **server role** (`admin` or
@@ -584,8 +616,8 @@ name and credentials may remain under the provider.
 
 Administrative and destructive actions are appended to the `audit_events` table:
 sign-ins and failed sign-in attempts, account creation, role and status changes,
-password changes and resets, project creation, import and deletion, and file
-checkpoints and rollbacks.
+password changes and resets, project creation, import and deletion, sharing
+changes (add, role change, removal, leaving), and file checkpoints and rollbacks.
 
 Each event records the action, its outcome, the actor, the target, the client
 address and a small JSON object of context. Attribution is meant to outlive the

@@ -31,6 +31,10 @@
 
   function applyUserUI(u) {
     currentUser = u;
+    // The server role gates the admin console: CSS hides admin-only controls and
+    // IrisAdmin reads this to decide what to load.
+    document.documentElement.dataset.role = u.role || "regular";
+    document.documentElement.dataset.uid = u.id || "";
     const ini = initials(u.name);
     $("userAvatar").textContent = ini;
     $("userName").textContent = u.name;
@@ -51,12 +55,17 @@
     const app = document.querySelector(".app");
     if (app) app.inert = false;
     if (window.IrisProjects) window.IrisProjects.showPicker();
+    // Role is now stamped; let the admin console honour a direct #admin link.
+    if (window.IrisAdmin) window.IrisAdmin.boot();
   }
 
   function showLogin() {
     if (window.IrisProjects) window.IrisProjects.onLogout();
+    if (window.IrisAdmin) window.IrisAdmin.close();
     document.documentElement.classList.remove("iris-authed");
     document.documentElement.classList.remove("iris-inproject");
+    delete document.documentElement.dataset.role;
+    delete document.documentElement.dataset.uid;
     currentUser = null;
     const app = document.querySelector(".app");
     if (app) app.inert = true;

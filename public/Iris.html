@@ -540,6 +540,7 @@
           <div class="pu-name" id="pkName">–</div>
           <div class="pu-email" id="pkEmail">–</div>
         </div>
+        <button class="tbtn admin-only" id="pkAdmin" title="User administration" data-i18n-title="admin.open"><span class="ic" data-icon="shield-lock"></span><span data-i18n="admin.usersShort">Users</span></button>
         <button class="tbtn" id="pkLogout" title="Sign out" data-i18n-title="account.signOut"><span class="ic" data-icon="logout"></span><span data-i18n="account.exit">Exit</span></button>
       </div>
     </header>
@@ -564,6 +565,169 @@
       <div class="pe-title" data-i18n="projects.empty">No projects</div>
       <div class="pe-sub" data-i18n="projects.emptyDescription">Create your first project to start writing in LaTeX or LilyPond.</div>
       <button class="btn cta" id="pkNewEmpty"><span class="ic" data-icon="plus"></span><span data-i18n="projects.newButton">New project</span></button>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== ADMIN · USERS ===================== -->
+<div class="admin-screen" id="adminScreen">
+  <div class="picker-wrap">
+    <header class="picker-top">
+      <div class="login-brand">
+        <div class="mark"><img src="iris_logo_w.svg" alt=""></div>
+        <div class="brand-label"><img class="brand-wordmark" src="iris_text_logo_w.svg" alt="Iris"> <span class="v">Beta 1</span></div>
+      </div>
+      <button class="tbtn" id="adminBack" title="Back to projects" data-i18n-title="admin.back"><span class="ic" data-icon="arrow-left"></span><span data-i18n="toolbar.projects">Projects</span></button>
+    </header>
+
+    <div class="picker-head">
+      <div>
+        <h1 class="picker-title" data-i18n="admin.title">User administration</h1>
+        <p class="picker-sub" data-i18n="admin.subtitle">Create accounts, change roles, and enable or disable access.</p>
+      </div>
+      <div class="picker-actions">
+        <button class="btn cta" id="adminNew"><span class="ic" data-icon="plus"></span><span data-i18n="admin.newUser">New user</span></button>
+      </div>
+    </div>
+
+    <div class="admin-filters">
+      <div class="admin-search">
+        <span class="ic" data-icon="search"></span>
+        <input id="adminSearch" type="search" placeholder="Search by name, username, or email" data-i18n-placeholder="admin.searchPlaceholder" spellcheck="false" autocomplete="off">
+      </div>
+      <select class="input" id="adminRoleFilter" aria-label="Filter by role" data-i18n-aria-label="admin.filterRole">
+        <option value="" data-i18n="admin.allRoles">All roles</option>
+        <option value="admin" data-i18n="admin.roleAdmin">Admin</option>
+        <option value="regular" data-i18n="admin.roleRegular">Regular</option>
+      </select>
+      <select class="input" id="adminStatusFilter" aria-label="Filter by status" data-i18n-aria-label="admin.filterStatus">
+        <option value="" data-i18n="admin.allStatuses">All statuses</option>
+        <option value="active" data-i18n="admin.statusActive">Active</option>
+        <option value="disabled" data-i18n="admin.statusDisabled">Disabled</option>
+      </select>
+    </div>
+
+    <div class="picker-import-status" id="adminStatusMsg" role="status" aria-live="polite"></div>
+
+    <div class="admin-table-wrap">
+      <table class="admin-table">
+        <thead>
+          <tr>
+            <th data-i18n="admin.colUser">User</th>
+            <th data-i18n="admin.colRole">Role</th>
+            <th data-i18n="admin.colStatus">Status</th>
+            <th data-i18n="admin.colSource">Sign-in</th>
+            <th data-i18n="admin.colLastLogin">Last sign-in</th>
+            <th class="admin-col-actions"><span class="visually-hidden" data-i18n="admin.colActions">Actions</span></th>
+          </tr>
+        </thead>
+        <tbody id="adminRows"></tbody>
+      </table>
+      <div class="picker-empty" id="adminEmpty" style="display:none">
+        <div class="pe-title" data-i18n="admin.noUsers">No matching users</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== ADMIN · CREATE USER ===================== -->
+<div class="scrim" id="adminCreateModal">
+  <div class="modal narrow">
+    <div class="m-head">
+      <h3 data-i18n="admin.newUser">New user</h3>
+      <button class="m-x" data-admin-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
+    </div>
+    <div class="m-body">
+      <div class="login-error inline" id="adminCreateError"></div>
+      <div class="field">
+        <span class="label" data-i18n="admin.username">Username</span>
+        <input class="input" id="adminCreateUsername" spellcheck="false" autocomplete="off">
+        <div class="hint"><span data-icon="info-circle"></span><span data-i18n="admin.usernameHint">Lowercase, at least 3 characters.</span></div>
+      </div>
+      <div class="field">
+        <span class="label" data-i18n="admin.email">Email</span>
+        <input class="input" id="adminCreateEmail" type="email" spellcheck="false" autocomplete="off">
+      </div>
+      <div class="field">
+        <span class="label" data-i18n="admin.name">Display name</span>
+        <input class="input" id="adminCreateName" spellcheck="false" autocomplete="off">
+      </div>
+      <div class="field">
+        <span class="label" data-i18n="admin.role">Role</span>
+        <select class="input" id="adminCreateRole">
+          <option value="regular" data-i18n="admin.roleRegular">Regular</option>
+          <option value="admin" data-i18n="admin.roleAdmin">Admin</option>
+        </select>
+      </div>
+    </div>
+    <div class="m-foot">
+      <button class="btn" data-admin-close data-i18n="common.cancel">Cancel</button>
+      <button class="btn cta" id="adminCreateSave" data-i18n="admin.createButton">Create user</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== ADMIN · EDIT USER ===================== -->
+<div class="scrim" id="adminEditModal">
+  <div class="modal narrow">
+    <div class="m-head">
+      <h3 id="adminEditTitle" data-i18n="admin.editUser">Edit user</h3>
+      <button class="m-x" data-admin-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
+    </div>
+    <div class="m-body">
+      <div class="login-error inline" id="adminEditError"></div>
+      <div class="admin-edit-id" id="adminEditIdentity"></div>
+      <div class="field">
+        <span class="label" data-i18n="admin.name">Display name</span>
+        <input class="input" id="adminEditName" spellcheck="false" autocomplete="off">
+      </div>
+      <div class="field">
+        <span class="label" data-i18n="admin.email">Email</span>
+        <input class="input" id="adminEditEmail" type="email" spellcheck="false" autocomplete="off">
+      </div>
+      <div class="field">
+        <span class="label" data-i18n="admin.role">Role</span>
+        <select class="input" id="adminEditRole">
+          <option value="regular" data-i18n="admin.roleRegular">Regular</option>
+          <option value="admin" data-i18n="admin.roleAdmin">Admin</option>
+        </select>
+      </div>
+      <div class="field">
+        <span class="label" data-i18n="admin.status">Status</span>
+        <select class="input" id="adminEditStatus">
+          <option value="active" data-i18n="admin.statusActive">Active</option>
+          <option value="disabled" data-i18n="admin.statusDisabled">Disabled</option>
+        </select>
+      </div>
+      <div class="admin-reset" id="adminResetRow">
+        <button class="btn" id="adminResetBtn"><span class="ic" data-icon="key"></span><span data-i18n="admin.resetPassword">Reset password</span></button>
+        <span class="hint" data-i18n="admin.resetHint">Issues a new one-time password and signs the account out.</span>
+      </div>
+    </div>
+    <div class="m-foot">
+      <button class="btn" data-admin-close data-i18n="common.cancel">Cancel</button>
+      <button class="btn cta" id="adminEditSave" data-i18n="admin.saveChanges">Save changes</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== ADMIN · CREDENTIALS (shown once) ===================== -->
+<div class="scrim" id="adminCredsModal">
+  <div class="modal narrow">
+    <div class="m-head">
+      <h3 data-i18n="admin.credentialsTitle">Temporary password</h3>
+      <button class="m-x" data-admin-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
+    </div>
+    <div class="m-body">
+      <p class="confirm-txt" data-i18n="admin.credentialsIntro">Share this one-time password with the user. It is shown only once.</p>
+      <div class="admin-creds">
+        <div class="admin-creds-row"><span class="label" data-i18n="admin.username">Username</span><code id="adminCredsUser"></code></div>
+        <div class="admin-creds-row"><span class="label" data-i18n="admin.password">Password</span><code id="adminCredsPass"></code></div>
+      </div>
+      <button class="btn" id="adminCredsCopy"><span class="ic" data-icon="check"></span><span data-i18n="admin.copyPassword">Copy password</span></button>
+    </div>
+    <div class="m-foot">
+      <button class="btn cta" data-admin-close data-i18n="admin.credentialsDone">Done</button>
     </div>
   </div>
 </div>
@@ -622,6 +786,7 @@
 <script src="iris-lilypond.js"></script>
 <script src="iris-app.js"></script>
 <script src="iris-projects.js"></script>
+<script src="iris-admin.js"></script>
 <script src="iris-auth.js"></script>
 </body>
 </html>
