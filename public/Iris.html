@@ -604,14 +604,12 @@
         <div class="brand-label"><img class="brand-wordmark" src="iris_text_logo_w.svg" alt="Iris"> <span class="v">Beta 1</span></div>
       </div>
       <div class="picker-user">
-        <button class="picker-account" id="pkAccount" title="Account" data-i18n-title="common.account" aria-haspopup="menu" aria-expanded="false" aria-controls="userMenu">
+        <button class="tbtn ghost-b admin-only" id="pkAdmin" type="button" title="User administration" data-i18n-title="admin.open"><span class="ic" data-icon="shield-lock"></span><span data-i18n="admin.usersShort">Users</span></button>
+        <button class="userchip" id="pkAccount" type="button" title="Account" data-i18n-title="common.account" aria-haspopup="menu" aria-expanded="false" aria-controls="userMenu">
           <span class="avatar" id="pkAvatar">–</span>
-          <span class="picker-user-txt">
-            <span class="pu-name" id="pkName">–</span>
-            <span class="pu-email" id="pkEmail">–</span>
-          </span>
+          <span class="uname" id="pkName">–</span>
+          <span class="chev" data-icon="chevron-down"></span>
         </button>
-        <button class="tbtn admin-only" id="pkAdmin" title="User administration" data-i18n-title="admin.open"><span class="ic" data-icon="shield-lock"></span><span data-i18n="admin.usersShort">Users</span></button>
       </div>
     </header>
 

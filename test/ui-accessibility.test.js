@@ -147,6 +147,15 @@ test("sign out is exposed once through the shared account menu", () => {
   assert.doesNotMatch(projects, /pkLogout/);
 });
 
+test("home account controls reuse the project toolbar styling and order", () => {
+  const homeHeader = html.slice(html.indexOf('<header class="picker-top">'), html.indexOf('<div class="picker-head">'));
+  assert.match(homeHeader, /class="tbtn ghost-b admin-only" id="pkAdmin"/);
+  assert.match(homeHeader, /class="userchip" id="pkAccount"/);
+  assert.ok(homeHeader.indexOf('id="pkAdmin"') < homeHeader.indexOf('id="pkAccount"'));
+  assert.match(homeHeader, /id="pkAccount"[\s\S]*class="avatar"[\s\S]*class="uname"[\s\S]*class="chev"/);
+  assert.doesNotMatch(css, /\.picker-account|\.picker-user-txt|\.pu-name|\.pu-email/);
+});
+
 test("admin controls remain usable on desktop, mobile and keyboard", () => {
   assert.match(css, /\.admin-filters select\{[^}]*width:auto/);
   assert.match(css, /@media\(max-width:640px\)[\s\S]*\.admin-table tbody tr\{display:grid/);

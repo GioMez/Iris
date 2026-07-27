@@ -32,10 +32,9 @@
     $("umAvatar").textContent = ini;
     $("umName").textContent = u.name;
     $("umEmail").textContent = u.email;
-    const pa = $("pkAvatar"), pn = $("pkName"), pe = $("pkEmail");
+    const pa = $("pkAvatar"), pn = $("pkName");
     if (pa) pa.textContent = ini;
     if (pn) pn.textContent = u.name;
-    if (pe) pe.textContent = u.email;
     // Only local accounts manage their own credentials/handle here; for an SSO
     // account (including one migrated to SSO) both are hidden — the password
     // lives at the IdP and changing the Iris username is pointless.
