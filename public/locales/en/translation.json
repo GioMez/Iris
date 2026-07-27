@@ -127,8 +127,7 @@
     "usernameUpdated": "Username updated.",
     "usernameUnchanged": "The username is unchanged.",
     "reauthHint": "Enter your current password to confirm the change.",
-    "signOut": "Sign out",
-    "exit": "Exit"
+    "signOut": "Sign out"
   },
   "attach": {
     "title": "Attach file",

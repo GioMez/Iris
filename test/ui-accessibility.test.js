@@ -140,6 +140,13 @@ test("new projects inherit the home language while existing projects retain thei
   assert.match(app, /settingsLanguage[\s\S]*IrisI18n\.setLanguage\(next\)/);
 });
 
+test("sign out is exposed once through the shared account menu", () => {
+  assert.doesNotMatch(html, /id="pkLogout"/);
+  assert.match(html, /id="miLogout"[^>]*role="menuitem"/);
+  assert.match(fs.readFileSync(path.join(root, "public/iris-auth.js"), "utf8"), /miLogout.*openDialog\("logoutModal"\)/);
+  assert.doesNotMatch(projects, /pkLogout/);
+});
+
 test("admin controls remain usable on desktop, mobile and keyboard", () => {
   assert.match(css, /\.admin-filters select\{[^}]*width:auto/);
   assert.match(css, /@media\(max-width:640px\)[\s\S]*\.admin-table tbody tr\{display:grid/);

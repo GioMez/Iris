@@ -534,9 +534,6 @@
     const back = $("btnCloseProject");
     if (back) back.addEventListener("click", () => closeCurrent());
 
-    const lo = $("pkLogout");
-    if (lo) lo.addEventListener("click", () => openModal("logoutModal"));
-
     $("projModalOk").addEventListener("click", () => confirmProjModal());
     $("projNameInput").addEventListener("input", () => $("projNameInput").classList.remove("nomatch"));
     $("projTypeSelect").addEventListener("change", function () {
