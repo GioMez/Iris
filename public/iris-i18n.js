@@ -9,8 +9,10 @@
     it: { label: "Italiano", locale: "it", dir: "ltr" },
   });
   let language = DEFAULT_LANGUAGE;
+  let defaultLanguage = DEFAULT_LANGUAGE;
   let messages = {};
   let fallbackMessages = {};
+  const catalogs = new Map();
 
   function supportedLanguage(value) {
     const requested = String(value || "").trim().toLowerCase().replaceAll("_", "-");
@@ -94,13 +96,18 @@
     root.querySelectorAll(selector).forEach(translateElement);
     document.documentElement.lang = SUPPORTED[language].locale;
     document.documentElement.dir = SUPPORTED[language].dir;
-    document.querySelectorAll("[data-language-select]").forEach((select) => { select.value = language; });
+    document.querySelectorAll("[data-language-select]").forEach((select) => {
+      select.value = select.dataset.languageScope === "project" ? language : defaultLanguage;
+    });
   }
 
   async function loadCatalog(code) {
+    if (catalogs.has(code)) return catalogs.get(code);
     const response = await fetch(`/locales/${code}/translation.json`, { cache: "no-cache" });
     if (!response.ok) throw new Error(`Unable to load locale ${code} (${response.status})`);
-    return response.json();
+    const catalog = await response.json();
+    catalogs.set(code, catalog);
+    return catalog;
   }
 
   async function setLanguage(nextLanguage, options = {}) {
@@ -108,9 +115,6 @@
     const nextMessages = next === DEFAULT_LANGUAGE ? fallbackMessages : await loadCatalog(next);
     language = next;
     messages = nextMessages;
-    if (options.persist !== false) {
-      try { localStorage.setItem(STORAGE_KEY, language); } catch (error) {}
-    }
     apply(document);
     if (!options.silent) {
       document.dispatchEvent(new CustomEvent("iris:languagechange", { detail: { language } }));
@@ -118,11 +122,30 @@
     return language;
   }
 
+  async function setDefaultLanguage(nextLanguage, options = {}) {
+    const next = normalizeLanguage(nextLanguage);
+    // Validate and cache the catalog now even when a project keeps its own
+    // active language. Returning home must never depend on a later fetch.
+    if (next !== DEFAULT_LANGUAGE) await loadCatalog(next);
+    defaultLanguage = next;
+    try { localStorage.setItem(STORAGE_KEY, defaultLanguage); } catch (error) {}
+    if (options.activate !== false) await setLanguage(defaultLanguage, options);
+    else apply(document);
+    document.dispatchEvent(new CustomEvent("iris:defaultlanguagechange", { detail: { language: defaultLanguage } }));
+    return defaultLanguage;
+  }
+
+  function useDefaultLanguage(options = {}) {
+    return setLanguage(defaultLanguage, options);
+  }
+
   function wireSelectors() {
     document.querySelectorAll("[data-language-select]").forEach((select) => {
-      select.value = language;
+      if (select.dataset.languageScope === "project") return;
+      select.value = defaultLanguage;
       select.addEventListener("change", () => {
-        void setLanguage(select.value).catch((error) => {
+        const activate = !document.documentElement.classList.contains("iris-inproject");
+        void setDefaultLanguage(select.value, { activate }).catch((error) => {
           apply(document);
           console.error("Language change failed", error);
         });
@@ -146,10 +169,12 @@
     try {
       messages = preferred === DEFAULT_LANGUAGE ? fallbackMessages : await loadCatalog(preferred);
       language = preferred;
+      defaultLanguage = preferred;
     } catch (error) {
       console.warn(`Unable to load preferred language ${preferred}; using ${DEFAULT_LANGUAGE}`, error);
       messages = fallbackMessages;
       language = DEFAULT_LANGUAGE;
+      defaultLanguage = DEFAULT_LANGUAGE;
     }
     apply(document);
     wireSelectors();
@@ -171,5 +196,8 @@
     get language() { return language; },
     get locale() { return locale(); },
     setLanguage,
+    setDefaultLanguage,
+    useDefaultLanguage,
+    get defaultLanguage() { return defaultLanguage; },
   };
 })();

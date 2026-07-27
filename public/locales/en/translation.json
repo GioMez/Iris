@@ -19,7 +19,14 @@
     "interface": "Interface language",
     "english": "English",
     "italian": "Italiano",
-    "savedLocally": "The preference is saved in this browser."
+    "savedLocally": "The preference is saved in this browser.",
+    "defaultMenu": "Default language",
+    "defaultTitle": "Default language",
+    "defaultLabel": "Default language",
+    "defaultDescription": "This language is used on the project home and as the initial language for new projects. Existing projects keep their own language preference.",
+    "defaultHint": "Changing this setting while a project is open does not change that project's language.",
+    "projectDescription": "Choose the language used by this project. This does not change the default language.",
+    "projectHint": "This preference is saved with the current project and can be changed at any time."
   },
   "toolbar": {
     "toggleSidebarTitle": "Show/hide sidebar",
@@ -297,7 +304,9 @@
     "renameAria": "Rename {{name}}",
     "deleteAria": "Delete {{name}}",
     "loadFailed": "Unable to load projects",
+    "unsavedTitle": "Discard unsaved changes?",
     "unsavedConfirm": "The project contains unsaved changes. Exit and discard them?",
+    "discardChanges": "Discard and exit",
     "noneOpen": "No project is open.",
     "operationFailed": "The operation failed.",
     "thisProject": "this project",

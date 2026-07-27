@@ -86,9 +86,13 @@ test("every API error code returned by the server is translated", () => {
   assert.doesNotMatch(server, /\{\s*error:\s*["'`]/);
 });
 
-test("language selectors are available before and after sign-in", () => {
+test("default and project language preferences remain separate", () => {
   assert.match(html, /id="loginLanguage"[^>]*data-language-select/);
-  assert.match(html, /id="settingsLanguage"[^>]*data-language-select/);
-  assert.match(runtime, /localStorage\.setItem\(STORAGE_KEY, language\)/);
+  assert.match(html, /id="miLanguage"[^>]*role="menuitem"/);
+  assert.match(html, /id="defaultLanguageSelect"[^>]*data-language-scope="default"/);
+  assert.match(html, /id="settingsLanguage"[^>]*data-language-scope="project"/);
+  assert.match(runtime, /localStorage\.setItem\(STORAGE_KEY, defaultLanguage\)/);
+  assert.match(runtime, /function setDefaultLanguage\(nextLanguage/);
+  assert.match(runtime, /function useDefaultLanguage\(options/);
   assert.match(runtime, /document\.documentElement\.lang/);
 });

@@ -2,6 +2,8 @@
 (function () {
   const $ = (id) => document.getElementById(id);
   const t = (key, params) => window.IrisI18n.t(key, params);
+  const openDialog = (target) => window.IrisMotion.openDialog(target);
+  const closeDialog = (target, options) => window.IrisMotion.closeDialog(target, options);
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   const ti = (name, className = "", label = "") => window.IrisIcons.icon(name, className, label);
@@ -28,6 +30,7 @@
     openTabs: ["main"],
     engine: "pdflatex",
     projectType: "latex",
+    projectLanguage: "en",
     compileProfile: { mode: "quick", steps: [{ tool: "[engine]", args: ["[main]"] }] },
     texPath: "",          // directory of the LaTeX binaries (empty = system PATH)
     texPathLocked: false,
@@ -745,12 +748,12 @@
     $("newItemDest").innerHTML = folderOptions(destPath);
     $("newItemDest").value = destPath;
     setNewItemMode(mode);
-    $("treeNewModal").classList.add("on");
+    openDialog("treeNewModal");
     setTimeout(() => { const i = $("newItemInput"); i.focus(); i.select(); }, 40);
   }
 
   function closeNewItem() {
-    $("treeNewModal").classList.remove("on");
+    void closeDialog("treeNewModal");
   }
 
   function confirmNewItem() {
@@ -805,11 +808,11 @@
     $("treeRenameHint").textContent = t("tree.nameHint");
     $("treeRenameInput").value = node.name || "";
     $("treeRenameInput").classList.remove("nomatch");
-    $("treeRenameModal").classList.add("on");
+    openDialog("treeRenameModal");
     setTimeout(() => { const i = $("treeRenameInput"); i.focus(); i.select(); }, 40);
   }
   function closeTreeRename() {
-    $("treeRenameModal").classList.remove("on");
+    void closeDialog("treeRenameModal");
     treeAction = null;
   }
   function confirmTreeRename() {
@@ -864,10 +867,10 @@
     const isFolder = node.type === "folder";
     $("treeDeleteTitle").textContent = t(isFolder ? "tree.deleteFolder" : "tree.deleteFile");
     $("treeDeleteText").textContent = t(isFolder ? "tree.deleteFolderConfirm" : "tree.deleteFileConfirm", { name: node.name });
-    $("treeDeleteModal").classList.add("on");
+    openDialog("treeDeleteModal");
   }
   function closeTreeDelete() {
-    $("treeDeleteModal").classList.remove("on");
+    void closeDialog("treeDeleteModal");
     treeAction = null;
   }
   function confirmTreeDelete() {
@@ -1239,6 +1242,7 @@
     return {
       project: { name: project.name, nodes: project.nodes },
       projectType: state.projectType,
+      language: state.projectLanguage,
       assets: state.assets,
       engine: state.engine,
       compileProfile: state.compileProfile,
@@ -1520,7 +1524,7 @@
     renderCompileProfile();
     const selected = document.querySelector(".set-nav [role=tab].on")?.dataset.set || "fonts";
     activateSettingsSection(selected);
-    $("settingsModal").classList.add("on");
+    openDialog("settingsModal");
     requestAnimationFrame(() => {
       const compact = window.matchMedia("(max-width: 700px)").matches;
       const target = compact
@@ -1562,7 +1566,7 @@
     $("attachDest").innerHTML = folderOptions();
     if (state.selectedFolder) $("attachDest").value = state.selectedFolder;
     clearAttach();
-    $("attachModal").classList.add("on");
+    openDialog("attachModal");
   }
   function clearAttach() {
     state.attachFile = null;
@@ -1612,7 +1616,7 @@
     folder.push({ type: "file", id: "file_" + Date.now(), name, kind, path, data: af.data });
     renderTree();
     void persistWhenDocumentClean();
-    $("attachModal").classList.remove("on");
+    void closeDialog("attachModal");
     toast(t("attach.uploaded", { name, destination: dest || "/" }));
   }
 
@@ -1855,6 +1859,24 @@
       if (state.autoSave) schedulePersist();
       void persistWhenDocumentClean();
     });
+    $("settingsLanguage").addEventListener("change", async function () {
+      const next = Object.prototype.hasOwnProperty.call(window.IrisI18n.SUPPORTED, this.value)
+        ? this.value
+        : window.IrisI18n.defaultLanguage;
+      const previous = state.projectLanguage;
+      this.disabled = true;
+      try {
+        state.projectLanguage = next;
+        await window.IrisI18n.setLanguage(next);
+        void persistWhenDocumentClean();
+      } catch (error) {
+        state.projectLanguage = previous;
+        await window.IrisI18n.setLanguage(previous).catch(() => {});
+        console.error("Project language change failed", error);
+      } finally {
+        this.disabled = false;
+      }
+    });
 
     // settings tabs + compact accordion
     const settingsTabs = Array.from(document.querySelectorAll(".set-nav [role=tab]"));
@@ -1919,19 +1941,20 @@
     // modal close
     document.querySelectorAll("[data-close]").forEach((b) => b.addEventListener("click", () => {
       const closingSettings = $("settingsModal").classList.contains("on") && !!b.closest("#settingsModal");
-      $("attachModal").classList.remove("on"); $("settingsModal").classList.remove("on");
+      const scrim = b.closest(".scrim");
+      if (scrim) void closeDialog(scrim);
       if (closingSettings) $("btnSettings").focus();
     }));
     document.querySelectorAll(".scrim").forEach((s) => s.addEventListener("click", (e) => {
       if (e.target !== s) return;
       const closingSettings = s.id === "settingsModal" && s.classList.contains("on");
-      s.classList.remove("on");
+      void closeDialog(s);
       if (closingSettings) $("btnSettings").focus();
     }));
     document.addEventListener("keydown", (e) => {
       if (e.key !== "Escape") return;
       const closingSettings = $("settingsModal").classList.contains("on");
-      document.querySelectorAll(".scrim.on").forEach((s) => s.classList.remove("on"));
+      document.querySelectorAll(".scrim.on:not(.forced)").forEach((s) => { void closeDialog(s); });
       if (closingSettings) $("btnSettings").focus();
       if (document.querySelector(".body").classList.contains("drawer-open")) {
         closeResponsiveSidebar();
@@ -2266,8 +2289,12 @@
   /* ---------------- IrisApp: bridge used by the projects layer ---------------- */
   window.IrisApp = {
     // Load a project's data into the editor and render everything.
-    load(data) {
+    async load(data) {
       data = data || {};
+      state.projectLanguage = Object.prototype.hasOwnProperty.call(window.IrisI18n.SUPPORTED, data.language)
+        ? data.language
+        : window.IrisI18n.defaultLanguage;
+      await window.IrisI18n.setLanguage(state.projectLanguage, { silent: true });
       project = (data.project && data.project.nodes) ? data.project : { name: data.name || "", nodes: [] };
       state.projectType = inferProjectType(data);
       state.assets = data.assets || {};

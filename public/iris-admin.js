@@ -5,6 +5,8 @@
 (function () {
   const $ = (id) => document.getElementById(id);
   const t = (key, params) => window.IrisI18n.t(key, params);
+  const openDialog = (id) => window.IrisMotion.openDialog(id);
+  const closeDialog = (id) => window.IrisMotion.closeDialog(id);
   const ti = (name) => (window.IrisIcons ? window.IrisIcons.icon(name) : "");
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
@@ -108,7 +110,7 @@
     $("adminCreateEmail").value = "";
     $("adminCreateName").value = "";
     $("adminCreateRole").value = "regular";
-    $("adminCreateModal").classList.add("on");
+    openDialog("adminCreateModal");
     setTimeout(() => $("adminCreateUsername").focus(), 50);
   }
 
@@ -131,7 +133,7 @@
           role: $("adminCreateRole").value,
         }),
       });
-      $("adminCreateModal").classList.remove("on");
+      await closeDialog("adminCreateModal");
       showCredentials(data.user.username, data.temporaryPassword);
       if (await load({ preserveStatus: true })) status(t("admin.userCreated", { name: data.user.username }));
     } catch (err) {
@@ -160,7 +162,7 @@
     $("adminEditLinkPending").checked = !!u.oidcLinkPending;
     $("adminLinkRow").style.display = isLocal ? "" : "none";
     $("adminUnlinkRow").style.display = isLocal ? "none" : "";
-    $("adminEditModal").classList.add("on");
+    openDialog("adminEditModal");
     setTimeout(() => $("adminEditName").focus(), 50);
   }
 
@@ -179,7 +181,7 @@
           oidcLinkPending: $("adminEditLinkPending").checked,
         }),
       });
-      $("adminEditModal").classList.remove("on");
+      await closeDialog("adminEditModal");
       // Acting on my own account can revoke my access to this console: a
       // self-demotion changes my role with no 401, a self-disable kills the
       // session (401 on refresh → routed to login). Re-sync before touching the
@@ -196,18 +198,18 @@
     }
   }
 
-  function openResetConfirmation() {
+  async function openResetConfirmation() {
     if (!editingId) return;
     const target = users.find((u) => u.id === editingId);
     $("adminResetConfirmText").textContent = t("admin.resetConfirm", { name: target ? target.username : "" });
-    $("adminEditModal").classList.remove("on");
-    $("adminResetConfirmModal").classList.add("on");
+    await closeDialog("adminEditModal");
+    openDialog("adminResetConfirmModal");
     setTimeout(() => $("adminResetConfirmBtn").focus(), 50);
   }
 
-  function closeResetConfirmation() {
-    $("adminResetConfirmModal").classList.remove("on");
-    $("adminEditModal").classList.add("on");
+  async function closeResetConfirmation() {
+    await closeDialog("adminResetConfirmModal");
+    openDialog("adminEditModal");
     setTimeout(() => $("adminResetBtn").focus(), 50);
   }
 
@@ -218,11 +220,11 @@
     btn.disabled = true; btn.classList.add("loading");
     try {
       const data = await api(`/api/admin/users/${editingId}/reset-password`, { method: "POST", body: "{}" });
-      $("adminResetConfirmModal").classList.remove("on");
+      await closeDialog("adminResetConfirmModal");
       showCredentials(target ? target.username : "", data.temporaryPassword);
     } catch (err) {
-      $("adminResetConfirmModal").classList.remove("on");
-      $("adminEditModal").classList.add("on");
+      await closeDialog("adminResetConfirmModal");
+      openDialog("adminEditModal");
       modalError("adminEditError", err);
     } finally {
       btn.disabled = false; btn.classList.remove("loading");
@@ -237,7 +239,7 @@
       const target = users.find((u) => u.id === editingId);
       const wasSelf = editingId === myId();
       const data = await api(`/api/admin/users/${editingId}/unlink-sso`, { method: "POST", body: "{}" });
-      $("adminEditModal").classList.remove("on");
+      await closeDialog("adminEditModal");
       showCredentials(target ? target.username : "", data.temporaryPassword);
       // Refresh the list so the account shows as local again — unless I unlinked
       // myself, whose session is now dead (a reload would 401 to login and hide
@@ -256,7 +258,7 @@
     $("adminCredsPass").textContent = password;
     const copy = $("adminCredsCopy");
     copy.querySelector("span:last-child").textContent = t("admin.copyPassword");
-    $("adminCredsModal").classList.add("on");
+    openDialog("adminCredsModal");
   }
 
   function wire() {
@@ -269,10 +271,10 @@
     $("adminStatusFilter").addEventListener("change", load);
     $("adminCreateForm").addEventListener("submit", (event) => { event.preventDefault(); void submitCreate(); });
     $("adminEditForm").addEventListener("submit", (event) => { event.preventDefault(); void submitEdit(); });
-    $("adminResetBtn").addEventListener("click", openResetConfirmation);
+    $("adminResetBtn").addEventListener("click", () => { void openResetConfirmation(); });
     $("adminResetConfirmForm").addEventListener("submit", (event) => { event.preventDefault(); void resetPassword(); });
-    $("adminResetConfirmCancel").addEventListener("click", closeResetConfirmation);
-    $("adminResetConfirmClose").addEventListener("click", closeResetConfirmation);
+    $("adminResetConfirmCancel").addEventListener("click", () => { void closeResetConfirmation(); });
+    $("adminResetConfirmClose").addEventListener("click", () => { void closeResetConfirmation(); });
     $("adminUnlinkBtn").addEventListener("click", unlinkSso);
     $("adminCredsCopy").addEventListener("click", async () => {
       try {
@@ -281,13 +283,13 @@
       } catch (e) { /* clipboard blocked; the value is selectable */ }
     });
     document.querySelectorAll("[data-admin-close]").forEach((b) =>
-      b.addEventListener("click", (e) => e.target.closest(".scrim").classList.remove("on"))
+      b.addEventListener("click", (e) => { void closeDialog(e.target.closest(".scrim")); })
     );
     document.querySelectorAll("#adminCreateModal, #adminEditModal, #adminCredsModal").forEach((scrim) =>
-      scrim.addEventListener("click", (e) => { if (e.target === scrim) scrim.classList.remove("on"); })
+      scrim.addEventListener("click", (e) => { if (e.target === scrim) void closeDialog(scrim); })
     );
     $("adminResetConfirmModal").addEventListener("click", (event) => {
-      if (event.target === $("adminResetConfirmModal")) closeResetConfirmation();
+      if (event.target === $("adminResetConfirmModal")) void closeResetConfirmation();
     });
     // IrisApp has a global Escape handler for scrims. Handle this nested flow in
     // capture phase so cancelling returns to the edit dialog instead of closing
@@ -296,7 +298,7 @@
       if (event.key !== "Escape" || !$("adminResetConfirmModal").classList.contains("on")) return;
       event.preventDefault();
       event.stopImmediatePropagation();
-      closeResetConfirmation();
+      void closeResetConfirmation();
     }, true);
     // A hard refresh at #admin lands on the console when the session is an admin.
     window.addEventListener("hashchange", () => {

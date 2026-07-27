@@ -19,7 +19,14 @@
     "interface": "Lingua dell'interfaccia",
     "english": "English",
     "italian": "Italiano",
-    "savedLocally": "La preferenza viene salvata in questo browser."
+    "savedLocally": "La preferenza viene salvata in questo browser.",
+    "defaultMenu": "Lingua predefinita",
+    "defaultTitle": "Lingua predefinita",
+    "defaultLabel": "Lingua predefinita",
+    "defaultDescription": "Questa lingua viene usata nella home dei progetti e come lingua iniziale dei nuovi progetti. I progetti esistenti mantengono la propria preferenza.",
+    "defaultHint": "Cambiare questa impostazione mentre un progetto è aperto non modifica la lingua di quel progetto.",
+    "projectDescription": "Scegli la lingua usata da questo progetto. La lingua predefinita non verrà modificata.",
+    "projectHint": "Questa preferenza viene salvata nel progetto corrente e può essere modificata in qualsiasi momento."
   },
   "toolbar": {
     "toggleSidebarTitle": "Mostra/nascondi pannello laterale",
@@ -297,7 +304,9 @@
     "renameAria": "Rinomina {{name}}",
     "deleteAria": "Elimina {{name}}",
     "loadFailed": "Impossibile caricare i progetti",
+    "unsavedTitle": "Scartare le modifiche non salvate?",
     "unsavedConfirm": "Il progetto contiene modifiche non salvate. Uscire e scartarle?",
+    "discardChanges": "Scarta ed esci",
     "noneOpen": "Nessun progetto aperto.",
     "operationFailed": "Operazione non riuscita.",
     "thisProject": "questo progetto",

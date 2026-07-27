@@ -5,12 +5,15 @@
 (function () {
   const $ = (id) => document.getElementById(id);
   const t = (key, params) => window.IrisI18n.t(key, params);
+  const openModal = (id) => window.IrisMotion.openDialog(id);
+  const closeModal = (id) => window.IrisMotion.closeDialog(id);
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   const ti = (name, className = "", label = "") => window.IrisIcons.icon(name, className, label);
 
   let index = [];
   let currentId = null;
+  let unsavedDecision = null;
   const cache = new Map();
 
   const ROLE_KEY = { owner: "roleOwner", editor: "roleEditor", viewer: "roleViewer" };
@@ -209,29 +212,49 @@
   }
 
   /* ---------------- open / close ---------------- */
+  function confirmDiscardChanges() {
+    if (unsavedDecision) return unsavedDecision.promise;
+    let resolveDecision;
+    const promise = new Promise((resolve) => { resolveDecision = resolve; });
+    unsavedDecision = { promise, resolve: resolveDecision };
+    openModal("projUnsavedModal");
+    setTimeout(() => $("projUnsavedCancel").focus(), 50);
+    return promise;
+  }
+
+  async function finishDiscardDecision(discard) {
+    const decision = unsavedDecision;
+    if (!decision) return;
+    unsavedDecision = null;
+    await closeModal("projUnsavedModal");
+    decision.resolve(!!discard);
+  }
+
   async function openProject(id) {
     try {
       const data = await loadData(id);
       if (!data || !window.IrisApp) return;
       currentId = id;
-      window.IrisApp.load(data);
+      await window.IrisApp.load(data);
       const m = metaOf(id);
       setProjName(m ? m.name : (data.project && data.project.name) || "");
-      document.documentElement.classList.add("iris-inproject");
+      window.IrisMotion.openProject();
     } catch (err) {
       console.error(err);
+      await window.IrisI18n.useDefaultLanguage({ silent: true });
       await renderPicker();
     }
   }
 
   async function closeCurrent() {
     const dirty = !!(currentId && window.IrisApp && window.IrisApp.hasUnsavedChanges && window.IrisApp.hasUnsavedChanges());
-    if (dirty && !window.confirm(t("projects.unsavedConfirm"))) return false;
+    if (dirty && !(await confirmDiscardChanges())) return false;
     if (dirty) cache.delete(currentId);
     else await persistCurrent();
     currentId = null;
-    document.documentElement.classList.remove("iris-inproject");
-    await renderPicker();
+    await window.IrisI18n.useDefaultLanguage({ silent: true });
+    setPickerLoading();
+    await Promise.all([window.IrisMotion.closeProject(), renderPicker()]);
     return true;
   }
 
@@ -350,6 +373,7 @@
     const data = {
       project: { name, nodes: blankNodes(name, projectType) },
       projectType,
+      language: window.IrisI18n.defaultLanguage,
       engine: projectType === "lilypond" ? "lilypond" : "pdflatex",
       compileProfile: { mode: "quick" },
       lilypondArgs: "",
@@ -387,14 +411,12 @@
     cache.delete(id);
     if (id === currentId) {
       currentId = null;
-      document.documentElement.classList.remove("iris-inproject");
+      await window.IrisI18n.useDefaultLanguage({ silent: true });
+      await window.IrisMotion.closeProject();
     }
   }
 
   /* ---------------- modals ---------------- */
-  const openModal = (id) => $(id).classList.add("on");
-  const closeModal = (id) => $(id).classList.remove("on");
-
   let projMode = "new", projTargetId = null, delTargetId = null;
 
   function askNew() {
@@ -434,12 +456,12 @@
     try {
       if (projMode === "new") {
         const id = await createProject(name, $("projTypeSelect").value);
-        closeModal("projModal");
+        await closeModal("projModal");
         await renderPicker();
         await openProject(id);
       } else {
         await renameProject(projTargetId, name);
-        closeModal("projModal");
+        await closeModal("projModal");
         await renderPicker();
       }
     } catch (err) {
@@ -461,7 +483,7 @@
     ok.disabled = true;
     try {
       await deleteProject(delTargetId);
-      closeModal("projDelModal");
+      await closeModal("projDelModal");
       await renderPicker();
     } catch (err) {
       console.error(err);
@@ -473,20 +495,27 @@
   /* ---------------- public API ---------------- */
   async function showPicker() {
     const dirty = !!(currentId && window.IrisApp && window.IrisApp.hasUnsavedChanges && window.IrisApp.hasUnsavedChanges());
-    if (dirty && !window.confirm(t("projects.unsavedConfirm"))) return false;
+    if (dirty && !(await confirmDiscardChanges())) return false;
     if (dirty) cache.delete(currentId);
     else await persistCurrent();
+    const hadProject = !!currentId;
     currentId = null;
-    document.documentElement.classList.remove("iris-inproject");
+    await window.IrisI18n.useDefaultLanguage({ silent: true });
     setPickerLoading();
-    await renderPicker();
+    if (hadProject) await Promise.all([window.IrisMotion.closeProject(), renderPicker()]);
+    else await renderPicker();
     return true;
   }
   function onLogout() {
+    if (unsavedDecision) {
+      unsavedDecision.resolve(false);
+      unsavedDecision = null;
+    }
     currentId = null;
     cache.clear();
     index = [];
-    document.documentElement.classList.remove("iris-inproject");
+    void window.IrisI18n.useDefaultLanguage({ silent: true });
+    window.IrisMotion.resetProject();
   }
 
   window.IrisProjects = { showPicker, openProject, closeCurrent, persistCurrent, compileCurrent, downloadCurrentFile, refreshCurrent, renderPicker, onLogout };
@@ -523,6 +552,15 @@
       const m = $(mid);
       m.addEventListener("click", (e) => { if (e.target === m) closeModal(mid); });
       m.querySelectorAll("[data-close]").forEach((b) => b.addEventListener("click", () => closeModal(mid)));
+    });
+    $("projUnsavedCancel").addEventListener("click", () => { void finishDiscardDecision(false); });
+    $("projUnsavedClose").addEventListener("click", () => { void finishDiscardDecision(false); });
+    $("projUnsavedDiscard").addEventListener("click", () => { void finishDiscardDecision(true); });
+    $("projUnsavedModal").addEventListener("click", (event) => {
+      if (event.target === $("projUnsavedModal")) void finishDiscardDecision(false);
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && unsavedDecision) void finishDiscardDecision(false);
     });
   }
 

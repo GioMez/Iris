@@ -9,6 +9,7 @@ const html = fs.readFileSync(path.join(root, "public/Iris.html"), "utf8");
 const app = fs.readFileSync(path.join(root, "public/iris-app.js"), "utf8");
 const projects = fs.readFileSync(path.join(root, "public/iris-projects.js"), "utf8");
 const admin = fs.readFileSync(path.join(root, "public/iris-admin.js"), "utf8");
+const motion = fs.readFileSync(path.join(root, "public/iris-motion.js"), "utf8");
 
 function token(name) {
   const match = css.match(new RegExp(`--${name}:\\s*(#[0-9a-f]{6})`, "i"));
@@ -106,6 +107,39 @@ test("project cards keep metadata readable beside persistent actions", () => {
   assert.match(css, /\.pcard-meta\{[^}]*white-space:normal/);
 });
 
+test("dialogs and project navigation share motion without animating the home", () => {
+  const motionIndex = html.indexOf('<script src="iris-motion.js">');
+  assert.ok(motionIndex > html.indexOf('<script src="iris-net.js">'));
+  ["iris-app.js", "iris-projects.js", "iris-admin.js", "iris-auth.js"].forEach((script) => {
+    assert.ok(motionIndex < html.indexOf(`<script src="${script}">`), `${script} must load after motion helpers`);
+  });
+  assert.match(css, /\.scrim\.on>\.modal\{animation:dialog-pop-in/);
+  assert.match(css, /\.scrim\.is-closing>\.modal\{[^}]*animation:dialog-pop-out/);
+  assert.match(css, /\.iris-project-opening \.app\{animation:project-open/);
+  assert.match(css, /\.iris-project-closing \.app\{[^}]*animation:project-close/);
+  assert.doesNotMatch(css, /\.picker-wrap\{[^}]*animation:/);
+  assert.match(css, /@media\(prefers-reduced-motion:reduce\)[\s\S]*\.iris-project-opening \.app/);
+  assert.match(motion, /function openDialog\(target\)/);
+  assert.match(motion, /async function closeProject\(\)/);
+  assert.match(projects, /IrisMotion\.openProject\(\)/);
+  assert.match(projects, /IrisMotion\.closeProject\(\)/);
+  assert.doesNotMatch(projects, /window\.confirm/);
+  assert.match(projects, /await confirmDiscardChanges\(\)/);
+  assert.match(app, /\.scrim\.on:not\(\.forced\)/);
+  const dialogSurfaces = html.match(/<(?:div|form) class="modal[^"]*"[^>]*role="dialog"[^>]*aria-modal="true"/g) || [];
+  assert.equal(dialogSurfaces.length, (html.match(/<div class="scrim"/g) || []).length);
+});
+
+test("new projects inherit the home language while existing projects retain their own", () => {
+  assert.match(projects, /language:\s*window\.IrisI18n\.defaultLanguage/);
+  assert.match(projects, /await window\.IrisApp\.load\(data\)/);
+  assert.match(projects, /IrisI18n\.useDefaultLanguage\(\{ silent: true \}\)/);
+  assert.match(app, /projectLanguage:\s*"en"/);
+  assert.match(app, /language:\s*state\.projectLanguage/);
+  assert.match(app, /data\.language[\s\S]*window\.IrisI18n\.defaultLanguage/);
+  assert.match(app, /settingsLanguage[\s\S]*IrisI18n\.setLanguage\(next\)/);
+});
+
 test("admin controls remain usable on desktop, mobile and keyboard", () => {
   assert.match(css, /\.admin-filters select\{[^}]*width:auto/);
   assert.match(css, /@media\(max-width:640px\)[\s\S]*\.admin-table tbody tr\{display:grid/);
@@ -158,7 +192,7 @@ test("project autosave is opt-in and uses a configurable long debounce", () => {
   assert.match(app, /beforeunload/);
   assert.match(app, /hasUnsavedChanges\(\)/);
   assert.match(app, /editor\.saveBeforeCompile/);
-  assert.match(projects, /projects\.unsavedConfirm/);
+  assert.match(projects, /confirmDiscardChanges\(\)/);
 });
 
 test("fundamental project actions expose matching keyboard shortcuts", () => {

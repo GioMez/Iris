@@ -4,6 +4,8 @@
 (function () {
   const $ = (id) => document.getElementById(id);
   const t = (key, params) => window.IrisI18n.t(key, params);
+  const openDialog = (id) => window.IrisMotion.openDialog(id);
+  const closeDialog = (id, options) => window.IrisMotion.closeDialog(id, options);
   let ssoEnabled = false;
   let currentUser = null;
   // While a forced first-login password change is pending the modal is mandatory:
@@ -69,10 +71,11 @@
   }
 
   function showLogin() {
+    void window.IrisMotion.closeAllDialogs({ immediate: true });
+    void window.IrisI18n.useDefaultLanguage({ silent: true });
     if (window.IrisProjects) window.IrisProjects.onLogout();
     if (window.IrisAdmin) window.IrisAdmin.close();
     document.documentElement.classList.remove("iris-authed");
-    document.documentElement.classList.remove("iris-inproject");
     delete document.documentElement.dataset.role;
     delete document.documentElement.dataset.uid;
     currentUser = null;
@@ -104,9 +107,9 @@
     $("passwordError").style.display = "none";
     $("passwordHint").textContent = "";
   }
-  function closePasswordModal() {
+  async function closePasswordModal() {
     if (passwordForced) return; // mandatory change: not dismissable
-    $("passwordModal").classList.remove("on");
+    await closeDialog("passwordModal");
     ["passwordCurrent", "passwordNew", "passwordConfirm"].forEach((id) => { $(id).value = ""; });
     hidePasswordError();
   }
@@ -116,7 +119,7 @@
     $("passwordModal").classList.toggle("forced", passwordForced);
     hidePasswordError();
     if (passwordForced) $("passwordHint").textContent = t("password.mustChange");
-    $("passwordModal").classList.add("on");
+    openDialog("passwordModal");
     setTimeout(() => $("passwordCurrent").focus(), 50);
   }
 
@@ -216,7 +219,8 @@
       if (passwordForced) {
         // Mandatory change satisfied: release the modal and enter the app.
         passwordForced = false;
-        $("passwordModal").classList.remove("forced", "on");
+        $("passwordModal").classList.remove("forced");
+        await closeDialog("passwordModal");
         ["passwordCurrent", "passwordNew", "passwordConfirm"].forEach((id) => { $(id).value = ""; });
         showApp(user);
         return;
@@ -238,8 +242,8 @@
     e.style.display = "flex";
   }
   function hideUsernameError() { $("usernameError").style.display = "none"; $("usernameHint").textContent = ""; }
-  function closeUsernameModal() {
-    $("usernameModal").classList.remove("on");
+  async function closeUsernameModal() {
+    await closeDialog("usernameModal");
     $("usernameNew").value = ""; $("usernameCurrent").value = "";
     hideUsernameError();
   }
@@ -250,8 +254,19 @@
     // Step-up: local accounts confirm with their password; SSO accounts have no
     // local secret, so the live session stands in for it.
     $("usernameReauthRow").style.display = currentUser.canChangePassword ? "" : "none";
-    $("usernameModal").classList.add("on");
+    openDialog("usernameModal");
     setTimeout(() => $("usernameNew").focus(), 50);
+  }
+
+  function openDefaultLanguageModal() {
+    openDialog("defaultLanguageModal");
+    setTimeout(() => $("defaultLanguageSelect").focus(), 50);
+  }
+
+  async function closeDefaultLanguageModal() {
+    await closeDialog("defaultLanguageModal");
+    const trigger = document.documentElement.classList.contains("iris-inproject") ? $("userChip") : $("pkAccount");
+    if (trigger) trigger.focus();
   }
   async function changeUsername() {
     const username = $("usernameNew").value.trim();
@@ -319,16 +334,28 @@
     um.addEventListener("click", (e) => e.stopPropagation());
     document.addEventListener("click", closeUserMenu);
 
+    $("miLanguage").addEventListener("click", () => { closeUserMenu(); openDefaultLanguageModal(); });
     $("miUsername").addEventListener("click", () => { closeUserMenu(); openUsernameModal(); });
     $("miPassword").addEventListener("click", () => { closeUserMenu(); openPasswordModal(); });
-    $("miLogout").addEventListener("click", () => { closeUserMenu(); $("logoutModal").classList.add("on"); });
+    $("miLogout").addEventListener("click", () => { closeUserMenu(); openDialog("logoutModal"); });
     $("logoutConfirm").addEventListener("click", async () => {
-      $("logoutModal").classList.remove("on");
+      await closeDialog("logoutModal");
       await doLogout();
     });
     document.querySelectorAll("#logoutModal [data-close]").forEach((b) =>
-      b.addEventListener("click", () => $("logoutModal").classList.remove("on"))
+      b.addEventListener("click", () => { void closeDialog("logoutModal"); })
     );
+    document.querySelectorAll("#defaultLanguageModal [data-close]").forEach((button) =>
+      button.addEventListener("click", () => { void closeDefaultLanguageModal(); })
+    );
+    $("defaultLanguageModal").addEventListener("click", (event) => {
+      if (event.target === $("defaultLanguageModal")) void closeDefaultLanguageModal();
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && $("defaultLanguageModal").classList.contains("on")) {
+        void closeDefaultLanguageModal();
+      }
+    });
     $("passwordSave").addEventListener("click", changePassword);
     ["passwordCurrent", "passwordNew", "passwordConfirm"].forEach((id) => {
       $(id).addEventListener("input", hidePasswordError);

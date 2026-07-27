@@ -193,6 +193,7 @@
     </div>
   </div>
   <div class="msep"></div>
+  <button class="mi" id="miLanguage" type="button" role="menuitem"><span class="ic" data-icon="language"></span><span data-i18n="language.defaultMenu">Default language</span></button>
   <button class="mi" id="miUsername" type="button" role="menuitem"><span class="ic" data-icon="edit"></span><span data-i18n="account.changeUsername">Change username</span></button>
   <button class="mi" id="miPassword" type="button" role="menuitem"><span class="ic" data-icon="key"></span><span data-i18n="account.changePassword">Change password</span></button>
   <button class="mi danger" id="miLogout" type="button" role="menuitem"><span class="ic" data-icon="logout"></span><span data-i18n="account.signOut">Sign out</span></button>
@@ -200,9 +201,9 @@
 
 <!-- ===================== ATTACH MODAL ===================== -->
 <div class="scrim" id="attachModal">
-  <div class="modal">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="attachTitle">
     <div class="m-head">
-      <h3 data-i18n="attach.title">Attach file</h3><span class="sub" data-i18n="attach.subtitle">images, PDFs, data…</span>
+      <h3 id="attachTitle" data-i18n="attach.title">Attach file</h3><span class="sub" data-i18n="attach.subtitle">images, PDFs, data…</span>
       <button class="m-x" data-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
@@ -347,14 +348,14 @@
       <button class="set-accordion-trigger" type="button" data-set="language" aria-expanded="false" aria-controls="settingsPanelLanguage"><span data-icon="language"></span><span data-i18n="language.title">Language</span><span class="set-chevron" data-icon="chevron-down"></span></button>
       <section class="set-pane" id="settingsPanelLanguage" role="tabpanel" aria-labelledby="settingsTabLanguage" tabindex="0" data-setpane="language" hidden>
         <h4 class="set-title"><span data-icon="language"></span><span data-i18n="language.title">Language</span></h4>
-        <p class="desc" data-i18n="language.description">Choose the language used by the Iris interface.</p>
+        <p class="desc" data-i18n="language.projectDescription">Choose the language used by this project. This does not change the default language.</p>
         <div class="field language-field">
           <label class="label" for="settingsLanguage" data-i18n="language.interface">Interface language</label>
-          <select class="select" id="settingsLanguage" data-language-select>
+          <select class="select" id="settingsLanguage" data-language-select data-language-scope="project">
             <option value="en" data-i18n="language.english">English</option>
             <option value="it" data-i18n="language.italian">Italiano</option>
           </select>
-          <div class="hint" data-i18n="language.savedLocally">The preference is saved in this browser.</div>
+          <div class="hint" data-i18n="language.projectHint">This preference is saved with the current project and can be changed at any time.</div>
         </div>
       </section>
       </div>
@@ -369,9 +370,9 @@
 
 <!-- ===================== FILE TREE MODALS ===================== -->
 <div class="scrim" id="treeNewModal">
-  <div class="modal narrow">
+  <div class="modal narrow" role="dialog" aria-modal="true" aria-labelledby="treeNewTitle">
     <div class="m-head">
-      <h3 data-i18n="tree.newTitle">New item</h3>
+      <h3 id="treeNewTitle" data-i18n="tree.newTitle">New item</h3>
       <button class="m-x" data-tree-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
@@ -400,7 +401,7 @@
 </div>
 
 <div class="scrim" id="treeRenameModal">
-  <div class="modal narrow">
+  <div class="modal narrow" role="dialog" aria-modal="true" aria-labelledby="treeRenameTitle">
     <div class="m-head">
       <h3 id="treeRenameTitle" data-i18n="tree.renameTitle">Rename</h3>
       <button class="m-x" data-tree-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
@@ -420,7 +421,7 @@
 </div>
 
 <div class="scrim" id="treeDeleteModal">
-  <div class="modal narrow">
+  <div class="modal narrow" role="dialog" aria-modal="true" aria-labelledby="treeDeleteTitle">
     <div class="m-head">
       <h3 id="treeDeleteTitle" data-i18n="tree.deleteTitle">Delete</h3>
       <button class="m-x" data-tree-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
@@ -437,9 +438,9 @@
 
 <!-- ===================== LOGOUT CONFIRM ===================== -->
 <div class="scrim" id="logoutModal">
-  <div class="modal narrow">
+  <div class="modal narrow" role="dialog" aria-modal="true" aria-labelledby="logoutTitle">
     <div class="m-head">
-      <h3 data-i18n="logout.title">Sign out</h3>
+      <h3 id="logoutTitle" data-i18n="logout.title">Sign out</h3>
       <button class="m-x" data-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
@@ -454,9 +455,9 @@
 
 <!-- ===================== CHANGE PASSWORD ===================== -->
 <div class="scrim" id="passwordModal">
-  <div class="modal narrow">
+  <div class="modal narrow" role="dialog" aria-modal="true" aria-labelledby="passwordTitle">
     <div class="m-head">
-      <h3 data-i18n="password.title">Change password</h3>
+      <h3 id="passwordTitle" data-i18n="password.title">Change password</h3>
       <button class="m-x" data-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
@@ -484,9 +485,9 @@
 </div>
 
 <div class="scrim" id="usernameModal">
-  <div class="modal narrow">
+  <div class="modal narrow" role="dialog" aria-modal="true" aria-labelledby="usernameTitle">
     <div class="m-head">
-      <h3 data-i18n="account.changeUsername">Change username</h3>
+      <h3 id="usernameTitle" data-i18n="account.changeUsername">Change username</h3>
       <button class="m-x" data-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
@@ -510,9 +511,33 @@
   </div>
 </div>
 
+<!-- ===================== DEFAULT LANGUAGE ===================== -->
+<div class="scrim" id="defaultLanguageModal">
+  <div class="modal narrow" role="dialog" aria-modal="true" aria-labelledby="defaultLanguageTitle" aria-describedby="defaultLanguageDescription">
+    <div class="m-head">
+      <h3 id="defaultLanguageTitle" data-i18n="language.defaultTitle">Default language</h3>
+      <button class="m-x" type="button" data-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
+    </div>
+    <div class="m-body">
+      <p class="modal-copy" id="defaultLanguageDescription" data-i18n="language.defaultDescription">This language is used on the project home and as the initial language for new projects. Existing projects keep their own language preference.</p>
+      <div class="field language-field">
+        <label class="label" for="defaultLanguageSelect" data-i18n="language.defaultLabel">Default language</label>
+        <select class="select" id="defaultLanguageSelect" data-language-select data-language-scope="default">
+          <option value="en" data-i18n="language.english">English</option>
+          <option value="it" data-i18n="language.italian">Italiano</option>
+        </select>
+        <div class="hint"><span data-icon="info-circle"></span><span data-i18n="language.defaultHint">Changing this setting while a project is open does not change that project's language.</span></div>
+      </div>
+    </div>
+    <div class="m-foot">
+      <button class="btn cta" type="button" data-close data-i18n="common.close">Close</button>
+    </div>
+  </div>
+</div>
+
 <!-- ===================== PROJECT MODALS ===================== -->
 <div class="scrim" id="projModal">
-  <div class="modal narrow">
+  <div class="modal narrow" role="dialog" aria-modal="true" aria-labelledby="projModalTitle">
     <div class="m-head">
       <h3 id="projModalTitle" data-i18n="projects.newTitle">New project</h3>
       <button class="m-x" data-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
@@ -539,9 +564,9 @@
 </div>
 
 <div class="scrim" id="projDelModal">
-  <div class="modal narrow">
+  <div class="modal narrow" role="dialog" aria-modal="true" aria-labelledby="projDeleteTitle">
     <div class="m-head">
-      <h3 data-i18n="projects.deleteTitle">Delete project</h3>
+      <h3 id="projDeleteTitle" data-i18n="projects.deleteTitle">Delete project</h3>
       <button class="m-x" data-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
@@ -550,6 +575,22 @@
     <div class="m-foot">
       <button class="btn" data-close data-i18n="common.cancel">Cancel</button>
       <button class="btn danger" id="projDelOk" data-i18n="projects.deleteButton">Delete project</button>
+    </div>
+  </div>
+</div>
+
+<div class="scrim" id="projUnsavedModal">
+  <div class="modal narrow" role="dialog" aria-modal="true" aria-labelledby="projUnsavedTitle">
+    <div class="m-head">
+      <h3 id="projUnsavedTitle" data-i18n="projects.unsavedTitle">Discard unsaved changes?</h3>
+      <button class="m-x" id="projUnsavedClose" type="button" aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
+    </div>
+    <div class="m-body">
+      <p class="confirm-txt" data-i18n="projects.unsavedConfirm">The project contains unsaved changes. Exit and discard them?</p>
+    </div>
+    <div class="m-foot">
+      <button class="btn" id="projUnsavedCancel" type="button" data-i18n="common.cancel">Cancel</button>
+      <button class="btn danger" id="projUnsavedDiscard" type="button" data-i18n="projects.discardChanges">Discard and exit</button>
     </div>
   </div>
 </div>
@@ -843,6 +884,7 @@
 <script src="iris-icons.js"></script>
 <script src="iris-i18n.js"></script>
 <script src="iris-net.js"></script>
+<script src="iris-motion.js"></script>
 <script src="iris-latex.js"></script>
 <script src="iris-lilypond.js"></script>
 <script src="iris-app.js"></script>

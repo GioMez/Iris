@@ -387,10 +387,18 @@ button.st{border:0;background:transparent;font:inherit}
 
 /* ===================== modal ===================== */
 .scrim{position:fixed;inset:0;background:rgba(8,8,14,.62);backdrop-filter:blur(3px);display:none;align-items:center;justify-content:center;z-index:60;padding:30px}
-.scrim.on{display:flex}
-.modal{width:min(540px,96vw);max-height:90vh;background:var(--panel);border:1px solid var(--border);border-radius:14px;box-shadow:var(--shadow);display:flex;flex-direction:column;overflow:hidden;animation:pop .16s ease}
+.scrim.on,.scrim.is-closing{display:flex}
+.scrim.on{animation:dialog-scrim-in .2s ease-out both}
+.scrim.on>.modal{animation:dialog-pop-in .2s cubic-bezier(.2,.8,.2,1) both}
+.scrim.is-closing{animation:dialog-scrim-out .16s ease-in both}
+.scrim.is-closing>.modal{pointer-events:none;animation:dialog-pop-out .16s ease-in both}
+.modal{width:min(540px,96vw);max-height:90vh;background:var(--panel);border:1px solid var(--border);border-radius:14px;box-shadow:var(--shadow);display:flex;flex-direction:column;overflow:hidden}
 .modal.wide{width:min(680px,96vw)}
 @keyframes pop{from{transform:translateY(8px) scale(.98)}to{transform:none}}
+@keyframes dialog-pop-in{from{opacity:0;transform:translateY(10px) scale(.965)}to{opacity:1;transform:none}}
+@keyframes dialog-pop-out{from{opacity:1;transform:none}to{opacity:0;transform:translateY(4px) scale(.96)}}
+@keyframes dialog-scrim-in{from{opacity:0}to{opacity:1}}
+@keyframes dialog-scrim-out{from{opacity:1}to{opacity:0}}
 .m-head{display:flex;align-items:center;gap:10px;padding:16px 18px;border-bottom:1px solid var(--border)}
 .m-head h3{margin:0;font-size:16px;font-weight:600}
 .m-head .sub{color:var(--txt-mut);font-size:12px}
@@ -512,7 +520,8 @@ button.st{border:0;background:transparent;font:inherit}
 @keyframes spin{to{transform:rotate(360deg)}}
 
 .menu{position:fixed;z-index:90;background:var(--panel);border:1px solid var(--border);border-radius:10px;box-shadow:var(--shadow);padding:5px;min-width:172px;display:none}
-.menu.on{display:block}
+.menu.on{display:block;animation:surface-pop-in .14s cubic-bezier(.2,.8,.2,1) both;transform-origin:center}
+@keyframes surface-pop-in{from{opacity:0;transform:scale(.96)}to{opacity:1;transform:none}}
 /* The account menu is opened from the home/admin screens too (z-index 90/95), so
    it must sit above them; modals (120) still close it before they open. */
 #userMenu{z-index:110}
@@ -549,6 +558,7 @@ button.st{border:0;background:transparent;font:inherit}
 .modal.narrow{width:min(420px,96vw)}
 .confirm-txt{margin:0;color:var(--txt-dim);font-size:13.5px;line-height:1.6}
 .confirm-txt b{color:var(--txt)}
+.modal-copy{margin:0 0 18px;color:var(--txt-dim);font-size:13.5px;line-height:1.6}
 
 /* ===================== login screen ===================== */
 .login-screen{position:fixed;inset:0;z-index:100;display:flex;align-items:center;justify-content:center;padding:24px;overflow-y:auto;
@@ -648,7 +658,14 @@ html:not(.iris-inproject) #projChip{display:none}
   background:var(--bg);background-image:radial-gradient(circle at 1px 1px,#ffffff0a 1px,transparent 0);background-size:24px 24px}
 .iris-authed .picker-screen{display:block}
 .iris-inproject .picker-screen{display:none}
-.picker-wrap{width:min(940px,100%);margin:0 auto;animation:pop .22s ease}
+.picker-wrap{width:min(940px,100%);margin:0 auto}
+
+/* The workspace enters as one surface and remains mounted while it shrinks on
+   exit. Only after that does the unanimated project home become visible. */
+.iris-project-opening .app{animation:project-open .24s cubic-bezier(.2,.8,.2,1) both;transform-origin:center}
+.iris-project-closing .app{pointer-events:none;animation:project-close .18s ease-in both;transform-origin:center}
+@keyframes project-open{from{opacity:.2;transform:translateY(9px) scale(.975)}to{opacity:1;transform:none}}
+@keyframes project-close{from{opacity:1;transform:none}to{opacity:0;transform:translateY(5px) scale(.965)}}
 
 .picker-top{display:flex;align-items:center;justify-content:space-between;gap:16px;
   padding-bottom:22px;margin-bottom:30px;border-bottom:1px solid var(--border)}
@@ -904,4 +921,7 @@ html.iris-inadmin[data-role="admin"] .admin-screen{display:block}
 
 @media(prefers-reduced-motion:reduce){
   .body,.body>.side,.side-backdrop{transition:none}
+  .login-card,.menu.on,.toast,.findbar.on,
+  .scrim.on,.scrim.is-closing,.scrim.on>.modal,.scrim.is-closing>.modal,
+  .iris-project-opening .app,.iris-project-closing .app{animation:none!important}
 }
