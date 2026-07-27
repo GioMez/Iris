@@ -222,6 +222,8 @@ function publicUser(rowOrToken) {
     role: rowOrToken.system_role || rowOrToken.role || "regular",
     authMethod,
     canChangePassword: (rowOrToken.auth_source || authMethod) === "local",
+    passwordChangeRequired:
+      (rowOrToken.password_change_required ?? rowOrToken.passwordChangeRequired ?? false) === true,
   };
 }
 
@@ -357,9 +359,13 @@ async function oauthUserInfo(accessToken) {
   if (!res.ok) throw new Error(data.error_description || data.error || "OAuth profile request failed");
   const email = String(data.email || "").trim().toLowerCase();
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw new Error("The SSO provider did not return a valid email address");
+  const subject = String(data.sub || "").trim();
+  // The subject is the durable identity; without it there is nothing stable to
+  // key the account on, so the profile is rejected rather than matched by email.
+  if (!subject) throw new Error("The SSO provider did not return a subject (sub) claim");
   return {
     email,
-    subject: String(data.sub || "").trim(),
+    subject,
     name: String(data.name || data.preferred_username || email).trim(),
     preferredUsername: String(data.preferred_username || email.split("@")[0]).trim(),
   };
@@ -385,7 +391,7 @@ async function availableUsername(base) {
 }
 
 const OAUTH_USER_COLUMNS =
-  "id, username, email, display_name, system_role, status, auth_source, oidc_issuer, oidc_subject, session_epoch, password_hash";
+  "id, username, email, display_name, system_role, status, auth_source, oidc_issuer, oidc_subject, oidc_link_pending, session_epoch, password_hash";
 
 function disabledAccountError() {
   const err = new Error("Account disabled");
@@ -394,27 +400,28 @@ function disabledAccountError() {
   return err;
 }
 
+// An SSO login whose durable identity is unknown but whose email matches an
+// existing account: refused until an admin opens the one-time linking window.
+function ssoLinkRequiredError() {
+  const err = new Error("SSO account linking must be authorized by an administrator");
+  err.status = 403;
+  err.errorCode = "AUTH_SSO_LINK_REQUIRED";
+  err.authError = "sso_link_required";
+  return err;
+}
+
 async function userFromOAuthProfile(profile, ip = null) {
   const issuer = OAUTH_ISSUER_URL || null;
   const subject = profile.subject || null;
+  // SSO cannot be enabled without an issuer, and oauthUserInfo already rejects an
+  // empty subject; the pair is the only identity used to match an account.
+  if (!issuer || !subject) throw new Error("SSO profile is missing a durable identity");
 
-  // The durable identity is the issuer + subject pair; email is only a fallback
-  // for accounts provisioned before the pair was recorded, since email can change.
-  let existing = null;
-  if (issuer && subject) {
-    const byOidc = await db.query(
-      `SELECT ${OAUTH_USER_COLUMNS} FROM users WHERE oidc_issuer = $1 AND oidc_subject = $2 LIMIT 1`,
-      [issuer, subject]
-    );
-    existing = byOidc.rows[0] || null;
-  }
-  if (!existing) {
-    const byEmail = await db.query(
-      `SELECT ${OAUTH_USER_COLUMNS} FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1`,
-      [profile.email]
-    );
-    existing = byEmail.rows[0] || null;
-  }
+  const byOidc = await db.query(
+    `SELECT ${OAUTH_USER_COLUMNS} FROM users WHERE oidc_issuer = $1 AND oidc_subject = $2 LIMIT 1`,
+    [issuer, subject]
+  );
+  const existing = byOidc.rows[0] || null;
 
   if (existing) {
     if (existing.status !== "active") throw disabledAccountError();
@@ -423,14 +430,44 @@ async function userFromOAuthProfile(profile, ip = null) {
       await db.query("UPDATE users SET display_name = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2", [nextName, existing.id]);
       existing.display_name = nextName;
     }
-    // Attach the issuer+subject identity to an account first matched by email.
-    if (issuer && subject && (!existing.oidc_issuer || !existing.oidc_subject)) {
-      await db.query(
-        "UPDATE users SET oidc_issuer = $1, oidc_subject = $2, auth_source = 'oidc', updated_at = CURRENT_TIMESTAMP WHERE id = $3",
-        [issuer, subject, existing.id]
-      );
-    }
     return existing;
+  }
+
+  // No durable-identity match. Email is never used to silently adopt an account:
+  // if it belongs to an existing one, the identity is bound only through an
+  // admin-opened one-time linking window, after which the account is SSO-only.
+  const byEmail = await db.query(
+    `SELECT ${OAUTH_USER_COLUMNS} FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1`,
+    [profile.email]
+  );
+  const emailMatch = byEmail.rows[0] || null;
+  if (emailMatch) {
+    if (emailMatch.status !== "active") throw disabledAccountError();
+    // Email already bound to a different SSO identity → refuse (email reuse).
+    if (emailMatch.oidc_issuer && emailMatch.oidc_subject) {
+      throw new Error("This email is already linked to a different SSO identity");
+    }
+    if (!emailMatch.oidc_link_pending) throw ssoLinkRequiredError();
+    await db.query(
+      `UPDATE users SET oidc_issuer = $1, oidc_subject = $2, auth_source = 'oidc',
+         password_hash = NULL, oidc_link_pending = FALSE, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $3`,
+      [issuer, subject, emailMatch.id]
+    );
+    await audit({
+      action: "user.oidc_linked",
+      actorId: emailMatch.id,
+      actorLabel: emailMatch.username,
+      ip,
+      targetType: "user",
+      targetId: emailMatch.id,
+      metadata: { issuer },
+    });
+    emailMatch.oidc_issuer = issuer;
+    emailMatch.oidc_subject = subject;
+    emailMatch.auth_source = "oidc";
+    emailMatch.password_hash = null;
+    return emailMatch;
   }
 
   if (!OAUTH_AUTO_REGISTER) {
@@ -540,7 +577,7 @@ async function requireUser(req) {
   if (!payload) throw requestError("NOT_AUTHENTICATED", 401);
 
   const { rows } = await db.query(
-    "SELECT id, username, email, display_name, system_role, status, auth_source, session_epoch FROM users WHERE id = $1 LIMIT 1",
+    "SELECT id, username, email, display_name, system_role, status, auth_source, session_epoch, password_change_required FROM users WHERE id = $1 LIMIT 1",
     [payload.sub]
   );
   const row = rows[0];
@@ -556,6 +593,7 @@ async function requireUser(req) {
     role: row.system_role,
     status: row.status,
     auth_source: row.auth_source,
+    passwordChangeRequired: row.password_change_required === true,
     authMethod: payload.authMethod || (row.auth_source === "oidc" ? "sso" : "local"),
     iat: payload.iat,
   };
@@ -2354,6 +2392,7 @@ function adminUserView(row) {
     role: row.system_role,
     status: row.status,
     authSource: row.auth_source,
+    oidcLinkPending: row.oidc_link_pending === true,
     createdAt: toMillis(row.created_at),
     lastLoginAt: row.last_login_at ? toMillis(row.last_login_at) : null,
     disabledAt: row.disabled_at ? toMillis(row.disabled_at) : null,
@@ -2361,7 +2400,7 @@ function adminUserView(row) {
 }
 
 const ADMIN_USER_FIELDS =
-  "id, username, email, display_name, system_role, status, auth_source, created_at, last_login_at, disabled_at";
+  "id, username, email, display_name, system_role, status, auth_source, oidc_link_pending, created_at, last_login_at, disabled_at";
 
 async function adminListUsers(req, res, url) {
   const term = normalizeSearch(url.searchParams.get("q"));
@@ -2401,8 +2440,8 @@ async function adminCreateUser(req, res, actor) {
   const password = crypto.randomBytes(18).toString("base64url");
   try {
     await db.query(
-      `INSERT INTO users (id, username, email, display_name, system_role, password_hash, auth_source)
-       VALUES ($1, $2, $3, $4, $5, $6, 'local')`,
+      `INSERT INTO users (id, username, email, display_name, system_role, password_hash, auth_source, password_change_required)
+       VALUES ($1, $2, $3, $4, $5, $6, 'local', TRUE)`,
       [id, username, email, displayName, role, await hashPassword(password)]
     );
   } catch (err) {
@@ -2430,6 +2469,8 @@ async function adminUpdateUser(req, res, actor, targetId) {
   if (wantsStatus && !isUserStatus(nextStatus)) throw requestError("ADMIN_STATUS_INVALID", 400);
   const nextEmail = body.email != null ? validEmail(body.email) : null;
   const nextName = body.name != null ? (String(body.name).trim().slice(0, 190) || null) : null;
+  const nextUsername = body.username != null ? validAdminUsername(body.username) : null;
+  const nextLinkPending = typeof body.oidcLinkPending === "boolean" ? body.oidcLinkPending : null;
 
   const client = await db.connect();
   let before;
@@ -2438,7 +2479,7 @@ async function adminUpdateUser(req, res, actor, targetId) {
     await client.query("BEGIN");
     await client.query("SELECT pg_advisory_xact_lock($1)", [ADMIN_INVARIANT_LOCK]);
     const current = await client.query(
-      "SELECT id, username, email, display_name, system_role, status, auth_source FROM users WHERE id = $1 FOR UPDATE",
+      "SELECT id, username, email, display_name, system_role, status, auth_source, oidc_link_pending FROM users WHERE id = $1 FOR UPDATE",
       [targetId]
     );
     if (!current.rows.length) throw requestError("ADMIN_USER_NOT_FOUND", 404);
@@ -2462,6 +2503,8 @@ async function adminUpdateUser(req, res, actor, targetId) {
     const sets = ["updated_at = CURRENT_TIMESTAMP"];
     const params = [];
     const add = (fragment, value) => { params.push(value); sets.push(fragment.replace("?", `$${params.length}`)); };
+    if (nextUsername) add("username = ?", nextUsername);
+    if (nextLinkPending !== null) add("oidc_link_pending = ?", nextLinkPending);
     if (nextName) add("display_name = ?", nextName);
     if (nextEmail) add("email = ?", nextEmail);
     if (wantsRole) add("system_role = ?", nextRole);
@@ -2493,6 +2536,12 @@ async function adminUpdateUser(req, res, actor, targetId) {
     client.release();
   }
 
+  if (nextUsername && nextUsername !== before.username) {
+    await audit({ ...sessionActor(req, actor), action: "user.username_changed", targetType: "user", targetId, metadata: { from: before.username, to: nextUsername } });
+  }
+  if (nextLinkPending !== null && nextLinkPending !== before.oidc_link_pending) {
+    await audit({ ...sessionActor(req, actor), action: "user.oidc_link_window", targetType: "user", targetId, metadata: { enabled: nextLinkPending } });
+  }
   if (wantsRole && nextRole !== before.system_role) {
     await audit({ ...sessionActor(req, actor), action: "user.role_changed", targetType: "user", targetId, metadata: { from: before.system_role, to: nextRole } });
   }
@@ -2507,9 +2556,10 @@ async function adminResetPassword(req, res, actor, targetId) {
   if (!rows.length) throw requestError("ADMIN_USER_NOT_FOUND", 404);
   if (rows[0].auth_source !== "local") throw requestError("ADMIN_NOT_LOCAL_ACCOUNT", 400);
   const password = crypto.randomBytes(18).toString("base64url");
-  // Bump the epoch so the account's existing sessions end at once.
+  // Bump the epoch so the account's existing sessions end at once, and require a
+  // change on next login so the temporary password is genuinely one-time.
   await db.query(
-    "UPDATE users SET password_hash = $1, session_epoch = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = $2",
+    "UPDATE users SET password_hash = $1, password_change_required = TRUE, session_epoch = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = $2",
     [await hashPassword(password), targetId]
   );
   await audit({ ...sessionActor(req, actor), action: "user.password_reset", targetType: "user", targetId });
@@ -2601,7 +2651,8 @@ async function handleApi(req, res, url) {
         targetType: "user",
         metadata: { authMethod: "sso", reason: err.message || "sso_error" },
       });
-      return redirect(res, "/?auth_error=sso", { "set-cookie": clearState });
+      const authError = err.authError || "sso";
+      return redirect(res, `/?auth_error=${authError}`, { "set-cookie": clearState });
     }
   }
 
@@ -2611,7 +2662,7 @@ async function handleApi(req, res, url) {
     const password = String(body.password || "");
     if (!login || !password) return errorJson(res, 400, "AUTH_REQUIRED_FIELDS");
     const { rows } = await db.query(
-      "SELECT id, username, email, display_name, system_role, status, auth_source, session_epoch, password_hash FROM users WHERE LOWER(username) = LOWER($1) OR LOWER(email) = LOWER($2) LIMIT 1",
+      "SELECT id, username, email, display_name, system_role, status, auth_source, session_epoch, password_hash, password_change_required FROM users WHERE LOWER(username) = LOWER($1) OR LOWER(email) = LOWER($2) LIMIT 1",
       [login, login]
     );
     const user = rows[0];
@@ -2684,8 +2735,9 @@ async function handleApi(req, res, url) {
     if (!passwordCheck.valid) return errorJson(res, 401, "PASSWORD_CURRENT_INCORRECT");
 
     const passwordHash = await hashPassword(newPassword);
-    await db.query("UPDATE users SET password_hash = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2", [passwordHash, user.id]);
+    await db.query("UPDATE users SET password_hash = $1, password_change_required = FALSE, updated_at = CURRENT_TIMESTAMP WHERE id = $2", [passwordHash, user.id]);
     user.password_hash = passwordHash;
+    user.password_change_required = false;
     await audit({
       ...sessionActor(req, sessionUser),
       action: "user.password_changed",
@@ -2708,7 +2760,44 @@ async function handleApi(req, res, url) {
 
   const user = await requireUser(req);
 
+  // A pending forced password change blocks every other authed endpoint until the
+  // temporary password is replaced. The login/password/logout/session routes are
+  // handled above, before this gate, so the account can still complete the change.
+  if (user.passwordChangeRequired) return errorJson(res, 403, "PASSWORD_CHANGE_REQUIRED");
+
   if (url.pathname.startsWith("/api/admin/")) return handleAdminApi(req, res, url, user);
+
+  if (req.method === "POST" && url.pathname === "/api/account/username") {
+    const body = await readBody(req);
+    const nextUsername = validAdminUsername(body.username);
+    const { rows } = await db.query(
+      "SELECT id, username, email, display_name, system_role, status, auth_source, session_epoch, password_hash FROM users WHERE id = $1 LIMIT 1",
+      [user.sub]
+    );
+    const row = rows[0];
+    if (!row) return errorJson(res, 401, "NOT_AUTHENTICATED");
+    if (nextUsername === row.username) return json(res, 200, { user: publicUser({ ...row, authMethod: user.authMethod }) });
+    // Step-up: a local account must re-enter its password to change the username;
+    // an SSO account has no local secret, so the live session is the proof.
+    if (row.password_hash) {
+      const currentPassword = String(body.currentPassword || "");
+      if (!currentPassword) return errorJson(res, 400, "ACCOUNT_REAUTH_REQUIRED");
+      const check = await verifyPassword(currentPassword, row.password_hash);
+      if (!check.valid) return errorJson(res, 401, "PASSWORD_CURRENT_INCORRECT");
+    }
+    try {
+      await db.query("UPDATE users SET username = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2", [nextUsername, user.sub]);
+    } catch (err) {
+      if (err.code === "23505") return errorJson(res, 409, "ADMIN_USER_EXISTS");
+      throw err;
+    }
+    await audit({ ...sessionActor(req, user), action: "user.username_changed", targetType: "user", targetId: user.sub, metadata: { from: row.username, to: nextUsername, self: true } });
+    row.username = nextUsername;
+    // Re-issue the session cookie so the token's username claim stays current.
+    return json(res, 200, { user: publicUser({ ...row, authMethod: user.authMethod }) }, {
+      "set-cookie": cookie("iris_session", makeToken(row, user.authMethod), { maxAge: 60 * 60 * 24 * 7 }),
+    });
+  }
 
   if (req.method === "GET" && url.pathname === "/api/projects") return listProjects(req, res, user);
   if (req.method === "POST" && url.pathname === "/api/projects/import") return importProjectArchive(req, res, user, url);

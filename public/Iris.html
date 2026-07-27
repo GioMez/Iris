@@ -193,6 +193,7 @@
     </div>
   </div>
   <div class="msep"></div>
+  <button class="mi" id="miUsername" type="button" role="menuitem"><span class="ic" data-icon="edit"></span><span data-i18n="account.changeUsername">Change username</span></button>
   <button class="mi" id="miPassword" type="button" role="menuitem"><span class="ic" data-icon="key"></span><span data-i18n="account.changePassword">Change password</span></button>
   <button class="mi danger" id="miLogout" type="button" role="menuitem"><span class="ic" data-icon="logout"></span><span data-i18n="account.signOut">Sign out</span></button>
 </div>
@@ -482,6 +483,33 @@
   </div>
 </div>
 
+<div class="scrim" id="usernameModal">
+  <div class="modal narrow">
+    <div class="m-head">
+      <h3 data-i18n="account.changeUsername">Change username</h3>
+      <button class="m-x" data-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
+    </div>
+    <div class="m-body">
+      <div class="login-error inline" id="usernameError"></div>
+      <div class="field">
+        <span class="label" data-i18n="admin.username">Username</span>
+        <input class="input" id="usernameNew" spellcheck="false" autocomplete="off">
+        <div class="hint"><span data-icon="info-circle"></span><span data-i18n="admin.usernameHint">Lowercase, at least 3 characters.</span></div>
+      </div>
+      <div class="field" id="usernameReauthRow">
+        <span class="label" data-i18n="password.current">Current password</span>
+        <input class="input" id="usernameCurrent" type="password" autocomplete="current-password">
+        <div class="hint"><span data-icon="info-circle"></span><span data-i18n="account.reauthHint">Enter your current password to confirm the change.</span></div>
+      </div>
+      <div class="hint" id="usernameHint"></div>
+    </div>
+    <div class="m-foot">
+      <button class="btn" data-close data-i18n="common.cancel">Cancel</button>
+      <button class="btn cta" id="usernameSave" data-i18n="account.changeUsername">Change username</button>
+    </div>
+  </div>
+</div>
+
 <!-- ===================== PROJECT MODALS ===================== -->
 <div class="scrim" id="projModal">
   <div class="modal narrow">
@@ -678,6 +706,11 @@
       <div class="login-error inline" id="adminEditError"></div>
       <div class="admin-edit-id" id="adminEditIdentity"></div>
       <div class="field">
+        <span class="label" data-i18n="admin.username">Username</span>
+        <input class="input" id="adminEditUsername" spellcheck="false" autocomplete="off">
+        <span class="hint" data-i18n="admin.usernameHint">Lowercase, at least 3 characters.</span>
+      </div>
+      <div class="field">
         <span class="label" data-i18n="admin.name">Display name</span>
         <input class="input" id="adminEditName" spellcheck="false" autocomplete="off">
       </div>
@@ -698,6 +731,10 @@
           <option value="active" data-i18n="admin.statusActive">Active</option>
           <option value="disabled" data-i18n="admin.statusDisabled">Disabled</option>
         </select>
+      </div>
+      <div class="field" id="adminLinkRow">
+        <label class="admin-check"><input type="checkbox" id="adminEditLinkPending"><span data-i18n="admin.linkPending">Allow SSO linking (one time)</span></label>
+        <span class="hint" data-i18n="admin.linkPendingHint">On the next SSO sign-in with this email the account is linked and becomes SSO-only.</span>
       </div>
       <div class="admin-reset" id="adminResetRow">
         <button class="btn" id="adminResetBtn"><span class="ic" data-icon="key"></span><span data-i18n="admin.resetPassword">Reset password</span></button>
@@ -782,6 +819,7 @@
 
 <script src="iris-icons.js"></script>
 <script src="iris-i18n.js"></script>
+<script src="iris-net.js"></script>
 <script src="iris-latex.js"></script>
 <script src="iris-lilypond.js"></script>
 <script src="iris-app.js"></script>

@@ -62,12 +62,17 @@
     lastCompile: null,
     dirtyFiles: new Map(), // file id -> edit revision not yet persisted
     editRevision: 0,
+    role: "owner", // project role; "viewer" makes the workspace read-only
   };
+
+  // The server enforces capabilities; this only shapes the UI. A viewer gets a
+  // read-only workspace: no editing, saving, compiling or tree mutations.
+  function isReadOnly() { return state.role === "viewer"; }
 
   /* ---------------- persistence (delegated to the projects layer) ---------------- */
   let persistQueue = Promise.resolve(true);
   function persist() {
-    if (!window.IrisProjects) return Promise.resolve(false);
+    if (!window.IrisProjects || isReadOnly()) return Promise.resolve(false);
     const operation = async () => {
       const dirtyAtStart = new Map(state.dirtyFiles);
       const saved = await window.IrisProjects.persistCurrent();
@@ -255,6 +260,17 @@
     delay.disabled = !state.autoSave;
     delay.value = String(state.autoSaveDelay);
     group.setAttribute("aria-disabled", state.autoSave ? "false" : "true");
+  }
+
+  // Reflects the current project role in the workspace: CSS (via iris-readonly)
+  // hides write controls and node tools, and the editor textarea is locked so a
+  // viewer cannot start editing and only discover the block on save.
+  function applyRoleGate() {
+    const ro = isReadOnly();
+    document.documentElement.classList.toggle("iris-readonly", ro);
+    if (area) area.readOnly = ro;
+    if (ro) { state.autoSave = false; clearTimeout(persistT); }
+    updateAutoSaveControls();
   }
 
   let editorSyncFrame = 0;
@@ -1253,6 +1269,7 @@
     return main || f;
   }
   async function compile() {
+    if (isReadOnly()) { toast(t("projects.readOnlyNotice")); return; }
     if (state.dirtyFiles.size) {
       toast(t("editor.saveBeforeCompile"), "err");
       $("btnSave").focus();
@@ -1721,6 +1738,7 @@
     openNewItem("file");
   }
   async function saveProject() {
+    if (isReadOnly()) { toast(t("projects.readOnlyNotice")); return false; }
     clearTimeout(persistT);
     const saved = await persist();
     toast(t(saved ? "editor.documentSaved" : "editor.saveFailed"), saved ? "" : "err");
@@ -1768,6 +1786,15 @@
     $("btnAttach").addEventListener("click", openAttach);
     $("dlBtn").addEventListener("click", downloadPdf);
     $("btnSettings").addEventListener("click", openSettings);
+
+    // If the backend refuses a write mid-session (role downgraded to viewer),
+    // the projects layer emits this; drop the workspace to read-only in place.
+    document.addEventListener("iris:writeforbidden", () => {
+      if (isReadOnly()) return;
+      state.role = "viewer";
+      applyRoleGate();
+      toast(t("projects.writeForbidden"), "err");
+    });
 
     // latex binaries path (in Impostazioni → Compilazione)
     $("texPath").addEventListener("input", function () {
@@ -2266,7 +2293,9 @@
       clearTimeout(persistT);
       state.dirtyFiles.clear();
       state.editRevision = 0;
-      updateAutoSaveControls();
+      state.role = data.role || "owner";
+      applyRoleGate();
+      if (isReadOnly()) toast(t("projects.readOnlyNotice"));
       state.zoom = 1; state.effectiveZoom = 1; state.fit = true; state.view = "preview"; state.previewKind = "empty";
       setWorkspaceView("editor");
       updateProjectTypeUi();

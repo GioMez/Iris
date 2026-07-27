@@ -11,24 +11,9 @@
   let users = [];
   let editingId = null;
 
-  async function api(path, options) {
-    const res = await fetch(path, {
-      credentials: "same-origin",
-      headers: { "content-type": "application/json", ...(options && options.headers) },
-      ...options,
-    });
-    let data = {};
-    try { data = await res.json(); } catch (e) {}
-    if (!res.ok) {
-      const err = new Error();
-      err.code = data.errorCode || "SERVER_ERROR";
-      err.params = data.params || {};
-      err.message = window.IrisI18n.error(err);
-      err.status = res.status;
-      throw err;
-    }
-    return data;
-  }
+  // A 401 here means my own session fell (self-disable, self password reset):
+  // IrisNet routes it to the registered handler, which drops back to login.
+  const api = (path, options) => window.IrisNet.request(path, options);
 
   const initials = (name) =>
     String(name || "").split(/\s+/).filter(Boolean).map((s) => s[0]).slice(0, 2).join("").toUpperCase() || "–";
@@ -150,12 +135,16 @@
     $("adminEditError").style.display = "none";
     $("adminEditTitle").textContent = t("admin.editTitle", { name: u.username });
     $("adminEditIdentity").textContent = `${u.email} · ${u.authSource === "oidc" ? t("admin.sourceOidc") : t("admin.sourceLocal")}`;
+    $("adminEditUsername").value = u.username || "";
     $("adminEditName").value = u.name || "";
     $("adminEditEmail").value = u.email || "";
     $("adminEditRole").value = u.role;
     $("adminEditStatus").value = u.status;
-    // Only local accounts have a password Iris can reset.
+    // Only local accounts have a password Iris can reset, and only they can be
+    // offered the one-time SSO linking window (an OIDC account is already linked).
     $("adminResetRow").style.display = u.authSource === "local" ? "" : "none";
+    $("adminEditLinkPending").checked = !!u.oidcLinkPending;
+    $("adminLinkRow").style.display = u.authSource === "local" ? "" : "none";
     $("adminEditModal").classList.add("on");
     setTimeout(() => $("adminEditName").focus(), 50);
   }
@@ -167,13 +156,23 @@
       const data = await api(`/api/admin/users/${editingId}`, {
         method: "PATCH",
         body: JSON.stringify({
+          username: $("adminEditUsername").value.trim(),
           name: $("adminEditName").value.trim(),
           email: $("adminEditEmail").value.trim(),
           role: $("adminEditRole").value,
           status: $("adminEditStatus").value,
+          oidcLinkPending: $("adminEditLinkPending").checked,
         }),
       });
       $("adminEditModal").classList.remove("on");
+      // Acting on my own account can revoke my access to this console: a
+      // self-demotion changes my role with no 401, a self-disable kills the
+      // session (401 on refresh → routed to login). Re-sync before touching the
+      // admin list, which would otherwise 403 and blank the console.
+      if (editingId === myId()) {
+        await window.IrisAuth.refreshSession();
+        if (!isAdmin()) { close(); return; }
+      }
       status(t("admin.userUpdated", { name: data.user.username }));
       await load();
     } catch (err) {

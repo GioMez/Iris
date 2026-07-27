@@ -6,25 +6,14 @@
   const t = (key, params) => window.IrisI18n.t(key, params);
   let ssoEnabled = false;
   let currentUser = null;
+  // While a forced first-login password change is pending the modal is mandatory:
+  // it cannot be dismissed and the app stays behind it until the change succeeds.
+  let passwordForced = false;
 
-  async function api(path, options) {
-    const res = await fetch(path, {
-      credentials: "same-origin",
-      headers: { "content-type": "application/json", ...(options && options.headers) },
-      ...options,
-    });
-    let data = {};
-    try { data = await res.json(); } catch (e) {}
-    if (!res.ok) {
-      const err = new Error();
-      err.code = data.errorCode || "SERVER_ERROR";
-      err.params = data.params || {};
-      err.message = window.IrisI18n.error(err);
-      err.status = res.status;
-      throw err;
-    }
-    return data;
-  }
+  // This module owns the login/session/password endpoints, where a 401 means
+  // "wrong credentials" and must be handled locally — never as a session drop —
+  // so it opts out of IrisNet's global unauthorized handler.
+  const api = (path, options) => window.IrisNet.request(path, { ...options, skipUnauthorizedHook: true });
 
   const initials = (name) =>
     String(name || "").split(/\s+/).filter(Boolean).map((s) => s[0]).slice(0, 2).join("").toUpperCase() || "–";
@@ -47,6 +36,20 @@
     if (pe) pe.textContent = u.email;
     const pwd = $("miPassword");
     if (pwd) pwd.style.display = u.canChangePassword ? "" : "none";
+  }
+
+  // Re-reads the live session and re-stamps role/identity. Used after an admin
+  // acts on their own account: a self-demotion changes the role with no forced
+  // logout, so the console must re-sync to notice it is no longer authorized.
+  // A self-disable instead 401s here and is routed straight back to login.
+  async function refreshSession() {
+    try {
+      const { user } = await window.IrisNet.request("/api/auth/session");
+      applyUserUI(user);
+      return user;
+    } catch (e) {
+      return null;
+    }
   }
 
   function showApp(u) {
@@ -96,15 +99,30 @@
     $("passwordHint").textContent = "";
   }
   function closePasswordModal() {
+    if (passwordForced) return; // mandatory change: not dismissable
     $("passwordModal").classList.remove("on");
     ["passwordCurrent", "passwordNew", "passwordConfirm"].forEach((id) => { $(id).value = ""; });
     hidePasswordError();
   }
-  function openPasswordModal() {
-    if (!currentUser || !currentUser.canChangePassword) return;
+  function openPasswordModal(forced) {
+    if (!forced && (!currentUser || !currentUser.canChangePassword)) return;
+    passwordForced = !!forced;
+    $("passwordModal").classList.toggle("forced", passwordForced);
     hidePasswordError();
+    if (passwordForced) $("passwordHint").textContent = t("password.mustChange");
     $("passwordModal").classList.add("on");
     setTimeout(() => $("passwordCurrent").focus(), 50);
+  }
+
+  // Entry point after a successful login/session: an account still owing a forced
+  // password change is held on the login screen behind the mandatory modal.
+  function proceedAfterAuth(user) {
+    if (user && user.passwordChangeRequired) {
+      showLogin();
+      openPasswordModal(true);
+      return;
+    }
+    showApp(user);
   }
 
   async function doLogin() {
@@ -120,7 +138,7 @@
         body: JSON.stringify({ username, password }),
       });
       hideError();
-      showApp(user);
+      proceedAfterAuth(user);
     } catch (err) {
       showError(window.IrisI18n.error(err, "auth.invalidRetry"));
       $("loginPass").select();
@@ -189,11 +207,63 @@
         method: "POST",
         body: JSON.stringify({ currentPassword, newPassword }),
       });
+      if (passwordForced) {
+        // Mandatory change satisfied: release the modal and enter the app.
+        passwordForced = false;
+        $("passwordModal").classList.remove("forced", "on");
+        ["passwordCurrent", "passwordNew", "passwordConfirm"].forEach((id) => { $(id).value = ""; });
+        showApp(user);
+        return;
+      }
       if (user) applyUserUI(user);
       $("passwordHint").textContent = t("password.updated");
       setTimeout(closePasswordModal, 650);
     } catch (err) {
       passwordError(window.IrisI18n.error(err, "password.updateFailed"));
+    } finally {
+      btn.disabled = false;
+      btn.classList.remove("loading");
+    }
+  }
+
+  function usernameError(msg) {
+    const e = $("usernameError");
+    e.textContent = msg;
+    e.style.display = "flex";
+  }
+  function hideUsernameError() { $("usernameError").style.display = "none"; $("usernameHint").textContent = ""; }
+  function closeUsernameModal() {
+    $("usernameModal").classList.remove("on");
+    $("usernameNew").value = ""; $("usernameCurrent").value = "";
+    hideUsernameError();
+  }
+  function openUsernameModal() {
+    if (!currentUser) return;
+    hideUsernameError();
+    $("usernameNew").value = currentUser.username || "";
+    // Step-up: local accounts confirm with their password; SSO accounts have no
+    // local secret, so the live session stands in for it.
+    $("usernameReauthRow").style.display = currentUser.canChangePassword ? "" : "none";
+    $("usernameModal").classList.add("on");
+    setTimeout(() => $("usernameNew").focus(), 50);
+  }
+  async function changeUsername() {
+    const username = $("usernameNew").value.trim();
+    const currentPassword = $("usernameCurrent").value;
+    if (!username) { usernameError(t("admin.usernameHint")); return; }
+    const btn = $("usernameSave");
+    btn.disabled = true;
+    btn.classList.add("loading");
+    try {
+      const { user } = await api("/api/account/username", {
+        method: "POST",
+        body: JSON.stringify({ username, currentPassword }),
+      });
+      if (user) applyUserUI(user);
+      $("usernameHint").textContent = t("account.usernameUpdated");
+      setTimeout(closeUsernameModal, 650);
+    } catch (err) {
+      usernameError(window.IrisI18n.error(err));
     } finally {
       btn.disabled = false;
       btn.classList.remove("loading");
@@ -225,6 +295,11 @@
     um.addEventListener("click", (e) => e.stopPropagation());
     document.addEventListener("click", () => { um.classList.remove("on"); $("userChip").setAttribute("aria-expanded", "false"); });
 
+    $("miUsername").addEventListener("click", () => {
+      um.classList.remove("on");
+      $("userChip").setAttribute("aria-expanded", "false");
+      openUsernameModal();
+    });
     $("miPassword").addEventListener("click", () => {
       um.classList.remove("on");
       $("userChip").setAttribute("aria-expanded", "false");
@@ -254,6 +329,18 @@
     document.querySelectorAll("#passwordModal [data-close]").forEach((b) =>
       b.addEventListener("click", closePasswordModal)
     );
+    $("usernameSave").addEventListener("click", changeUsername);
+    ["usernameNew", "usernameCurrent"].forEach((id) => {
+      $(id).addEventListener("input", hideUsernameError);
+      $(id).addEventListener("keydown", (e) => {
+        if (e.key === "Enter") { e.preventDefault(); changeUsername(); }
+        if (e.key === "Escape") { e.preventDefault(); closeUsernameModal(); }
+      });
+    });
+    $("usernameModal").addEventListener("click", (e) => { if (e.target === $("usernameModal")) closeUsernameModal(); });
+    document.querySelectorAll("#usernameModal [data-close]").forEach((b) =>
+      b.addEventListener("click", closeUsernameModal)
+    );
   }
 
   async function boot() {
@@ -268,14 +355,19 @@
     }
     try {
       const { user } = await api("/api/auth/session");
-      showApp(user);
+      proceedAfterAuth(user);
     } catch (e) {
       showLogin();
       if (authError === "sso") showError(t("auth.ssoFailed"));
+      else if (authError === "sso_link_required") showError(t("auth.ssoLinkRequired"));
     }
   }
 
-  window.IrisAuth = { showLogin, showApp };
+  // Any authed request that 401s (expired cookie, disabled account, forced
+  // logout after a password reset) drops the whole app back to the login screen.
+  window.IrisNet.setUnauthorizedHandler(showLogin);
+
+  window.IrisAuth = { showLogin, showApp, refreshSession };
   document.addEventListener("iris:languagechange", () => {
     const reveal = $("loginPass").type === "text";
     $("pwToggle").textContent = t(reveal ? "auth.hidePassword" : "auth.showPassword");

@@ -693,6 +693,19 @@ html:not(.iris-inproject) #projChip{display:none}
 .pcard-ic .ti{width:14px;height:14px}
 .pcard-ic:hover{background:#ffffff14;color:var(--txt)}
 .pcard-ic.danger:hover{background:rgba(247,118,142,.16);color:var(--semantic-danger);border-color:rgba(247,118,142,.4)}
+.pcard-role{display:inline-block;margin:4px 0 2px;padding:2px 8px;border-radius:999px;font-size:10px;font-weight:600;letter-spacing:.03em;text-transform:uppercase;border:1px solid var(--border);background:var(--panel-2);color:var(--txt-mut)}
+.pcard-role.role-owner{background:rgba(125,207,255,.12);color:var(--accent);border-color:rgba(125,207,255,.22)}
+.pcard-role.role-editor{background:rgba(187,154,247,.12);color:var(--category-music);border-color:rgba(187,154,247,.22)}
+.pcard-role.role-viewer{background:var(--panel-2);color:var(--txt-mut);border-color:var(--border)}
+
+/* Viewer role: hide every write affordance. The server still enforces this;
+   this only keeps a viewer from starting edits they cannot persist. */
+.iris-readonly #btnSave,.iris-readonly #btnCompile,.iris-readonly #btnFormat,
+.iris-readonly #btnNew,.iris-readonly #newFileBtn,.iris-readonly #btnOpen,
+.iris-readonly #btnAttach,.iris-readonly .node-tools{display:none!important}
+
+/* Mandatory first-login password change: the modal cannot be dismissed. */
+#passwordModal.forced [data-close]{display:none!important}
 
 .picker-empty{text-align:center;padding:70px 20px;border:1.5px dashed var(--border);border-radius:14px;
   display:flex;flex-direction:column;align-items:center;gap:9px}
@@ -748,6 +761,8 @@ html.iris-inadmin[data-role="admin"] .admin-screen{display:block}
 .admin-badge.role-regular{background:var(--panel-2);color:var(--txt-mut);border-color:var(--border)}
 .admin-badge.status-active{background:rgba(120,200,140,.12);color:var(--semantic-success);border-color:rgba(120,200,140,.22)}
 .admin-badge.status-disabled{background:rgba(230,120,120,.12);color:var(--semantic-danger);border-color:rgba(230,120,120,.22)}
+.admin-check{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--txt);cursor:pointer}
+.admin-check input{width:15px;height:15px;accent-color:var(--accent);cursor:pointer}
 .admin-source{color:var(--txt-mut);font-family:var(--font-code);font-size:11.5px}
 .admin-time{color:var(--txt-mut);font-size:12px}
 .admin-row-edit{border:1px solid var(--border);background:transparent;color:var(--txt-mut);border-radius:8px;

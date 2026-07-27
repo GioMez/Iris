@@ -115,6 +115,10 @@
   },
   "account": {
     "changePassword": "Cambia password",
+    "changeUsername": "Cambia nome utente",
+    "newUsername": "Nuovo nome utente",
+    "usernameUpdated": "Nome utente aggiornato.",
+    "reauthHint": "Inserisci la password attuale per confermare la modifica.",
     "signOut": "Disconnetti",
     "exit": "Esci"
   },
@@ -249,7 +253,8 @@
     "tooShort": "La nuova password deve contenere almeno 10 caratteri.",
     "mismatch": "La conferma non coincide con la nuova password.",
     "updated": "Password aggiornata.",
-    "updateFailed": "Impossibile aggiornare la password."
+    "updateFailed": "Impossibile aggiornare la password.",
+    "mustChange": "Per continuare, imposta una nuova password."
   },
   "projects": {
     "newTitle": "Nuovo progetto",
@@ -294,7 +299,13 @@
     "unsavedConfirm": "Il progetto contiene modifiche non salvate. Uscire e scartarle?",
     "noneOpen": "Nessun progetto aperto.",
     "operationFailed": "Operazione non riuscita.",
-    "thisProject": "questo progetto"
+    "thisProject": "questo progetto",
+    "roleOwner": "Proprietario",
+    "roleEditor": "Editor",
+    "roleViewer": "Visualizzatore",
+    "roleBadgeTitle": "Il tuo ruolo su questo progetto",
+    "readOnlyNotice": "Sola lettura: hai accesso in visualizzazione a questo progetto.",
+    "writeForbidden": "Permesso di modifica revocato: il progetto è ora in sola lettura."
   },
   "auth": {
     "title": "Accedi al tuo spazio",
@@ -313,7 +324,8 @@
     "ssoSignIn": "Accedi con SSO",
     "ssoDisabled": "SSO non configurato sul backend",
     "ssoNotConfigured": "SSO non configurato. Usa le credenziali locali o aggiorna la configurazione del backend.",
-    "ssoFailed": "Accesso SSO non riuscito. Riprova o usa le credenziali locali."
+    "ssoFailed": "Accesso SSO non riuscito. Riprova o usa le credenziali locali.",
+    "ssoLinkRequired": "Accesso SSO riuscito, ma questo account non è ancora abilitato all'SSO. Se possiedi già un account Iris con questa email, chiedi a un amministratore di autorizzare l'associazione."
   },
   "editor": {
     "lilypondCompiler": "Compilatore LilyPond",
@@ -391,7 +403,9 @@
     "copied": "Copiata",
     "credentialsDone": "Fatto",
     "userCreated": "Creato {{name}}.",
-    "userUpdated": "Aggiornato {{name}}."
+    "userUpdated": "Aggiornato {{name}}.",
+    "linkPending": "Consenti associazione SSO (una volta)",
+    "linkPendingHint": "Al prossimo accesso SSO con questa email l'account verrà collegato all'identità SSO e diventerà solo-SSO (la password locale viene rimossa)."
   },
   "api": {
     "AUTH_REQUIRED_FIELDS": "Inserisci nome utente e password.",
@@ -403,6 +417,8 @@
     "PASSWORD_MUST_DIFFER": "La nuova password deve essere diversa da quella attuale.",
     "PASSWORD_SSO_ACCOUNT": "Questo account usa SSO e non ha una password locale.",
     "PASSWORD_CURRENT_INCORRECT": "Password attuale non corretta.",
+    "PASSWORD_CHANGE_REQUIRED": "Devi impostare una nuova password prima di continuare.",
+    "ACCOUNT_REAUTH_REQUIRED": "Inserisci la password attuale per confermare la modifica.",
     "PROJECT_NAME_REQUIRED": "Il nome del progetto è obbligatorio.",
     "PROJECT_NAME_TOO_LONG": "Il nome del progetto è troppo lungo.",
     "PROJECT_NOT_FOUND": "Progetto non trovato.",

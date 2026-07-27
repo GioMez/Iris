@@ -13,37 +13,11 @@
   let currentId = null;
   const cache = new Map();
 
-  async function api(path, options) {
-    const res = await fetch(path, {
-      credentials: "same-origin",
-      headers: { "content-type": "application/json", ...(options && options.headers) },
-      ...options,
-    });
-    let data = {};
-    try { data = await res.json(); } catch (e) {}
-    if (!res.ok) {
-      if (res.status === 401 && window.IrisAuth) window.IrisAuth.showLogin();
-      const err = new Error();
-      err.code = data.errorCode || "SERVER_ERROR";
-      err.params = data.params || {};
-      err.message = window.IrisI18n.error(err);
-      err.status = res.status;
-      throw err;
-    }
-    return data;
-  }
+  const ROLE_KEY = { owner: "roleOwner", editor: "roleEditor", viewer: "roleViewer" };
+  const roleLabel = (role) => t(`projects.${ROLE_KEY[role] || "roleOwner"}`);
 
-  async function errorFromResponse(res) {
-    let data = {};
-    try { data = await res.json(); } catch (e) {}
-    if (res.status === 401 && window.IrisAuth) window.IrisAuth.showLogin();
-    const err = new Error();
-    err.code = data.errorCode || "SERVER_ERROR";
-    err.params = data.params || {};
-    err.message = window.IrisI18n.error(err);
-    err.status = res.status;
-    return err;
-  }
+  const api = (path, options) => window.IrisNet.request(path, options);
+  const errorFromResponse = (res) => window.IrisNet.errorFromResponse(res);
 
   function saveBlob(blob, fileName) {
     const blobUrl = URL.createObjectURL(blob);
@@ -187,18 +161,25 @@
         const card = document.createElement("div");
         card.className = "pcard";
         card.dataset.id = m.id;
+        // The server is the authority on capabilities; the card only reflects the
+        // role so owners get manage tools and viewers/editors don't see actions
+        // they can't perform.
+        const isOwner = m.role === "owner";
         card.innerHTML =
           `<button class="pcard-open" type="button" title="${esc(t("projects.openTitle"))}">` +
             `<span class="pcard-icon${m.projectType === "lilypond" ? " lilypond" : ""}">${ti(m.projectType === "lilypond" ? "music" : "file-code-2")}</span>` +
             `<span class="pcard-text">` +
               `<span class="pcard-name">${esc(m.name)}</span>` +
+              `<span class="pcard-role role-${esc(m.role || "owner")}" title="${esc(t("projects.roleBadgeTitle"))}">${esc(roleLabel(m.role))}</span>` +
               `<span class="pcard-meta">${m.projectType === "lilypond" ? "LilyPond" : "LaTeX"} · ${esc(t("projects.fileCount", { count: nfiles }))} · ${esc(t("projects.modified", { time: fmtTime(m.updatedAt) }))}</span>` +
             `</span>` +
           `</button>` +
           `<div class="pcard-tools">` +
             `<button class="pcard-ic" type="button" data-act="download" title="${esc(t("common.download"))}" aria-label="${esc(t("projects.downloadAria", { name: m.name }))}">${ti("download")}</button>` +
-            `<button class="pcard-ic" type="button" data-act="rename" title="${esc(t("common.rename"))}" aria-label="${esc(t("projects.renameAria", { name: m.name }))}">${ti("edit")}</button>` +
-            `<button class="pcard-ic danger" type="button" data-act="delete" title="${esc(t("common.delete"))}" aria-label="${esc(t("projects.deleteAria", { name: m.name }))}">${ti("trash")}</button>` +
+            (isOwner
+              ? `<button class="pcard-ic" type="button" data-act="rename" title="${esc(t("common.rename"))}" aria-label="${esc(t("projects.renameAria", { name: m.name }))}">${ti("edit")}</button>` +
+                `<button class="pcard-ic danger" type="button" data-act="delete" title="${esc(t("common.delete"))}" aria-label="${esc(t("projects.deleteAria", { name: m.name }))}">${ti("trash")}</button>`
+              : "") +
           `</div>`;
         card.querySelector(".pcard-open").addEventListener("click", () => openProject(m.id));
         card.querySelector('[data-act="download"]').addEventListener("click", async (e) => {
@@ -214,8 +195,10 @@
             button.disabled = false;
           }
         });
-        card.querySelector('[data-act="rename"]').addEventListener("click", (e) => { e.stopPropagation(); askRename(m.id); });
-        card.querySelector('[data-act="delete"]').addEventListener("click", (e) => { e.stopPropagation(); askDelete(m.id); });
+        const renameBtn = card.querySelector('[data-act="rename"]');
+        if (renameBtn) renameBtn.addEventListener("click", (e) => { e.stopPropagation(); askRename(m.id); });
+        const deleteBtn = card.querySelector('[data-act="delete"]');
+        if (deleteBtn) deleteBtn.addEventListener("click", (e) => { e.stopPropagation(); askDelete(m.id); });
         grid.appendChild(card);
       });
     } catch (err) {
@@ -275,6 +258,10 @@
       return true;
     } catch (err) {
       console.error("Salvataggio progetto fallito", err);
+      // Write refused (role downgraded to viewer while the project was open):
+      // let the editor drop to read-only and tell the user, instead of failing
+      // silently and risking lost edits.
+      if (err && err.status === 403) document.dispatchEvent(new CustomEvent("iris:writeforbidden"));
       return false;
     }
   }

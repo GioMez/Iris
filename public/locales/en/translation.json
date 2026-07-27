@@ -115,6 +115,10 @@
   },
   "account": {
     "changePassword": "Change password",
+    "changeUsername": "Change username",
+    "newUsername": "New username",
+    "usernameUpdated": "Username updated.",
+    "reauthHint": "Enter your current password to confirm the change.",
     "signOut": "Sign out",
     "exit": "Exit"
   },
@@ -249,7 +253,8 @@
     "tooShort": "The new password must contain at least 10 characters.",
     "mismatch": "The confirmation does not match the new password.",
     "updated": "Password updated.",
-    "updateFailed": "Unable to update the password."
+    "updateFailed": "Unable to update the password.",
+    "mustChange": "To continue, set a new password."
   },
   "projects": {
     "newTitle": "New project",
@@ -294,7 +299,13 @@
     "unsavedConfirm": "The project contains unsaved changes. Exit and discard them?",
     "noneOpen": "No project is open.",
     "operationFailed": "The operation failed.",
-    "thisProject": "this project"
+    "thisProject": "this project",
+    "roleOwner": "Owner",
+    "roleEditor": "Editor",
+    "roleViewer": "Viewer",
+    "roleBadgeTitle": "Your role on this project",
+    "readOnlyNotice": "Read-only: you have view access to this project.",
+    "writeForbidden": "Edit permission revoked: this project is now read-only."
   },
   "auth": {
     "title": "Sign in to your workspace",
@@ -313,7 +324,8 @@
     "ssoSignIn": "Sign in with SSO",
     "ssoDisabled": "SSO is not configured on the backend",
     "ssoNotConfigured": "SSO is not configured. Use local credentials or update the backend configuration.",
-    "ssoFailed": "SSO sign-in failed. Try again or use local credentials."
+    "ssoFailed": "SSO sign-in failed. Try again or use local credentials.",
+    "ssoLinkRequired": "SSO sign-in succeeded, but this account is not linked to SSO yet. If you already have an Iris account with this email, ask an administrator to authorize the link."
   },
   "editor": {
     "lilypondCompiler": "LilyPond compiler",
@@ -391,7 +403,9 @@
     "copied": "Copied",
     "credentialsDone": "Done",
     "userCreated": "Created {{name}}.",
-    "userUpdated": "Updated {{name}}."
+    "userUpdated": "Updated {{name}}.",
+    "linkPending": "Allow SSO linking (one time)",
+    "linkPendingHint": "On the next SSO sign-in with this email the account is linked to the SSO identity and becomes SSO-only (the local password is removed)."
   },
   "api": {
     "AUTH_REQUIRED_FIELDS": "Enter your username and password.",
@@ -403,6 +417,8 @@
     "PASSWORD_MUST_DIFFER": "The new password must be different from the current password.",
     "PASSWORD_SSO_ACCOUNT": "This SSO account does not have a local password.",
     "PASSWORD_CURRENT_INCORRECT": "The current password is incorrect.",
+    "PASSWORD_CHANGE_REQUIRED": "You must set a new password before continuing.",
+    "ACCOUNT_REAUTH_REQUIRED": "Enter your current password to confirm the change.",
     "PROJECT_NAME_REQUIRED": "A project name is required.",
     "PROJECT_NAME_TOO_LONG": "The project name is too long.",
     "PROJECT_NOT_FOUND": "Project not found.",
