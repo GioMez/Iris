@@ -327,6 +327,50 @@
     saveBlob(await res.blob(), fileName || String(filePath || "download").split("/").pop());
   }
 
+  /* ---------------- file history / versions ---------------- */
+  // Resolves a live tree node's canonical file id (project_files UUID) from its
+  // path, using the cached server data. Files created this session keep a client
+  // ref id until reconciliation, so callers persist() first to refresh the cache.
+  function resolveFileId(filePath) {
+    const data = cache.get(currentId);
+    if (!data || !data.project || !Array.isArray(data.project.nodes)) return null;
+    const target = String(filePath || "");
+    let found = null;
+    const walk = (nodes) => (nodes || []).forEach((node) => {
+      if (found) return;
+      if (node.type === "folder") walk(node.children);
+      else if (node.path === target) found = node.id;
+    });
+    walk(data.project.nodes);
+    return found || null;
+  }
+
+  async function listFileVersions(fileId) {
+    if (!currentId) throw new Error(t("projects.noneOpen"));
+    const out = await api(`/api/projects/${currentId}/files/${fileId}/versions`);
+    return Array.isArray(out.versions) ? out.versions : [];
+  }
+
+  async function getFileVersion(fileId, versionId) {
+    if (!currentId) throw new Error(t("projects.noneOpen"));
+    return api(`/api/projects/${currentId}/files/${fileId}/versions/${versionId}`);
+  }
+
+  async function restoreFileVersion(fileId, versionId) {
+    if (!currentId) throw new Error(t("projects.noneOpen"));
+    return api(`/api/projects/${currentId}/files/${fileId}/versions/${versionId}/restore`, {
+      method: "POST",
+      body: "{}",
+    });
+  }
+
+  // Manual project-wide checkpoint. The current editor state is expected to be
+  // persisted already (callers save first), so the server snapshots from disk.
+  async function checkpointCurrent() {
+    if (!currentId) throw new Error(t("projects.noneOpen"));
+    return api(`/api/projects/${currentId}/checkpoint`, { method: "POST", body: "{}" });
+  }
+
   async function downloadProjectArchive(id, projectName) {
     const res = await fetch(`/api/projects/${id}/archive`, { credentials: "same-origin" });
     if (!res.ok) throw await errorFromResponse(res);
@@ -518,7 +562,7 @@
     window.IrisMotion.resetProject();
   }
 
-  window.IrisProjects = { showPicker, openProject, closeCurrent, persistCurrent, compileCurrent, downloadCurrentFile, refreshCurrent, renderPicker, onLogout };
+  window.IrisProjects = { showPicker, openProject, closeCurrent, persistCurrent, compileCurrent, downloadCurrentFile, refreshCurrent, renderPicker, onLogout, resolveFileId, listFileVersions, getFileVersion, restoreFileVersion, checkpointCurrent };
 
   /* ---------------- wiring ---------------- */
   function wire() {

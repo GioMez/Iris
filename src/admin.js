@@ -33,6 +33,19 @@ function normalizeSearch(value) {
   return term || null;
 }
 
+// Physical user deletion is a distinct, protected operation, separate from the
+// reversible disable. It is refused when it would be a mistake or strand data,
+// and the reasons are ordered by severity so the first blocker is reported.
+// Pure so the guard is tested without a database; the sole-owner project count is
+// computed by the endpoint. Deleting only a disabled account also means the
+// last-active-admin rule is already satisfied (disabling it was blocked earlier).
+function userDeletionBlock({ isSelf, status, soleOwnerProjectCount }) {
+  if (isSelf) return "self";
+  if (status !== "disabled") return "not_disabled";
+  if (Number(soleOwnerProjectCount) > 0) return "sole_owner";
+  return null;
+}
+
 module.exports = {
   SYSTEM_ROLES,
   USER_STATUSES,
@@ -41,4 +54,5 @@ module.exports = {
   countsAsActiveAdmin,
   leavesNoActiveAdmin,
   normalizeSearch,
+  userDeletionBlock,
 };

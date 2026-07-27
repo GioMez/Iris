@@ -13,7 +13,7 @@ const { lifecycleGate, healthStatus, isMutatingMethod, HEALTH_PATH } = require("
 const { recordAuditEvent } = require("./audit");
 const { collectProjectFiles, reconcileProjectFiles } = require("./project-files");
 const { hashContent, isVersionableText, contentChanged } = require("./versions");
-const { isSystemRole, isUserStatus, leavesNoActiveAdmin, normalizeSearch } = require("./admin");
+const { isSystemRole, isUserStatus, leavesNoActiveAdmin, normalizeSearch, userDeletionBlock } = require("./admin");
 const { isProjectRole, roleHasCapability, leavesNoOwner } = require("./project-access");
 const { projectStorageKey, resolveProjectStorageDir, relocateProjectStorage } = require("./project-storage");
 const { createZip, extractZip } = require("./zip");
@@ -2360,6 +2360,11 @@ const ADMIN_USERS_ROUTE = "/api/admin/users";
 const ADMIN_USER_ROUTE = new RegExp(`^/api/admin/users/(${UUID_PATTERN})$`);
 const ADMIN_USER_RESET_ROUTE = new RegExp(`^/api/admin/users/(${UUID_PATTERN})/reset-password$`);
 const ADMIN_USER_UNLINK_ROUTE = new RegExp(`^/api/admin/users/(${UUID_PATTERN})/unlink-sso$`);
+const ADMIN_USER_DELETION_PREVIEW_ROUTE = new RegExp(`^/api/admin/users/(${UUID_PATTERN})/deletion-preview$`);
+const ADMIN_PROJECTS_ROUTE = "/api/admin/projects";
+const ADMIN_PROJECT_ROUTE = new RegExp(`^/api/admin/projects/(${UUID_PATTERN})$`);
+const ADMIN_PROJECT_MEMBERS_ROUTE = new RegExp(`^/api/admin/projects/(${UUID_PATTERN})/members$`);
+const ADMIN_PROJECT_MEMBER_ROUTE = new RegExp(`^/api/admin/projects/(${UUID_PATTERN})/members/(${UUID_PATTERN})$`);
 const PROJECT_MEMBERS_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/members$`);
 const PROJECT_MEMBER_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/members/(${UUID_PATTERN})$`);
 const PROJECT_CHECKPOINT_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/checkpoint$`);
@@ -2587,8 +2592,257 @@ async function adminUnlinkSso(req, res, actor, targetId) {
   json(res, 200, { ok: true, temporaryPassword: password });
 }
 
+// ---------------------------------------------------------------------------
+// Admin project console. Server admins manage project membership, roles and the
+// existence of any project — an explicit, audited exceptional power — but gain
+// no access to project *contents*: none of these handlers reads or serves source
+// files. Content stays gated by project membership, keeping the two authorities
+// (server role vs project role) separate.
+// ---------------------------------------------------------------------------
+
+async function adminProjectRow(projectId) {
+  const { rows } = await db.query("SELECT id, name, storage_path FROM projects WHERE id = $1", [projectId]);
+  if (!rows.length) throw requestError("PROJECT_NOT_FOUND", 404);
+  return rows[0];
+}
+
+// Lists every project on the server with its members and roles, flagging any that
+// have no owner (orphaned) so the admin can recover them. Optional `q` filters by
+// name; `filter=orphaned` narrows to ownerless projects.
+async function adminListProjects(req, res, url) {
+  const term = normalizeSearch(url.searchParams.get("q"));
+  const onlyOrphaned = url.searchParams.get("filter") === "orphaned";
+  const params = [];
+  let where = "";
+  if (term) { params.push(`%${term}%`); where = "WHERE LOWER(p.name) LIKE $1"; }
+  const { rows: projects } = await db.query(
+    `SELECT p.id, p.name, p.created_at, p.updated_at,
+            (SELECT COUNT(*) FROM project_members m WHERE m.project_id = p.id) AS member_count,
+            (SELECT COUNT(*) FROM project_members m WHERE m.project_id = p.id AND m.role = 'owner') AS owner_count
+     FROM projects p ${where} ORDER BY p.updated_at DESC, p.id`,
+    params
+  );
+  const ids = projects.map((p) => p.id);
+  const membersByProject = new Map();
+  if (ids.length) {
+    const { rows: members } = await db.query(
+      `SELECT m.project_id, m.user_id, m.role, u.username, u.email, u.display_name, u.status
+       FROM project_members m JOIN users u ON u.id = m.user_id
+       WHERE m.project_id = ANY($1) ORDER BY (m.role <> 'owner'), u.username`,
+      [ids]
+    );
+    for (const m of members) {
+      if (!membersByProject.has(m.project_id)) membersByProject.set(m.project_id, []);
+      membersByProject.get(m.project_id).push({
+        userId: m.user_id, username: m.username, name: m.display_name, email: m.email, role: m.role, status: m.status,
+      });
+    }
+  }
+  let list = projects.map((p) => ({
+    id: p.id,
+    name: p.name,
+    createdAt: toMillis(p.created_at),
+    updatedAt: toMillis(p.updated_at),
+    memberCount: Number(p.member_count),
+    ownerCount: Number(p.owner_count),
+    orphaned: Number(p.owner_count) === 0,
+    members: membersByProject.get(p.id) || [],
+  }));
+  if (onlyOrphaned) list = list.filter((p) => p.orphaned);
+  json(res, 200, { projects: list });
+}
+
+async function adminAddProjectMember(req, res, actor, projectId) {
+  await adminProjectRow(projectId);
+  const body = await readBody(req);
+  const role = String(body.role || "");
+  if (!isProjectRole(role)) throw requestError("MEMBER_ROLE_INVALID", 400);
+  const target = await resolveMemberUser(body.identifier);
+  try {
+    await db.query(
+      "INSERT INTO project_members (project_id, user_id, role, invited_by) VALUES ($1, $2, $3, $4)",
+      [projectId, target.id, role, actor.sub]
+    );
+  } catch (err) {
+    if (err.code === "23505") throw requestError("MEMBER_ALREADY", 409);
+    throw err;
+  }
+  await audit({
+    ...sessionActor(req, actor),
+    action: "project.shared",
+    targetType: "membership",
+    targetId: projectId,
+    metadata: { userId: target.id, username: target.username, role, via: "admin" },
+  });
+  json(res, 201, {
+    member: memberView({ user_id: target.id, username: target.username, email: target.email, display_name: target.display_name, role, invited_by: actor.sub, created_at: new Date() }),
+  });
+}
+
+async function adminUpdateProjectMember(req, res, actor, projectId, memberId) {
+  await adminProjectRow(projectId);
+  const body = await readBody(req);
+  const nextRole = String(body.role || "");
+  if (!isProjectRole(nextRole)) throw requestError("MEMBER_ROLE_INVALID", 400);
+  let previousRole;
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock($1, hashtext($2))", [PROJECT_OWNER_LOCK, projectId]);
+    const current = await client.query(
+      "SELECT role FROM project_members WHERE project_id = $1 AND user_id = $2 FOR UPDATE",
+      [projectId, memberId]
+    );
+    if (!current.rows.length) throw requestError("MEMBER_NOT_FOUND", 404);
+    previousRole = current.rows[0].role;
+    const others = await client.query(
+      "SELECT COUNT(*) AS n FROM project_members WHERE project_id = $1 AND role = 'owner' AND user_id <> $2",
+      [projectId, memberId]
+    );
+    if (leavesNoOwner(previousRole, nextRole, Number(others.rows[0].n))) throw requestError("PROJECT_LAST_OWNER", 409);
+    await client.query(
+      "UPDATE project_members SET role = $3, updated_at = CURRENT_TIMESTAMP WHERE project_id = $1 AND user_id = $2",
+      [projectId, memberId, nextRole]
+    );
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+  if (nextRole !== previousRole) {
+    await audit({
+      ...sessionActor(req, actor),
+      action: "project.member_role_changed",
+      targetType: "membership",
+      targetId: projectId,
+      metadata: { userId: memberId, from: previousRole, to: nextRole, via: "admin" },
+    });
+  }
+  json(res, 200, { ok: true });
+}
+
+async function adminRemoveProjectMember(req, res, actor, projectId, memberId) {
+  await adminProjectRow(projectId);
+  const client = await db.connect();
+  let removed = false;
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock($1, hashtext($2))", [PROJECT_OWNER_LOCK, projectId]);
+    const current = await client.query(
+      "SELECT role FROM project_members WHERE project_id = $1 AND user_id = $2 FOR UPDATE",
+      [projectId, memberId]
+    );
+    if (!current.rows.length) throw requestError("MEMBER_NOT_FOUND", 404);
+    const others = await client.query(
+      "SELECT COUNT(*) AS n FROM project_members WHERE project_id = $1 AND role = 'owner' AND user_id <> $2",
+      [projectId, memberId]
+    );
+    if (leavesNoOwner(current.rows[0].role, null, Number(others.rows[0].n))) throw requestError("PROJECT_LAST_OWNER", 409);
+    await client.query("DELETE FROM project_members WHERE project_id = $1 AND user_id = $2", [projectId, memberId]);
+    removed = true;
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+  if (removed) {
+    await audit({
+      ...sessionActor(req, actor),
+      action: "project.unshared",
+      targetType: "membership",
+      targetId: projectId,
+      metadata: { userId: memberId, via: "admin" },
+    });
+  }
+  json(res, 200, { ok: true });
+}
+
+async function adminDeleteProject(req, res, actor, projectId) {
+  const row = await adminProjectRow(projectId);
+  const storageDir = resolveProjectStorageDir(DATA_DIR, row.storage_path);
+  await db.query("DELETE FROM projects WHERE id = $1", [projectId]);
+  await fs.rm(storageDir, { recursive: true, force: true });
+  await audit({
+    ...sessionActor(req, actor),
+    action: "project.deleted",
+    targetType: "project",
+    targetId: projectId,
+    metadata: { name: row.name, via: "admin" },
+  });
+  json(res, 200, { ok: true });
+}
+
+// The projects for which the user is the *only* owner. Deleting the user would
+// strand these (membership cascades away), so they must be resolved in the
+// project console first. Other memberships and co-owned projects are unaffected.
+async function soleOwnerProjects(userId) {
+  const { rows } = await db.query(
+    `SELECT p.id, p.name
+     FROM projects p
+     JOIN project_members m ON m.project_id = p.id AND m.user_id = $1 AND m.role = 'owner'
+     WHERE NOT EXISTS (
+       SELECT 1 FROM project_members o WHERE o.project_id = p.id AND o.role = 'owner' AND o.user_id <> $1
+     )
+     ORDER BY p.name`,
+    [userId]
+  );
+  return rows.map((r) => ({ id: r.id, name: r.name }));
+}
+
+async function adminUserDeletionPreview(req, res, actor, userId) {
+  const { rows } = await db.query("SELECT id, username, status FROM users WHERE id = $1", [userId]);
+  if (!rows.length) throw requestError("ADMIN_USER_NOT_FOUND", 404);
+  json(res, 200, {
+    user: { id: rows[0].id, username: rows[0].username, status: rows[0].status },
+    isSelf: rows[0].id === actor.sub,
+    soleOwnerProjects: await soleOwnerProjects(userId),
+  });
+}
+
+// Physical, irreversible deletion — distinct from the reversible disable. Guarded
+// against self-deletion, deleting a still-active account, and stranding a project
+// whose only owner is this user (those are resolved in the project console). The
+// row is then hard-deleted: the schema cascades memberships and sessions and nulls
+// authorship, while denormalised labels keep revisions and the audit trail
+// readable, so attribution outlives the account.
+async function adminDeleteUser(req, res, actor, userId) {
+  const { rows } = await db.query("SELECT id, username, system_role, status FROM users WHERE id = $1", [userId]);
+  if (!rows.length) throw requestError("ADMIN_USER_NOT_FOUND", 404);
+  const target = rows[0];
+  const body = await readBody(req);
+  const soleOwnerProjectCount = (await soleOwnerProjects(userId)).length;
+  const block = userDeletionBlock({ isSelf: target.id === actor.sub, status: target.status, soleOwnerProjectCount });
+  if (block === "self") throw requestError("ADMIN_CANNOT_DELETE_SELF", 409);
+  if (block === "not_disabled") throw requestError("ADMIN_DELETE_REQUIRES_DISABLED", 409);
+  if (block === "sole_owner") throw requestError("ADMIN_DELETE_SOLE_OWNER", 409);
+  if (String(body.confirmation || "") !== target.username) throw requestError("ADMIN_DELETE_CONFIRMATION", 400);
+  await db.query("DELETE FROM users WHERE id = $1", [userId]);
+  await audit({
+    ...sessionActor(req, actor),
+    action: "user.deleted",
+    targetType: "user",
+    targetId: userId,
+    metadata: { username: target.username, role: target.system_role },
+  });
+  json(res, 200, { ok: true });
+}
+
 async function handleAdminApi(req, res, url, actor) {
   requireAdmin(actor);
+  if (url.pathname === ADMIN_PROJECTS_ROUTE && req.method === "GET") return adminListProjects(req, res, url);
+  const adminProjectMemberMatch = url.pathname.match(ADMIN_PROJECT_MEMBER_ROUTE);
+  if (adminProjectMemberMatch && req.method === "PATCH") return adminUpdateProjectMember(req, res, actor, adminProjectMemberMatch[1], adminProjectMemberMatch[2]);
+  if (adminProjectMemberMatch && req.method === "DELETE") return adminRemoveProjectMember(req, res, actor, adminProjectMemberMatch[1], adminProjectMemberMatch[2]);
+  const adminProjectMembersMatch = url.pathname.match(ADMIN_PROJECT_MEMBERS_ROUTE);
+  if (adminProjectMembersMatch && req.method === "POST") return adminAddProjectMember(req, res, actor, adminProjectMembersMatch[1]);
+  const adminProjectMatch = url.pathname.match(ADMIN_PROJECT_ROUTE);
+  if (adminProjectMatch && req.method === "DELETE") return adminDeleteProject(req, res, actor, adminProjectMatch[1]);
+  const deletionPreviewMatch = url.pathname.match(ADMIN_USER_DELETION_PREVIEW_ROUTE);
+  if (deletionPreviewMatch && req.method === "GET") return adminUserDeletionPreview(req, res, actor, deletionPreviewMatch[1]);
   if (url.pathname === ADMIN_USERS_ROUTE) {
     if (req.method === "GET") return adminListUsers(req, res, url);
     if (req.method === "POST") return adminCreateUser(req, res, actor);
@@ -2599,6 +2853,7 @@ async function handleAdminApi(req, res, url, actor) {
   if (unlinkMatch && req.method === "POST") return adminUnlinkSso(req, res, actor, unlinkMatch[1]);
   const userMatch = url.pathname.match(ADMIN_USER_ROUTE);
   if (userMatch && req.method === "PATCH") return adminUpdateUser(req, res, actor, userMatch[1]);
+  if (userMatch && req.method === "DELETE") return adminDeleteUser(req, res, actor, userMatch[1]);
   errorJson(res, 404, "ENDPOINT_NOT_FOUND");
 }
 

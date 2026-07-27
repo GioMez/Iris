@@ -2,8 +2,12 @@ const crypto = require("node:crypto");
 
 const REASONS = new Set(["manual", "compile", "rollback", "initial"]);
 // A source file larger than this is not versioned inline: history is meant for
-// editable text, and a runaway file should not bloat the database.
-const MAX_VERSION_BYTES = 2 * 1024 * 1024;
+// editable text, and a runaway file should not bloat the database. 16 MB is
+// generous for even a very long source: PostgreSQL stores the content out-of-line
+// and compresses it (TOAST), so the on-disk cost is far below the raw size. It
+// also stays well under the 25 MB request-body cap (MAX_BODY), so any file this
+// size can actually be saved in the first place.
+const MAX_VERSION_BYTES = 16 * 1024 * 1024;
 
 function hashContent(text) {
   return crypto.createHash("sha256").update(text, "utf8").digest("hex");

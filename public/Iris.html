@@ -36,6 +36,7 @@
     </div>
     <div class="workflow-actions" aria-label="Document workflow" data-i18n-aria-label="toolbar.workflow">
       <button class="workflow-btn" id="btnSave" type="button" title="Save (Ctrl/Cmd+S)" aria-label="Save the document" data-i18n-title="toolbar.saveTitle" data-i18n-aria-label="toolbar.saveAria" aria-keyshortcuts="Control+S Meta+S"><span class="ic" data-icon="device-floppy"></span><span class="workflow-label" data-i18n="toolbar.save">Save</span></button>
+      <button class="workflow-btn workflow-snapshot" id="btnSnapshot" type="button" title="Snapshot" aria-label="Create a snapshot in the file history" data-i18n-title="toolbar.snapshotTitle" data-i18n-aria-label="toolbar.snapshotAria"><span class="ic" data-icon="camera"></span><span class="workflow-label" data-i18n="toolbar.snapshot">Snapshot</span></button>
       <button class="workflow-compile" id="btnCompile" type="button" title="Compile (Ctrl/Cmd+Enter)" aria-label="Compile the project" data-i18n-title="toolbar.compileTitle" data-i18n-aria-label="toolbar.compileAria" aria-keyshortcuts="Control+Enter Meta+Enter"><span class="ic" data-icon="player-play"></span><span class="workflow-label" data-i18n="toolbar.compile">Compile</span></button>
       <button class="workflow-btn workflow-output" id="dlBtn" type="button" title="Download output" aria-label="Download the compiled output" data-i18n-title="toolbar.outputTitle" data-i18n-aria-label="toolbar.outputAria"><span class="ic" data-icon="download"></span><span class="dl-label workflow-label" data-i18n="toolbar.output">Output</span></button>
     </div>
@@ -826,6 +827,38 @@
     </div>
     <div class="m-foot">
       <button class="btn cta" type="button" data-admin-close data-i18n="admin.credentialsDone">Done</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== FILE HISTORY ===================== -->
+<div class="scrim" id="versionsModal">
+  <div class="modal wide versions-modal" role="dialog" aria-modal="true" aria-labelledby="versionsTitle">
+    <div class="m-head">
+      <span class="ver-head-icon" data-icon="history"></span>
+      <div class="ver-head-text">
+        <h3 id="versionsTitle" data-i18n="versions.title">File history</h3>
+        <span class="sub" id="versionsSubtitle"></span>
+      </div>
+      <button class="btn sm ver-snapshot" id="versionsSnapshot" type="button" data-i18n-title="versions.snapshotTitle" title="Save a snapshot of every changed file"><span class="ic" data-icon="camera"></span><span data-i18n="versions.snapshot">Snapshot</span></button>
+      <button class="m-x" type="button" data-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
+    </div>
+    <div class="ver-grid">
+      <div class="ver-list-pane">
+        <div class="ver-list" id="versionsList" role="listbox" aria-label="Revisions" data-i18n-aria-label="versions.title"></div>
+        <div class="ver-state" id="versionsListState"></div>
+      </div>
+      <div class="ver-detail-pane" id="versionsDetail">
+        <div class="ver-detail-head">
+          <div class="ver-meta" id="versionsMeta"></div>
+          <div class="ver-viewswitch" id="versionsViewSwitch" role="tablist" aria-label="View mode" hidden>
+            <button class="on" type="button" role="tab" data-ver-view="preview" data-i18n="versions.viewPreview">Preview</button>
+            <button type="button" role="tab" data-ver-view="diff" data-i18n="versions.viewDiff">Changes</button>
+          </div>
+        </div>
+        <div class="ver-view" id="versionsView"></div>
+        <div class="ver-actions" id="versionsActions"></div>
+      </div>
     </div>
   </div>
 </div>

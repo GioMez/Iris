@@ -948,9 +948,13 @@
           el.setAttribute("role", "treeitem");
           el.setAttribute("aria-selected", n.id === state.activeId ? "true" : "false");
           el.tabIndex = 0;
+          // History exists only for versionable text sources: generated output
+          // and binary assets (images, fonts) are never captured as revisions.
+          const canHistory = !n.generated && n.kind !== "img" && n.kind !== "font";
           el.innerHTML = `<span class="tw"></span>${fileIcon(n.kind)}<span class="nm">${esc(n.name)}</span>` +
             (n.generated ? `<span class="tag">gen</span>` : (n.kind === "img" ? `<span class="tag">img</span>` : "")) +
             `<span class="node-tools">` +
+              (canHistory ? `<button class="node-act" type="button" data-act="history" title="${esc(t("tree.history"))}" aria-label="${esc(t("tree.historyAria", { name: n.name }))}">${ti("history")}</button>` : "") +
               `<button class="node-act" type="button" data-act="download" title="${esc(t("common.download"))}" aria-label="${esc(t("tree.downloadAria", { name: n.name }))}">${ti("download")}</button>` +
             (n.readOnly || n.generated ? "" :
               `<button class="node-act" type="button" data-act="rename" title="${esc(t("common.rename"))}" aria-label="${esc(t("tree.renameAria", { name: n.name }))}">${ti("edit")}</button>` +
@@ -965,6 +969,8 @@
           const rename = el.querySelector('[data-act="rename"]');
           const del = el.querySelector('[data-act="delete"]');
           const download = el.querySelector('[data-act="download"]');
+          const history = el.querySelector('[data-act="history"]');
+          if (history) history.addEventListener("click", (e) => { e.stopPropagation(); void openFileHistory(n); });
           if (download) download.addEventListener("click", (e) => { e.stopPropagation(); void downloadTreeFile(n); });
           if (rename) rename.addEventListener("click", (e) => { e.stopPropagation(); openTreeRename(n, nodes, parentPath); });
           if (del) del.addEventListener("click", (e) => { e.stopPropagation(); openTreeDelete(n, nodes, parentPath); });
@@ -1999,6 +2005,15 @@
       });
     });
 
+    // file history (versions). Close/click-outside/Escape are handled by the
+    // generic scrim wiring above; only the in-dialog controls need binding.
+    $("btnSnapshot").addEventListener("click", () => { void snapshotProject($("btnSnapshot")); });
+    $("versionsSnapshot").addEventListener("click", () => { void snapshotProject($("versionsSnapshot")); });
+    $("versionsViewSwitch").addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-ver-view]");
+      if (btn) setVersionView(btn.dataset.verView);
+    });
+
     // attach modal
     $("attachDrop").addEventListener("click", () => $("attachInput").click());
     $("attachInput").addEventListener("change", () => $("attachInput").files[0] && pickAttach($("attachInput").files[0]));
@@ -2287,6 +2302,321 @@
   }
 
   /* ---------------- IrisApp: bridge used by the projects layer ---------------- */
+  /* ---------------- file history (versions) ---------------- */
+  // A file's revision history is keyed on its canonical project_files UUID. Files
+  // created this session keep a client-ref id until the server reconciles them on
+  // save, so the entry point resolves the canonical id before opening.
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const isCanonicalFileId = (id) => typeof id === "string" && UUID_RE.test(id);
+  const REASON_KEY = { initial: "reasonInitial", manual: "reasonManual", compile: "reasonCompile", rollback: "reasonRollback" };
+  const verState = { fileId: null, node: null, versions: [], selectedId: null, view: "preview", detail: null, confirm: null, busy: false, listSeq: 0, detailSeq: 0 };
+
+  function reasonLabel(reason) {
+    return REASON_KEY[reason] ? t(`versions.${REASON_KEY[reason]}`) : String(reason || "");
+  }
+  function formatVersionTime(ts) {
+    if (!ts) return "";
+    return window.IrisI18n.formatDate(new Date(ts), { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
+  }
+  function formatVersionBytes(size) {
+    const bytes = Number(size) || 0;
+    if (bytes < 1024) return t("versions.unit_bytes", { value: window.IrisI18n.formatNumber(bytes) });
+    return t("versions.unit_kilobytes", { value: window.IrisI18n.formatNumber(Math.round(bytes / 102.4) / 10) });
+  }
+  // The current live content of the file whose history is open: the editor buffer
+  // when it is the active file, otherwise the node's stored content.
+  function currentVersionFileContent() {
+    const node = verState.node;
+    if (!node) return "";
+    if (node.id === state.activeId) return area.value;
+    return node.content || "";
+  }
+
+  function setVersionsListState(html) {
+    const el = $("versionsListState");
+    el.innerHTML = html || "";
+    el.style.display = html ? "" : "none";
+  }
+
+  async function openFileHistory(node) {
+    if (!node) return;
+    let fileId = node.id;
+    if (!isCanonicalFileId(fileId)) {
+      // Not yet reconciled: persist so the server assigns the canonical id, then
+      // look it up by path from the refreshed project cache.
+      await persist();
+      const resolved = window.IrisProjects && window.IrisProjects.resolveFileId
+        ? window.IrisProjects.resolveFileId(node.path)
+        : null;
+      if (isCanonicalFileId(resolved)) fileId = resolved;
+    }
+    if (!isCanonicalFileId(fileId)) { toast(t("versions.unsavedFile"), "err"); return; }
+    verState.fileId = fileId;
+    verState.node = node;
+    verState.versions = [];
+    verState.selectedId = null;
+    verState.detail = null;
+    verState.view = "preview";
+    verState.confirm = null;
+    $("versionsSubtitle").textContent = node.name || node.path || "";
+    $("versionsSnapshot").style.display = isReadOnly() ? "none" : "";
+    openDialog("versionsModal");
+    await loadVersionsList({ selectFirst: true });
+  }
+
+  async function loadVersionsList({ selectFirst = false } = {}) {
+    const seq = ++verState.listSeq;
+    setVersionsListState(`<div class="ver-state-msg">${esc(t("versions.loading"))}</div>`);
+    $("versionsList").innerHTML = "";
+    try {
+      const versions = await window.IrisProjects.listFileVersions(verState.fileId);
+      if (seq !== verState.listSeq) return;
+      verState.versions = versions;
+      if (!versions.length) {
+        renderVersionList();
+        setVersionsListState(`<div class="ve-title">${esc(t("versions.empty"))}</div><div class="ve-sub">${esc(t("versions.emptyHint"))}</div>`);
+        verState.selectedId = null;
+        verState.detail = null;
+        renderVersionDetail();
+        return;
+      }
+      setVersionsListState("");
+      const keep = versions.some((v) => v.id === verState.selectedId)
+        ? verState.selectedId
+        : (selectFirst ? versions[0].id : null);
+      renderVersionList();
+      if (keep) await selectVersion(keep);
+      else renderVersionDetail();
+    } catch (err) {
+      if (seq !== verState.listSeq) return;
+      verState.versions = [];
+      renderVersionList();
+      setVersionsListState(`<div class="ve-title error">${esc(window.IrisI18n.error(err, "versions.loadFailed"))}</div>`);
+      verState.selectedId = null;
+      verState.detail = null;
+      renderVersionDetail();
+    }
+  }
+
+  function renderVersionList() {
+    const list = $("versionsList");
+    list.innerHTML = "";
+    verState.versions.forEach((v) => {
+      const item = document.createElement("button");
+      item.type = "button";
+      const on = v.id === verState.selectedId;
+      item.className = "ver-item" + (on ? " on" : "");
+      item.setAttribute("role", "option");
+      item.setAttribute("aria-selected", on ? "true" : "false");
+      item.innerHTML =
+        `<span class="ver-reason reason-${esc(v.reason)}">${esc(reasonLabel(v.reason))}</span>` +
+        `<span class="ver-when">${esc(formatVersionTime(v.createdAt))}</span>` +
+        `<span class="ver-who">${esc(t("versions.byAuthor", { author: v.author }))}</span>`;
+      item.addEventListener("click", () => { if (v.id !== verState.selectedId) void selectVersion(v.id); });
+      list.appendChild(item);
+    });
+  }
+
+  async function selectVersion(versionId) {
+    verState.selectedId = versionId;
+    verState.confirm = null;
+    renderVersionList();
+    const seq = ++verState.detailSeq;
+    verState.detail = null;
+    renderVersionDetail({ loading: true });
+    try {
+      const detail = await window.IrisProjects.getFileVersion(verState.fileId, versionId);
+      if (seq !== verState.detailSeq) return;
+      verState.detail = detail;
+      renderVersionDetail();
+    } catch (err) {
+      if (seq !== verState.detailSeq) return;
+      verState.detail = null;
+      renderVersionDetail({ error: window.IrisI18n.error(err, "versions.loadFailed") });
+    }
+  }
+
+  function renderVersionDetail(opts = {}) {
+    const meta = $("versionsMeta");
+    const view = $("versionsView");
+    const actions = $("versionsActions");
+    const viewSwitch = $("versionsViewSwitch");
+    const summary = verState.versions.find((v) => v.id === verState.selectedId);
+    if (!summary) {
+      meta.innerHTML = "";
+      viewSwitch.hidden = true;
+      const hint = verState.versions.length ? t("versions.select") : t("versions.emptyHint");
+      view.innerHTML = `<div class="ver-placeholder">${esc(hint)}</div>`;
+      actions.innerHTML = "";
+      return;
+    }
+    meta.innerHTML =
+      `<span class="ver-reason reason-${esc(summary.reason)}">${esc(reasonLabel(summary.reason))}</span>` +
+      `<span class="ver-meta-line"><span class="ver-meta-when">${esc(formatVersionTime(summary.createdAt))}</span>` +
+      `<span class="ver-meta-who">${esc(t("versions.byAuthor", { author: summary.author }))}</span>` +
+      `<span class="ver-meta-size">${esc(formatVersionBytes(summary.size))}</span></span>`;
+    viewSwitch.hidden = false;
+    viewSwitch.querySelectorAll("[data-ver-view]").forEach((b) => {
+      const active = b.dataset.verView === verState.view;
+      b.classList.toggle("on", active);
+      b.setAttribute("aria-selected", active ? "true" : "false");
+    });
+    if (opts.loading) { view.innerHTML = `<div class="ver-placeholder">${esc(t("versions.loading"))}</div>`; actions.innerHTML = ""; return; }
+    if (opts.error) { view.innerHTML = `<div class="ver-placeholder error">${esc(opts.error)}</div>`; actions.innerHTML = ""; return; }
+    if (!verState.detail) { view.innerHTML = `<div class="ver-placeholder">${esc(t("versions.loading"))}</div>`; actions.innerHTML = ""; return; }
+    renderVersionView();
+    renderVersionActions();
+  }
+
+  function renderVersionView() {
+    const view = $("versionsView");
+    const content = String(verState.detail && verState.detail.content || "");
+    if (verState.view === "diff") {
+      const rows = lineDiff(content, currentVersionFileContent());
+      if (!rows.some((r) => r.type !== "same")) {
+        view.innerHTML = `<div class="ver-placeholder">${esc(t("versions.noChanges"))}</div>`;
+        return;
+      }
+      const body = rows.map((r) => {
+        const sign = r.type === "add" ? "+" : (r.type === "del" ? "-" : "");
+        return `<div class="diff-line diff-${r.type}"><span class="diff-sign">${sign}</span><span class="diff-text">${esc(r.text) || "&#8203;"}</span></div>`;
+      }).join("");
+      view.innerHTML = `<div class="ver-diff-caption">${esc(t("versions.diffCaption"))}</div><div class="ver-diff">${body}</div>`;
+    } else {
+      view.innerHTML = `<pre class="ver-pre">${esc(content) || "&#8203;"}</pre>`;
+    }
+  }
+
+  function renderVersionActions() {
+    const actions = $("versionsActions");
+    if (isReadOnly()) { actions.innerHTML = ""; return; }
+    if (verState.confirm === "restore") {
+      actions.innerHTML =
+        `<span class="ver-confirm">${esc(t("versions.restoreConfirm"))} <span class="ver-confirm-hint">${esc(t("versions.restoreConfirmHint"))}</span></span>` +
+        `<span class="ver-confirm-btns">` +
+          `<button class="btn sm" type="button" data-ver-act="cancel">${esc(t("common.cancel"))}</button>` +
+          `<button class="btn cta sm" type="button" data-ver-act="confirm-restore">${esc(t("versions.restoreConfirmYes"))}</button>` +
+        `</span>`;
+    } else {
+      actions.innerHTML =
+        `<button class="btn cta ver-restore" type="button" data-ver-act="restore" title="${esc(t("versions.restoreTitle"))}">${ti("arrow-back-up")}<span>${esc(t("versions.restore"))}</span></button>`;
+    }
+    actions.querySelectorAll("[data-ver-act]").forEach((b) => b.addEventListener("click", () => {
+      const act = b.dataset.verAct;
+      if (act === "restore") { verState.confirm = "restore"; renderVersionActions(); }
+      else if (act === "cancel") { verState.confirm = null; renderVersionActions(); }
+      else if (act === "confirm-restore") void confirmRestore();
+    }));
+  }
+
+  async function confirmRestore() {
+    if (verState.busy || !verState.selectedId || isReadOnly()) return;
+    verState.busy = true;
+    const confirmBtn = $("versionsActions").querySelector('[data-ver-act="confirm-restore"]');
+    if (confirmBtn) { confirmBtn.disabled = true; confirmBtn.classList.add("loading"); }
+    try {
+      // Flush the editor to disk first so the backend's pre-rollback snapshot
+      // captures the true current state before the file is overwritten.
+      await persist();
+      const out = await window.IrisProjects.restoreFileVersion(verState.fileId, verState.selectedId);
+      const node = findFile(verState.node.id) || verState.node;
+      if (node) {
+        node.content = out.content;
+        state.dirtyFiles.delete(node.id);
+        if (node.id === state.activeId) { area.value = out.content; paint(); renderOutline(); }
+      }
+      renderTabs();
+      verState.confirm = null;
+      verState.selectedId = null;
+      toast(t("versions.restoreDone", { name: verState.node.name || verState.node.path }));
+      await loadVersionsList({ selectFirst: true });
+    } catch (err) {
+      verState.confirm = null;
+      renderVersionActions();
+      toast(window.IrisI18n.error(err, "versions.restoreFailed"), "err");
+    } finally {
+      verState.busy = false;
+    }
+  }
+
+  // Manual project-wide snapshot, shared by the toolbar button and the history
+  // dialog. Persists first so the server captures the working copy from disk.
+  async function snapshotProject(button) {
+    if (verState.busy || isReadOnly()) return;
+    verState.busy = true;
+    if (button) { button.disabled = true; button.classList.add("loading"); }
+    try {
+      await persist();
+      const out = await window.IrisProjects.checkpointCurrent();
+      const created = (out && Number(out.created)) || 0;
+      toast(created ? t("versions.snapshotDone", { count: created }) : t("versions.snapshotNone"));
+      if ($("versionsModal").classList.contains("on")) {
+        verState.selectedId = null;
+        await loadVersionsList({ selectFirst: true });
+      }
+    } catch (err) {
+      toast(window.IrisI18n.error(err, "versions.snapshotFailed"), "err");
+    } finally {
+      verState.busy = false;
+      if (button) { button.disabled = false; button.classList.remove("loading"); }
+    }
+  }
+
+  function setVersionView(mode) {
+    verState.view = mode === "diff" ? "diff" : "preview";
+    renderVersionDetail();
+  }
+
+  // Re-render the open history dialog after a language switch.
+  function refreshVersionsUi() {
+    if (!$("versionsModal").classList.contains("on")) return;
+    if (verState.node) $("versionsSubtitle").textContent = verState.node.name || verState.node.path || "";
+    $("versionsSnapshot").style.display = isReadOnly() ? "none" : "";
+    if (!verState.versions.length) {
+      setVersionsListState(`<div class="ve-title">${esc(t("versions.empty"))}</div><div class="ve-sub">${esc(t("versions.emptyHint"))}</div>`);
+    }
+    renderVersionList();
+    renderVersionDetail();
+  }
+
+  // Line-based diff (LCS). Bounded by the 2 MB version cap; a coarse
+  // prefix/suffix diff guards pathological line counts from a quadratic table.
+  function lineDiff(oldText, newText) {
+    const a = String(oldText).split("\n");
+    const b = String(newText).split("\n");
+    const n = a.length, m = b.length;
+    if (n > 2000 || m > 2000 || n * m > 2000000) return simpleLineDiff(a, b);
+    const dp = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
+    for (let i = n - 1; i >= 0; i--) {
+      for (let j = m - 1; j >= 0; j--) {
+        dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+      }
+    }
+    const rows = [];
+    let i = 0, j = 0;
+    while (i < n && j < m) {
+      if (a[i] === b[j]) { rows.push({ type: "same", text: a[i] }); i++; j++; }
+      else if (dp[i + 1][j] >= dp[i][j + 1]) { rows.push({ type: "del", text: a[i] }); i++; }
+      else { rows.push({ type: "add", text: b[j] }); j++; }
+    }
+    while (i < n) { rows.push({ type: "del", text: a[i] }); i++; }
+    while (j < m) { rows.push({ type: "add", text: b[j] }); j++; }
+    return rows;
+  }
+  function simpleLineDiff(a, b) {
+    const n = a.length, m = b.length;
+    const head = [];
+    let s = 0;
+    while (s < n && s < m && a[s] === b[s]) { head.push({ type: "same", text: a[s] }); s++; }
+    const tail = [];
+    let ea = n - 1, eb = m - 1;
+    while (ea >= s && eb >= s && a[ea] === b[eb]) { tail.unshift({ type: "same", text: a[ea] }); ea--; eb--; }
+    const mid = [];
+    for (let i = s; i <= ea; i++) mid.push({ type: "del", text: a[i] });
+    for (let j = s; j <= eb; j++) mid.push({ type: "add", text: b[j] });
+    return head.concat(mid, tail);
+  }
+
   window.IrisApp = {
     // Load a project's data into the editor and render everything.
     async load(data) {
@@ -2400,6 +2730,8 @@
       $("attachDest").innerHTML = folderOptions(destination);
       $("attachDest").value = destination;
     }
+
+    refreshVersionsUi();
 
     if (state.lastCompile) {
       const { f, res, ms, compiledAt } = state.lastCompile;

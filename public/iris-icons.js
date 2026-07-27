@@ -51,6 +51,9 @@
     "file-code-2": "<path d=\"M10 12h-1v5h1\" /><path d=\"M14 12h1v5h-1\" /><path d=\"M14 3v4a1 1 0 0 0 1 1h4\" /><path d=\"M17 21h-10a2 2 0 0 1 -2 -2v-14a2 2 0 0 1 2 -2h7l5 5v11a2 2 0 0 1 -2 2\" />",
     "info-circle": "<path d=\"M3 12a9 9 0 1 0 18 0a9 9 0 0 0 -18 0\" /><path d=\"M12 9h.01\" /><path d=\"M11 12h1v4h1\" />",
     "language": "<path d=\"M4 5h7\" /><path d=\"M7 4c0 4.5 -1.5 7.5 -4 9\" /><path d=\"M5 9c1.5 2 3.5 3.5 6 4\" /><path d=\"M12 20l4 -9l4 9\" /><path d=\"M14 17h4\" />",
+    "history": "<path d=\"M12 8l0 4l2 2\" /><path d=\"M3.05 11a9 9 0 1 1 .5 4m-.5 5v-5h5\" />",
+    "camera": "<path d=\"M5 7h1a2 2 0 0 0 2 -2a1 1 0 0 1 1 -1h6a1 1 0 0 1 1 1a2 2 0 0 0 2 2h1a2 2 0 0 1 2 2v9a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-9a2 2 0 0 1 2 -2\" /><path d=\"M9 13a3 3 0 1 0 6 0a3 3 0 0 0 -6 0\" />",
+    "arrow-back-up": "<path d=\"M9 14l-4 -4l4 -4\" /><path d=\"M5 10h11a4 4 0 1 1 0 8h-1\" />",
   };
 
   function icon(name, className = "", label = "") {

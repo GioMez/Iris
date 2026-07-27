@@ -1,7 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { isSystemRole, isUserStatus, countsAsActiveAdmin, leavesNoActiveAdmin, normalizeSearch } = require("../src/admin");
+const { isSystemRole, isUserStatus, countsAsActiveAdmin, leavesNoActiveAdmin, normalizeSearch, userDeletionBlock } = require("../src/admin");
 
 test("role and status vocabularies match the schema", () => {
   assert.ok(isSystemRole("admin") && isSystemRole("regular"));
@@ -47,4 +47,16 @@ test("search terms are trimmed, lowercased, bounded, or nulled", () => {
   assert.equal(normalizeSearch(""), null);
   assert.equal(normalizeSearch(null), null);
   assert.equal(normalizeSearch("x".repeat(300)).length, 190);
+});
+
+test("user deletion is blocked in order: self, then not-disabled, then sole owner", () => {
+  // Deleting yourself is refused regardless of anything else.
+  assert.equal(userDeletionBlock({ isSelf: true, status: "disabled", soleOwnerProjectCount: 0 }), "self");
+  assert.equal(userDeletionBlock({ isSelf: true, status: "active", soleOwnerProjectCount: 5 }), "self");
+  // Physical deletion is only allowed on an already-disabled account.
+  assert.equal(userDeletionBlock({ isSelf: false, status: "active", soleOwnerProjectCount: 0 }), "not_disabled");
+  // A disabled account that is the sole owner of a project must be resolved first.
+  assert.equal(userDeletionBlock({ isSelf: false, status: "disabled", soleOwnerProjectCount: 2 }), "sole_owner");
+  // Disabled, not self, owns no orphan-making project: deletion may proceed.
+  assert.equal(userDeletionBlock({ isSelf: false, status: "disabled", soleOwnerProjectCount: 0 }), null);
 });

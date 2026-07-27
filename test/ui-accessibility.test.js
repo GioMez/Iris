@@ -69,6 +69,8 @@ test("save, compile and output form one ordered workflow", () => {
 test("preview controls support PDFs and image artifacts without format-specific branding", () => {
   assert.doesNotMatch(html, /data-icon="file-type-pdf"/);
   assert.doesNotMatch(app, /ti\("file-type-pdf"\)/);
+  assert.match(css, /\.seg\{[^}]*grid-template-columns:90px 58px;[^}]*width:154px;[^}]*height:32px/);
+  assert.match(css, /@container \(max-width:540px\)\{[\s\S]*\.pvbar \.seg\{grid-template-columns:30px 30px;width:66px\}/);
   assert.match(app, /function layoutImagePages\(\)/);
   assert.match(app, /function requestPreviewLayout\(\)/);
   assert.match(css, /\.image-preview img\{[^}]*width:100%/);

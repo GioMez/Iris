@@ -399,6 +399,56 @@ test("document versions form an append-only history keyed to a stable file id", 
   assert.equal(Number(afterProject.rows[0].n), 0);
 });
 
+test("admin user deletion: sole-owner detection and membership cascade", { skip: !connectionString }, async (t) => {
+  const pool = await isolatedSchema(t);
+  await runMigrations(pool);
+  const alice = await insertUser(pool, "alice", "alice@example.org");
+  const bob = await insertUser(pool, "bob", "bob@example.org");
+  const mkProject = async (name) => {
+    const id = uuidv7();
+    await pool.query(
+      "INSERT INTO projects (id, created_by, name, storage_path) VALUES ($1, $2, $3, $4)",
+      [id, alice, name, projectStorageKey(id)]
+    );
+    return id;
+  };
+  const addMember = (projectId, userId, role) =>
+    pool.query("INSERT INTO project_members (project_id, user_id, role) VALUES ($1, $2, $3)", [projectId, userId, role]);
+
+  const solo = await mkProject("Solo");       // alice: only owner
+  await addMember(solo, alice, "owner");
+  const shared = await mkProject("Shared");   // alice + bob: both owners
+  await addMember(shared, alice, "owner");
+  await addMember(shared, bob, "owner");
+  const guest = await mkProject("Guest");     // bob owner, alice editor
+  await addMember(guest, bob, "owner");
+  await addMember(guest, alice, "editor");
+
+  // The endpoint's sole-owner detection: alice is the *only* owner of Solo alone.
+  const soleOwner = await pool.query(
+    `SELECT p.id FROM projects p
+     JOIN project_members m ON m.project_id = p.id AND m.user_id = $1 AND m.role = 'owner'
+     WHERE NOT EXISTS (SELECT 1 FROM project_members o WHERE o.project_id = p.id AND o.role = 'owner' AND o.user_id <> $1)`,
+    [alice]
+  );
+  assert.deepEqual(soleOwner.rows.map((r) => r.id), [solo], "only the solely-owned project is flagged");
+
+  // Deleting alice cascades her memberships: the co-owned project keeps its other
+  // owner, her editor membership vanishes, and the solely-owned project is left
+  // ownerless — which is exactly why the endpoint blocks until it is resolved.
+  await pool.query("DELETE FROM users WHERE id = $1", [alice]);
+  const ownerCount = async (id) =>
+    Number((await pool.query("SELECT COUNT(*) AS n FROM project_members WHERE project_id = $1 AND role = 'owner'", [id])).rows[0].n);
+  assert.equal(await ownerCount(shared), 1, "co-owned project keeps its other owner");
+  assert.equal(await ownerCount(solo), 0, "solely-owned project is orphaned by the cascade");
+  const guestMembership = await pool.query(
+    "SELECT COUNT(*) AS n FROM project_members WHERE project_id = $1 AND user_id = $2", [guest, alice]
+  );
+  assert.equal(Number(guestMembership.rows[0].n), 0, "her editor membership cascades away");
+  const surviving = await pool.query("SELECT COUNT(*) AS n FROM projects");
+  assert.equal(Number(surviving.rows[0].n), 3, "the projects themselves survive (created_by is nulled)");
+});
+
 test("upgrading a pre-002 database relocates project data", { skip: !connectionString }, async (t) => {
   const pool = await isolatedSchema(t);
   const staged = await tempDir(t, "iris-migrations-");
