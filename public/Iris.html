@@ -563,11 +563,13 @@
         <div class="brand-label"><img class="brand-wordmark" src="iris_text_logo_w.svg" alt="Iris"> <span class="v">Beta 1</span></div>
       </div>
       <div class="picker-user">
-        <span class="avatar" id="pkAvatar">–</span>
-        <div class="picker-user-txt">
-          <div class="pu-name" id="pkName">–</div>
-          <div class="pu-email" id="pkEmail">–</div>
-        </div>
+        <button class="picker-account" id="pkAccount" title="Account" data-i18n-title="common.account" aria-haspopup="menu" aria-expanded="false" aria-controls="userMenu">
+          <span class="avatar" id="pkAvatar">–</span>
+          <span class="picker-user-txt">
+            <span class="pu-name" id="pkName">–</span>
+            <span class="pu-email" id="pkEmail">–</span>
+          </span>
+        </button>
         <button class="tbtn admin-only" id="pkAdmin" title="User administration" data-i18n-title="admin.open"><span class="ic" data-icon="shield-lock"></span><span data-i18n="admin.usersShort">Users</span></button>
         <button class="tbtn" id="pkLogout" title="Sign out" data-i18n-title="account.signOut"><span class="ic" data-icon="logout"></span><span data-i18n="account.exit">Exit</span></button>
       </div>
@@ -637,15 +639,15 @@
 
     <div class="picker-import-status" id="adminStatusMsg" role="status" aria-live="polite"></div>
 
-    <div class="admin-table-wrap">
+    <div class="admin-table-wrap" id="adminTableWrap">
       <table class="admin-table">
         <thead>
           <tr>
             <th data-i18n="admin.colUser">User</th>
             <th data-i18n="admin.colRole">Role</th>
             <th data-i18n="admin.colStatus">Status</th>
-            <th data-i18n="admin.colSource">Sign-in</th>
-            <th data-i18n="admin.colLastLogin">Last sign-in</th>
+            <th class="admin-hide-sm" data-i18n="admin.colSource">Sign-in</th>
+            <th class="admin-hide-sm" data-i18n="admin.colLastLogin">Last sign-in</th>
             <th class="admin-col-actions"><span class="visually-hidden" data-i18n="admin.colActions">Actions</span></th>
           </tr>
         </thead>
@@ -660,25 +662,25 @@
 
 <!-- ===================== ADMIN · CREATE USER ===================== -->
 <div class="scrim" id="adminCreateModal">
-  <div class="modal narrow">
+  <form class="modal narrow" id="adminCreateForm" role="dialog" aria-modal="true" aria-labelledby="adminCreateTitle">
     <div class="m-head">
-      <h3 data-i18n="admin.newUser">New user</h3>
-      <button class="m-x" data-admin-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
+      <h3 id="adminCreateTitle" data-i18n="admin.newUser">New user</h3>
+      <button class="m-x" type="button" data-admin-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
       <div class="login-error inline" id="adminCreateError"></div>
       <div class="field">
         <span class="label" data-i18n="admin.username">Username</span>
-        <input class="input" id="adminCreateUsername" spellcheck="false" autocomplete="off">
+        <input class="input" id="adminCreateUsername" spellcheck="false" autocomplete="off" maxlength="64" required>
         <div class="hint"><span data-icon="info-circle"></span><span data-i18n="admin.usernameHint">Lowercase, at least 3 characters.</span></div>
       </div>
       <div class="field">
         <span class="label" data-i18n="admin.email">Email</span>
-        <input class="input" id="adminCreateEmail" type="email" spellcheck="false" autocomplete="off">
+        <input class="input" id="adminCreateEmail" type="email" spellcheck="false" autocomplete="off" maxlength="190" required>
       </div>
       <div class="field">
         <span class="label" data-i18n="admin.name">Display name</span>
-        <input class="input" id="adminCreateName" spellcheck="false" autocomplete="off">
+        <input class="input" id="adminCreateName" spellcheck="false" autocomplete="off" maxlength="190">
       </div>
       <div class="field">
         <span class="label" data-i18n="admin.role">Role</span>
@@ -689,34 +691,34 @@
       </div>
     </div>
     <div class="m-foot">
-      <button class="btn" data-admin-close data-i18n="common.cancel">Cancel</button>
-      <button class="btn cta" id="adminCreateSave" data-i18n="admin.createButton">Create user</button>
+      <button class="btn" type="button" data-admin-close data-i18n="common.cancel">Cancel</button>
+      <button class="btn cta" id="adminCreateSave" type="submit" data-i18n="admin.createButton">Create user</button>
     </div>
-  </div>
+  </form>
 </div>
 
 <!-- ===================== ADMIN · EDIT USER ===================== -->
 <div class="scrim" id="adminEditModal">
-  <div class="modal narrow">
+  <form class="modal narrow" id="adminEditForm" role="dialog" aria-modal="true" aria-labelledby="adminEditTitle">
     <div class="m-head">
       <h3 id="adminEditTitle" data-i18n="admin.editUser">Edit user</h3>
-      <button class="m-x" data-admin-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
+      <button class="m-x" type="button" data-admin-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
       <div class="login-error inline" id="adminEditError"></div>
       <div class="admin-edit-id" id="adminEditIdentity"></div>
       <div class="field">
         <span class="label" data-i18n="admin.username">Username</span>
-        <input class="input" id="adminEditUsername" spellcheck="false" autocomplete="off">
+        <input class="input" id="adminEditUsername" spellcheck="false" autocomplete="off" maxlength="64" required>
         <span class="hint" data-i18n="admin.usernameHint">Lowercase, at least 3 characters.</span>
       </div>
       <div class="field">
         <span class="label" data-i18n="admin.name">Display name</span>
-        <input class="input" id="adminEditName" spellcheck="false" autocomplete="off">
+        <input class="input" id="adminEditName" spellcheck="false" autocomplete="off" maxlength="190">
       </div>
       <div class="field">
         <span class="label" data-i18n="admin.email">Email</span>
-        <input class="input" id="adminEditEmail" type="email" spellcheck="false" autocomplete="off">
+        <input class="input" id="adminEditEmail" type="email" spellcheck="false" autocomplete="off" maxlength="190" required>
       </div>
       <div class="field">
         <span class="label" data-i18n="admin.role">Role</span>
@@ -737,23 +739,44 @@
         <span class="hint" data-i18n="admin.linkPendingHint">On the next SSO sign-in with this email the account is linked and becomes SSO-only.</span>
       </div>
       <div class="admin-reset" id="adminResetRow">
-        <button class="btn" id="adminResetBtn"><span class="ic" data-icon="key"></span><span data-i18n="admin.resetPassword">Reset password</span></button>
+        <button class="btn" id="adminResetBtn" type="button"><span class="ic" data-icon="key"></span><span data-i18n="admin.resetPassword">Reset password</span></button>
         <span class="hint" data-i18n="admin.resetHint">Issues a new one-time password and signs the account out.</span>
+      </div>
+      <div class="admin-reset" id="adminUnlinkRow">
+        <button class="btn" id="adminUnlinkBtn" type="button"><span class="ic" data-icon="circle-x"></span><span data-i18n="admin.unlinkSso">Remove SSO link</span></button>
+        <span class="hint" data-i18n="admin.unlinkSsoHint">The account reverts to local with a new temporary password.</span>
       </div>
     </div>
     <div class="m-foot">
-      <button class="btn" data-admin-close data-i18n="common.cancel">Cancel</button>
-      <button class="btn cta" id="adminEditSave" data-i18n="admin.saveChanges">Save changes</button>
+      <button class="btn" type="button" data-admin-close data-i18n="common.cancel">Cancel</button>
+      <button class="btn cta" id="adminEditSave" type="submit" data-i18n="admin.saveChanges">Save changes</button>
     </div>
-  </div>
+  </form>
+</div>
+
+<!-- ===================== ADMIN · RESET PASSWORD CONFIRMATION ===================== -->
+<div class="scrim" id="adminResetConfirmModal">
+  <form class="modal narrow" id="adminResetConfirmForm" role="dialog" aria-modal="true" aria-labelledby="adminResetConfirmTitle">
+    <div class="m-head">
+      <h3 id="adminResetConfirmTitle" data-i18n="admin.resetConfirmTitle">Reset password?</h3>
+      <button class="m-x" id="adminResetConfirmClose" type="button" aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
+    </div>
+    <div class="m-body">
+      <p class="confirm-txt" id="adminResetConfirmText"></p>
+    </div>
+    <div class="m-foot">
+      <button class="btn" id="adminResetConfirmCancel" type="button" data-i18n="common.cancel">Cancel</button>
+      <button class="btn danger" id="adminResetConfirmBtn" type="submit" data-i18n="admin.resetConfirmButton">Generate new password</button>
+    </div>
+  </form>
 </div>
 
 <!-- ===================== ADMIN · CREDENTIALS (shown once) ===================== -->
 <div class="scrim" id="adminCredsModal">
-  <div class="modal narrow">
+  <div class="modal narrow" role="dialog" aria-modal="true" aria-labelledby="adminCredsTitle">
     <div class="m-head">
-      <h3 data-i18n="admin.credentialsTitle">Temporary password</h3>
-      <button class="m-x" data-admin-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
+      <h3 id="adminCredsTitle" data-i18n="admin.credentialsTitle">Temporary password</h3>
+      <button class="m-x" type="button" data-admin-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
       <p class="confirm-txt" data-i18n="admin.credentialsIntro">Share this one-time password with the user. It is shown only once.</p>
@@ -764,7 +787,7 @@
       <button class="btn" id="adminCredsCopy"><span class="ic" data-icon="check"></span><span data-i18n="admin.copyPassword">Copy password</span></button>
     </div>
     <div class="m-foot">
-      <button class="btn cta" data-admin-close data-i18n="admin.credentialsDone">Done</button>
+      <button class="btn cta" type="button" data-admin-close data-i18n="admin.credentialsDone">Done</button>
     </div>
   </div>
 </div>

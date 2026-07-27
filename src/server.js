@@ -450,7 +450,8 @@ async function userFromOAuthProfile(profile, ip = null) {
     if (!emailMatch.oidc_link_pending) throw ssoLinkRequiredError();
     await db.query(
       `UPDATE users SET oidc_issuer = $1, oidc_subject = $2, auth_source = 'oidc',
-         password_hash = NULL, oidc_link_pending = FALSE, updated_at = CURRENT_TIMESTAMP
+         password_hash = NULL, oidc_link_pending = FALSE, oidc_linked_at = CURRENT_TIMESTAMP,
+         updated_at = CURRENT_TIMESTAMP
        WHERE id = $3`,
       [issuer, subject, emailMatch.id]
     );
@@ -2358,6 +2359,7 @@ const PROJECT_FILE_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/files/do
 const ADMIN_USERS_ROUTE = "/api/admin/users";
 const ADMIN_USER_ROUTE = new RegExp(`^/api/admin/users/(${UUID_PATTERN})$`);
 const ADMIN_USER_RESET_ROUTE = new RegExp(`^/api/admin/users/(${UUID_PATTERN})/reset-password$`);
+const ADMIN_USER_UNLINK_ROUTE = new RegExp(`^/api/admin/users/(${UUID_PATTERN})/unlink-sso$`);
 const PROJECT_MEMBERS_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/members$`);
 const PROJECT_MEMBER_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/members/(${UUID_PATTERN})$`);
 const PROJECT_CHECKPOINT_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/checkpoint$`);
@@ -2566,6 +2568,25 @@ async function adminResetPassword(req, res, actor, targetId) {
   json(res, 200, { ok: true, temporaryPassword: password });
 }
 
+// Undo an SSO conversion (or linking): the account reverts to a local one with a
+// fresh one-time password. It drops the durable identity so a re-link starts
+// clean, and bumps the epoch so any live SSO session ends at once.
+async function adminUnlinkSso(req, res, actor, targetId) {
+  const { rows } = await db.query("SELECT id, username, oidc_subject FROM users WHERE id = $1", [targetId]);
+  if (!rows.length) throw requestError("ADMIN_USER_NOT_FOUND", 404);
+  if (!rows[0].oidc_subject) throw requestError("ADMIN_NOT_LINKED", 400);
+  const password = crypto.randomBytes(18).toString("base64url");
+  await db.query(
+    `UPDATE users SET auth_source = 'local', oidc_issuer = NULL, oidc_subject = NULL,
+       oidc_linked_at = NULL, oidc_link_pending = FALSE, password_hash = $1,
+       password_change_required = TRUE, session_epoch = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+     WHERE id = $2`,
+    [await hashPassword(password), targetId]
+  );
+  await audit({ ...sessionActor(req, actor), action: "user.oidc_unlinked", targetType: "user", targetId });
+  json(res, 200, { ok: true, temporaryPassword: password });
+}
+
 async function handleAdminApi(req, res, url, actor) {
   requireAdmin(actor);
   if (url.pathname === ADMIN_USERS_ROUTE) {
@@ -2574,6 +2595,8 @@ async function handleAdminApi(req, res, url, actor) {
   }
   const resetMatch = url.pathname.match(ADMIN_USER_RESET_ROUTE);
   if (resetMatch && req.method === "POST") return adminResetPassword(req, res, actor, resetMatch[1]);
+  const unlinkMatch = url.pathname.match(ADMIN_USER_UNLINK_ROUTE);
+  if (unlinkMatch && req.method === "POST") return adminUnlinkSso(req, res, actor, unlinkMatch[1]);
   const userMatch = url.pathname.match(ADMIN_USER_ROUTE);
   if (userMatch && req.method === "PATCH") return adminUpdateUser(req, res, actor, userMatch[1]);
   errorJson(res, 404, "ENDPOINT_NOT_FOUND");
@@ -2662,7 +2685,7 @@ async function handleApi(req, res, url) {
     const password = String(body.password || "");
     if (!login || !password) return errorJson(res, 400, "AUTH_REQUIRED_FIELDS");
     const { rows } = await db.query(
-      "SELECT id, username, email, display_name, system_role, status, auth_source, session_epoch, password_hash, password_change_required FROM users WHERE LOWER(username) = LOWER($1) OR LOWER(email) = LOWER($2) LIMIT 1",
+      "SELECT id, username, email, display_name, system_role, status, auth_source, session_epoch, password_hash, password_change_required, oidc_linked_at FROM users WHERE LOWER(username) = LOWER($1) OR LOWER(email) = LOWER($2) LIMIT 1",
       [login, login]
     );
     const user = rows[0];
@@ -2677,8 +2700,11 @@ async function handleApi(req, res, url) {
       metadata: { authMethod: "local", reason },
     });
     if (user && !user.password_hash) {
-      await failedLogin("sso_account");
-      return errorJson(res, 401, "AUTH_SSO_ACCOUNT");
+      // An account converted from local to SSO gets a specific message; one that
+      // was always SSO gets the generic "use the SSO button" guidance.
+      const converted = !!user.oidc_linked_at;
+      await failedLogin(converted ? "converted_to_sso" : "sso_account");
+      return errorJson(res, 401, converted ? "AUTH_CONVERTED_TO_SSO" : "AUTH_SSO_ACCOUNT");
     }
     const passwordCheck = user ? await verifyPassword(password, user.password_hash) : { valid: false, needsRehash: false };
     if (!user || !passwordCheck.valid) {

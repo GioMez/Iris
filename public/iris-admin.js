@@ -10,6 +10,7 @@
 
   let users = [];
   let editingId = null;
+  let loadSequence = 0;
 
   // A 401 here means my own session fell (self-disable, self password reset):
   // IrisNet routes it to the registered handler, which drops back to login.
@@ -43,8 +44,11 @@
     if (window.location.hash === "#admin") history.replaceState(null, "", window.location.pathname + window.location.search);
   }
 
-  async function load() {
-    status("");
+  async function load({ preserveStatus = false } = {}) {
+    const sequence = ++loadSequence;
+    if (!preserveStatus) status("");
+    $("adminTableWrap").setAttribute("aria-busy", "true");
+    $("adminTableWrap").classList.add("loading");
     const params = new URLSearchParams();
     const q = $("adminSearch").value.trim();
     if (q) params.set("q", q);
@@ -52,12 +56,21 @@
     if ($("adminStatusFilter").value) params.set("status", $("adminStatusFilter").value);
     try {
       const data = await api(`/api/admin/users${params.toString() ? `?${params}` : ""}`);
+      if (sequence !== loadSequence) return false;
       users = data.users || [];
       render();
+      return true;
     } catch (err) {
+      if (sequence !== loadSequence) return false;
       users = [];
       render();
       status(window.IrisI18n.error(err), true);
+      return false;
+    } finally {
+      if (sequence === loadSequence) {
+        $("adminTableWrap").removeAttribute("aria-busy");
+        $("adminTableWrap").classList.remove("loading");
+      }
     }
   }
 
@@ -120,8 +133,7 @@
       });
       $("adminCreateModal").classList.remove("on");
       showCredentials(data.user.username, data.temporaryPassword);
-      status(t("admin.userCreated", { name: data.user.username }));
-      await load();
+      if (await load({ preserveStatus: true })) status(t("admin.userCreated", { name: data.user.username }));
     } catch (err) {
       modalError("adminCreateError", err);
     } finally {
@@ -140,11 +152,14 @@
     $("adminEditEmail").value = u.email || "";
     $("adminEditRole").value = u.role;
     $("adminEditStatus").value = u.status;
-    // Only local accounts have a password Iris can reset, and only they can be
-    // offered the one-time SSO linking window (an OIDC account is already linked).
-    $("adminResetRow").style.display = u.authSource === "local" ? "" : "none";
+    // Local accounts can have their password reset and be offered the one-time
+    // SSO linking window; OIDC accounts (native or converted) can instead be
+    // unlinked, reverting to local with a fresh temporary password.
+    const isLocal = u.authSource === "local";
+    $("adminResetRow").style.display = isLocal ? "" : "none";
     $("adminEditLinkPending").checked = !!u.oidcLinkPending;
-    $("adminLinkRow").style.display = u.authSource === "local" ? "" : "none";
+    $("adminLinkRow").style.display = isLocal ? "" : "none";
+    $("adminUnlinkRow").style.display = isLocal ? "none" : "";
     $("adminEditModal").classList.add("on");
     setTimeout(() => $("adminEditName").focus(), 50);
   }
@@ -173,8 +188,7 @@
         await window.IrisAuth.refreshSession();
         if (!isAdmin()) { close(); return; }
       }
-      status(t("admin.userUpdated", { name: data.user.username }));
-      await load();
+      if (await load({ preserveStatus: true })) status(t("admin.userUpdated", { name: data.user.username }));
     } catch (err) {
       modalError("adminEditError", err);
     } finally {
@@ -182,15 +196,53 @@
     }
   }
 
+  function openResetConfirmation() {
+    if (!editingId) return;
+    const target = users.find((u) => u.id === editingId);
+    $("adminResetConfirmText").textContent = t("admin.resetConfirm", { name: target ? target.username : "" });
+    $("adminEditModal").classList.remove("on");
+    $("adminResetConfirmModal").classList.add("on");
+    setTimeout(() => $("adminResetConfirmBtn").focus(), 50);
+  }
+
+  function closeResetConfirmation() {
+    $("adminResetConfirmModal").classList.remove("on");
+    $("adminEditModal").classList.add("on");
+    setTimeout(() => $("adminResetBtn").focus(), 50);
+  }
+
   async function resetPassword() {
     if (!editingId) return;
-    const btn = $("adminResetBtn");
+    const target = users.find((u) => u.id === editingId);
+    const btn = $("adminResetConfirmBtn");
+    btn.disabled = true; btn.classList.add("loading");
+    try {
+      const data = await api(`/api/admin/users/${editingId}/reset-password`, { method: "POST", body: "{}" });
+      $("adminResetConfirmModal").classList.remove("on");
+      showCredentials(target ? target.username : "", data.temporaryPassword);
+    } catch (err) {
+      $("adminResetConfirmModal").classList.remove("on");
+      $("adminEditModal").classList.add("on");
+      modalError("adminEditError", err);
+    } finally {
+      btn.disabled = false; btn.classList.remove("loading");
+    }
+  }
+
+  async function unlinkSso() {
+    if (!editingId) return;
+    const btn = $("adminUnlinkBtn");
     btn.disabled = true; btn.classList.add("loading");
     try {
       const target = users.find((u) => u.id === editingId);
-      const data = await api(`/api/admin/users/${editingId}/reset-password`, { method: "POST", body: "{}" });
+      const wasSelf = editingId === myId();
+      const data = await api(`/api/admin/users/${editingId}/unlink-sso`, { method: "POST", body: "{}" });
       $("adminEditModal").classList.remove("on");
       showCredentials(target ? target.username : "", data.temporaryPassword);
+      // Refresh the list so the account shows as local again — unless I unlinked
+      // myself, whose session is now dead (a reload would 401 to login and hide
+      // the temporary password before it can be copied).
+      if (!wasSelf) await load();
     } catch (err) {
       modalError("adminEditError", err);
     } finally {
@@ -215,9 +267,13 @@
     $("adminSearch").addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(load, 220); });
     $("adminRoleFilter").addEventListener("change", load);
     $("adminStatusFilter").addEventListener("change", load);
-    $("adminCreateSave").addEventListener("click", submitCreate);
-    $("adminEditSave").addEventListener("click", submitEdit);
-    $("adminResetBtn").addEventListener("click", resetPassword);
+    $("adminCreateForm").addEventListener("submit", (event) => { event.preventDefault(); void submitCreate(); });
+    $("adminEditForm").addEventListener("submit", (event) => { event.preventDefault(); void submitEdit(); });
+    $("adminResetBtn").addEventListener("click", openResetConfirmation);
+    $("adminResetConfirmForm").addEventListener("submit", (event) => { event.preventDefault(); void resetPassword(); });
+    $("adminResetConfirmCancel").addEventListener("click", closeResetConfirmation);
+    $("adminResetConfirmClose").addEventListener("click", closeResetConfirmation);
+    $("adminUnlinkBtn").addEventListener("click", unlinkSso);
     $("adminCredsCopy").addEventListener("click", async () => {
       try {
         await navigator.clipboard.writeText($("adminCredsPass").textContent);
@@ -230,6 +286,18 @@
     document.querySelectorAll("#adminCreateModal, #adminEditModal, #adminCredsModal").forEach((scrim) =>
       scrim.addEventListener("click", (e) => { if (e.target === scrim) scrim.classList.remove("on"); })
     );
+    $("adminResetConfirmModal").addEventListener("click", (event) => {
+      if (event.target === $("adminResetConfirmModal")) closeResetConfirmation();
+    });
+    // IrisApp has a global Escape handler for scrims. Handle this nested flow in
+    // capture phase so cancelling returns to the edit dialog instead of closing
+    // the whole account-management flow.
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape" || !$("adminResetConfirmModal").classList.contains("on")) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      closeResetConfirmation();
+    }, true);
     // A hard refresh at #admin lands on the console when the session is an admin.
     window.addEventListener("hashchange", () => {
       if (window.location.hash === "#admin") open();

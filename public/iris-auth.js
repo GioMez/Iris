@@ -270,6 +270,25 @@
     }
   }
 
+  // The account menu is shared by the in-project chip and the home (picker)
+  // account block, so it can be opened from either screen.
+  const USER_MENU_TRIGGERS = ["userChip", "pkAccount"];
+  function closeUserMenu() {
+    $("userMenu").classList.remove("on");
+    USER_MENU_TRIGGERS.forEach((id) => { const el = $(id); if (el) el.setAttribute("aria-expanded", "false"); });
+  }
+  function toggleUserMenu(trigger) {
+    const um = $("userMenu");
+    const open = !um.classList.contains("on");
+    if (open) {
+      const r = trigger.getBoundingClientRect();
+      um.style.left = Math.max(8, r.right - 232) + "px";
+      um.style.top = r.bottom + 6 + "px";
+    }
+    um.classList.toggle("on", open);
+    USER_MENU_TRIGGERS.forEach((id) => { const el = $(id); if (el) el.setAttribute("aria-expanded", open && el === trigger ? "true" : "false"); });
+  }
+
   function wire() {
     $("loginCard").addEventListener("submit", (e) => { e.preventDefault(); doLogin(); });
     $("loginUser").addEventListener("input", hideError);
@@ -284,32 +303,15 @@
     document.querySelectorAll("[data-sso]").forEach((b) => b.addEventListener("click", () => ssoLogin()));
 
     const um = $("userMenu");
-    $("userChip").addEventListener("click", (e) => {
-      e.stopPropagation();
-      const r = $("userChip").getBoundingClientRect();
-      um.style.left = Math.max(8, r.right - 232) + "px";
-      um.style.top = r.bottom + 6 + "px";
-      um.classList.toggle("on");
-      $("userChip").setAttribute("aria-expanded", um.classList.contains("on") ? "true" : "false");
-    });
+    $("userChip").addEventListener("click", (e) => { e.stopPropagation(); toggleUserMenu($("userChip")); });
+    const pkAccount = $("pkAccount");
+    if (pkAccount) pkAccount.addEventListener("click", (e) => { e.stopPropagation(); toggleUserMenu(pkAccount); });
     um.addEventListener("click", (e) => e.stopPropagation());
-    document.addEventListener("click", () => { um.classList.remove("on"); $("userChip").setAttribute("aria-expanded", "false"); });
+    document.addEventListener("click", closeUserMenu);
 
-    $("miUsername").addEventListener("click", () => {
-      um.classList.remove("on");
-      $("userChip").setAttribute("aria-expanded", "false");
-      openUsernameModal();
-    });
-    $("miPassword").addEventListener("click", () => {
-      um.classList.remove("on");
-      $("userChip").setAttribute("aria-expanded", "false");
-      openPasswordModal();
-    });
-    $("miLogout").addEventListener("click", () => {
-      um.classList.remove("on");
-      $("userChip").setAttribute("aria-expanded", "false");
-      $("logoutModal").classList.add("on");
-    });
+    $("miUsername").addEventListener("click", () => { closeUserMenu(); openUsernameModal(); });
+    $("miPassword").addEventListener("click", () => { closeUserMenu(); openPasswordModal(); });
+    $("miLogout").addEventListener("click", () => { closeUserMenu(); $("logoutModal").classList.add("on"); });
     $("logoutConfirm").addEventListener("click", async () => {
       $("logoutModal").classList.remove("on");
       await doLogout();

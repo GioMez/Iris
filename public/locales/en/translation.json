@@ -396,6 +396,9 @@
     "saveChanges": "Save changes",
     "resetPassword": "Reset password",
     "resetHint": "Issues a new one-time password and signs the account out.",
+    "resetConfirmTitle": "Reset password?",
+    "resetConfirm": "Generate a new password for {{name}}? Active sessions will be ended and the current password will stop working.",
+    "resetConfirmButton": "Generate new password",
     "credentialsTitle": "Temporary password",
     "credentialsIntro": "Share this one-time password with the user. It is shown only once.",
     "password": "Password",
@@ -405,11 +408,14 @@
     "userCreated": "Created {{name}}.",
     "userUpdated": "Updated {{name}}.",
     "linkPending": "Allow SSO linking (one time)",
-    "linkPendingHint": "On the next SSO sign-in with this email the account is linked to the SSO identity and becomes SSO-only (the local password is removed)."
+    "linkPendingHint": "On the next SSO sign-in with this email the account is linked to the SSO identity and becomes SSO-only (the local password is removed).",
+    "unlinkSso": "Remove SSO link",
+    "unlinkSsoHint": "The account reverts to local with a new temporary password and any active SSO session is ended."
   },
   "api": {
     "AUTH_REQUIRED_FIELDS": "Enter your username and password.",
     "AUTH_SSO_ACCOUNT": "This account uses SSO. Sign in with the SSO button.",
+    "AUTH_CONVERTED_TO_SSO": "This account has been linked to SSO and can no longer sign in with local credentials.",
     "AUTH_INVALID_CREDENTIALS": "Invalid credentials. Try again.",
     "PASSWORD_LOCAL_LOGIN_REQUIRED": "The local password can only be changed after a username/password sign-in.",
     "PASSWORD_REQUIRED_FIELDS": "Enter the current and new passwords.",
@@ -436,6 +442,7 @@
     "ADMIN_USER_NOT_FOUND": "User not found.",
     "ADMIN_LAST_ADMIN": "At least one active administrator must remain.",
     "ADMIN_NOT_LOCAL_ACCOUNT": "Only local accounts have a password to reset.",
+    "ADMIN_NOT_LINKED": "This account is not linked to an SSO identity.",
     "PROJECT_FORBIDDEN": "Your role does not allow this action.",
     "MEMBER_IDENTIFIER_REQUIRED": "A username or email is required.",
     "MEMBER_USER_NOT_FOUND": "No account matches that username or email. Ask an administrator to create it.",

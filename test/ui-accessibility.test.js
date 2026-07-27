@@ -8,6 +8,7 @@ const css = fs.readFileSync(path.join(root, "public/iris.css"), "utf8");
 const html = fs.readFileSync(path.join(root, "public/Iris.html"), "utf8");
 const app = fs.readFileSync(path.join(root, "public/iris-app.js"), "utf8");
 const projects = fs.readFileSync(path.join(root, "public/iris-projects.js"), "utf8");
+const admin = fs.readFileSync(path.join(root, "public/iris-admin.js"), "utf8");
 
 function token(name) {
   const match = css.match(new RegExp(`--${name}:\\s*(#[0-9a-f]{6})`, "i"));
@@ -96,6 +97,25 @@ test("project chooser supports portable ZIP downloads and imports", () => {
   assert.match(projects, /data-act="download"/);
   assert.match(projects, /\/api\/projects\/\$\{id\}\/archive/);
   assert.match(projects, /\/api\/projects\/import\?\$\{query\}/);
+});
+
+test("project cards keep metadata readable beside persistent actions", () => {
+  assert.match(css, /\.pcard\{[^}]*min-height:164px/);
+  assert.match(css, /\.pcard-tools\{[^}]*position:static/);
+  assert.match(css, /\.pcard-name\{[^}]*white-space:normal/);
+  assert.match(css, /\.pcard-meta\{[^}]*white-space:normal/);
+});
+
+test("admin controls remain usable on desktop, mobile and keyboard", () => {
+  assert.match(css, /\.admin-filters select\{[^}]*width:auto/);
+  assert.match(css, /@media\(max-width:640px\)[\s\S]*\.admin-table tbody tr\{display:grid/);
+  assert.equal((html.match(/<th class="admin-hide-sm"/g) || []).length, 2);
+  assert.match(html, /id="adminCreateForm"[^>]*role="dialog"[^>]*aria-modal="true"/);
+  assert.match(html, /id="adminEditForm"[^>]*role="dialog"[^>]*aria-modal="true"/);
+  assert.match(html, /id="adminResetConfirmForm"[^>]*role="dialog"[^>]*aria-modal="true"/);
+  assert.match(admin, /adminResetConfirmText.*admin\.resetConfirm/);
+  assert.match(admin, /adminCreateForm.*addEventListener\("submit"/);
+  assert.match(admin, /adminEditForm.*addEventListener\("submit"/);
 });
 
 test("editor suppresses native boundary bounce without custom motion", () => {
