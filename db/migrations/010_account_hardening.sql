@@ -12,14 +12,7 @@
 -- is set; the link then clears the flag and, from that point, the account is
 -- SSO-only (its local password hash is dropped). Without an open window the SSO
 -- login is refused and the account is left untouched.
---
--- oidc_linked_at marks an account that was converted from local to SSO through
--- that window (as opposed to one auto-registered as SSO from the start). It lets
--- a local login attempt on a converted account explain that it can no longer use
--- local credentials, and an admin can undo the conversion (unlink) to hand back
--- local access with a fresh temporary password.
 
 ALTER TABLE users
   ADD COLUMN password_change_required BOOLEAN NOT NULL DEFAULT FALSE,
-  ADD COLUMN oidc_link_pending BOOLEAN NOT NULL DEFAULT FALSE,
-  ADD COLUMN oidc_linked_at TIMESTAMPTZ;
+  ADD COLUMN oidc_link_pending BOOLEAN NOT NULL DEFAULT FALSE;

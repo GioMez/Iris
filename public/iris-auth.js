@@ -34,8 +34,14 @@
     if (pa) pa.textContent = ini;
     if (pn) pn.textContent = u.name;
     if (pe) pe.textContent = u.email;
+    // Only local accounts manage their own credentials/handle here; for an SSO
+    // account (including one migrated to SSO) both are hidden — the password
+    // lives at the IdP and changing the Iris username is pointless.
+    const isLocalAccount = u.canChangePassword;
     const pwd = $("miPassword");
-    if (pwd) pwd.style.display = u.canChangePassword ? "" : "none";
+    if (pwd) pwd.style.display = isLocalAccount ? "" : "none";
+    const uname = $("miUsername");
+    if (uname) uname.style.display = isLocalAccount ? "" : "none";
   }
 
   // Re-reads the live session and re-stamps role/identity. Used after an admin
@@ -251,6 +257,10 @@
     const username = $("usernameNew").value.trim();
     const currentPassword = $("usernameCurrent").value;
     if (!username) { usernameError(t("admin.usernameHint")); return; }
+    if (username === currentUser.username) { usernameError(t("account.usernameUnchanged")); return; }
+    // Local accounts must re-enter their password; catch it here so the user is
+    // told before a round-trip instead of the modal closing on a no-op.
+    if (currentUser.canChangePassword && !currentPassword) { usernameError(t("account.reauthHint")); return; }
     const btn = $("usernameSave");
     btn.disabled = true;
     btn.classList.add("loading");

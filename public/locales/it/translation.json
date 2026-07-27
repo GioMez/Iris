@@ -118,6 +118,7 @@
     "changeUsername": "Cambia nome utente",
     "newUsername": "Nuovo nome utente",
     "usernameUpdated": "Nome utente aggiornato.",
+    "usernameUnchanged": "Il nome utente è invariato.",
     "reauthHint": "Inserisci la password attuale per confermare la modifica.",
     "signOut": "Disconnetti",
     "exit": "Esci"

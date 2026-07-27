@@ -118,6 +118,7 @@
     "changeUsername": "Change username",
     "newUsername": "New username",
     "usernameUpdated": "Username updated.",
+    "usernameUnchanged": "The username is unchanged.",
     "reauthHint": "Enter your current password to confirm the change.",
     "signOut": "Sign out",
     "exit": "Exit"
