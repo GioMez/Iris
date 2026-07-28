@@ -568,20 +568,23 @@ at least one owner always remains, so the last owner cannot be demoted or leave.
 Promoting someone to owner is an explicit, owner-only action. Sharing changes are
 recorded in the audit trail.
 
-Sharing targets accounts that already exist, found by exact username or verified
-email; the effective grant always references the user's immutable id. If no
+From the in-project sharing console, owners search active accounts by partial
+username or email and can inspect display name, username and email before choosing
+a role. The effective grant always references the user's immutable id. If no
 account matches, the owner is asked to have an administrator provision one — there
 are no public links and no pending invitations for strangers in this release.
 
-The sharing endpoints are `GET/POST /api/projects/:id/members` and
-`PATCH/DELETE /api/projects/:id/members/:userId`.
+The sharing endpoints are `GET/POST /api/projects/:id/members`,
+`GET /api/projects/:id/members/search?q=...` and
+`PATCH/DELETE /api/projects/:id/members/:userId`. They require the project owner
+capability; the last owner cannot demote or remove themselves.
 
 ## Server administration
 
 Iris distinguishes two authorization levels. The **server role** (`admin` or
-`regular`) governs account management; a project role will govern project contents
-in a later release. A server admin is not automatically granted access to any
-project's contents.
+`regular`) governs account management, while the project role governs project
+contents. A server admin is not automatically granted access to any project's
+contents.
 
 Admins manage the ordinary account lifecycle over `/api/admin/users`, so it no
 longer requires direct database access:

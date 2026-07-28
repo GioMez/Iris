@@ -161,7 +161,9 @@ test("home account controls reuse the project toolbar styling and order", () => 
 test("admin controls remain usable on desktop, mobile and keyboard", () => {
   assert.match(css, /\.admin-filters select\{[^}]*width:auto/);
   assert.match(css, /@media\(max-width:640px\)[\s\S]*\.admin-table tbody tr\{display:grid/);
-  assert.equal((html.match(/<th class="admin-hide-sm"/g) || []).length, 2);
+  // Secondary columns hidden on small screens: two in the users table
+  // (sign-in, last sign-in) and one in the projects table (updated).
+  assert.equal((html.match(/<th class="admin-hide-sm"/g) || []).length, 3);
   assert.match(html, /id="adminCreateForm"[^>]*role="dialog"[^>]*aria-modal="true"/);
   assert.match(html, /id="adminEditForm"[^>]*role="dialog"[^>]*aria-modal="true"/);
   assert.match(html, /id="adminResetConfirmForm"[^>]*role="dialog"[^>]*aria-modal="true"/);

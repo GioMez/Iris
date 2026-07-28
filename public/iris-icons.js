@@ -54,6 +54,7 @@
     "history": "<path d=\"M12 8l0 4l2 2\" /><path d=\"M3.05 11a9 9 0 1 1 .5 4m-.5 5v-5h5\" />",
     "camera": "<path d=\"M5 7h1a2 2 0 0 0 2 -2a1 1 0 0 1 1 -1h6a1 1 0 0 1 1 1a2 2 0 0 0 2 2h1a2 2 0 0 1 2 2v9a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-9a2 2 0 0 1 2 -2\" /><path d=\"M9 13a3 3 0 1 0 6 0a3 3 0 0 0 -6 0\" />",
     "arrow-back-up": "<path d=\"M9 14l-4 -4l4 -4\" /><path d=\"M5 10h11a4 4 0 1 1 0 8h-1\" />",
+    "users": "<path d=\"M9 7a4 4 0 1 0 0 8a4 4 0 0 0 0 -8\" /><path d=\"M17 11a4 4 0 1 0 0 -8\" /><path d=\"M17 21v-2a4 4 0 0 0 -4 -4h-8a4 4 0 0 0 -4 4v2\" /><path d=\"M21 21v-2a4 4 0 0 0 -3 -3.87\" />",
   };
 
   function icon(name, className = "", label = "") {

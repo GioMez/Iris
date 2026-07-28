@@ -13,6 +13,22 @@
   let users = [];
   let editingId = null;
   let loadSequence = 0;
+  let adminTab = "users";
+
+  // The admin area hosts two sibling dashboards (users, projects) behind one
+  // switch. The projects dashboard is a separate module, activated lazily.
+  function setAdminTab(tab) {
+    adminTab = tab === "projects" ? "projects" : "users";
+    document.querySelectorAll("#adminSwitch [data-admin-tab]").forEach((b) => {
+      const on = b.dataset.adminTab === adminTab;
+      b.classList.toggle("on", on);
+      b.setAttribute("aria-selected", on ? "true" : "false");
+    });
+    document.querySelectorAll("[data-admin-panel]").forEach((panel) => {
+      panel.hidden = panel.dataset.adminPanel !== adminTab;
+    });
+    if (adminTab === "projects" && window.IrisAdminProjects) window.IrisAdminProjects.activate();
+  }
 
   // A 401 here means my own session fell (self-disable, self password reset):
   // IrisNet routes it to the registered handler, which drops back to login.
@@ -38,6 +54,7 @@
     if (!isAdmin()) return;
     document.documentElement.classList.add("iris-inadmin");
     if (window.location.hash !== "#admin") history.pushState(null, "", "#admin");
+    setAdminTab("users");
     void load();
   }
 
@@ -162,6 +179,9 @@
     $("adminEditLinkPending").checked = !!u.oidcLinkPending;
     $("adminLinkRow").style.display = isLocal ? "" : "none";
     $("adminUnlinkRow").style.display = isLocal ? "none" : "";
+    // Physical deletion is a distinct, protected step: offered only for an
+    // already-disabled account, and never for oneself.
+    $("adminDeleteUserRow").style.display = (u.status === "disabled" && u.id !== myId()) ? "" : "none";
     openDialog("adminEditModal");
     setTimeout(() => $("adminEditName").focus(), 50);
   }
@@ -252,6 +272,86 @@
     }
   }
 
+  /* ---------------- delete account ---------------- */
+  // Physical, irreversible deletion, separate from the reversible disable. The
+  // server guards it (self / not-disabled / sole-owner) and hard-deletes the row;
+  // this flow surfaces any sole-owner projects and points to the projects console
+  // to resolve them, then confirms by typing the username.
+  let deleteUserTarget = null;
+
+  async function askDeleteUser() {
+    if (!editingId) return;
+    const btn = $("adminDeleteUserBtn");
+    btn.disabled = true; btn.classList.add("loading");
+    try {
+      const preview = await api(`/api/admin/users/${editingId}/deletion-preview`);
+      deleteUserTarget = { id: editingId, username: preview.user.username, soleOwnerProjects: preview.soleOwnerProjects || [] };
+      await closeDialog("adminEditModal");
+      renderDeleteUser();
+      openDialog("adminDeleteUserModal");
+      if (!deleteUserTarget.soleOwnerProjects.length) setTimeout(() => $("adminDeleteUserConfirm").focus(), 50);
+    } catch (err) {
+      modalError("adminEditError", err);
+    } finally {
+      btn.disabled = false; btn.classList.remove("loading");
+    }
+  }
+
+  function renderDeleteUser() {
+    if (!deleteUserTarget) return;
+    const { username, soleOwnerProjects } = deleteUserTarget;
+    const blocked = soleOwnerProjects.length > 0;
+    $("adminDeleteUserTitle").textContent = t("admin.deleteUserTitle", { name: username });
+    $("adminDeleteUserError").style.display = "none";
+    const soleBox = $("adminDeleteUserSoleOwner");
+    soleBox.style.display = blocked ? "" : "none";
+    if (blocked) {
+      const list = $("adminDeleteUserProjects");
+      list.innerHTML = "";
+      for (const project of soleOwnerProjects) {
+        const li = document.createElement("li");
+        li.textContent = project.name;
+        list.appendChild(li);
+      }
+    }
+    $("adminDeleteUserConfirmField").style.display = blocked ? "none" : "";
+    $("adminDeleteUserConfirmLabel").textContent = t("admin.deleteUserConfirmLabel", { username });
+    const input = $("adminDeleteUserConfirm");
+    input.value = "";
+    input.classList.remove("nomatch");
+    $("adminDeleteUserOk").disabled = blocked;
+  }
+
+  async function confirmDeleteUser(event) {
+    event.preventDefault();
+    if (!deleteUserTarget || deleteUserTarget.soleOwnerProjects.length) return;
+    const { id, username } = deleteUserTarget;
+    const input = $("adminDeleteUserConfirm");
+    if (input.value.trim() !== username) {
+      input.classList.add("nomatch"); input.focus();
+      return;
+    }
+    const btn = $("adminDeleteUserOk");
+    btn.disabled = true; btn.classList.add("loading");
+    try {
+      await api(`/api/admin/users/${id}`, { method: "DELETE", body: JSON.stringify({ confirmation: username }) });
+      await closeDialog("adminDeleteUserModal");
+      deleteUserTarget = null;
+      if (await load({ preserveStatus: true })) status(t("admin.deleteUserDone", { name: username }));
+    } catch (err) {
+      const el = $("adminDeleteUserError");
+      el.textContent = window.IrisI18n.error(err);
+      el.style.display = "flex";
+    } finally {
+      btn.disabled = false; btn.classList.remove("loading");
+    }
+  }
+
+  function openProjectsFromDelete() {
+    void closeDialog("adminDeleteUserModal");
+    setAdminTab("projects");
+  }
+
   /* ---------------- credentials (shown once) ---------------- */
   function showCredentials(username, password) {
     $("adminCredsUser").textContent = username;
@@ -264,6 +364,8 @@
   function wire() {
     $("pkAdmin").addEventListener("click", open);
     $("adminBack").addEventListener("click", close);
+    document.querySelectorAll("#adminSwitch [data-admin-tab]").forEach((b) =>
+      b.addEventListener("click", () => setAdminTab(b.dataset.adminTab)));
     $("adminNew").addEventListener("click", openCreate);
     let searchTimer;
     $("adminSearch").addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(load, 220); });
@@ -276,6 +378,10 @@
     $("adminResetConfirmCancel").addEventListener("click", () => { void closeResetConfirmation(); });
     $("adminResetConfirmClose").addEventListener("click", () => { void closeResetConfirmation(); });
     $("adminUnlinkBtn").addEventListener("click", unlinkSso);
+    $("adminDeleteUserBtn").addEventListener("click", () => { void askDeleteUser(); });
+    $("adminDeleteUserForm").addEventListener("submit", (e) => { void confirmDeleteUser(e); });
+    $("adminDeleteUserOpenProjects").addEventListener("click", openProjectsFromDelete);
+    $("adminDeleteUserConfirm").addEventListener("input", () => $("adminDeleteUserConfirm").classList.remove("nomatch"));
     $("adminCredsCopy").addEventListener("click", async () => {
       try {
         await navigator.clipboard.writeText($("adminCredsPass").textContent);
@@ -285,7 +391,7 @@
     document.querySelectorAll("[data-admin-close]").forEach((b) =>
       b.addEventListener("click", (e) => { void closeDialog(e.target.closest(".scrim")); })
     );
-    document.querySelectorAll("#adminCreateModal, #adminEditModal, #adminCredsModal").forEach((scrim) =>
+    document.querySelectorAll("#adminCreateModal, #adminEditModal, #adminCredsModal, #adminDeleteUserModal").forEach((scrim) =>
       scrim.addEventListener("click", (e) => { if (e.target === scrim) void closeDialog(scrim); })
     );
     $("adminResetConfirmModal").addEventListener("click", (event) => {
@@ -317,7 +423,9 @@
     // IrisAuth calls boot() from showApp once the role is known; the console
     // opens then if the page was loaded directly at #admin.
     document.addEventListener("iris:languagechange", () => {
-      if (document.documentElement.classList.contains("iris-inadmin")) render();
+      if (!document.documentElement.classList.contains("iris-inadmin")) return;
+      render();
+      if ($("adminDeleteUserModal").classList.contains("on")) renderDeleteUser();
     });
   });
 })();

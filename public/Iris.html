@@ -41,6 +41,7 @@
       <button class="workflow-btn workflow-output" id="dlBtn" type="button" title="Download output" aria-label="Download the compiled output" data-i18n-title="toolbar.outputTitle" data-i18n-aria-label="toolbar.outputAria"><span class="ic" data-icon="download"></span><span class="dl-label workflow-label" data-i18n="toolbar.output">Output</span></button>
     </div>
     <div class="tbar-right">
+      <button class="tbtn icononly project-share-trigger" id="btnShareProject" type="button" title="Share project" aria-label="Share project" data-i18n-title="sharing.toolbarTitle" data-i18n-aria-label="sharing.toolbarAria" hidden><span class="ic" data-icon="users"></span></button>
       <button class="userchip" id="userChip" title="Account" data-i18n-title="common.account" aria-haspopup="menu" aria-expanded="false" aria-controls="userMenu">
         <span class="avatar" id="userAvatar">–</span>
         <span class="uname" id="userName">–</span>
@@ -596,6 +597,44 @@
   </div>
 </div>
 
+<div class="scrim" id="projectShareModal">
+  <div class="modal project-share-modal" role="dialog" aria-modal="true" aria-labelledby="projectShareTitle">
+    <div class="m-head">
+      <div>
+        <h3 id="projectShareTitle" data-i18n="sharing.title">Share project</h3>
+        <p class="sub" id="projectShareSubtitle"></p>
+      </div>
+      <button class="m-x" type="button" data-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
+    </div>
+    <div class="m-body">
+      <div class="login-error inline" id="projectShareError" role="alert" style="display:none"></div>
+      <h4 class="set-title" data-i18n="sharing.members">People with access</h4>
+      <div class="project-share-members" id="projectShareMembers"></div>
+      <form class="project-share-add" id="projectShareForm">
+        <h4 class="set-title" data-i18n="sharing.addTitle">Share with another user</h4>
+        <label class="label" for="projectShareSearch" data-i18n="sharing.searchLabel">Username or email</label>
+        <input class="input" id="projectShareSearch" type="search" placeholder="Search by username or email" data-i18n-placeholder="sharing.searchPlaceholder" spellcheck="false" autocomplete="off" aria-describedby="projectShareSearchHint projectShareSearchStatus">
+        <div class="hint" id="projectShareSearchHint" data-i18n="sharing.searchHint">Enter at least two characters, then select an account.</div>
+        <div class="project-share-search-status" id="projectShareSearchStatus" aria-live="polite"></div>
+        <div class="project-share-results" id="projectShareResults"></div>
+        <div class="project-share-add-actions">
+          <label class="visually-hidden" for="projectShareRole" data-i18n="sharing.role">Role</label>
+          <select class="input" id="projectShareRole" aria-label="Role" data-i18n-aria-label="sharing.role">
+            <option value="owner" data-i18n="projects.roleOwner">Owner</option>
+            <option value="editor" data-i18n="projects.roleEditor">Editor</option>
+            <option value="viewer" data-i18n="projects.roleViewer">Viewer</option>
+          </select>
+          <button class="btn cta" type="submit" id="projectShareAdd" data-i18n="sharing.addButton" disabled>Add user</button>
+        </div>
+      </form>
+      <div class="project-share-status" id="projectShareStatus" aria-live="polite"></div>
+    </div>
+    <div class="m-foot">
+      <button class="btn cta" type="button" data-close data-i18n="common.close">Close</button>
+    </div>
+  </div>
+</div>
+
 <!-- ===================== PROJECT CHOOSER ===================== -->
 <div class="picker-screen" id="pickerScreen">
   <div class="picker-wrap">
@@ -605,7 +644,7 @@
         <div class="brand-label"><img class="brand-wordmark" src="iris_text_logo_w.svg" alt="Iris"> <span class="v">Beta 1</span></div>
       </div>
       <div class="picker-user">
-        <button class="tbtn ghost-b admin-only" id="pkAdmin" type="button" title="User administration" data-i18n-title="admin.open"><span class="ic" data-icon="shield-lock"></span><span data-i18n="admin.usersShort">Users</span></button>
+        <button class="tbtn ghost-b admin-only" id="pkAdmin" type="button" title="Server administration" data-i18n-title="admin.open"><span class="ic" data-icon="shield-lock"></span><span data-i18n="admin.adminShort">Admin</span></button>
         <button class="userchip" id="pkAccount" type="button" title="Account" data-i18n-title="common.account" aria-haspopup="menu" aria-expanded="false" aria-controls="userMenu">
           <span class="avatar" id="pkAvatar">–</span>
           <span class="uname" id="pkName">–</span>
@@ -638,17 +677,25 @@
   </div>
 </div>
 
-<!-- ===================== ADMIN · USERS ===================== -->
+<!-- ===================== ADMIN ===================== -->
 <div class="admin-screen" id="adminScreen">
   <div class="picker-wrap">
     <header class="picker-top">
-      <div class="login-brand">
-        <div class="mark"><img src="iris_logo_w.svg" alt=""></div>
-        <div class="brand-label"><img class="brand-wordmark" src="iris_text_logo_w.svg" alt="Iris"> <span class="v">Beta 1</span></div>
+      <div class="admin-headleft">
+        <div class="login-brand">
+          <div class="mark"><img src="iris_logo_w.svg" alt=""></div>
+          <div class="brand-label"><img class="brand-wordmark" src="iris_text_logo_w.svg" alt="Iris"> <span class="v">Beta 1</span></div>
+        </div>
+        <div class="admin-switch" id="adminSwitch" role="tablist" aria-label="Admin sections" data-i18n-aria-label="admin.sectionsAria">
+          <button class="on" type="button" role="tab" aria-selected="true" data-admin-tab="users" data-i18n="admin.tabUsers">Users</button>
+          <button type="button" role="tab" aria-selected="false" data-admin-tab="projects" data-i18n="admin.tabProjects">Projects</button>
+        </div>
       </div>
       <button class="tbtn" id="adminBack" title="Back to projects" data-i18n-title="admin.back"><span class="ic" data-icon="arrow-left"></span><span data-i18n="toolbar.projects">Projects</span></button>
     </header>
 
+    <!-- USERS PANEL -->
+    <div data-admin-panel="users" id="adminUsersPanel">
     <div class="picker-head">
       <div>
         <h1 class="picker-title" data-i18n="admin.title">User administration</h1>
@@ -694,6 +741,48 @@
       </table>
       <div class="picker-empty" id="adminEmpty" style="display:none">
         <div class="pe-title" data-i18n="admin.noUsers">No matching users</div>
+      </div>
+    </div>
+    </div><!-- /users panel -->
+
+    <!-- PROJECTS PANEL -->
+    <div data-admin-panel="projects" id="adminProjectsPanel" hidden>
+      <div class="picker-head">
+        <div>
+          <h1 class="picker-title" data-i18n="adminProjects.title">Project administration</h1>
+          <p class="picker-sub" data-i18n="adminProjects.subtitle">Manage membership, roles and the existence of any project. Contents stay private to members.</p>
+        </div>
+      </div>
+
+      <div class="admin-filters">
+        <div class="admin-search">
+          <span class="ic" data-icon="search"></span>
+          <input id="adminProjectSearch" type="search" placeholder="Search by project name" data-i18n-placeholder="adminProjects.searchPlaceholder" spellcheck="false" autocomplete="off">
+        </div>
+        <select class="input" id="adminProjectFilter" aria-label="Filter projects" data-i18n-aria-label="adminProjects.filter">
+          <option value="" data-i18n="adminProjects.allProjects">All projects</option>
+          <option value="orphaned" data-i18n="adminProjects.orphanedOnly">Orphaned only</option>
+        </select>
+      </div>
+
+      <div class="picker-import-status" id="adminProjectStatusMsg" role="status" aria-live="polite"></div>
+
+      <div class="admin-table-wrap" id="adminProjectTableWrap">
+        <table class="admin-table">
+          <thead>
+            <tr>
+              <th data-i18n="adminProjects.colProject">Project</th>
+              <th data-i18n="adminProjects.colMembers">Members</th>
+              <th data-i18n="adminProjects.colState">State</th>
+              <th class="admin-hide-sm" data-i18n="adminProjects.colUpdated">Updated</th>
+              <th class="admin-col-actions"><span class="visually-hidden" data-i18n="admin.colActions">Actions</span></th>
+            </tr>
+          </thead>
+          <tbody id="adminProjectRows"></tbody>
+        </table>
+        <div class="picker-empty" id="adminProjectEmpty" style="display:none">
+          <div class="pe-title" data-i18n="adminProjects.noProjects">No matching projects</div>
+        </div>
       </div>
     </div>
   </div>
@@ -785,6 +874,10 @@
         <button class="btn" id="adminUnlinkBtn" type="button"><span class="ic" data-icon="circle-x"></span><span data-i18n="admin.unlinkSso">Remove SSO link</span></button>
         <span class="hint" data-i18n="admin.unlinkSsoHint">The account reverts to local with a new temporary password.</span>
       </div>
+      <div class="admin-reset" id="adminDeleteUserRow">
+        <button class="btn danger" id="adminDeleteUserBtn" type="button"><span class="ic" data-icon="trash"></span><span data-i18n="admin.deleteUser">Delete account</span></button>
+        <span class="hint" data-i18n="admin.deleteUserHint">Permanently deletes this disabled account. This cannot be undone.</span>
+      </div>
     </div>
     <div class="m-foot">
       <button class="btn" type="button" data-admin-close data-i18n="common.cancel">Cancel</button>
@@ -829,6 +922,87 @@
       <button class="btn cta" type="button" data-admin-close data-i18n="admin.credentialsDone">Done</button>
     </div>
   </div>
+</div>
+
+<!-- ===================== ADMIN · DELETE USER ===================== -->
+<div class="scrim" id="adminDeleteUserModal">
+  <form class="modal narrow" id="adminDeleteUserForm" role="dialog" aria-modal="true" aria-labelledby="adminDeleteUserTitle">
+    <div class="m-head">
+      <h3 id="adminDeleteUserTitle" data-i18n="admin.deleteUser">Delete account</h3>
+      <button class="m-x" type="button" data-admin-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
+    </div>
+    <div class="m-body">
+      <p class="confirm-txt" data-i18n="admin.deleteUserWarn">This permanently deletes the account. Revisions and audit entries are kept but attributed to a former user. This cannot be undone.</p>
+      <div class="admin-sole-owner" id="adminDeleteUserSoleOwner" style="display:none">
+        <p class="admin-sole-owner-txt" data-i18n="admin.deleteUserSoleOwner">This user is the only owner of the projects below. Reassign or delete them in the Projects tab first, then come back.</p>
+        <ul class="admin-sole-owner-list" id="adminDeleteUserProjects"></ul>
+        <button class="btn" type="button" id="adminDeleteUserOpenProjects"><span class="ic" data-icon="arrow-right"></span><span data-i18n="admin.deleteUserOpenProjects">Open Projects</span></button>
+      </div>
+      <div class="field" id="adminDeleteUserConfirmField">
+        <label class="label" id="adminDeleteUserConfirmLabel" for="adminDeleteUserConfirm"></label>
+        <input class="input" id="adminDeleteUserConfirm" spellcheck="false" autocomplete="off">
+      </div>
+      <div class="login-error inline" id="adminDeleteUserError" style="display:none"></div>
+    </div>
+    <div class="m-foot">
+      <button class="btn" type="button" data-admin-close data-i18n="common.cancel">Cancel</button>
+      <button class="btn danger" id="adminDeleteUserOk" type="submit" data-i18n="admin.deleteUserButton">Delete account</button>
+    </div>
+  </form>
+</div>
+
+<!-- ===================== ADMIN · MANAGE PROJECT ===================== -->
+<div class="scrim" id="adminProjectModal">
+  <div class="modal narrow" role="dialog" aria-modal="true" aria-labelledby="adminProjectTitle">
+    <div class="m-head">
+      <h3 id="adminProjectTitle" data-i18n="adminProjects.manageTitle">Manage project</h3>
+      <button class="m-x" type="button" data-admin-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
+    </div>
+    <div class="m-body">
+      <div class="adminproj-orphan" id="adminProjectOrphan" style="display:none"><span data-icon="alert-triangle"></span><span data-i18n="adminProjects.orphanWarning">This project has no owner. Assign one to restore normal access.</span></div>
+      <div class="login-error inline" id="adminProjectError" style="display:none"></div>
+      <h4 class="set-title" data-i18n="adminProjects.members">Members</h4>
+      <div class="adminproj-members" id="adminProjectMembers"></div>
+      <form class="adminproj-add" id="adminProjectAddForm">
+        <input id="adminProjectAddIdentifier" placeholder="Username or email" data-i18n-placeholder="adminProjects.memberIdentifier" spellcheck="false" autocomplete="off">
+        <select class="input" id="adminProjectAddRole" aria-label="Role" data-i18n-aria-label="adminProjects.role">
+          <option value="owner" data-i18n="adminProjects.roleOwner">Owner</option>
+          <option value="editor" data-i18n="adminProjects.roleEditor">Editor</option>
+          <option value="viewer" data-i18n="adminProjects.roleViewer">Viewer</option>
+        </select>
+        <button class="btn" type="submit" id="adminProjectAddBtn" data-i18n="adminProjects.addButton">Add</button>
+      </form>
+      <div class="adminproj-danger">
+        <div>
+          <button class="btn danger" type="button" id="adminProjectDeleteBtn"><span class="ic" data-icon="trash"></span><span data-i18n="adminProjects.deleteProject">Delete project</span></button>
+          <p class="hint" data-i18n="adminProjects.deleteProjectHint">Permanently deletes the project and all its files, history and outputs.</p>
+        </div>
+      </div>
+    </div>
+    <div class="m-foot">
+      <button class="btn cta" type="button" data-admin-close data-i18n="common.close">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== ADMIN · DELETE PROJECT ===================== -->
+<div class="scrim" id="adminProjectDeleteModal">
+  <form class="modal narrow" id="adminProjectDeleteForm" role="dialog" aria-modal="true" aria-labelledby="adminProjectDeleteTitle">
+    <div class="m-head">
+      <h3 id="adminProjectDeleteTitle" data-i18n="adminProjects.deleteProject">Delete project</h3>
+      <button class="m-x" type="button" data-admin-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
+    </div>
+    <div class="m-body">
+      <p class="confirm-txt" id="adminProjectDeleteText"></p>
+      <label class="label" id="adminProjectDeleteLabel" for="adminProjectDeleteConfirm"></label>
+      <input id="adminProjectDeleteConfirm" spellcheck="false" autocomplete="off">
+      <div class="login-error inline" id="adminProjectDeleteError" style="display:none"></div>
+    </div>
+    <div class="m-foot">
+      <button class="btn" type="button" data-admin-close data-i18n="common.cancel">Cancel</button>
+      <button class="btn danger" type="submit" id="adminProjectDeleteOk" data-i18n="adminProjects.deleteProjectButton">Delete project</button>
+    </div>
+  </form>
 </div>
 
 <!-- ===================== FILE HISTORY ===================== -->
@@ -920,6 +1094,7 @@
 <script src="iris-app.js"></script>
 <script src="iris-projects.js"></script>
 <script src="iris-admin.js"></script>
+<script src="iris-admin-projects.js"></script>
 <script src="iris-auth.js"></script>
 </body>
 </html>

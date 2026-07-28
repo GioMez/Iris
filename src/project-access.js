@@ -30,4 +30,21 @@ function leavesNoOwner(currentRole, nextRole, otherOwners) {
   return wasOwner && !willBeOwner && otherOwners === 0;
 }
 
-module.exports = { PROJECT_ROLES, CAPABILITIES, isProjectRole, roleHasCapability, leavesNoOwner };
+function normalizeMemberSearch(value) {
+  const query = String(value || "").trim().slice(0, 100);
+  return query.length >= 2 ? query : null;
+}
+
+function escapeLikePattern(value) {
+  return String(value).replace(/[\\%_]/g, "\\$&");
+}
+
+module.exports = {
+  PROJECT_ROLES,
+  CAPABILITIES,
+  isProjectRole,
+  roleHasCapability,
+  leavesNoOwner,
+  normalizeMemberSearch,
+  escapeLikePattern,
+};

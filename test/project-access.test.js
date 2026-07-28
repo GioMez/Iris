@@ -1,7 +1,13 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { isProjectRole, roleHasCapability, leavesNoOwner } = require("../src/project-access");
+const {
+  isProjectRole,
+  roleHasCapability,
+  leavesNoOwner,
+  normalizeMemberSearch,
+  escapeLikePattern,
+} = require("../src/project-access");
 
 test("the role vocabulary matches the schema", () => {
   assert.ok(isProjectRole("owner") && isProjectRole("editor") && isProjectRole("viewer"));
@@ -44,4 +50,14 @@ test("acting on a non-owner never triggers the invariant", () => {
   assert.equal(leavesNoOwner("viewer", "editor", 0), false);
   // Promoting someone to owner is always safe.
   assert.equal(leavesNoOwner("editor", "owner", 0), false);
+});
+
+test("member search requires two characters and has a bounded query", () => {
+  assert.equal(normalizeMemberSearch(" a "), null);
+  assert.equal(normalizeMemberSearch("  Alice@example.org  "), "Alice@example.org");
+  assert.equal(normalizeMemberSearch("x".repeat(120)).length, 100);
+});
+
+test("member search treats SQL LIKE metacharacters literally", () => {
+  assert.equal(escapeLikePattern("a%b_c\\d"), "a\\%b\\_c\\\\d");
 });

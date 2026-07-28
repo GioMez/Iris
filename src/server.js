@@ -14,7 +14,13 @@ const { recordAuditEvent } = require("./audit");
 const { collectProjectFiles, reconcileProjectFiles } = require("./project-files");
 const { hashContent, isVersionableText, contentChanged } = require("./versions");
 const { isSystemRole, isUserStatus, leavesNoActiveAdmin, normalizeSearch, userDeletionBlock } = require("./admin");
-const { isProjectRole, roleHasCapability, leavesNoOwner } = require("./project-access");
+const {
+  isProjectRole,
+  roleHasCapability,
+  leavesNoOwner,
+  normalizeMemberSearch,
+  escapeLikePattern,
+} = require("./project-access");
 const { projectStorageKey, resolveProjectStorageDir, relocateProjectStorage } = require("./project-storage");
 const { createZip, extractZip } = require("./zip");
 
@@ -1220,18 +1226,49 @@ async function listProjects(req, res, user) {
 // the same project cannot race past the last-owner check.
 const PROJECT_OWNER_LOCK = 4952;
 
-// First release: sharing targets accounts that already exist, found by exact
-// username or email. A missing user is reported so the owner can ask an admin to
-// provision the account; pending invitations for strangers are a later evolution.
-async function resolveMemberUser(identifier) {
+// Sharing targets accounts that already exist. The UI resolves a partial search
+// to an immutable user id; exact username/email remains available to admin flows.
+// Pending invitations for strangers are a later evolution.
+async function resolveMemberUser(identifier, userId = null, activeOnly = false) {
   const value = String(identifier || "").trim();
-  if (!value) throw requestError("MEMBER_IDENTIFIER_REQUIRED", 400);
+  if (!userId && !value) throw requestError("MEMBER_IDENTIFIER_REQUIRED", 400);
+  if (userId && !isUuid(userId)) throw requestError("MEMBER_USER_NOT_FOUND", 404);
+  const where = userId
+    ? `id = $1${activeOnly ? " AND status = 'active'" : ""}`
+    : `(LOWER(username) = LOWER($1) OR LOWER(email) = LOWER($1))${activeOnly ? " AND status = 'active'" : ""}`;
   const { rows } = await db.query(
-    "SELECT id, username, email, display_name FROM users WHERE LOWER(username) = LOWER($1) OR LOWER(email) = LOWER($1) LIMIT 1",
-    [value]
+    `SELECT id, username, email, display_name FROM users WHERE ${where} LIMIT 1`,
+    [userId || value]
   );
   if (!rows.length) throw requestError("MEMBER_USER_NOT_FOUND", 404);
   return rows[0];
+}
+
+async function searchProjectMembers(req, res, user, projectId, url) {
+  await authorizeProject(projectId, user, "share");
+  const query = normalizeMemberSearch(url.searchParams.get("q"));
+  if (!query) return json(res, 200, { users: [] });
+  const pattern = `%${escapeLikePattern(query.toLowerCase())}%`;
+  const { rows } = await db.query(
+    `SELECT u.id AS user_id, u.username, u.email, u.display_name
+     FROM users u
+     WHERE u.status = 'active'
+       AND (LOWER(u.username) LIKE $2 ESCAPE '\\' OR LOWER(u.email) LIKE $2 ESCAPE '\\')
+       AND NOT EXISTS (
+         SELECT 1 FROM project_members m WHERE m.project_id = $1 AND m.user_id = u.id
+       )
+     ORDER BY LOWER(COALESCE(u.display_name, u.username)), LOWER(u.username)
+     LIMIT 20`,
+    [projectId, pattern]
+  );
+  json(res, 200, {
+    users: rows.map((row) => ({
+      userId: row.user_id,
+      username: row.username,
+      name: row.display_name,
+      email: row.email,
+    })),
+  });
 }
 
 function memberView(row) {
@@ -1247,7 +1284,7 @@ function memberView(row) {
 }
 
 async function listProjectMembers(req, res, user, projectId) {
-  await authorizeProject(projectId, user, "read");
+  await authorizeProject(projectId, user, "share");
   const { rows } = await db.query(
     `SELECT m.user_id, m.role, m.invited_by, m.created_at, u.username, u.email, u.display_name
      FROM project_members m JOIN users u ON u.id = m.user_id
@@ -1260,9 +1297,9 @@ async function listProjectMembers(req, res, user, projectId) {
 async function addProjectMember(req, res, user, projectId) {
   await authorizeProject(projectId, user, "share");
   const body = await readBody(req);
-  const role = String(body.role || "");
+  const role = String((body && body.role) || "");
   if (!isProjectRole(role)) throw requestError("MEMBER_ROLE_INVALID", 400);
-  const target = await resolveMemberUser(body.identifier);
+  const target = await resolveMemberUser(body && body.identifier, body && body.userId, true);
   try {
     await db.query(
       "INSERT INTO project_members (project_id, user_id, role, invited_by) VALUES ($1, $2, $3, $4)",
@@ -1375,7 +1412,7 @@ async function getProject(req, res, user, id) {
   data.project.name = row.name;
   data.createdAt = toMillis(row.created_at);
   data.updatedAt = toMillis(row.updated_at);
-  json(res, 200, { id: row.id, ...data });
+  json(res, 200, { id: row.id, ...data, role: row.role });
 }
 
 // Reconciles the file-identity ledger against the tree about to be written and
@@ -2366,6 +2403,7 @@ const ADMIN_PROJECT_ROUTE = new RegExp(`^/api/admin/projects/(${UUID_PATTERN})$`
 const ADMIN_PROJECT_MEMBERS_ROUTE = new RegExp(`^/api/admin/projects/(${UUID_PATTERN})/members$`);
 const ADMIN_PROJECT_MEMBER_ROUTE = new RegExp(`^/api/admin/projects/(${UUID_PATTERN})/members/(${UUID_PATTERN})$`);
 const PROJECT_MEMBERS_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/members$`);
+const PROJECT_MEMBER_SEARCH_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/members/search$`);
 const PROJECT_MEMBER_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/members/(${UUID_PATTERN})$`);
 const PROJECT_CHECKPOINT_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/checkpoint$`);
 const FILE_VERSIONS_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/files/(${UUID_PATTERN})/versions$`);
@@ -3092,6 +3130,9 @@ async function handleApi(req, res, url) {
 
   const fileDownloadMatch = url.pathname.match(PROJECT_FILE_ROUTE);
   if (fileDownloadMatch && req.method === "GET") return downloadProjectFile(req, res, user, fileDownloadMatch[1], url);
+
+  const memberSearchMatch = url.pathname.match(PROJECT_MEMBER_SEARCH_ROUTE);
+  if (memberSearchMatch && req.method === "GET") return searchProjectMembers(req, res, user, memberSearchMatch[1], url);
 
   const memberMatch = url.pathname.match(PROJECT_MEMBER_ROUTE);
   if (memberMatch) {

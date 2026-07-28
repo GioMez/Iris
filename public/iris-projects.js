@@ -17,6 +17,7 @@
   const cache = new Map();
 
   const ROLE_KEY = { owner: "roleOwner", editor: "roleEditor", viewer: "roleViewer" };
+  const PROJECT_ROLES = ["owner", "editor", "viewer"];
   const roleLabel = (role) => t(`projects.${ROLE_KEY[role] || "roleOwner"}`);
 
   const api = (path, options) => window.IrisNet.request(path, options);
@@ -113,6 +114,15 @@
     const el = $("projChipName");
     if (el) el.textContent = name || "-";
     document.title = name ? `${name} · Iris` : "Iris";
+  }
+  function currentRole() {
+    const meta = metaOf(currentId);
+    const data = cache.get(currentId);
+    return (data && data.role) || (meta && meta.role) || null;
+  }
+  function syncShareTrigger(role = currentRole()) {
+    const button = $("btnShareProject");
+    if (button) button.hidden = !currentId || role !== "owner";
   }
   function setPickerLoading() {
     const grid = $("pkGrid"), empty = $("pkEmpty"), count = $("pkCount");
@@ -234,10 +244,13 @@
     try {
       const data = await loadData(id);
       if (!data || !window.IrisApp) return;
+      const m = metaOf(id);
+      data.role = data.role || (m && m.role) || "owner";
+      if (m) m.role = data.role;
       currentId = id;
       await window.IrisApp.load(data);
-      const m = metaOf(id);
       setProjName(m ? m.name : (data.project && data.project.name) || "");
+      syncShareTrigger(data.role);
       window.IrisMotion.openProject();
     } catch (err) {
       console.error(err);
@@ -252,6 +265,7 @@
     if (dirty) cache.delete(currentId);
     else await persistCurrent();
     currentId = null;
+    syncShareTrigger(null);
     await window.IrisI18n.useDefaultLanguage({ silent: true });
     setPickerLoading();
     await Promise.all([window.IrisMotion.closeProject(), renderPicker()]);
@@ -455,6 +469,7 @@
     cache.delete(id);
     if (id === currentId) {
       currentId = null;
+      syncShareTrigger(null);
       await window.IrisI18n.useDefaultLanguage({ silent: true });
       await window.IrisMotion.closeProject();
     }
@@ -536,6 +551,258 @@
     }
   }
 
+  /* ---------------- project sharing ---------------- */
+  let shareMembers = [];
+  let shareSearchResults = [];
+  let shareSelectedUser = null;
+  let shareBusy = false;
+  let shareSearchTimer = 0;
+  let shareSearchGeneration = 0;
+
+  function shareError(error) {
+    const node = $("projectShareError");
+    if (!error) {
+      node.textContent = "";
+      node.style.display = "none";
+      return;
+    }
+    node.textContent = window.IrisI18n.error(error, "sharing.loadFailed");
+    node.style.display = "";
+  }
+
+  function shareStatus(message) {
+    $("projectShareStatus").textContent = message || "";
+  }
+
+  function renderShareMembers() {
+    const host = $("projectShareMembers");
+    host.innerHTML = "";
+    if (!shareMembers.length) {
+      host.innerHTML = `<div class="project-share-empty">${esc(t("sharing.noMembers"))}</div>`;
+      return;
+    }
+    const ownerCount = shareMembers.filter((member) => member.role === "owner").length;
+    const currentUserId = document.documentElement.dataset.uid || "";
+    shareMembers.forEach((member) => {
+      const isSelf = member.userId === currentUserId;
+      const lastOwner = member.role === "owner" && ownerCount === 1;
+      const row = document.createElement("div");
+      row.className = "project-share-member";
+      const options = PROJECT_ROLES.map((role) =>
+        `<option value="${role}"${role === member.role ? " selected" : ""}>${esc(roleLabel(role))}</option>`
+      ).join("");
+      const lockedTitle = lastOwner ? ` title="${esc(t("api.PROJECT_LAST_OWNER"))}"` : "";
+      row.innerHTML =
+        `<span class="project-share-member-id"><b>${esc(member.name || member.username)}${isSelf ? ` <span class="project-share-you">${esc(t("sharing.you"))}</span>` : ""}</b>` +
+        `<span class="project-share-member-sub">@${esc(member.username)} · ${esc(member.email)}</span></span>` +
+        `<select class="input project-share-role" aria-label="${esc(t("sharing.role"))}"${lastOwner || shareBusy ? " disabled" : ""}${lockedTitle}>${options}</select>` +
+        `<button class="node-act danger project-share-remove" type="button" aria-label="${esc(t("sharing.removeAria", { name: member.username }))}" title="${esc(lastOwner ? t("api.PROJECT_LAST_OWNER") : t("sharing.removeAria", { name: member.username }))}"${lastOwner || shareBusy ? " disabled" : ""}>${ti("trash")}</button>`;
+      const select = row.querySelector(".project-share-role");
+      if (!lastOwner) select.addEventListener("change", () => { void changeSharedRole(member, select.value); });
+      const remove = row.querySelector(".project-share-remove");
+      if (!lastOwner) remove.addEventListener("click", () => { void removeSharedMember(member); });
+      host.appendChild(row);
+    });
+  }
+
+  function renderShareSearchResults() {
+    const host = $("projectShareResults");
+    host.innerHTML = "";
+    shareSearchResults.forEach((user) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `project-share-result${shareSelectedUser && shareSelectedUser.userId === user.userId ? " selected" : ""}`;
+      button.setAttribute("aria-pressed", shareSelectedUser && shareSelectedUser.userId === user.userId ? "true" : "false");
+      button.innerHTML = `<b>${esc(user.name || user.username)}</b><span>@${esc(user.username)} · ${esc(user.email)}</span>`;
+      button.addEventListener("click", () => {
+        shareSelectedUser = user;
+        $("projectShareSearchStatus").textContent = "";
+        renderShareSearchResults();
+        $("projectShareAdd").disabled = shareBusy;
+      });
+      host.appendChild(button);
+    });
+    $("projectShareAdd").disabled = shareBusy || !shareSelectedUser;
+  }
+
+  function clearShareSearch() {
+    clearTimeout(shareSearchTimer);
+    shareSearchGeneration += 1;
+    shareSearchResults = [];
+    shareSelectedUser = null;
+    $("projectShareSearch").value = "";
+    $("projectShareSearchStatus").textContent = "";
+    renderShareSearchResults();
+  }
+
+  async function searchShareUsers() {
+    const query = $("projectShareSearch").value.trim();
+    shareSelectedUser = null;
+    if (query.length < 2) {
+      shareSearchResults = [];
+      $("projectShareSearchStatus").textContent = "";
+      renderShareSearchResults();
+      return;
+    }
+    const generation = ++shareSearchGeneration;
+    $("projectShareSearchStatus").textContent = t("sharing.searching");
+    try {
+      const params = new URLSearchParams({ q: query });
+      const out = await api(`/api/projects/${currentId}/members/search?${params}`);
+      if (generation !== shareSearchGeneration) return;
+      shareSearchResults = Array.isArray(out.users) ? out.users : [];
+      shareError(null);
+      $("projectShareSearchStatus").textContent = shareSearchResults.length ? "" : t("sharing.noResults");
+      renderShareSearchResults();
+    } catch (error) {
+      if (generation !== shareSearchGeneration) return;
+      shareSearchResults = [];
+      renderShareSearchResults();
+      shareError(error);
+      $("projectShareSearchStatus").textContent = "";
+    }
+  }
+
+  function scheduleShareSearch() {
+    clearTimeout(shareSearchTimer);
+    shareSelectedUser = null;
+    $("projectShareAdd").disabled = true;
+    shareSearchTimer = setTimeout(() => { void searchShareUsers(); }, 250);
+  }
+
+  async function loadShareMembers() {
+    $("projectShareMembers").innerHTML = `<div class="project-share-empty">${esc(t("sharing.loadingMembers"))}</div>`;
+    try {
+      const out = await api(`/api/projects/${currentId}/members`);
+      shareMembers = Array.isArray(out.members) ? out.members : [];
+      shareError(null);
+      renderShareMembers();
+    } catch (error) {
+      shareMembers = [];
+      renderShareMembers();
+      shareError(error);
+    }
+  }
+
+  async function openProjectSharing() {
+    if (!currentId || currentRole() !== "owner") return;
+    const meta = metaOf(currentId);
+    $("projectShareSubtitle").textContent = t("sharing.subtitle", { name: meta ? meta.name : t("projects.thisProject") });
+    $("projectShareRole").value = "editor";
+    shareError(null);
+    shareStatus("");
+    clearShareSearch();
+    openModal("projectShareModal");
+    await loadShareMembers();
+    setTimeout(() => $("projectShareSearch").focus(), 40);
+  }
+
+  async function addSharedMember(event) {
+    event.preventDefault();
+    if (shareBusy || !shareSelectedUser || !currentId) {
+      if (!shareSelectedUser) $("projectShareSearchStatus").textContent = t("sharing.selectUser");
+      return;
+    }
+    shareBusy = true;
+    const button = $("projectShareAdd");
+    button.disabled = true;
+    button.classList.add("loading");
+    try {
+      const selected = shareSelectedUser;
+      await api(`/api/projects/${currentId}/members`, {
+        method: "POST",
+        body: JSON.stringify({ userId: selected.userId, role: $("projectShareRole").value }),
+      });
+      shareError(null);
+      shareStatus(t("sharing.memberAdded", { name: selected.name || selected.username }));
+      clearShareSearch();
+      await loadShareMembers();
+    } catch (error) {
+      shareError(error);
+    } finally {
+      shareBusy = false;
+      button.classList.remove("loading");
+      renderShareMembers();
+      renderShareSearchResults();
+    }
+  }
+
+  function updateCurrentRole(role) {
+    const meta = metaOf(currentId);
+    const data = cache.get(currentId);
+    if (meta) meta.role = role;
+    if (data) data.role = role;
+    if (window.IrisApp && window.IrisApp.setRole) window.IrisApp.setRole(role);
+    syncShareTrigger(role);
+  }
+
+  async function changeSharedRole(member, nextRole) {
+    if (shareBusy || nextRole === member.role || !currentId) return;
+    const isSelf = member.userId === document.documentElement.dataset.uid;
+    shareBusy = true;
+    renderShareMembers();
+    try {
+      if (isSelf && window.IrisApp.hasUnsavedChanges && window.IrisApp.hasUnsavedChanges()) {
+        const saved = await persistCurrent();
+        if (!saved) throw new Error(t("projects.operationFailed"));
+      }
+      await api(`/api/projects/${currentId}/members/${member.userId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ role: nextRole }),
+      });
+      shareError(null);
+      if (isSelf) {
+        updateCurrentRole(nextRole);
+        await closeModal("projectShareModal");
+      } else {
+        shareStatus(t("sharing.roleChanged"));
+        await loadShareMembers();
+      }
+    } catch (error) {
+      shareError(error);
+    } finally {
+      shareBusy = false;
+      renderShareMembers();
+    }
+  }
+
+  async function leaveSharedProject() {
+    const id = currentId;
+    await closeModal("projectShareModal");
+    index = index.filter((projectMeta) => projectMeta.id !== id);
+    cache.delete(id);
+    currentId = null;
+    syncShareTrigger(null);
+    await window.IrisI18n.useDefaultLanguage({ silent: true });
+    setPickerLoading();
+    await Promise.all([window.IrisMotion.closeProject(), renderPicker()]);
+  }
+
+  async function removeSharedMember(member) {
+    if (shareBusy || !currentId) return;
+    const isSelf = member.userId === document.documentElement.dataset.uid;
+    shareBusy = true;
+    renderShareMembers();
+    try {
+      if (isSelf && window.IrisApp.hasUnsavedChanges && window.IrisApp.hasUnsavedChanges()) {
+        const saved = await persistCurrent();
+        if (!saved) throw new Error(t("projects.operationFailed"));
+      }
+      await api(`/api/projects/${currentId}/members/${member.userId}`, { method: "DELETE" });
+      shareError(null);
+      if (isSelf) await leaveSharedProject();
+      else {
+        shareStatus(t("sharing.memberRemoved"));
+        await loadShareMembers();
+      }
+    } catch (error) {
+      shareError(error);
+    } finally {
+      shareBusy = false;
+      renderShareMembers();
+    }
+  }
+
   /* ---------------- public API ---------------- */
   async function showPicker() {
     const dirty = !!(currentId && window.IrisApp && window.IrisApp.hasUnsavedChanges && window.IrisApp.hasUnsavedChanges());
@@ -544,6 +811,7 @@
     else await persistCurrent();
     const hadProject = !!currentId;
     currentId = null;
+    syncShareTrigger(null);
     await window.IrisI18n.useDefaultLanguage({ silent: true });
     setPickerLoading();
     if (hadProject) await Promise.all([window.IrisMotion.closeProject(), renderPicker()]);
@@ -556,6 +824,7 @@
       unsavedDecision = null;
     }
     currentId = null;
+    syncShareTrigger(null);
     cache.clear();
     index = [];
     void window.IrisI18n.useDefaultLanguage({ silent: true });
@@ -577,6 +846,9 @@
 
     const back = $("btnCloseProject");
     if (back) back.addEventListener("click", () => closeCurrent());
+    $("btnShareProject").addEventListener("click", () => { void openProjectSharing(); });
+    $("projectShareForm").addEventListener("submit", (event) => { void addSharedMember(event); });
+    $("projectShareSearch").addEventListener("input", scheduleShareSearch);
 
     $("projModalOk").addEventListener("click", () => confirmProjModal());
     $("projNameInput").addEventListener("input", () => $("projNameInput").classList.remove("nomatch"));
@@ -612,6 +884,12 @@
       else if (projTargetId) askRename(projTargetId);
     }
     if (delTargetId && $("projDelModal").classList.contains("on")) askDelete(delTargetId);
+    if ($("projectShareModal").classList.contains("on")) {
+      const meta = metaOf(currentId);
+      $("projectShareSubtitle").textContent = t("sharing.subtitle", { name: meta ? meta.name : t("projects.thisProject") });
+      renderShareMembers();
+      renderShareSearchResults();
+    }
   });
   window.IrisI18n.ready.then(wire);
 })();

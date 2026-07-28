@@ -122,6 +122,8 @@ button{font-family:inherit;color:inherit}
 .tbar-scroll::-webkit-scrollbar{height:0;display:none}
 .tbar-scroll>*{flex:0 0 auto}
 .tbar-right{flex:0 0 auto;display:flex;align-items:center;gap:6px;padding-left:4px}
+.project-share-trigger{border-color:var(--border);color:var(--txt-dim)}
+.project-share-trigger[hidden]{display:none}
 
 /* The document workflow stays in one predictable place: save → compile → output. */
 .workflow-actions{display:flex;align-items:center;gap:5px;flex:0 0 auto;padding:3px;border:1px solid var(--border);border-radius:10px;background:#ffffff05}
@@ -795,6 +797,79 @@ html.iris-inadmin[data-role="admin"] .admin-screen{display:block}
 .admin-creds-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 13px}
 .admin-creds-row+.admin-creds-row{border-top:1px solid var(--border)}
 .admin-creds-row code{font-family:var(--font-code);font-size:13px;color:var(--txt);user-select:all}
+
+/* ===================== Admin · projects ===================== */
+.admin-headleft{display:flex;align-items:center;gap:16px;min-width:0}
+.admin-switch{display:inline-flex;flex:0 0 auto;padding:3px;border:1px solid var(--border);border-radius:10px;background:#ffffff05;gap:3px}
+.admin-switch button{height:30px;padding:0 14px;border:0;border-radius:7px;background:transparent;color:var(--txt-mut);font:inherit;font-size:13px;cursor:pointer;transition:.12s}
+.admin-switch button:hover{color:var(--txt)}
+.admin-switch button.on{background:var(--selection-soft);box-shadow:inset 0 0 0 1px var(--selection-line);color:var(--selection)}
+.adminproj-name{font-weight:500;color:var(--txt)}
+.adminproj-chips{display:flex;flex-wrap:wrap;gap:5px}
+.adminproj-chip{display:inline-flex;align-items:center;gap:5px;padding:2px 9px;border-radius:999px;font-size:11px;border:1px solid var(--border);background:var(--panel-2);color:var(--txt-mut)}
+.adminproj-chip b{color:var(--txt);font-weight:600}
+.adminproj-chip.role-owner{background:rgba(125,207,255,.1);border-color:rgba(125,207,255,.22);color:var(--accent)}
+.adminproj-chip.role-editor{background:rgba(187,154,247,.1);border-color:rgba(187,154,247,.22);color:var(--category-music)}
+.adminproj-nomembers{color:var(--semantic-warning);font-size:12px}
+.admin-badge.adminproj-badge-orphan{background:rgba(224,175,104,.14);color:var(--semantic-warning);border-color:rgba(224,175,104,.28)}
+.adminproj-orphan-row td{background:rgba(224,175,104,.05)}
+.adminproj-orphan{display:flex;align-items:center;gap:9px;padding:10px 12px;margin-bottom:14px;border-radius:10px;
+  background:rgba(224,175,104,.1);border:1px solid rgba(224,175,104,.28);color:var(--semantic-warning);font-size:12.5px}
+.adminproj-orphan [data-icon]{flex:0 0 auto}
+.adminproj-orphan [data-icon] .ti{width:17px;height:17px}
+.adminproj-members{display:flex;flex-direction:column;gap:8px;margin:10px 0 16px}
+.adminproj-member{display:grid;grid-template-columns:minmax(0,1fr) 118px 34px;align-items:center;gap:9px}
+.adminproj-member-id{display:flex;flex-direction:column;min-width:0}
+.adminproj-member-id b{font-size:13px;color:var(--txt);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.adminproj-member-sub{font-size:11px;color:var(--txt-mut);font-family:var(--font-code);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.adminproj-role{height:34px}
+.adminproj-remove{width:34px;height:34px}
+.adminproj-add{display:grid;grid-template-columns:minmax(0,1fr) 118px auto;gap:9px;align-items:center;padding-top:14px;border-top:1px solid var(--border)}
+.adminproj-add input{width:100%;height:38px;padding:0 12px;border-radius:9px;border:1px solid var(--border);background:var(--panel-2);color:var(--txt);font-family:var(--font-code);font-size:12.5px}
+.adminproj-add input:focus{outline:none;border-color:var(--accent)}
+.adminproj-danger{margin-top:16px;padding-top:14px;border-top:1px solid var(--border)}
+.adminproj-danger .hint{margin-top:8px}
+.admin-sole-owner{margin:12px 0 16px;padding:12px 13px;border-radius:10px;background:rgba(224,175,104,.1);border:1px solid rgba(224,175,104,.28)}
+.admin-sole-owner-txt{margin:0 0 8px;font-size:12.5px;color:var(--semantic-warning)}
+.admin-sole-owner-list{margin:0 0 10px;padding-left:18px;color:var(--txt);font-size:13px;display:flex;flex-direction:column;gap:2px}
+
+/* ===================== Project sharing ===================== */
+.project-share-modal{width:min(660px,96vw);max-height:min(760px,92vh)}
+.project-share-modal .m-head>div{min-width:0}
+.project-share-modal .m-head .sub{margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.project-share-members{display:flex;flex-direction:column;gap:8px;margin:10px 0 20px}
+.project-share-member{display:grid;grid-template-columns:minmax(0,1fr) 126px 36px;align-items:center;gap:9px;padding:8px;border:1px solid var(--border);border-radius:10px;background:var(--panel-2)}
+.project-share-member-id{display:flex;flex-direction:column;min-width:0}
+.project-share-member-id b{font-size:13px;color:var(--txt);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.project-share-member-sub{font:11px var(--font-code);color:var(--txt-mut);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.project-share-you{color:var(--accent);font:600 10px var(--font-ui);text-transform:uppercase;letter-spacing:.04em}
+.project-share-role{height:36px}
+.project-share-remove{width:36px;height:36px}
+.project-share-empty{padding:12px;border:1px dashed var(--border);border-radius:10px;color:var(--txt-mut);font-size:12.5px}
+.project-share-add{padding-top:18px;border-top:1px solid var(--border)}
+.project-share-add>.set-title{margin-bottom:12px}
+.project-share-add>.input{width:100%}
+.project-share-search-status{min-height:18px;margin-top:6px;color:var(--txt-mut);font-size:11.5px}
+.project-share-results{display:flex;flex-direction:column;gap:6px;max-height:190px;overflow:auto;margin:2px 0 10px}
+.project-share-results:empty{display:none}
+.project-share-result{width:100%;display:flex;flex-direction:column;align-items:flex-start;gap:2px;padding:9px 11px;border:1px solid var(--border);border-radius:9px;background:var(--panel-2);color:var(--txt);text-align:left;cursor:pointer}
+.project-share-result:hover{border-color:var(--accent);background:rgba(125,207,255,.06)}
+.project-share-result.selected{border-color:var(--accent);background:var(--selection-soft);box-shadow:inset 0 0 0 1px var(--selection-line)}
+.project-share-result b{font-size:13px}
+.project-share-result span{font:11px var(--font-code);color:var(--txt-mut)}
+.project-share-add-actions{display:grid;grid-template-columns:160px auto;justify-content:end;gap:9px;margin-top:9px}
+.project-share-status{min-height:18px;margin-top:10px;color:var(--semantic-success);font-size:12px}
+@media(max-width:640px){
+  .admin-headleft{gap:10px}
+  .adminproj-member{grid-template-columns:minmax(0,1fr) 104px 34px}
+  .adminproj-add{grid-template-columns:1fr 118px;grid-auto-rows:auto}
+  .adminproj-add button{grid-column:1/-1}
+  .project-share-member{grid-template-columns:minmax(0,1fr) 36px}
+  .project-share-member-id{grid-column:1/-1}
+  .project-share-role{grid-column:1}
+  .project-share-remove{grid-column:2}
+  .project-share-add-actions{grid-template-columns:1fr 1fr}
+}
 .visually-hidden{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 
 /* ===================== File history · versions ===================== */

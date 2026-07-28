@@ -2687,6 +2687,11 @@
     },
     hasUnsavedChanges() { return state.dirtyFiles.size > 0; },
     setName(name) { project.name = name; },
+    setRole(role) {
+      state.role = ["owner", "editor", "viewer"].includes(role) ? role : "viewer";
+      applyRoleGate();
+      if (isReadOnly()) toast(t("projects.readOnlyNotice"));
+    },
   };
 
   /* ---------------- boot ---------------- */
