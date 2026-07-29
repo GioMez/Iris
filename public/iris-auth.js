@@ -35,6 +35,9 @@
     const pa = $("pkAvatar"), pn = $("pkName");
     if (pa) pa.textContent = ini;
     if (pn) pn.textContent = u.name;
+    const aa = $("adminAvatar"), an = $("adminName");
+    if (aa) aa.textContent = ini;
+    if (an) an.textContent = u.name;
     // Only local accounts manage their own credentials/handle here; for an SSO
     // account (including one migrated to SSO) both are hidden — the password
     // lives at the IdP and changing the Iris username is pointless.
@@ -62,8 +65,7 @@
   function showApp(u) {
     applyUserUI(u);
     document.documentElement.classList.add("iris-authed");
-    const app = document.querySelector(".app");
-    if (app) app.inert = false;
+    window.IrisMotion.setActiveSurface("picker");
     if (window.IrisProjects) window.IrisProjects.showPicker();
     // Role is now stamped; let the admin console honour a direct #admin link.
     if (window.IrisAdmin) window.IrisAdmin.boot();
@@ -78,8 +80,9 @@
     delete document.documentElement.dataset.role;
     delete document.documentElement.dataset.uid;
     currentUser = null;
-    const app = document.querySelector(".app");
-    if (app) app.inert = true;
+    closeUserMenu();
+    window.IrisMotion.setActiveSurface("login");
+    document.title = "Iris";
     $("loginUser").value = "";
     $("loginPass").value = "";
     hideError();
@@ -90,21 +93,29 @@
     const e = $("loginError");
     e.textContent = msg;
     e.style.display = "flex";
+    $("loginUser").setAttribute("aria-invalid", "true");
+    $("loginPass").setAttribute("aria-invalid", "true");
     const card = $("loginCard");
     card.classList.remove("shake");
     void card.offsetWidth;
     card.classList.add("shake");
   }
-  const hideError = () => { $("loginError").style.display = "none"; };
+  const hideError = () => {
+    $("loginError").style.display = "none";
+    $("loginUser").removeAttribute("aria-invalid");
+    $("loginPass").removeAttribute("aria-invalid");
+  };
 
-  function passwordError(msg) {
+  function passwordError(msg, fields = []) {
     const e = $("passwordError");
     e.textContent = msg;
     e.style.display = "flex";
+    fields.forEach((id) => $(id).setAttribute("aria-invalid", "true"));
   }
   function hidePasswordError() {
     $("passwordError").style.display = "none";
     $("passwordHint").textContent = "";
+    ["passwordCurrent", "passwordNew", "passwordConfirm"].forEach((id) => $(id).removeAttribute("aria-invalid"));
   }
   async function closePasswordModal() {
     if (passwordForced) return; // mandatory change: not dismissable
@@ -184,6 +195,7 @@
   }
 
   async function doLogout() {
+    if (window.IrisApp && window.IrisApp.waitForPersistence) await window.IrisApp.waitForPersistence();
     if (window.IrisProjects) await window.IrisProjects.persistCurrent();
     try { await api("/api/auth/logout", { method: "POST", body: "{}" }); } catch (e) {}
     showLogin();
@@ -194,16 +206,16 @@
     const newPassword = $("passwordNew").value;
     const confirmPassword = $("passwordConfirm").value;
     if (!currentPassword || !newPassword || !confirmPassword) {
-      passwordError(t("password.allFields"));
+      passwordError(t("password.allFields"), ["passwordCurrent", "passwordNew", "passwordConfirm"]);
       return;
     }
     if (newPassword.length < 10) {
-      passwordError(t("password.tooShort"));
+      passwordError(t("password.tooShort"), ["passwordNew"]);
       $("passwordNew").focus();
       return;
     }
     if (newPassword !== confirmPassword) {
-      passwordError(t("password.mismatch"));
+      passwordError(t("password.mismatch"), ["passwordConfirm"]);
       $("passwordConfirm").focus();
       return;
     }
@@ -228,19 +240,25 @@
       $("passwordHint").textContent = t("password.updated");
       setTimeout(closePasswordModal, 650);
     } catch (err) {
-      passwordError(window.IrisI18n.error(err, "password.updateFailed"));
+      passwordError(window.IrisI18n.error(err, "password.updateFailed"), ["passwordCurrent"]);
     } finally {
       btn.disabled = false;
       btn.classList.remove("loading");
     }
   }
 
-  function usernameError(msg) {
+  function usernameError(msg, field = "usernameNew") {
     const e = $("usernameError");
     e.textContent = msg;
     e.style.display = "flex";
+    $(field).setAttribute("aria-invalid", "true");
   }
-  function hideUsernameError() { $("usernameError").style.display = "none"; $("usernameHint").textContent = ""; }
+  function hideUsernameError() {
+    $("usernameError").style.display = "none";
+    $("usernameHint").textContent = "";
+    $("usernameNew").removeAttribute("aria-invalid");
+    $("usernameCurrent").removeAttribute("aria-invalid");
+  }
   async function closeUsernameModal() {
     await closeDialog("usernameModal");
     $("usernameNew").value = ""; $("usernameCurrent").value = "";
@@ -264,7 +282,7 @@
 
   async function closeDefaultLanguageModal() {
     await closeDialog("defaultLanguageModal");
-    const trigger = document.documentElement.classList.contains("iris-inproject") ? $("userChip") : $("pkAccount");
+    const trigger = activeAccountTrigger();
     if (trigger) trigger.focus();
   }
   async function changeUsername() {
@@ -274,7 +292,7 @@
     if (username === currentUser.username) { usernameError(t("account.usernameUnchanged")); return; }
     // Local accounts must re-enter their password; catch it here so the user is
     // told before a round-trip instead of the modal closing on a no-op.
-    if (currentUser.canChangePassword && !currentPassword) { usernameError(t("account.reauthHint")); return; }
+    if (currentUser.canChangePassword && !currentPassword) { usernameError(t("account.reauthHint"), "usernameCurrent"); return; }
     const btn = $("usernameSave");
     btn.disabled = true;
     btn.classList.add("loading");
@@ -296,21 +314,32 @@
 
   // The account menu is shared by the in-project chip and the home (picker)
   // account block, so it can be opened from either screen.
-  const USER_MENU_TRIGGERS = ["userChip", "pkAccount"];
-  function closeUserMenu() {
+  const USER_MENU_TRIGGERS = ["userChip", "pkAccount", "adminAccount"];
+  let userMenuTrigger = null;
+  function activeAccountTrigger() {
+    if (document.documentElement.classList.contains("iris-inadmin")) return $("adminAccount");
+    if (document.documentElement.classList.contains("iris-inproject")) return $("userChip");
+    return $("pkAccount");
+  }
+  function closeUserMenu(restoreFocus = false) {
     $("userMenu").classList.remove("on");
     USER_MENU_TRIGGERS.forEach((id) => { const el = $(id); if (el) el.setAttribute("aria-expanded", "false"); });
+    if (restoreFocus && userMenuTrigger && userMenuTrigger.isConnected) userMenuTrigger.focus();
   }
   function toggleUserMenu(trigger) {
     const um = $("userMenu");
     const open = !um.classList.contains("on");
     if (open) {
+      userMenuTrigger = trigger;
       const r = trigger.getBoundingClientRect();
       um.style.left = Math.max(8, r.right - 232) + "px";
       um.style.top = r.bottom + 6 + "px";
     }
     um.classList.toggle("on", open);
     USER_MENU_TRIGGERS.forEach((id) => { const el = $(id); if (el) el.setAttribute("aria-expanded", open && el === trigger ? "true" : "false"); });
+    if (open) requestAnimationFrame(() => {
+      Array.from(um.querySelectorAll('[role="menuitem"]')).find((item) => item.getClientRects().length > 0)?.focus();
+    });
   }
 
   function wire() {
@@ -330,13 +359,36 @@
     $("userChip").addEventListener("click", (e) => { e.stopPropagation(); toggleUserMenu($("userChip")); });
     const pkAccount = $("pkAccount");
     if (pkAccount) pkAccount.addEventListener("click", (e) => { e.stopPropagation(); toggleUserMenu(pkAccount); });
+    const adminAccount = $("adminAccount");
+    if (adminAccount) adminAccount.addEventListener("click", (e) => { e.stopPropagation(); toggleUserMenu(adminAccount); });
     um.addEventListener("click", (e) => e.stopPropagation());
-    document.addEventListener("click", closeUserMenu);
+    document.addEventListener("click", () => closeUserMenu());
 
-    $("miLanguage").addEventListener("click", () => { closeUserMenu(); openDefaultLanguageModal(); });
-    $("miUsername").addEventListener("click", () => { closeUserMenu(); openUsernameModal(); });
-    $("miPassword").addEventListener("click", () => { closeUserMenu(); openPasswordModal(); });
-    $("miLogout").addEventListener("click", () => { closeUserMenu(); openDialog("logoutModal"); });
+    um.addEventListener("keydown", (event) => {
+      const items = Array.from(um.querySelectorAll('[role="menuitem"]')).filter((item) => item.getClientRects().length > 0);
+      if (!items.length) return;
+      const index = items.indexOf(document.activeElement);
+      let next = index;
+      if (event.key === "ArrowDown") next = (index + 1 + items.length) % items.length;
+      else if (event.key === "ArrowUp") next = (index - 1 + items.length) % items.length;
+      else if (event.key === "Home") next = 0;
+      else if (event.key === "End") next = items.length - 1;
+      else if (event.key === "Escape") {
+        event.preventDefault(); event.stopImmediatePropagation(); closeUserMenu(true); return;
+      }
+      else if (event.key === "Tab") {
+        event.preventDefault(); event.stopImmediatePropagation(); closeUserMenu(true); return;
+      }
+      else return;
+      event.preventDefault();
+      event.stopPropagation();
+      items[next].focus();
+    });
+
+    $("miLanguage").addEventListener("click", () => { closeUserMenu(true); openDefaultLanguageModal(); });
+    $("miUsername").addEventListener("click", () => { closeUserMenu(true); openUsernameModal(); });
+    $("miPassword").addEventListener("click", () => { closeUserMenu(true); openPasswordModal(); });
+    $("miLogout").addEventListener("click", () => { closeUserMenu(true); openDialog("logoutModal"); });
     $("logoutConfirm").addEventListener("click", async () => {
       await closeDialog("logoutModal");
       await doLogout();
@@ -351,10 +403,15 @@
       if (event.target === $("defaultLanguageModal")) void closeDefaultLanguageModal();
     });
     document.addEventListener("keydown", (event) => {
-      if (event.key === "Escape" && $("defaultLanguageModal").classList.contains("on")) {
-        void closeDefaultLanguageModal();
+      if (event.key !== "Escape") return;
+      if ($("defaultLanguageModal").classList.contains("on")) {
+        event.preventDefault(); event.stopImmediatePropagation(); void closeDefaultLanguageModal();
+      } else if ($("passwordModal").classList.contains("on")) {
+        event.preventDefault(); event.stopImmediatePropagation(); void closePasswordModal();
+      } else if ($("usernameModal").classList.contains("on")) {
+        event.preventDefault(); event.stopImmediatePropagation(); void closeUsernameModal();
       }
-    });
+    }, true);
     $("passwordSave").addEventListener("click", changePassword);
     ["passwordCurrent", "passwordNew", "passwordConfirm"].forEach((id) => {
       $(id).addEventListener("input", hidePasswordError);

@@ -9,9 +9,11 @@ const en = JSON.parse(fs.readFileSync(path.join(publicDir, "locales/en/translati
 const it = JSON.parse(fs.readFileSync(path.join(publicDir, "locales/it/translation.json"), "utf8"));
 const html = fs.readFileSync(path.join(publicDir, "Iris.html"), "utf8");
 const runtime = fs.readFileSync(path.join(publicDir, "iris-i18n.js"), "utf8");
+const app = fs.readFileSync(path.join(publicDir, "iris-app.js"), "utf8");
 const server = fs.readFileSync(path.join(root, "src/server.js"), "utf8");
-const uiScripts = ["iris-app.js", "iris-projects.js", "iris-auth.js", "iris-lilypond.js"]
+const uiScripts = ["iris-projects.js", "iris-builds.js", "iris-auth.js", "iris-lilypond.js"]
   .map((file) => fs.readFileSync(path.join(publicDir, file), "utf8"));
+uiScripts.unshift(app);
 
 function flatten(value, prefix = "", output = {}) {
   Object.entries(value).forEach(([key, child]) => {
@@ -34,7 +36,7 @@ test("English is the default locale and the i18n runtime loads before UI modules
   assert.match(runtime, /const DEFAULT_LANGUAGE = "en"/);
   const i18nIndex = html.indexOf('<script src="iris-i18n.js">');
   assert.ok(i18nIndex > html.indexOf('<script src="iris-icons.js">'));
-  ["iris-app.js", "iris-projects.js", "iris-auth.js"].forEach((script) => {
+  ["iris-app.js", "iris-projects.js", "iris-builds.js", "iris-auth.js"].forEach((script) => {
     assert.ok(i18nIndex < html.indexOf(`<script src="${script}">`), `${script} must load after translations`);
   });
 });
@@ -95,4 +97,9 @@ test("default and project language preferences remain separate", () => {
   assert.match(runtime, /function setDefaultLanguage\(nextLanguage/);
   assert.match(runtime, /function useDefaultLanguage\(options/);
   assert.match(runtime, /document\.documentElement\.lang/);
+});
+
+test("stale locale loads can be discarded before they change the interface", () => {
+  assert.match(runtime, /typeof options\.isCurrent === "function" && !options\.isCurrent\(\)/);
+  assert.match(app, /isCurrent: \(\) => generation === state\.projectLoadGeneration/);
 });

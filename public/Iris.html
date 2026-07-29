@@ -39,10 +39,11 @@
       <button class="workflow-btn workflow-snapshot" id="btnSnapshot" type="button" title="Snapshot" aria-label="Create a snapshot in the file history" data-i18n-title="toolbar.snapshotTitle" data-i18n-aria-label="toolbar.snapshotAria"><span class="ic" data-icon="camera"></span><span class="workflow-label" data-i18n="toolbar.snapshot">Snapshot</span></button>
       <button class="workflow-compile" id="btnCompile" type="button" title="Compile (Ctrl/Cmd+Enter)" aria-label="Compile the project" data-i18n-title="toolbar.compileTitle" data-i18n-aria-label="toolbar.compileAria" aria-keyshortcuts="Control+Enter Meta+Enter"><span class="ic" data-icon="player-play"></span><span class="workflow-label" data-i18n="toolbar.compile">Compile</span></button>
       <button class="workflow-btn workflow-output" id="dlBtn" type="button" title="Download output" aria-label="Download the compiled output" data-i18n-title="toolbar.outputTitle" data-i18n-aria-label="toolbar.outputAria"><span class="ic" data-icon="download"></span><span class="dl-label workflow-label" data-i18n="toolbar.output">Output</span></button>
+      <button class="workflow-btn workflow-builds" id="btnBuilds" type="button" title="Compilation history" aria-label="Open compilation history" data-i18n-title="toolbar.buildsTitle" data-i18n-aria-label="toolbar.buildsAria"><span class="ic" data-icon="history"></span><span class="workflow-label" data-i18n="toolbar.builds">Builds</span></button>
     </div>
     <div class="tbar-right">
       <button class="tbtn icononly project-share-trigger" id="btnShareProject" type="button" title="Share project" aria-label="Share project" data-i18n-title="sharing.toolbarTitle" data-i18n-aria-label="sharing.toolbarAria" hidden><span class="ic" data-icon="users"></span></button>
-      <button class="userchip" id="userChip" title="Account" data-i18n-title="common.account" aria-haspopup="menu" aria-expanded="false" aria-controls="userMenu">
+      <button class="userchip" id="userChip" title="Account" aria-label="Account" data-i18n-title="common.account" data-i18n-aria-label="common.account" aria-haspopup="menu" aria-expanded="false" aria-controls="userMenu">
         <span class="avatar" id="userAvatar">–</span>
         <span class="uname" id="userName">–</span>
         <span class="chev" data-icon="chevron-down"></span>
@@ -223,12 +224,12 @@
         </div>
       </div>
       <div class="field">
-        <span class="label" data-i18n="attach.destination">Destination folder</span>
+        <label class="label" for="attachDest" data-i18n="attach.destination">Destination folder</label>
         <select class="select" id="attachDest"></select>
         <div class="hint"><span data-icon="info-circle"></span><span data-i18n="attach.destinationHint">Images usually belong in figure/.</span></div>
       </div>
       <div class="field">
-        <span class="label" data-i18n="attach.fileName">File name</span>
+        <label class="label" for="attachRename" data-i18n="attach.fileName">File name</label>
         <input class="input" id="attachRename" placeholder="file-name.png" data-i18n-placeholder="attach.fileNamePlaceholder">
       </div>
     </div>
@@ -307,17 +308,17 @@
           <code class="binpath" id="projectTypeLabel">LaTeX</code>
         </div>
         <div class="field">
-          <span class="label" id="compilerPathLabel" data-i18n="settings.latexBinaryPath">LaTeX binaries path</span>
+          <label class="label" id="compilerPathLabel" for="texPath" data-i18n="settings.latexBinaryPath">LaTeX binaries path</label>
           <input class="input" id="texPath" placeholder="optional, e.g. /opt/homebrew/bin" data-i18n-placeholder="common.optionalExample" spellcheck="false" autocomplete="off">
           <div class="hint" id="texPathHint"><span data-icon="info-circle"></span><span>When empty, the backend PATH is used.</span></div>
         </div>
         <div class="field" id="lilypondArgsField" style="display:none">
-          <span class="label" data-i18n="settings.lilypondArgs">LilyPond arguments</span>
+          <label class="label" for="lilypondArgs" data-i18n="settings.lilypondArgs">LilyPond arguments</label>
           <input class="input" id="lilypondArgs" placeholder='e.g. --loglevel=WARNING -I "music includes"' data-i18n-placeholder="settings.lilypondArgsPlaceholder" spellcheck="false" autocomplete="off" maxlength="2000">
           <div class="hint"><span data-icon="info-circle"></span><span data-i18n="settings.lilypondArgsHint">Inserted between lilypond and the .ly file; quoted values are supported. Iris still manages the destination.</span></div>
         </div>
         <div class="field" id="lilypondFormatField" style="display:none">
-          <span class="label" data-i18n="settings.lilypondOutput">LilyPond output format</span>
+          <label class="label" for="lilypondFormat" data-i18n="settings.lilypondOutput">LilyPond output format</label>
           <select class="select" id="lilypondFormat">
             <option value="pdf" data-i18n="settings.formatPdf">PDF — typeset document</option>
             <option value="png" data-i18n="settings.formatPng">PNG — one image per page</option>
@@ -333,7 +334,7 @@
         </div>
         <div id="compilePipelineControls">
           <div class="field" style="margin-top:18px">
-            <span class="label" data-i18n="settings.pipeline">Compilation pipeline</span>
+            <label class="label" for="compilePreset" data-i18n="settings.pipeline">Compilation pipeline</label>
             <select class="select" id="compilePreset">
               <option value="quick" data-i18n="settings.presetQuick">Quick</option>
               <option value="bibtex" data-i18n="settings.presetBibtex">BibTeX bibliography</option>
@@ -379,18 +380,18 @@
     </div>
     <div class="m-body">
       <div class="field">
-        <span class="label" data-i18n="tree.type">Type</span>
-        <div class="typepick" id="newItemType">
+        <span class="label" id="newItemTypeLabel" data-i18n="tree.type">Type</span>
+        <div class="typepick" id="newItemType" role="group" aria-labelledby="newItemTypeLabel">
           <button class="typepick-btn on" type="button" data-new-type="file" data-i18n="tree.fileTex">.tex file</button>
           <button class="typepick-btn" type="button" data-new-type="folder" data-i18n="tree.folder">Folder</button>
         </div>
       </div>
       <div class="field">
-        <span class="label" data-i18n="tree.createIn">Create in</span>
+        <label class="label" for="newItemDest" data-i18n="tree.createIn">Create in</label>
         <select class="select" id="newItemDest"></select>
       </div>
       <div class="field">
-        <span class="label" id="newItemLabel" data-i18n="tree.fileName">File name</span>
+        <label class="label" id="newItemLabel" for="newItemInput" data-i18n="tree.fileName">File name</label>
         <input class="input" id="newItemInput" spellcheck="false" autocomplete="off" maxlength="120">
         <div class="hint" id="newItemHint" data-i18n="tree.destinationHint">Choose the destination folder.</div>
       </div>
@@ -410,7 +411,7 @@
     </div>
     <div class="m-body">
       <div class="field">
-        <span class="label" id="treeRenameLabel" data-i18n="tree.fileName">File name</span>
+        <label class="label" id="treeRenameLabel" for="treeRenameInput" data-i18n="tree.fileName">File name</label>
         <input class="input" id="treeRenameInput" spellcheck="false" autocomplete="off" maxlength="120">
         <div class="hint" id="treeRenameHint" data-i18n="tree.nameHint">Use a name without folder separators.</div>
       </div>
@@ -463,19 +464,19 @@
       <button class="m-x" data-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
-      <div class="login-error inline" id="passwordError" data-i18n="password.invalid">Invalid password.</div>
+      <div class="login-error inline" id="passwordError" role="alert" data-i18n="password.invalid">Invalid password.</div>
       <div class="field">
-        <span class="label" data-i18n="password.current">Current password</span>
-        <input class="input" id="passwordCurrent" type="password" autocomplete="current-password">
+        <label class="label" for="passwordCurrent" data-i18n="password.current">Current password</label>
+        <input class="input" id="passwordCurrent" type="password" autocomplete="current-password" aria-describedby="passwordError">
       </div>
       <div class="field">
-        <span class="label" data-i18n="password.new">New password</span>
-        <input class="input" id="passwordNew" type="password" autocomplete="new-password">
-        <div class="hint"><span data-icon="info-circle"></span><span data-i18n="password.minimum">At least 10 characters.</span></div>
+        <label class="label" for="passwordNew" data-i18n="password.new">New password</label>
+        <input class="input" id="passwordNew" type="password" autocomplete="new-password" aria-describedby="passwordMinimum passwordError">
+        <div class="hint" id="passwordMinimum"><span data-icon="info-circle"></span><span data-i18n="password.minimum">At least 10 characters.</span></div>
       </div>
       <div class="field">
-        <span class="label" data-i18n="password.confirm">Confirm new password</span>
-        <input class="input" id="passwordConfirm" type="password" autocomplete="new-password">
+        <label class="label" for="passwordConfirm" data-i18n="password.confirm">Confirm new password</label>
+        <input class="input" id="passwordConfirm" type="password" autocomplete="new-password" aria-describedby="passwordError">
       </div>
       <div class="hint" id="passwordHint"></div>
     </div>
@@ -493,16 +494,16 @@
       <button class="m-x" data-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
-      <div class="login-error inline" id="usernameError"></div>
+      <div class="login-error inline" id="usernameError" role="alert"></div>
       <div class="field">
-        <span class="label" data-i18n="admin.username">Username</span>
-        <input class="input" id="usernameNew" spellcheck="false" autocomplete="off">
-        <div class="hint"><span data-icon="info-circle"></span><span data-i18n="admin.usernameHint">Lowercase, at least 3 characters.</span></div>
+        <label class="label" for="usernameNew" data-i18n="admin.username">Username</label>
+        <input class="input" id="usernameNew" spellcheck="false" autocomplete="off" aria-describedby="usernameRequirement usernameError">
+        <div class="hint" id="usernameRequirement"><span data-icon="info-circle"></span><span data-i18n="admin.usernameHint">Lowercase, at least 3 characters.</span></div>
       </div>
       <div class="field" id="usernameReauthRow">
-        <span class="label" data-i18n="password.current">Current password</span>
-        <input class="input" id="usernameCurrent" type="password" autocomplete="current-password">
-        <div class="hint"><span data-icon="info-circle"></span><span data-i18n="account.reauthHint">Enter your current password to confirm the change.</span></div>
+        <label class="label" for="usernameCurrent" data-i18n="password.current">Current password</label>
+        <input class="input" id="usernameCurrent" type="password" autocomplete="current-password" aria-describedby="usernameReauthHint usernameError">
+        <div class="hint" id="usernameReauthHint"><span data-icon="info-circle"></span><span data-i18n="account.reauthHint">Enter your current password to confirm the change.</span></div>
       </div>
       <div class="hint" id="usernameHint"></div>
     </div>
@@ -545,13 +546,14 @@
       <button class="m-x" data-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
+      <div class="login-error inline" id="projModalError" role="alert"></div>
       <div class="field">
-        <span class="label" data-i18n="projects.name">Project name</span>
-        <input class="input" id="projNameInput" placeholder="e.g. Graduation thesis" data-i18n-placeholder="projects.namePlaceholder" spellcheck="false" autocomplete="off" maxlength="80">
+        <label class="label" for="projNameInput" data-i18n="projects.name">Project name</label>
+        <input class="input" id="projNameInput" placeholder="e.g. Graduation thesis" data-i18n-placeholder="projects.namePlaceholder" spellcheck="false" autocomplete="off" maxlength="80" aria-describedby="projModalHint projModalError">
         <div class="hint" id="projModalHint" data-i18n="projects.newLatexHint">It will be created with an initial main.tex file.</div>
       </div>
       <div class="field" id="projTypeField">
-        <span class="label" data-i18n="projects.type">Project type</span>
+        <label class="label" for="projTypeSelect" data-i18n="projects.type">Project type</label>
         <select class="select" id="projTypeSelect">
           <option value="latex" data-i18n="projects.latex">LaTeX document</option>
           <option value="lilypond" data-i18n="projects.lilypond">LilyPond score</option>
@@ -573,6 +575,7 @@
     </div>
     <div class="m-body">
       <p class="confirm-txt" id="projDeleteText" data-i18n="projects.deleteGeneric">Do you want to delete this project? All its files and bibliographies will be removed. This action cannot be undone.</p>
+      <div class="login-error inline modal-error-after" id="projDeleteError" role="alert"></div>
     </div>
     <div class="m-foot">
       <button class="btn" data-close data-i18n="common.cancel">Cancel</button>
@@ -609,6 +612,7 @@
     <div class="m-body">
       <div class="login-error inline" id="projectShareError" role="alert" style="display:none"></div>
       <h4 class="set-title" data-i18n="sharing.members">People with access</h4>
+      <p class="hint adminproj-owner-hint" id="projectShareOwnerHint" data-i18n="sharing.ownerHint">Every project must keep at least one owner.</p>
       <div class="project-share-members" id="projectShareMembers"></div>
       <form class="project-share-add" id="projectShareForm">
         <h4 class="set-title" data-i18n="sharing.addTitle">Share with another user</h4>
@@ -636,7 +640,7 @@
 </div>
 
 <!-- ===================== PROJECT CHOOSER ===================== -->
-<div class="picker-screen" id="pickerScreen">
+<div class="picker-screen" id="pickerScreen" aria-labelledby="projectPickerTitle">
   <div class="picker-wrap">
     <header class="picker-top">
       <div class="login-brand">
@@ -645,7 +649,7 @@
       </div>
       <div class="picker-user">
         <button class="tbtn ghost-b admin-only" id="pkAdmin" type="button" title="Server administration" data-i18n-title="admin.open"><span class="ic" data-icon="shield-lock"></span><span data-i18n="admin.adminShort">Admin</span></button>
-        <button class="userchip" id="pkAccount" type="button" title="Account" data-i18n-title="common.account" aria-haspopup="menu" aria-expanded="false" aria-controls="userMenu">
+        <button class="userchip" id="pkAccount" type="button" title="Account" aria-label="Account" data-i18n-title="common.account" data-i18n-aria-label="common.account" aria-haspopup="menu" aria-expanded="false" aria-controls="userMenu">
           <span class="avatar" id="pkAvatar">–</span>
           <span class="uname" id="pkName">–</span>
           <span class="chev" data-icon="chevron-down"></span>
@@ -655,7 +659,7 @@
 
     <div class="picker-head">
       <div>
-        <h1 class="picker-title" data-i18n="projects.yourProjects">Your projects</h1>
+        <h1 class="picker-title" id="projectPickerTitle" tabindex="-1" data-i18n="projects.yourProjects">Your projects</h1>
         <p class="picker-sub"><span data-i18n="projects.description">Each project is self-contained, with its own files and bibliographies.</span> <span id="pkCount" class="pk-count"></span></p>
       </div>
       <div class="picker-actions">
@@ -668,7 +672,7 @@
 
     <div class="picker-grid" id="pkGrid"></div>
 
-    <div class="picker-empty" id="pkEmpty" style="display:none">
+    <div class="picker-empty" id="pkEmpty" role="status" aria-live="polite" style="display:none">
       <div class="pe-mark" data-icon="files"></div>
       <div class="pe-title" data-i18n="projects.empty">No projects</div>
       <div class="pe-sub" data-i18n="projects.emptyDescription">Create your first project to start writing in LaTeX or LilyPond.</div>
@@ -681,24 +685,29 @@
 <div class="admin-screen" id="adminScreen">
   <div class="picker-wrap">
     <header class="picker-top">
-      <div class="admin-headleft">
-        <div class="login-brand">
-          <div class="mark"><img src="iris_logo_w.svg" alt=""></div>
-          <div class="brand-label"><img class="brand-wordmark" src="iris_text_logo_w.svg" alt="Iris"> <span class="v">Beta 1</span></div>
-        </div>
-        <div class="admin-switch" id="adminSwitch" role="tablist" aria-label="Admin sections" data-i18n-aria-label="admin.sectionsAria">
-          <button class="on" type="button" role="tab" aria-selected="true" data-admin-tab="users" data-i18n="admin.tabUsers">Users</button>
-          <button type="button" role="tab" aria-selected="false" data-admin-tab="projects" data-i18n="admin.tabProjects">Projects</button>
-        </div>
+      <div class="login-brand">
+        <div class="mark"><img src="iris_logo_w.svg" alt=""></div>
+        <div class="brand-label"><img class="brand-wordmark" src="iris_text_logo_w.svg" alt="Iris"> <span class="v">Beta 1</span></div>
       </div>
-      <button class="tbtn" id="adminBack" title="Back to projects" data-i18n-title="admin.back"><span class="ic" data-icon="arrow-left"></span><span data-i18n="toolbar.projects">Projects</span></button>
+      <div class="picker-user admin-header-actions">
+        <div class="admin-switch" id="adminSwitch" role="tablist" aria-label="Admin sections" data-i18n-aria-label="admin.sectionsAria">
+          <button class="on" id="adminTabUsers" type="button" role="tab" aria-selected="true" aria-controls="adminUsersPanel" tabindex="0" data-admin-tab="users" data-i18n="admin.tabUsers">Users</button>
+          <button id="adminTabProjects" type="button" role="tab" aria-selected="false" aria-controls="adminProjectsPanel" tabindex="-1" data-admin-tab="projects" data-i18n="admin.tabProjects">Projects</button>
+        </div>
+        <button class="tbtn ghost-b" id="adminBack" title="Back to projects" aria-label="Back to projects" data-i18n-title="admin.back" data-i18n-aria-label="admin.back"><span class="ic" data-icon="arrow-left"></span><span class="admin-back-label" data-i18n="toolbar.projects">Projects</span></button>
+        <button class="userchip" id="adminAccount" type="button" title="Account" aria-label="Account" data-i18n-title="common.account" data-i18n-aria-label="common.account" aria-haspopup="menu" aria-expanded="false" aria-controls="userMenu">
+          <span class="avatar" id="adminAvatar">–</span>
+          <span class="uname" id="adminName">–</span>
+          <span class="chev" data-icon="chevron-down"></span>
+        </button>
+      </div>
     </header>
 
     <!-- USERS PANEL -->
-    <div data-admin-panel="users" id="adminUsersPanel">
+    <div data-admin-panel="users" id="adminUsersPanel" role="tabpanel" aria-labelledby="adminTabUsers" tabindex="-1">
     <div class="picker-head">
       <div>
-        <h1 class="picker-title" data-i18n="admin.title">User administration</h1>
+        <h1 class="picker-title" id="adminUsersTitle" tabindex="-1" data-i18n="admin.title">User administration</h1>
         <p class="picker-sub" data-i18n="admin.subtitle">Create accounts, change roles, and enable or disable access.</p>
       </div>
       <div class="picker-actions">
@@ -707,6 +716,7 @@
     </div>
 
     <div class="admin-filters">
+      <label class="visually-hidden" for="adminSearch" data-i18n="admin.searchLabel">Search users</label>
       <div class="admin-search">
         <span class="ic" data-icon="search"></span>
         <input id="adminSearch" type="search" placeholder="Search by name, username, or email" data-i18n-placeholder="admin.searchPlaceholder" spellcheck="false" autocomplete="off">
@@ -723,7 +733,10 @@
       </select>
     </div>
 
-    <div class="picker-import-status" id="adminStatusMsg" role="status" aria-live="polite"></div>
+    <div class="picker-status-row">
+      <div class="picker-import-status" id="adminStatusMsg" role="status" aria-live="polite"></div>
+      <button class="status-retry" id="adminStatusRetry" type="button" hidden data-i18n="common.retry">Try again</button>
+    </div>
 
     <div class="admin-table-wrap" id="adminTableWrap">
       <table class="admin-table">
@@ -739,22 +752,24 @@
         </thead>
         <tbody id="adminRows"></tbody>
       </table>
-      <div class="picker-empty" id="adminEmpty" style="display:none">
+      <div class="picker-empty" id="adminEmpty" role="status" aria-live="polite" style="display:none">
         <div class="pe-title" data-i18n="admin.noUsers">No matching users</div>
+        <div class="pe-sub" data-i18n="admin.noUsersDescription">Try changing the search or filters.</div>
       </div>
     </div>
     </div><!-- /users panel -->
 
     <!-- PROJECTS PANEL -->
-    <div data-admin-panel="projects" id="adminProjectsPanel" hidden>
+    <div data-admin-panel="projects" id="adminProjectsPanel" role="tabpanel" aria-labelledby="adminTabProjects" tabindex="-1" hidden>
       <div class="picker-head">
         <div>
-          <h1 class="picker-title" data-i18n="adminProjects.title">Project administration</h1>
+          <h1 class="picker-title" id="adminProjectsTitle" tabindex="-1" data-i18n="adminProjects.title">Project administration</h1>
           <p class="picker-sub" data-i18n="adminProjects.subtitle">Manage membership, roles and the existence of any project. Contents stay private to members.</p>
         </div>
       </div>
 
       <div class="admin-filters">
+        <label class="visually-hidden" for="adminProjectSearch" data-i18n="adminProjects.searchLabel">Search projects</label>
         <div class="admin-search">
           <span class="ic" data-icon="search"></span>
           <input id="adminProjectSearch" type="search" placeholder="Search by project name" data-i18n-placeholder="adminProjects.searchPlaceholder" spellcheck="false" autocomplete="off">
@@ -765,7 +780,10 @@
         </select>
       </div>
 
-      <div class="picker-import-status" id="adminProjectStatusMsg" role="status" aria-live="polite"></div>
+      <div class="picker-status-row">
+        <div class="picker-import-status" id="adminProjectStatusMsg" role="status" aria-live="polite"></div>
+        <button class="status-retry" id="adminProjectStatusRetry" type="button" hidden data-i18n="common.retry">Try again</button>
+      </div>
 
       <div class="admin-table-wrap" id="adminProjectTableWrap">
         <table class="admin-table">
@@ -780,8 +798,9 @@
           </thead>
           <tbody id="adminProjectRows"></tbody>
         </table>
-        <div class="picker-empty" id="adminProjectEmpty" style="display:none">
+        <div class="picker-empty" id="adminProjectEmpty" role="status" aria-live="polite" style="display:none">
           <div class="pe-title" data-i18n="adminProjects.noProjects">No matching projects</div>
+          <div class="pe-sub" data-i18n="adminProjects.noProjectsDescription">Try changing the search or filters.</div>
         </div>
       </div>
     </div>
@@ -796,23 +815,23 @@
       <button class="m-x" type="button" data-admin-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
-      <div class="login-error inline" id="adminCreateError"></div>
+      <div class="login-error inline" id="adminCreateError" role="alert"></div>
       <div class="field">
-        <span class="label" data-i18n="admin.username">Username</span>
-        <input class="input" id="adminCreateUsername" spellcheck="false" autocomplete="off" maxlength="64" required>
-        <div class="hint"><span data-icon="info-circle"></span><span data-i18n="admin.usernameHint">Lowercase, at least 3 characters.</span></div>
+        <label class="label" for="adminCreateUsername" data-i18n="admin.username">Username</label>
+        <input class="input" id="adminCreateUsername" spellcheck="false" autocomplete="off" maxlength="64" required aria-describedby="adminCreateUsernameHint adminCreateError">
+        <div class="hint" id="adminCreateUsernameHint"><span data-icon="info-circle"></span><span data-i18n="admin.usernameHint">Lowercase, at least 3 characters.</span></div>
       </div>
       <div class="field">
-        <span class="label" data-i18n="admin.email">Email</span>
-        <input class="input" id="adminCreateEmail" type="email" spellcheck="false" autocomplete="off" maxlength="190" required>
+        <label class="label" for="adminCreateEmail" data-i18n="admin.email">Email</label>
+        <input class="input" id="adminCreateEmail" type="email" spellcheck="false" autocomplete="off" maxlength="190" required aria-describedby="adminCreateError">
       </div>
       <div class="field">
-        <span class="label" data-i18n="admin.name">Display name</span>
-        <input class="input" id="adminCreateName" spellcheck="false" autocomplete="off" maxlength="190">
+        <label class="label" for="adminCreateName" data-i18n="admin.name">Display name</label>
+        <input class="input" id="adminCreateName" spellcheck="false" autocomplete="off" maxlength="190" aria-describedby="adminCreateError">
       </div>
       <div class="field">
-        <span class="label" data-i18n="admin.role">Role</span>
-        <select class="input" id="adminCreateRole">
+        <label class="label" for="adminCreateRole" data-i18n="admin.role">Role</label>
+        <select class="input" id="adminCreateRole" aria-describedby="adminCreateError">
           <option value="regular" data-i18n="admin.roleRegular">Regular</option>
           <option value="admin" data-i18n="admin.roleAdmin">Admin</option>
         </select>
@@ -833,31 +852,31 @@
       <button class="m-x" type="button" data-admin-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
-      <div class="login-error inline" id="adminEditError"></div>
+      <div class="login-error inline" id="adminEditError" role="alert"></div>
       <div class="admin-edit-id" id="adminEditIdentity"></div>
       <div class="field">
-        <span class="label" data-i18n="admin.username">Username</span>
-        <input class="input" id="adminEditUsername" spellcheck="false" autocomplete="off" maxlength="64" required>
-        <span class="hint" data-i18n="admin.usernameHint">Lowercase, at least 3 characters.</span>
+        <label class="label" for="adminEditUsername" data-i18n="admin.username">Username</label>
+        <input class="input" id="adminEditUsername" spellcheck="false" autocomplete="off" maxlength="64" required aria-describedby="adminEditUsernameHint adminEditError">
+        <span class="hint" id="adminEditUsernameHint" data-i18n="admin.usernameHint">Lowercase, at least 3 characters.</span>
       </div>
       <div class="field">
-        <span class="label" data-i18n="admin.name">Display name</span>
-        <input class="input" id="adminEditName" spellcheck="false" autocomplete="off" maxlength="190">
+        <label class="label" for="adminEditName" data-i18n="admin.name">Display name</label>
+        <input class="input" id="adminEditName" spellcheck="false" autocomplete="off" maxlength="190" aria-describedby="adminEditError">
       </div>
       <div class="field">
-        <span class="label" data-i18n="admin.email">Email</span>
-        <input class="input" id="adminEditEmail" type="email" spellcheck="false" autocomplete="off" maxlength="190" required>
+        <label class="label" for="adminEditEmail" data-i18n="admin.email">Email</label>
+        <input class="input" id="adminEditEmail" type="email" spellcheck="false" autocomplete="off" maxlength="190" required aria-describedby="adminEditError">
       </div>
       <div class="field">
-        <span class="label" data-i18n="admin.role">Role</span>
-        <select class="input" id="adminEditRole">
+        <label class="label" for="adminEditRole" data-i18n="admin.role">Role</label>
+        <select class="input" id="adminEditRole" aria-describedby="adminEditError">
           <option value="regular" data-i18n="admin.roleRegular">Regular</option>
           <option value="admin" data-i18n="admin.roleAdmin">Admin</option>
         </select>
       </div>
       <div class="field">
-        <span class="label" data-i18n="admin.status">Status</span>
-        <select class="input" id="adminEditStatus">
+        <label class="label" for="adminEditStatus" data-i18n="admin.status">Status</label>
+        <select class="input" id="adminEditStatus" aria-describedby="adminEditError">
           <option value="active" data-i18n="admin.statusActive">Active</option>
           <option value="disabled" data-i18n="admin.statusDisabled">Disabled</option>
         </select>
@@ -942,7 +961,7 @@
         <label class="label" id="adminDeleteUserConfirmLabel" for="adminDeleteUserConfirm"></label>
         <input class="input" id="adminDeleteUserConfirm" spellcheck="false" autocomplete="off">
       </div>
-      <div class="login-error inline" id="adminDeleteUserError" style="display:none"></div>
+      <div class="login-error inline" id="adminDeleteUserError" role="alert" style="display:none"></div>
     </div>
     <div class="m-foot">
       <button class="btn" type="button" data-admin-close data-i18n="common.cancel">Cancel</button>
@@ -960,11 +979,13 @@
     </div>
     <div class="m-body">
       <div class="adminproj-orphan" id="adminProjectOrphan" style="display:none"><span data-icon="alert-triangle"></span><span data-i18n="adminProjects.orphanWarning">This project has no owner. Assign one to restore normal access.</span></div>
-      <div class="login-error inline" id="adminProjectError" style="display:none"></div>
+      <div class="login-error inline" id="adminProjectError" role="alert" style="display:none"></div>
       <h4 class="set-title" data-i18n="adminProjects.members">Members</h4>
+      <p class="hint adminproj-owner-hint" id="adminProjectOwnerHint" data-i18n="adminProjects.ownerHint">Every project must keep at least one owner.</p>
       <div class="adminproj-members" id="adminProjectMembers"></div>
       <form class="adminproj-add" id="adminProjectAddForm">
-        <input id="adminProjectAddIdentifier" placeholder="Username or email" data-i18n-placeholder="adminProjects.memberIdentifier" spellcheck="false" autocomplete="off">
+        <label class="visually-hidden" for="adminProjectAddIdentifier" data-i18n="adminProjects.memberIdentifier">Username or email</label>
+        <input class="input" id="adminProjectAddIdentifier" placeholder="Username or email" data-i18n-placeholder="adminProjects.memberIdentifier" spellcheck="false" autocomplete="off" aria-describedby="adminProjectError">
         <select class="input" id="adminProjectAddRole" aria-label="Role" data-i18n-aria-label="adminProjects.role">
           <option value="owner" data-i18n="adminProjects.roleOwner">Owner</option>
           <option value="editor" data-i18n="adminProjects.roleEditor">Editor</option>
@@ -972,6 +993,7 @@
         </select>
         <button class="btn" type="submit" id="adminProjectAddBtn" data-i18n="adminProjects.addButton">Add</button>
       </form>
+      <div class="adminproj-modal-status" id="adminProjectModalStatus" role="status" aria-live="polite"></div>
       <div class="adminproj-danger">
         <div>
           <button class="btn danger" type="button" id="adminProjectDeleteBtn"><span class="ic" data-icon="trash"></span><span data-i18n="adminProjects.deleteProject">Delete project</span></button>
@@ -995,8 +1017,8 @@
     <div class="m-body">
       <p class="confirm-txt" id="adminProjectDeleteText"></p>
       <label class="label" id="adminProjectDeleteLabel" for="adminProjectDeleteConfirm"></label>
-      <input id="adminProjectDeleteConfirm" spellcheck="false" autocomplete="off">
-      <div class="login-error inline" id="adminProjectDeleteError" style="display:none"></div>
+      <input class="input" id="adminProjectDeleteConfirm" spellcheck="false" autocomplete="off" aria-describedby="adminProjectDeleteError">
+      <div class="login-error inline modal-error-after" id="adminProjectDeleteError" role="alert" style="display:none"></div>
     </div>
     <div class="m-foot">
       <button class="btn" type="button" data-admin-close data-i18n="common.cancel">Cancel</button>
@@ -1037,6 +1059,34 @@
   </div>
 </div>
 
+<!-- ===================== VERSIONED BUILDS ===================== -->
+<div class="scrim" id="buildsModal">
+  <div class="modal wide builds-modal" role="dialog" aria-modal="true" aria-labelledby="buildsTitle">
+    <div class="m-head">
+      <span class="build-head-icon" data-icon="history"></span>
+      <div class="build-head-text">
+        <h3 id="buildsTitle" data-i18n="builds.title">Compilation history</h3>
+        <span class="sub" data-i18n="builds.subtitle">Versioned outputs and compiler diagnostics</span>
+      </div>
+      <button class="m-x build-refresh" id="buildsRefresh" type="button" aria-label="Refresh compilations" title="Refresh compilations" data-i18n-aria-label="builds.refresh" data-i18n-title="builds.refresh"><span data-icon="refresh"></span></button>
+      <button class="m-x" type="button" data-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
+    </div>
+    <div class="build-grid">
+      <div class="build-list-pane">
+        <div class="build-list" id="buildsList" role="listbox" aria-label="Compilations" data-i18n-aria-label="builds.title"></div>
+        <div class="build-list-state" id="buildsListState" role="status" aria-live="polite"></div>
+        <button class="build-more" id="buildsMore" type="button" hidden data-i18n="builds.loadMore">Load older builds</button>
+      </div>
+      <div class="build-detail-pane">
+        <div class="build-detail-head" id="buildsMeta"></div>
+        <div class="build-view" id="buildsView"></div>
+        <div class="build-notice" id="buildsNotice" role="status" aria-live="polite"></div>
+        <div class="build-actions" id="buildsActions"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- ===================== LOGIN SCREEN ===================== -->
 <div class="login-screen" id="loginScreen">
   <form class="login-card" id="loginCard" autocomplete="on">
@@ -1054,16 +1104,16 @@
     <h1 class="login-title" data-i18n="auth.title">Sign in to your workspace</h1>
     <p class="login-sub" data-i18n="auth.subtitle">Enter your credentials to continue</p>
 
-    <div class="login-error" id="loginError" data-i18n="auth.invalidCredentials">Invalid credentials.</div>
+  <div class="login-error" id="loginError" role="alert" data-i18n="auth.invalidCredentials">Invalid credentials.</div>
 
     <div class="lfield">
-      <span class="label" data-i18n="auth.identity">Username or email</span>
-      <input class="linput" id="loginUser" name="username" autocomplete="username" placeholder="e.g. j.smith" data-i18n-placeholder="auth.identityPlaceholder" spellcheck="false">
+      <label class="label" for="loginUser" data-i18n="auth.identity">Username or email</label>
+      <input class="linput" id="loginUser" name="username" autocomplete="username" placeholder="e.g. j.smith" data-i18n-placeholder="auth.identityPlaceholder" spellcheck="false" aria-describedby="loginError">
     </div>
     <div class="lfield">
-      <span class="label" data-i18n="auth.password">Password</span>
+      <label class="label" for="loginPass" data-i18n="auth.password">Password</label>
       <div class="pwwrap">
-        <input class="linput" id="loginPass" name="password" type="password" autocomplete="current-password" placeholder="••••••••">
+        <input class="linput" id="loginPass" name="password" type="password" autocomplete="current-password" placeholder="••••••••" aria-describedby="loginError">
         <button class="pwtoggle" id="pwToggle" type="button" data-i18n="auth.showPassword">show</button>
       </div>
     </div>
@@ -1093,6 +1143,7 @@
 <script src="iris-lilypond.js"></script>
 <script src="iris-app.js"></script>
 <script src="iris-projects.js"></script>
+<script src="iris-builds.js"></script>
 <script src="iris-admin.js"></script>
 <script src="iris-admin-projects.js"></script>
 <script src="iris-auth.js"></script>

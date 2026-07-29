@@ -113,6 +113,7 @@
   async function setLanguage(nextLanguage, options = {}) {
     const next = normalizeLanguage(nextLanguage);
     const nextMessages = next === DEFAULT_LANGUAGE ? fallbackMessages : await loadCatalog(next);
+    if (typeof options.isCurrent === "function" && !options.isCurrent()) return language;
     language = next;
     messages = nextMessages;
     apply(document);

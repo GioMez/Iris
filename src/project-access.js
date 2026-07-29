@@ -7,7 +7,7 @@
 const PROJECT_ROLES = new Set(["owner", "editor", "viewer"]);
 
 const CAPABILITIES = {
-  owner: new Set(["read", "write", "compile", "share", "delete"]),
+  owner: new Set(["read", "write", "compile", "share", "delete", "deleteBuild"]),
   editor: new Set(["read", "write", "compile"]),
   viewer: new Set(["read"]),
 };

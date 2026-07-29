@@ -63,6 +63,11 @@
     attachFile: null,
     compiledArtifacts: [],
     lastCompile: null,
+    previewBuildId: null,
+    compileGeneration: 0,
+    compiling: false,
+    projectLoadGeneration: 0,
+    outputGeneration: 0,
     dirtyFiles: new Map(), // file id -> edit revision not yet persisted
     editRevision: 0,
     role: "owner", // project role; "viewer" makes the workspace read-only
@@ -97,6 +102,14 @@
   }
   function persistWhenDocumentClean() {
     return state.dirtyFiles.size ? Promise.resolve(false) : persist();
+  }
+  async function waitForPersistence() {
+    let pending;
+    do {
+      pending = persistQueue;
+      await pending;
+    } while (pending !== persistQueue);
+    return true;
   }
   function walk(nodes, fn) {
     nodes.forEach((n) => { if (n.type === "folder") walk(n.children, fn); else fn(n); });
@@ -990,6 +1003,17 @@
     renderTree();
   }
 
+  function removeBuildFromOutputTree(buildId) {
+    const output = project.nodes.find((node) => node.type === "folder" && node.name === "output" && (node.generated || node.readOnly));
+    if (!output || !Array.isArray(output.children)) return false;
+    const buildPath = `output/${buildId}`;
+    const nextChildren = output.children.filter((node) => node.name !== buildId && node.path !== buildPath);
+    if (nextChildren.length === output.children.length) return false;
+    output.children = nextChildren;
+    renderTree();
+    return true;
+  }
+
   function applyRefreshedFileTree(data) {
     if (!data || !data.project || !Array.isArray(data.project.nodes)) throw new Error("Invalid project tree");
     const previousActive = state.activeId;
@@ -1033,13 +1057,21 @@
       return;
     }
     const button = $("refreshTreeBtn");
+    const revision = state.editRevision;
+    const snapshot = JSON.stringify(projectSnapshot());
     button.disabled = true;
     button.classList.add("loading");
     try {
       if (!window.IrisProjects || !window.IrisProjects.refreshCurrent) throw new Error(t("editor.projectsBackendUnavailable"));
-      applyRefreshedFileTree(await window.IrisProjects.refreshCurrent());
+      const data = await window.IrisProjects.refreshCurrent();
+      if (revision !== state.editRevision || state.dirtyFiles.size || JSON.stringify(projectSnapshot()) !== snapshot) {
+        toast(t("tree.refreshChanged"), "err");
+        return;
+      }
+      applyRefreshedFileTree(data);
       toast(t("tree.refreshed"));
     } catch (err) {
+      if (err && err.stale) return;
       console.error("File tree refresh failed", err);
       toast(t("tree.refreshFailed"), "err");
     } finally {
@@ -1280,6 +1312,7 @@
   }
   async function compile() {
     if (isReadOnly()) { toast(t("projects.readOnlyNotice")); return; }
+    if (state.compiling) return;
     if (state.dirtyFiles.size) {
       toast(t("editor.saveBeforeCompile"), "err");
       $("btnSave").focus();
@@ -1287,6 +1320,8 @@
     }
     const f = docFileForCompile();
     if (!f) { toast(t("editor.nothingToCompile"), "err"); return; }
+    const generation = ++state.compileGeneration;
+    state.compiling = true;
     setWorkspaceView("preview");
     setView("preview");
     $("compiling").classList.add("on");
@@ -1306,6 +1341,9 @@
         lilypondFormat: state.lilypondFormat,
         compileProfile: state.compileProfile,
       });
+      if (generation !== state.compileGeneration) return;
+      const outputGeneration = ++state.outputGeneration;
+      state.previewBuildId = res.buildId || null;
       const ms = ((res.durationMs || (performance.now() - t0)) / 1000).toFixed(1);
       syncOutputTree(res.outputTree);
       buildLog(f, res, ms);
@@ -1313,6 +1351,10 @@
       if (res.success && Array.isArray(res.artifacts) && res.artifacts.length) await renderCompiledOutput(res);
       else if (res.pdfBase64) await renderPdf(res);
       else {
+        const loadGeneration = ++state.pdfLoadGeneration;
+        await releasePdfDocument();
+        if (outputGeneration !== state.outputGeneration || loadGeneration !== state.pdfLoadGeneration) return;
+        clearCompiledArtifacts();
         state.previewKind = "empty";
         updateZoomLabel();
         $("pvEmpty").style.display = "";
@@ -1323,6 +1365,13 @@
         setView("log");
       }
     } catch (err) {
+      if (generation !== state.compileGeneration) return;
+      const outputGeneration = ++state.outputGeneration;
+      const loadGeneration = ++state.pdfLoadGeneration;
+      await releasePdfDocument();
+      if (generation !== state.compileGeneration || outputGeneration !== state.outputGeneration || loadGeneration !== state.pdfLoadGeneration) return;
+      clearCompiledArtifacts();
+      state.previewBuildId = null;
       const ms = ((performance.now() - t0) / 1000).toFixed(1);
       const message = err.message || t("editor.compileFailed");
       const res = { success: false, log: t("editor.compileFailedLog", { message }), warnings: [], errors: [err.message || t("editor.compileError")] };
@@ -1331,9 +1380,23 @@
       setView("log");
       toast(t("editor.compileFailed"), "err");
     } finally {
-      $("compiling").classList.remove("on");
-      $("btnCompile").disabled = false;
+      if (generation === state.compileGeneration) {
+        state.compiling = false;
+        $("compiling").classList.remove("on");
+        $("btnCompile").disabled = false;
+      }
     }
+  }
+
+  function cancelPendingBuild() {
+    state.compileGeneration += 1;
+    state.compiling = false;
+    $("compiling").classList.remove("on");
+    $("btnCompile").disabled = false;
+  }
+
+  function cancelPendingProjectLoad() {
+    state.projectLoadGeneration += 1;
   }
   function buildLog(f, res, ms, remember = true) {
     if (remember) state.lastCompile = { f, res, ms, compiledAt: new Date() };
@@ -1395,8 +1458,10 @@
   function prepareCompiledArtifacts(res) {
     clearCompiledArtifacts();
     state.compiledArtifacts = (res.artifacts || []).map((artifact) => {
-      const { base64, ...metadata } = artifact;
-      const bytes = artifactBytes(base64);
+      const { base64, bytes: suppliedBytes, ...metadata } = artifact;
+      const bytes = suppliedBytes instanceof Uint8Array
+        ? suppliedBytes
+        : (suppliedBytes instanceof ArrayBuffer ? new Uint8Array(suppliedBytes) : artifactBytes(base64));
       const blob = new Blob([bytes], { type: metadata.mimeType || "application/octet-stream" });
       return {
         ...metadata,
@@ -1470,7 +1535,13 @@
     const pdfjs = await pdfjsReady;
     const loadingTask = pdfjs.getDocument({ data: bytes });
     state.pdfLoadingTask = loadingTask;
-    const doc = await loadingTask.promise;
+    let doc;
+    try {
+      doc = await loadingTask.promise;
+    } catch (error) {
+      if (loadGeneration !== state.pdfLoadGeneration || loadingTask !== state.pdfLoadingTask) return;
+      throw error;
+    }
     if (loadGeneration !== state.pdfLoadGeneration || loadingTask !== state.pdfLoadingTask) {
       if (loadingTask === state.pdfLoadingTask) state.pdfLoadingTask = null;
       await loadingTask.destroy();
@@ -1741,6 +1812,88 @@
     });
   }
 
+  async function clearBuildOutput(buildId = null) {
+    if (buildId && state.previewBuildId !== buildId) return false;
+    const outputGeneration = ++state.outputGeneration;
+    const loadGeneration = ++state.pdfLoadGeneration;
+    await releasePdfDocument();
+    if (outputGeneration !== state.outputGeneration || loadGeneration !== state.pdfLoadGeneration) return false;
+    if (buildId && state.previewBuildId !== buildId) return false;
+    clearCompiledArtifacts();
+    state.previewBuildId = null;
+    state.lastCompile = null;
+    state.previewKind = "empty";
+    state.pages = [];
+    state.curPage = 1;
+    $("pvPages").innerHTML = "";
+    $("logView").innerHTML = "";
+    $("pvEmpty").innerHTML = `<div class="big">${ti("file")}</div><span>${esc(t("preview.empty"))}</span>`;
+    $("pvEmpty").style.display = "";
+    $("pgTot").textContent = "–";
+    $("pgCur").textContent = "–";
+    $("stTime").textContent = t("status.neverCompiled");
+    $("stMath").textContent = "";
+    $("stWarn").style.display = "none";
+    $("stErr").style.display = "none";
+    $("stState").textContent = t("status.ready");
+    $("stDot").className = "dotok";
+    $("stState").parentElement.classList.add("accent");
+    $("stState").parentElement.classList.remove("err");
+    setView("preview");
+    updateZoomLabel();
+    return true;
+  }
+
+  async function showBuildOutput(payload, options = {}) {
+    const build = payload && payload.build;
+    if (!build) return false;
+    const artifacts = Array.isArray(payload.artifacts) ? payload.artifacts : [];
+    const succeeded = build.status === "succeeded" && artifacts.length > 0;
+    const sourceName = String(build.mainPath || t("toolbar.output")).split("/").pop();
+    const source = { name: sourceName, path: build.mainPath || sourceName };
+    const seconds = ((Number(build.durationMs) || 0) / 1000).toFixed(1);
+    const compiledAt = new Date(build.completedAt || build.createdAt || Date.now());
+    const res = {
+      success: succeeded,
+      buildId: build.id,
+      outputFormat: build.format,
+      outputName: artifacts[0] ? artifacts[0].name : build.displayName,
+      artifacts,
+      durationMs: build.durationMs,
+      exitCode: build.exitCode,
+      signal: build.signal,
+      timedOut: build.timedOut,
+      log: build.log || "",
+      warnings: build.warnings || [],
+      errors: build.errors || [],
+    };
+    const outputGeneration = ++state.outputGeneration;
+    state.previewBuildId = build.id;
+    state.lastCompile = { f: source, res, ms: seconds, compiledAt };
+    buildLog(source, res, seconds, false);
+    updateCompileStatus(res, seconds, compiledAt);
+    if (succeeded) {
+      await renderCompiledOutput(res);
+    } else {
+      const loadGeneration = ++state.pdfLoadGeneration;
+      await releasePdfDocument();
+      if (outputGeneration !== state.outputGeneration || loadGeneration !== state.pdfLoadGeneration) return false;
+      clearCompiledArtifacts();
+      state.previewKind = "empty";
+      state.pages = [];
+      $("pvPages").innerHTML = "";
+      $("pvEmpty").innerHTML = `<div class="big">${ti("terminal-2")}</div><span>${esc(t("builds.noArtifacts"))}</span>`;
+      $("pvEmpty").style.display = "";
+      $("pgTot").textContent = "–";
+      $("pgCur").textContent = "–";
+      setView("log");
+      updateZoomLabel();
+    }
+    if (outputGeneration !== state.outputGeneration) return false;
+    if (options.activateWorkspace !== false) setWorkspaceView("preview");
+    return true;
+  }
+
   /* ---------------- new / open / save ---------------- */
   const newDocumentTemplate = () => `\\documentclass[11pt]{article}\n\\usepackage[utf8]{inputenc}\n\n\\title{${t("templates.newDocument")}}\n\\author{}\n\\date{\\today}\n\n\\begin{document}\n\\maketitle\n\n\\section{}\n\n\\end{document}`;
   const NEWLY = `\\version "2.24.0"\n\n\\score {\n  \\relative c' {\n    \\key c \\major\n    \\time 4/4\n    c4 d e f | g1 \\bar "|."\n  }\n  \\layout { }\n}`;
@@ -1959,9 +2112,9 @@
     }));
     document.addEventListener("keydown", (e) => {
       if (e.key !== "Escape") return;
-      const closingSettings = $("settingsModal").classList.contains("on");
-      document.querySelectorAll(".scrim.on:not(.forced)").forEach((s) => { void closeDialog(s); });
-      if (closingSettings) $("btnSettings").focus();
+      // Dialog Escape handling belongs to IrisMotion, which closes only the top
+      // dialog and restores its opener. This handler owns the responsive drawer.
+      if (document.querySelector(".scrim.on")) return;
       if (document.querySelector(".body").classList.contains("drawer-open")) {
         closeResponsiveSidebar();
         $("btnSidebar").focus();
@@ -2067,7 +2220,10 @@
 
     // ---- global shortcuts ----
     document.addEventListener("keydown", (e) => {
-      if (!document.documentElement.classList.contains("iris-authed")) return;
+      if (!document.documentElement.classList.contains("iris-inproject")) return;
+      if (document.querySelector(".scrim.on")) return;
+      if (document.querySelector(".menu.on")) return;
+      if (e.target && e.target.closest("input,textarea,select,[contenteditable='true']") && e.target !== area) return;
       const mod = e.ctrlKey || e.metaKey;
       const key = e.key.toLowerCase();
       if (!mod || e.altKey || e.repeat) return;
@@ -2620,11 +2776,18 @@
   window.IrisApp = {
     // Load a project's data into the editor and render everything.
     async load(data) {
+      const generation = ++state.projectLoadGeneration;
       data = data || {};
-      state.projectLanguage = Object.prototype.hasOwnProperty.call(window.IrisI18n.SUPPORTED, data.language)
+      cancelPendingBuild();
+      const projectLanguage = Object.prototype.hasOwnProperty.call(window.IrisI18n.SUPPORTED, data.language)
         ? data.language
         : window.IrisI18n.defaultLanguage;
-      await window.IrisI18n.setLanguage(state.projectLanguage, { silent: true });
+      await window.IrisI18n.setLanguage(projectLanguage, {
+        silent: true,
+        isCurrent: () => generation === state.projectLoadGeneration,
+      });
+      if (generation !== state.projectLoadGeneration) return false;
+      state.projectLanguage = projectLanguage;
       project = (data.project && data.project.nodes) ? data.project : { name: data.name || "", nodes: [] };
       state.projectType = inferProjectType(data);
       state.assets = data.assets || {};
@@ -2639,10 +2802,12 @@
       state.fonts = fontSettingsFromTree(data.fonts);
       state.fonts.forEach((font) => registerProjectFont(font).then(() => renderFontList()));
       setPreviewFont(null);
+      state.outputGeneration += 1;
       state.pdfLoadGeneration += 1;
       void releasePdfDocument();
       clearCompiledArtifacts();
       state.lastCompile = null;
+      state.previewBuildId = null;
       state.pages = []; state.curPage = 1;
       state.untitledN = data.untitledN || 0;
       state.autoSave = data.autoSave === true;
@@ -2680,18 +2845,27 @@
       if (active) openFile(active);
       else { area.value = ""; paint(); renderOutline(); }
       updateZoomLabel();
+      return true;
     },
     // Snapshot the active project for persistence.
     serialize() {
       return projectSnapshot();
     },
     hasUnsavedChanges() { return state.dirtyFiles.size > 0; },
+    waitForPersistence,
+    persistChanges() { return persist(); },
     setName(name) { project.name = name; },
     setRole(role) {
       state.role = ["owner", "editor", "viewer"].includes(role) ? role : "viewer";
       applyRoleGate();
       if (isReadOnly()) toast(t("projects.readOnlyNotice"));
     },
+    showBuildOutput,
+    clearBuildOutput,
+    currentBuildId() { return state.previewBuildId; },
+    cancelPendingBuild,
+    cancelPendingProjectLoad,
+    removeBuildFromOutputTree,
   };
 
   /* ---------------- boot ---------------- */

@@ -14,6 +14,8 @@
   let index = [];
   let currentId = null;
   let unsavedDecision = null;
+  let openGeneration = 0;
+  let saveQueue = Promise.resolve(false);
   const cache = new Map();
 
   const ROLE_KEY = { owner: "roleOwner", editor: "roleEditor", viewer: "roleViewer" };
@@ -37,8 +39,10 @@
   function setPickerStatus(message, isError = false) {
     const status = $("pkImportStatus");
     if (!status) return;
-    status.textContent = message || "";
+    status.setAttribute("role", isError ? "alert" : "status");
+    status.setAttribute("aria-live", isError ? "assertive" : "polite");
     status.classList.toggle("error", !!isError);
+    status.textContent = message || "";
   }
 
   /* ---------------- blank content ---------------- */
@@ -130,8 +134,14 @@
     if (empty) empty.style.display = "none";
     if (grid) {
       grid.style.display = "";
-      grid.innerHTML = `<div class="pcard"><button class="pcard-open" type="button" disabled><span class="pcard-text"><span class="pcard-name">${esc(t("projects.loading"))}</span><span class="pcard-meta">${esc(t("projects.loadingDescription"))}</span></span></button></div>`;
+      grid.setAttribute("aria-busy", "true");
+      grid.innerHTML = `<div class="pcard loading" role="status" aria-live="polite" aria-label="${esc(t("projects.loading"))}"><div class="pcard-open"><span class="pcard-icon">${ti("file-code-2")}</span><span class="pcard-text"><span class="pcard-name">${esc(t("projects.loading"))}</span><span class="pcard-meta">${esc(t("projects.loadingDescription"))}</span></span></div><div class="pcard-tools" aria-hidden="true"><span class="pcard-tool-placeholder"></span><span class="pcard-tool-placeholder"></span><span class="pcard-tool-placeholder"></span></div></div>`;
     }
+  }
+
+  function focusPicker() {
+    if (window.IrisMotion.activeSurface() !== "picker") return;
+    setTimeout(() => $("projectPickerTitle").focus(), 0);
   }
 
   async function loadIndex() {
@@ -147,10 +157,17 @@
   }
 
   async function refreshCurrent() {
-    if (!currentId) throw new Error(t("projects.noneOpen"));
-    const data = await api(`/api/projects/${currentId}`);
-    cache.set(currentId, data);
-    const meta = metaOf(currentId);
+    const projectId = currentId;
+    const sessionGeneration = openGeneration;
+    if (!projectId) throw new Error(t("projects.noneOpen"));
+    const data = await api(`/api/projects/${projectId}`);
+    if (currentId !== projectId || openGeneration !== sessionGeneration) {
+      const error = new Error(t("projects.noneOpen"));
+      error.stale = true;
+      throw error;
+    }
+    cache.set(projectId, data);
+    const meta = metaOf(projectId);
     if (meta) {
       meta.name = (data.project && data.project.name) || meta.name;
       meta.projectType = data.projectType || meta.projectType;
@@ -163,6 +180,7 @@
   /* ---------------- chooser render ---------------- */
   async function renderPicker() {
     const grid = $("pkGrid"), empty = $("pkEmpty"), count = $("pkCount");
+    grid.setAttribute("aria-busy", "true");
     try {
       const idx = (await loadIndex()).slice().sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
       if (count) count.textContent = idx.length ? t("projects.count", { count: idx.length }) : "";
@@ -217,7 +235,14 @@
     } catch (err) {
       grid.style.display = "";
       empty.style.display = "none";
-      grid.innerHTML = `<div class="picker-empty" style="display:block"><div class="pe-title">${esc(t("projects.loadFailed"))}</div><div class="pe-sub">${esc(window.IrisI18n.error(err))}</div></div>`;
+      grid.innerHTML = `<div class="picker-empty error"><div role="alert"><div class="pe-title">${esc(t("projects.loadFailed"))}</div><div class="pe-sub">${esc(window.IrisI18n.error(err))}</div></div><button class="btn" type="button" data-retry-projects>${esc(t("common.retry"))}</button></div>`;
+      grid.querySelector("[data-retry-projects]").addEventListener("click", () => {
+        $("projectPickerTitle").focus();
+        setPickerLoading();
+        void renderPicker();
+      });
+    } finally {
+      grid.removeAttribute("aria-busy");
     }
   }
 
@@ -241,82 +266,118 @@
   }
 
   async function openProject(id) {
+    const generation = ++openGeneration;
+    if (window.IrisApp && window.IrisApp.cancelPendingProjectLoad) window.IrisApp.cancelPendingProjectLoad();
     try {
       const data = await loadData(id);
+      if (generation !== openGeneration) return;
       if (!data || !window.IrisApp) return;
       const m = metaOf(id);
       data.role = data.role || (m && m.role) || "owner";
       if (m) m.role = data.role;
       currentId = id;
-      await window.IrisApp.load(data);
+      if (window.IrisBuilds) window.IrisBuilds.reset();
+      const loaded = await window.IrisApp.load(data);
+      if (generation !== openGeneration || loaded === false) return;
       setProjName(m ? m.name : (data.project && data.project.name) || "");
       syncShareTrigger(data.role);
+      window.IrisMotion.setActiveSurface("app");
       window.IrisMotion.openProject();
+      setTimeout(() => $("codeArea").focus(), 0);
+      if (window.IrisBuilds) void window.IrisBuilds.loadLatest(id);
     } catch (err) {
+      if (generation !== openGeneration) return;
       console.error(err);
+      currentId = null;
+      syncShareTrigger(null);
+      window.IrisMotion.setActiveSurface("picker");
       await window.IrisI18n.useDefaultLanguage({ silent: true });
       await renderPicker();
+      const meta = metaOf(id);
+      setPickerStatus(t("projects.openFailed", { name: meta ? meta.name : t("projects.thisProject"), error: window.IrisI18n.error(err) }), true);
+      focusPicker();
     }
   }
 
   async function closeCurrent() {
     const dirty = !!(currentId && window.IrisApp && window.IrisApp.hasUnsavedChanges && window.IrisApp.hasUnsavedChanges());
     if (dirty && !(await confirmDiscardChanges())) return false;
+    window.IrisMotion.setActiveSurface("picker");
+    if (window.IrisApp && window.IrisApp.waitForPersistence) await window.IrisApp.waitForPersistence();
     if (dirty) cache.delete(currentId);
     else await persistCurrent();
+    openGeneration += 1;
+    if (window.IrisApp && window.IrisApp.cancelPendingBuild) window.IrisApp.cancelPendingBuild();
+    if (window.IrisApp && window.IrisApp.cancelPendingProjectLoad) window.IrisApp.cancelPendingProjectLoad();
     currentId = null;
+    if (window.IrisBuilds) window.IrisBuilds.reset();
     syncShareTrigger(null);
     await window.IrisI18n.useDefaultLanguage({ silent: true });
+    document.title = `${t("projects.yourProjects")} · Iris`;
     setPickerLoading();
+    window.IrisMotion.setActiveSurface("picker");
     await Promise.all([window.IrisMotion.closeProject(), renderPicker()]);
+    focusPicker();
     return true;
   }
 
-  async function persistCurrent() {
-    if (!currentId || !window.IrisApp) return false;
+  function persistCurrent() {
+    if (!currentId || !window.IrisApp) return Promise.resolve(false);
+    const projectId = currentId;
+    const sessionGeneration = openGeneration;
     const data = window.IrisApp.serialize();
     const now = Date.now();
     data.updatedAt = now;
-    cache.set(currentId, data);
-    const m = metaOf(currentId);
+    cache.set(projectId, data);
+    const m = metaOf(projectId);
     if (m) {
       m.name = (data.project && data.project.name) || m.name;
       m.updatedAt = now;
       m.fileCount = countFiles(data);
       m.projectType = data.projectType || m.projectType || "latex";
     }
-    try {
-      const out = await api(`/api/projects/${currentId}`, {
-        method: "PUT",
-        body: JSON.stringify({ name: m ? m.name : data.project.name, data }),
-      });
-      if (out && out.data) cache.set(currentId, out.data);
-      if (out && out.project && m) Object.assign(m, out.project);
-      return true;
-    } catch (err) {
-      console.error("Salvataggio progetto fallito", err);
-      // Write refused (role downgraded to viewer while the project was open):
-      // let the editor drop to read-only and tell the user, instead of failing
-      // silently and risking lost edits.
-      if (err && err.status === 403) document.dispatchEvent(new CustomEvent("iris:writeforbidden"));
-      return false;
-    }
+    const name = m ? m.name : data.project.name;
+    const operation = async () => {
+      try {
+        const out = await api(`/api/projects/${projectId}`, {
+          method: "PUT",
+          body: JSON.stringify({ name, data }),
+        });
+        const staleReopen = currentId === projectId && openGeneration !== sessionGeneration;
+        if (!staleReopen && out && out.data) cache.set(projectId, out.data);
+        if (!staleReopen && out && out.project && m) Object.assign(m, out.project);
+        return currentId === projectId && openGeneration === sessionGeneration;
+      } catch (err) {
+        console.error("Salvataggio progetto fallito", err);
+        // Write refused (role downgraded to viewer while the project was open):
+        // let the editor drop to read-only and tell the user, instead of failing
+        // silently and risking lost edits.
+        if (currentId === projectId && openGeneration === sessionGeneration && err && err.status === 403) {
+          document.dispatchEvent(new CustomEvent("iris:writeforbidden"));
+        }
+        return false;
+      }
+    };
+    saveQueue = saveQueue.then(operation, operation);
+    return saveQueue;
   }
 
   async function compileCurrent(data, options) {
     if (!currentId) throw new Error(t("projects.noneOpen"));
+    const projectId = currentId;
+    const sessionGeneration = openGeneration;
     data = data && typeof data === "object" ? data : (window.IrisApp ? window.IrisApp.serialize() : {});
     const now = Date.now();
     data.updatedAt = now;
-    cache.set(currentId, data);
-    const m = metaOf(currentId);
+    cache.set(projectId, data);
+    const m = metaOf(projectId);
     if (m) {
       m.name = (data.project && data.project.name) || m.name;
       m.updatedAt = now;
       m.fileCount = countFiles(data);
       m.projectType = data.projectType || m.projectType || "latex";
     }
-    const out = await api(`/api/projects/${currentId}/compile`, {
+    const out = await api(`/api/projects/${projectId}/compile`, {
       method: "POST",
       body: JSON.stringify({
         name: m ? m.name : data.project.name,
@@ -330,6 +391,8 @@
         compileProfile: options && options.compileProfile,
       }),
     });
+    if (currentId !== projectId || openGeneration !== sessionGeneration) throw new Error(t("projects.noneOpen"));
+    document.dispatchEvent(new CustomEvent("iris:buildcompleted", { detail: out }));
     return out;
   }
 
@@ -383,6 +446,48 @@
   async function checkpointCurrent() {
     if (!currentId) throw new Error(t("projects.noneOpen"));
     return api(`/api/projects/${currentId}/checkpoint`, { method: "POST", body: "{}" });
+  }
+
+  /* ---------------- versioned build outputs ---------------- */
+  function currentProjectId() { return currentId; }
+
+  async function listBuildOutputs({ limit = 50, offset = 0 } = {}) {
+    if (!currentId) throw new Error(t("projects.noneOpen"));
+    const query = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+    return api(`/api/projects/${currentId}/builds?${query}`);
+  }
+
+  async function getBuildOutput(buildId) {
+    if (!currentId) throw new Error(t("projects.noneOpen"));
+    return api(`/api/projects/${currentId}/builds/${buildId}`);
+  }
+
+  async function loadBuildOutput(buildId) {
+    const projectId = currentId;
+    if (!projectId) throw new Error(t("projects.noneOpen"));
+    const detail = await api(`/api/projects/${projectId}/builds/${buildId}`);
+    const artifacts = await Promise.all((detail.artifacts || []).map(async (artifact) => {
+      const response = await fetch(artifact.url, { credentials: "same-origin" });
+      if (!response.ok) throw await errorFromResponse(response);
+      return {
+        ...artifact,
+        name: artifact.path || artifact.name,
+        bytes: new Uint8Array(await response.arrayBuffer()),
+      };
+    }));
+    if (currentId !== projectId) throw new Error(t("projects.noneOpen"));
+    return { build: detail.build, artifacts };
+  }
+
+  async function downloadBuildArtifact(artifact) {
+    const response = await fetch(artifact.downloadUrl || artifact.url, { credentials: "same-origin" });
+    if (!response.ok) throw await errorFromResponse(response);
+    saveBlob(await response.blob(), artifact.name || "output");
+  }
+
+  async function deleteBuildOutput(buildId) {
+    if (!currentId) throw new Error(t("projects.noneOpen"));
+    return api(`/api/projects/${currentId}/builds/${buildId}`, { method: "DELETE" });
   }
 
   async function downloadProjectArchive(id, projectName) {
@@ -468,7 +573,11 @@
     index = index.filter((x) => x.id !== id);
     cache.delete(id);
     if (id === currentId) {
+      openGeneration += 1;
+      if (window.IrisApp && window.IrisApp.cancelPendingBuild) window.IrisApp.cancelPendingBuild();
+      if (window.IrisApp && window.IrisApp.cancelPendingProjectLoad) window.IrisApp.cancelPendingProjectLoad();
       currentId = null;
+      if (window.IrisBuilds) window.IrisBuilds.reset();
       syncShareTrigger(null);
       await window.IrisI18n.useDefaultLanguage({ silent: true });
       await window.IrisMotion.closeProject();
@@ -487,6 +596,8 @@
     $("projTypeSelect").value = "latex";
     $("projNameInput").value = "";
     $("projNameInput").classList.remove("nomatch");
+    $("projNameInput").removeAttribute("aria-invalid");
+    $("projModalError").style.display = "none";
     openModal("projModal");
     setTimeout(() => $("projNameInput").focus(), 40);
   }
@@ -499,6 +610,8 @@
     $("projTypeField").style.display = "none";
     $("projNameInput").value = m ? m.name : "";
     $("projNameInput").classList.remove("nomatch");
+    $("projNameInput").removeAttribute("aria-invalid");
+    $("projModalError").style.display = "none";
     openModal("projModal");
     setTimeout(() => { const i = $("projNameInput"); i.focus(); i.select(); }, 40);
   }
@@ -506,7 +619,10 @@
     const name = $("projNameInput").value.trim();
     if (!name) {
       const i = $("projNameInput");
-      i.classList.add("nomatch"); i.focus();
+      i.classList.add("nomatch"); i.setAttribute("aria-invalid", "true"); i.focus();
+      const error = $("projModalError");
+      error.textContent = t("api.PROJECT_NAME_REQUIRED");
+      error.style.display = "flex";
       return;
     }
     const ok = $("projModalOk");
@@ -519,13 +635,20 @@
         await renderPicker();
         await openProject(id);
       } else {
+        const renamedId = projTargetId;
         await renameProject(projTargetId, name);
         await closeModal("projModal");
         await renderPicker();
+        const action = document.querySelector(`.pcard[data-id="${renamedId}"] [data-act="rename"]`);
+        if (action) action.focus();
+        else focusPicker();
       }
     } catch (err) {
       $("projNameInput").classList.add("nomatch");
-      $("projModalHint").textContent = window.IrisI18n.error(err, "projects.operationFailed");
+      $("projNameInput").setAttribute("aria-invalid", "true");
+      const error = $("projModalError");
+      error.textContent = window.IrisI18n.error(err, "projects.operationFailed");
+      error.style.display = "flex";
     } finally {
       ok.disabled = false;
       ok.classList.remove("loading");
@@ -535,6 +658,7 @@
     const m = metaOf(id);
     delTargetId = id;
     $("projDeleteText").textContent = t("projects.deleteConfirm", { name: m ? m.name : t("projects.thisProject") });
+    $("projDeleteError").style.display = "none";
     openModal("projDelModal");
   }
   async function confirmDelete() {
@@ -544,8 +668,11 @@
       await deleteProject(delTargetId);
       await closeModal("projDelModal");
       await renderPicker();
+      focusPicker();
     } catch (err) {
-      console.error(err);
+      const error = $("projDeleteError");
+      error.textContent = window.IrisI18n.error(err, "projects.deleteFailed");
+      error.style.display = "flex";
     } finally {
       ok.disabled = false;
     }
@@ -567,7 +694,7 @@
       return;
     }
     node.textContent = window.IrisI18n.error(error, "sharing.loadFailed");
-    node.style.display = "";
+    node.style.display = "flex";
   }
 
   function shareStatus(message) {
@@ -595,8 +722,8 @@
       row.innerHTML =
         `<span class="project-share-member-id"><b>${esc(member.name || member.username)}${isSelf ? ` <span class="project-share-you">${esc(t("sharing.you"))}</span>` : ""}</b>` +
         `<span class="project-share-member-sub">@${esc(member.username)} · ${esc(member.email)}</span></span>` +
-        `<select class="input project-share-role" aria-label="${esc(t("sharing.role"))}"${lastOwner || shareBusy ? " disabled" : ""}${lockedTitle}>${options}</select>` +
-        `<button class="node-act danger project-share-remove" type="button" aria-label="${esc(t("sharing.removeAria", { name: member.username }))}" title="${esc(lastOwner ? t("api.PROJECT_LAST_OWNER") : t("sharing.removeAria", { name: member.username }))}"${lastOwner || shareBusy ? " disabled" : ""}>${ti("trash")}</button>`;
+        `<select class="input project-share-role" aria-label="${esc(t("sharing.roleAria", { name: member.name || member.username }))}" aria-describedby="projectShareOwnerHint"${lastOwner || shareBusy ? " disabled" : ""}${lockedTitle}>${options}</select>` +
+        `<button class="node-act danger project-share-remove" type="button" aria-label="${esc(t("sharing.removeAria", { name: member.username }))}" aria-describedby="projectShareOwnerHint" title="${esc(lastOwner ? t("api.PROJECT_LAST_OWNER") : t("sharing.removeAria", { name: member.username }))}"${lastOwner || shareBusy ? " disabled" : ""}>${ti("trash")}</button>`;
       const select = row.querySelector(".project-share-role");
       if (!lastOwner) select.addEventListener("change", () => { void changeSharedRole(member, select.value); });
       const remove = row.querySelector(".project-share-remove");
@@ -743,7 +870,7 @@
     renderShareMembers();
     try {
       if (isSelf && window.IrisApp.hasUnsavedChanges && window.IrisApp.hasUnsavedChanges()) {
-        const saved = await persistCurrent();
+        const saved = window.IrisApp.persistChanges ? await window.IrisApp.persistChanges() : await persistCurrent();
         if (!saved) throw new Error(t("projects.operationFailed"));
       }
       await api(`/api/projects/${currentId}/members/${member.userId}`, {
@@ -771,11 +898,18 @@
     await closeModal("projectShareModal");
     index = index.filter((projectMeta) => projectMeta.id !== id);
     cache.delete(id);
+    openGeneration += 1;
+    if (window.IrisApp && window.IrisApp.cancelPendingBuild) window.IrisApp.cancelPendingBuild();
+    if (window.IrisApp && window.IrisApp.cancelPendingProjectLoad) window.IrisApp.cancelPendingProjectLoad();
     currentId = null;
+    if (window.IrisBuilds) window.IrisBuilds.reset();
     syncShareTrigger(null);
     await window.IrisI18n.useDefaultLanguage({ silent: true });
+    document.title = `${t("projects.yourProjects")} · Iris`;
     setPickerLoading();
+    window.IrisMotion.setActiveSurface("picker");
     await Promise.all([window.IrisMotion.closeProject(), renderPicker()]);
+    focusPicker();
   }
 
   async function removeSharedMember(member) {
@@ -785,7 +919,7 @@
     renderShareMembers();
     try {
       if (isSelf && window.IrisApp.hasUnsavedChanges && window.IrisApp.hasUnsavedChanges()) {
-        const saved = await persistCurrent();
+        const saved = window.IrisApp.persistChanges ? await window.IrisApp.persistChanges() : await persistCurrent();
         if (!saved) throw new Error(t("projects.operationFailed"));
       }
       await api(`/api/projects/${currentId}/members/${member.userId}`, { method: "DELETE" });
@@ -807,15 +941,23 @@
   async function showPicker() {
     const dirty = !!(currentId && window.IrisApp && window.IrisApp.hasUnsavedChanges && window.IrisApp.hasUnsavedChanges());
     if (dirty && !(await confirmDiscardChanges())) return false;
+    window.IrisMotion.setActiveSurface("picker");
+    if (window.IrisApp && window.IrisApp.waitForPersistence) await window.IrisApp.waitForPersistence();
     if (dirty) cache.delete(currentId);
     else await persistCurrent();
     const hadProject = !!currentId;
+    openGeneration += 1;
+    if (window.IrisApp && window.IrisApp.cancelPendingBuild) window.IrisApp.cancelPendingBuild();
+    if (window.IrisApp && window.IrisApp.cancelPendingProjectLoad) window.IrisApp.cancelPendingProjectLoad();
     currentId = null;
+    if (window.IrisBuilds) window.IrisBuilds.reset();
     syncShareTrigger(null);
     await window.IrisI18n.useDefaultLanguage({ silent: true });
+    document.title = `${t("projects.yourProjects")} · Iris`;
     setPickerLoading();
     if (hadProject) await Promise.all([window.IrisMotion.closeProject(), renderPicker()]);
     else await renderPicker();
+    focusPicker();
     return true;
   }
   function onLogout() {
@@ -823,15 +965,25 @@
       unsavedDecision.resolve(false);
       unsavedDecision = null;
     }
+    openGeneration += 1;
+    if (window.IrisApp && window.IrisApp.cancelPendingBuild) window.IrisApp.cancelPendingBuild();
+    if (window.IrisApp && window.IrisApp.cancelPendingProjectLoad) window.IrisApp.cancelPendingProjectLoad();
     currentId = null;
     syncShareTrigger(null);
     cache.clear();
     index = [];
     void window.IrisI18n.useDefaultLanguage({ silent: true });
     window.IrisMotion.resetProject();
+    document.title = "Iris";
   }
 
-  window.IrisProjects = { showPicker, openProject, closeCurrent, persistCurrent, compileCurrent, downloadCurrentFile, refreshCurrent, renderPicker, onLogout, resolveFileId, listFileVersions, getFileVersion, restoreFileVersion, checkpointCurrent };
+  window.IrisProjects = {
+    showPicker, openProject, closeCurrent, persistCurrent, compileCurrent,
+    downloadCurrentFile, refreshCurrent, renderPicker, onLogout, resolveFileId,
+    listFileVersions, getFileVersion, restoreFileVersion, checkpointCurrent,
+    currentProjectId, currentRole, listBuildOutputs, getBuildOutput, loadBuildOutput,
+    downloadBuildArtifact, deleteBuildOutput,
+  };
 
   /* ---------------- wiring ---------------- */
   function wire() {
@@ -851,7 +1003,11 @@
     $("projectShareSearch").addEventListener("input", scheduleShareSearch);
 
     $("projModalOk").addEventListener("click", () => confirmProjModal());
-    $("projNameInput").addEventListener("input", () => $("projNameInput").classList.remove("nomatch"));
+    $("projNameInput").addEventListener("input", () => {
+      $("projNameInput").classList.remove("nomatch");
+      $("projNameInput").removeAttribute("aria-invalid");
+      $("projModalError").style.display = "none";
+    });
     $("projTypeSelect").addEventListener("change", function () {
       $("projModalHint").textContent = t(this.value === "lilypond" ? "projects.newLilypondHint" : "projects.newLatexHint");
     });
@@ -873,12 +1029,18 @@
       if (event.target === $("projUnsavedModal")) void finishDiscardDecision(false);
     });
     document.addEventListener("keydown", (event) => {
-      if (event.key === "Escape" && unsavedDecision) void finishDiscardDecision(false);
-    });
+      if (event.key !== "Escape" || !unsavedDecision) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      void finishDiscardDecision(false);
+    }, true);
   }
 
   document.addEventListener("iris:languagechange", () => {
-    if (document.documentElement.classList.contains("iris-authed") && !currentId) void renderPicker();
+    if (document.documentElement.classList.contains("iris-authed") && !currentId) {
+      document.title = `${t("projects.yourProjects")} · Iris`;
+      void renderPicker();
+    }
     if ($("projModal").classList.contains("on")) {
       if (projMode === "new") askNew();
       else if (projTargetId) askRename(projTargetId);

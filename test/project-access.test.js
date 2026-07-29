@@ -19,6 +19,8 @@ test("the capability matrix matches the roadmap", () => {
   for (const cap of ["read", "write", "compile", "share", "delete"]) {
     assert.equal(roleHasCapability("owner", cap), true, `owner should have ${cap}`);
   }
+  assert.equal(roleHasCapability("owner", "deleteBuild"), true);
+  assert.equal(roleHasCapability("editor", "deleteBuild"), false);
   // Editor: read, write, compile — but not share or delete.
   assert.deepEqual(
     ["read", "write", "compile", "share", "delete"].map((c) => roleHasCapability("editor", c)),

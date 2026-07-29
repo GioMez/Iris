@@ -8,7 +8,10 @@ const css = fs.readFileSync(path.join(root, "public/iris.css"), "utf8");
 const html = fs.readFileSync(path.join(root, "public/Iris.html"), "utf8");
 const app = fs.readFileSync(path.join(root, "public/iris-app.js"), "utf8");
 const projects = fs.readFileSync(path.join(root, "public/iris-projects.js"), "utf8");
+const builds = fs.readFileSync(path.join(root, "public/iris-builds.js"), "utf8");
 const admin = fs.readFileSync(path.join(root, "public/iris-admin.js"), "utf8");
+const adminProjects = fs.readFileSync(path.join(root, "public/iris-admin-projects.js"), "utf8");
+const auth = fs.readFileSync(path.join(root, "public/iris-auth.js"), "utf8");
 const motion = fs.readFileSync(path.join(root, "public/iris-motion.js"), "utf8");
 
 function token(name) {
@@ -82,9 +85,34 @@ test("compiled outputs sync into the tree and every file exposes download", () =
   assert.match(projects, /function downloadCurrentFile\(filePath, fileName\)/);
 });
 
+test("versioned builds are discoverable, previewable, and restored on project open", () => {
+  assert.match(html, /id="btnBuilds"[^>]*data-i18n-title="toolbar\.buildsTitle"/);
+  assert.match(html, /id="buildsRefresh"[^>]*data-i18n-aria-label="builds\.refresh"/);
+  assert.match(html, /id="buildsModal"[\s\S]*role="dialog"[\s\S]*id="buildsList"[^>]*role="listbox"/);
+  assert.match(projects, /\/api\/projects\/\$\{currentId\}\/builds\?\$\{query\}/);
+  assert.match(projects, /\/api\/projects\/\$\{projectId\}\/builds\/\$\{buildId\}/);
+  assert.match(projects, /IrisBuilds\.loadLatest\(id\)/);
+  assert.match(builds, /latestSuccessfulId/);
+  assert.match(builds, /IrisApp\.showBuildOutput\(payload, \{ activateWorkspace: false \}\)/);
+  assert.match(builds, /currentRole\(\) === "owner"/);
+  assert.match(builds, /deleteBuildOutput\(deletedId\)/);
+  assert.match(builds, /function moveListSelection\(event\)/);
+  assert.match(builds, /\["ArrowDown", "ArrowUp", "Home", "End"\]/);
+  assert.match(builds, /reloadSelected: true/);
+  assert.match(builds, /previewSeq !== buildState\.previewSeq/);
+  assert.match(builds, /clearBuildOutput\(latestCompleted\.id\)/);
+  assert.match(app, /async function showBuildOutput\(payload, options = \{\}\)/);
+  assert.match(app, /suppliedBytes instanceof Uint8Array/);
+  assert.match(app, /function removeBuildFromOutputTree\(buildId\)/);
+  assert.match(css, /\.build-grid\{[^}]*grid-template-columns:292px minmax\(0,1fr\)/);
+  assert.match(css, /@media\(max-width:760px\)[\s\S]*\.build-grid\{grid-template-columns:1fr/);
+});
+
 test("file tree supports server refresh and font uploads sync immediately", () => {
   assert.match(html, /id="refreshTreeBtn"[^>]*data-i18n-title="sidebar\.refreshTree"/);
   assert.match(app, /function refreshFileTree\(\)/);
+  assert.match(app, /revision !== state\.editRevision \|\| state\.dirtyFiles\.size/);
+  assert.match(app, /JSON\.stringify\(projectSnapshot\(\)\) !== snapshot/);
   assert.match(projects, /async function refreshCurrent\(\)/);
   assert.match(app, /function syncFontInTree\(font\)/);
   assert.match(app, /syncFontInTree\(font\)/);
@@ -127,7 +155,8 @@ test("dialogs and project navigation share motion without animating the home", (
   assert.match(projects, /IrisMotion\.closeProject\(\)/);
   assert.doesNotMatch(projects, /window\.confirm/);
   assert.match(projects, /await confirmDiscardChanges\(\)/);
-  assert.match(app, /\.scrim\.on:not\(\.forced\)/);
+  assert.match(motion, /function closeTopDialog\(\)/);
+  assert.match(motion, /const dialogStack = \[\]/);
   const dialogSurfaces = html.match(/<(?:div|form) class="modal[^"]*"[^>]*role="dialog"[^>]*aria-modal="true"/g) || [];
   assert.equal(dialogSurfaces.length, (html.match(/<div class="scrim"/g) || []).length);
 });
@@ -160,7 +189,7 @@ test("home account controls reuse the project toolbar styling and order", () => 
 
 test("admin controls remain usable on desktop, mobile and keyboard", () => {
   assert.match(css, /\.admin-filters select\{[^}]*width:auto/);
-  assert.match(css, /@media\(max-width:640px\)[\s\S]*\.admin-table tbody tr\{display:grid/);
+  assert.match(css, /@media\(max-width:820px\)[\s\S]*\.admin-table tbody tr\{display:grid/);
   // Secondary columns hidden on small screens: two in the users table
   // (sign-in, last sign-in) and one in the projects table (updated).
   assert.equal((html.match(/<th class="admin-hide-sm"/g) || []).length, 3);
@@ -170,6 +199,68 @@ test("admin controls remain usable on desktop, mobile and keyboard", () => {
   assert.match(admin, /adminResetConfirmText.*admin\.resetConfirm/);
   assert.match(admin, /adminCreateForm.*addEventListener\("submit"/);
   assert.match(admin, /adminEditForm.*addEventListener\("submit"/);
+});
+
+test("home and admin share one aligned responsive header system", () => {
+  assert.match(css, /\.login-brand \.mark\{width:34px;height:34px/);
+  assert.match(css, /\.admin-switch\{[^}]*height:34px;[^}]*padding:2px/);
+  assert.match(css, /\.admin-switch button\{height:28px/);
+  assert.match(css, /@media\(max-width:640px\)\{[\s\S]*\.picker-screen\{padding:30px 18px 48px/);
+  assert.match(css, /@media\(max-width:640px\)\{[\s\S]*\.admin-screen\{padding:30px 18px 48px/);
+  const adminHeader = html.slice(html.indexOf('<div class="admin-screen"'), html.indexOf('<!-- USERS PANEL -->'));
+  assert.match(adminHeader, /class="login-brand"/);
+  assert.match(adminHeader, /class="picker-user admin-header-actions"/);
+  assert.match(adminHeader, /id="adminAccount"[\s\S]*class="avatar"[\s\S]*class="uname"/);
+});
+
+test("only the active application surface and top dialog are interactive", () => {
+  assert.match(motion, /function setActiveSurface\(name\)/);
+  assert.match(motion, /element\.inert = !interactive/);
+  assert.match(motion, /function focusableElements\(dialog\)/);
+  assert.match(motion, /event\.key !== "Tab"/);
+  assert.match(motion, /dialog\.classList\.contains\("forced"\) && !options\.force/);
+  assert.match(app, /if \(!document\.documentElement\.classList\.contains\("iris-inproject"\)\) return/);
+  assert.match(app, /if \(document\.querySelector\("\.scrim\.on"\)\) return/);
+  assert.match(app, /if \(document\.querySelector\("\.menu\.on"\)\) return/);
+  assert.match(projects, /leaveSharedProject[\s\S]*setActiveSurface\("picker"\)/);
+});
+
+test("admin tabs, filters and forms expose complete accessible relationships", () => {
+  assert.match(html, /id="adminTabUsers"[^>]*aria-controls="adminUsersPanel"[^>]*tabindex="0"/);
+  assert.match(html, /id="adminTabProjects"[^>]*aria-controls="adminProjectsPanel"[^>]*tabindex="-1"/);
+  assert.match(html, /id="adminUsersPanel"[^>]*role="tabpanel"[^>]*aria-labelledby="adminTabUsers"/);
+  assert.match(html, /for="adminSearch"/);
+  assert.match(html, /for="adminCreateUsername"/);
+  assert.match(admin, /event\.key === "ArrowRight"/);
+  assert.match(admin, /b\.tabIndex = on \? 0 : -1/);
+});
+
+test("loading, error and empty states preserve layout and meaning", () => {
+  assert.match(css, /\.picker-import-status:empty\{visibility:hidden\}/);
+  assert.match(css, /\.picker-grid>\.picker-empty\{grid-column:1\/-1/);
+  assert.match(css, /\.admin-table-wrap>\.picker-empty\{border:0/);
+  assert.match(projects, /grid\.setAttribute\("aria-busy", "true"\)/);
+  assert.match(projects, /data-retry-projects/);
+  assert.match(admin, /if \(loadFailed\) \{ empty\.style\.display = "none"; return; \}/);
+});
+
+test("account and credential controls retain names at every breakpoint", () => {
+  ["userChip", "pkAccount", "adminAccount"].forEach((id) => {
+    assert.match(html, new RegExp(`id="${id}"[^>]*data-i18n-aria-label="common\\.account"`));
+  });
+  ["passwordCurrent", "passwordNew", "passwordConfirm", "usernameNew", "usernameCurrent"].forEach((id) => {
+    assert.match(html, new RegExp(`<label[^>]*for="${id}"`));
+  });
+  assert.match(auth, /const USER_MENU_TRIGGERS = \["userChip", "pkAccount", "adminAccount"\]/);
+  assert.match(auth, /event\.stopImmediatePropagation\(\); closeUserMenu\(true\)/);
+});
+
+test("admin member mutations retain focus and expose in-modal status", () => {
+  assert.match(adminProjects, /row\.dataset\.userId = m\.userId/);
+  assert.match(adminProjects, /function focusMemberControl\(userId, selector\)/);
+  assert.match(adminProjects, /adminProjectModalStatus/);
+  assert.match(html, /id="adminProjectOwnerHint"/);
+  assert.match(html, /id="projectShareOwnerHint"/);
 });
 
 test("editor suppresses native boundary bounce without custom motion", () => {
@@ -223,6 +314,29 @@ test("fundamental project actions expose matching keyboard shortcuts", () => {
   assert.match(app, /key === "n"[^\n]*newFile\(\)/);
   assert.match(app, /key === "o"[^\n]*openExternalPicker\(\)/);
   assert.match(app, /e\.key === "Enter"[^\n]*compile\(\)/);
+  assert.match(app, /if \(state\.compiling\) return/);
+});
+
+test("project and build requests ignore stale asynchronous completions", () => {
+  assert.match(projects, /let openGeneration = 0/);
+  assert.match(projects, /generation !== openGeneration/);
+  assert.match(projects, /cancelPendingProjectLoad/);
+  assert.match(projects, /const projectId = currentId;[\s\S]*currentId !== projectId/);
+  assert.match(app, /compileGeneration/);
+  assert.match(app, /generation !== state\.compileGeneration/);
+  assert.match(app, /projectLoadGeneration/);
+  assert.match(app, /outputGeneration/);
+  assert.match(app, /loadGeneration !== state\.pdfLoadGeneration/);
+  assert.match(builds, /const seq = \+\+buildState\.previewSeq/);
+  assert.match(builds, /currentProjectId\(\) !== projectId/);
+  assert.match(builds, /data-build-act="cancel-delete"[^\n]*\.focus\(\)/);
+  assert.match(projects, /async function refreshCurrent\(\)[\s\S]*const projectId = currentId/);
+  assert.match(projects, /function persistCurrent\(\)[\s\S]*const projectId = currentId/);
+  assert.match(projects, /openGeneration !== sessionGeneration/);
+  assert.match(projects, /saveQueue = saveQueue\.then\(operation, operation\)/);
+  assert.match(app, /async function waitForPersistence\(\)/);
+  assert.match(app, /pending !== persistQueue/);
+  assert.match(app, /persistChanges\(\) \{ return persist\(\); \}/);
 });
 
 test("settings use accessible tabs and a compact accordion", () => {

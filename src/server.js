@@ -23,6 +23,14 @@ const {
 } = require("./project-access");
 const { projectStorageKey, resolveProjectStorageDir, relocateProjectStorage } = require("./project-storage");
 const { createZip, extractZip } = require("./zip");
+const {
+  buildStoragePath,
+  publishCompileOutput,
+  versionCompileArtifacts,
+  hashBuildArtifacts,
+  resolveBuildDirectory,
+  resolveBuildArtifact,
+} = require("./builds");
 
 loadDotEnv(path.resolve(".env"));
 
@@ -81,6 +89,7 @@ let initialAdminCredentials = null;
 let shuttingDown = false;
 let inFlight = 0;
 let inFlightMutations = 0;
+const activeBuilds = new Set();
 
 // Cheap, synchronous check on the mutation path, which is far rarer than reads.
 function maintenanceActive() {
@@ -1467,17 +1476,17 @@ function versionAuthorLabel(user) {
   return user.username || user.email || `user:${user.sub}`;
 }
 
-async function latestVersion(fileId) {
-  const { rows } = await db.query(
+async function latestVersion(fileId, queryable = db) {
+  const { rows } = await queryable.query(
     "SELECT id, content_hash FROM document_versions WHERE file_id = $1 ORDER BY created_at DESC, id DESC LIMIT 1",
     [fileId]
   );
   return rows[0] || null;
 }
 
-async function insertVersion({ fileId, parentId, user, reason, content }) {
+async function insertVersion({ fileId, parentId, user, reason, content }, queryable = db) {
   const id = uuidv7();
-  await db.query(
+  await queryable.query(
     `INSERT INTO document_versions (id, file_id, parent_version_id, author_id, author_label, reason, content_hash, content, size)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
     [id, fileId, parentId, user.sub, versionAuthorLabel(user), reason, hashContent(content), content, Buffer.byteLength(content, "utf8")]
@@ -1485,29 +1494,62 @@ async function insertVersion({ fileId, parentId, user, reason, content }) {
   return id;
 }
 
-// Records a revision of one file if its on-disk content is versionable text and
-// differs from its latest revision. Returns the new version id or null.
-async function snapshotFileIfChanged({ storageDir, file, user, reason }) {
+// Resolves the exact revision for the on-disk content, inserting it when changed.
+// Unversionable content has no revision and is represented by null.
+async function snapshotFileIfChanged({ storageDir, file, user, reason }, queryable = db) {
   const buffer = await fs.readFile(path.join(storageDir, file.path)).catch(() => null);
   if (!isVersionableText(buffer, file.kind)) return null;
   const content = buffer.toString("utf8");
-  const previous = await latestVersion(file.id);
-  if (!contentChanged(previous ? previous.content_hash : null, hashContent(content))) return null;
-  return insertVersion({ fileId: file.id, parentId: previous ? previous.id : null, user, reason, content });
+  const previous = await latestVersion(file.id, queryable);
+  if (!contentChanged(previous ? previous.content_hash : null, hashContent(content))) {
+    return { id: previous.id, created: false };
+  }
+  const id = await insertVersion(
+    { fileId: file.id, parentId: previous ? previous.id : null, user, reason, content },
+    queryable
+  );
+  return { id, created: true };
 }
 
-// Snapshots every live text file of a project at a checkpoint (a compile or a
-// manual request). Unchanged files are skipped, so the history stays meaningful.
-async function captureProjectCheckpoint({ projectId, storageDir, user, reason }) {
-  const { rows: files } = await db.query(
-    "SELECT id, path, kind FROM project_files WHERE project_id = $1 AND deleted_at IS NULL ORDER BY path",
-    [projectId]
-  );
-  let created = 0;
-  for (const file of files) {
-    if (await snapshotFileIfChanged({ storageDir, file, user, reason })) created += 1;
+// A project checkpoint is serialized so concurrent compilations cannot fork a
+// file's revision chain. It also returns the exact revision used for each file.
+async function captureProjectCheckpoint({ projectId, storageDir, user, reason, files: checkpointFiles = null }) {
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock(4953, hashtext($1))", [projectId]);
+    let files = checkpointFiles;
+    if (!files) {
+      const result = await client.query(
+        "SELECT id, path, kind FROM project_files WHERE project_id = $1 AND deleted_at IS NULL ORDER BY path",
+        [projectId]
+      );
+      files = result.rows;
+    }
+    let created = 0;
+    const versions = new Map();
+    for (const file of files) {
+      const version = await snapshotFileIfChanged({ storageDir, file, user, reason }, client);
+      if (version && version.created) created += 1;
+      versions.set(file.id, version ? version.id : null);
+    }
+    await client.query("COMMIT");
+    return { created, versions };
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
   }
-  return { created };
+}
+
+async function sourceRevisionForBuild(storageDir, mainPath, sourceFileId, sourceRevisionId) {
+  const content = await fs.readFile(path.join(storageDir, mainPath));
+  return {
+    sourceFileId,
+    sourceContentHash: hashContent(content),
+    sourceRevisionId,
+  };
 }
 
 async function fileForProject(projectId, fileId) {
@@ -2277,13 +2319,6 @@ function compileArtifactNameMatches(fileName, jobname, format) {
   return boundary === "." || boundary === "-";
 }
 
-async function removePriorCompileArtifacts(outputDir, jobname, format) {
-  const entries = await fs.readdir(outputDir, { withFileTypes: true }).catch(() => []);
-  await Promise.all(entries
-    .filter((entry) => entry.isFile() && compileArtifactNameMatches(entry.name, jobname, format))
-    .map((entry) => fs.rm(path.join(outputDir, entry.name), { force: true })));
-}
-
 async function readCompileArtifacts(outputDir, jobname, format) {
   const entries = await fs.readdir(outputDir, { withFileTypes: true }).catch(() => []);
   const names = entries
@@ -2306,6 +2341,245 @@ async function readCompileArtifacts(outputDir, jobname, format) {
     });
   }
   return artifacts;
+}
+
+const BUILD_OUTPUT_FIELDS = `
+  id, project_id, source_file_id, source_revision_id, source_content_hash, created_by, created_by_label,
+  created_at, completed_at, status, project_type, compiler, format, main_path,
+  display_name, storage_path, size, content_hash, artifact_count, duration_ms,
+  exit_code, signal, timed_out`;
+
+function buildOutputView(row, diagnostics = false) {
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    sourceFileId: row.source_file_id,
+    sourceRevisionId: row.source_revision_id,
+    sourceContentHash: row.source_content_hash,
+    createdBy: row.created_by,
+    author: row.created_by_label,
+    createdAt: toMillis(row.created_at),
+    completedAt: row.completed_at ? toMillis(row.completed_at) : null,
+    status: row.status,
+    projectType: row.project_type,
+    compiler: row.compiler,
+    format: row.format,
+    mainPath: row.main_path,
+    displayName: row.display_name,
+    storagePath: row.storage_path,
+    size: Number(row.size),
+    contentHash: row.content_hash,
+    artifactCount: Number(row.artifact_count),
+    durationMs: row.duration_ms,
+    exitCode: row.exit_code,
+    signal: row.signal,
+    timedOut: row.timed_out,
+    ...(diagnostics ? {
+      log: row.log || "",
+      warnings: Array.isArray(row.warnings) ? row.warnings : [],
+      errors: Array.isArray(row.errors) ? row.errors : [],
+    } : {}),
+  };
+}
+
+function buildArtifactView(row, projectId, buildId) {
+  const url = `/api/projects/${projectId}/builds/${buildId}/artifacts/${row.id}`;
+  return {
+    id: row.id,
+    name: row.name,
+    path: row.storage_path,
+    mimeType: row.mime_type,
+    size: Number(row.size),
+    contentHash: row.content_hash,
+    url,
+    downloadUrl: `${url}?download=1`,
+  };
+}
+
+async function createBuildOutput({
+  id, projectId, sourceFileId, sourceRevisionId, sourceContentHash, user, projectType, compiler, format, mainPath, displayName,
+}) {
+  const { rows } = await db.query(
+    `INSERT INTO build_outputs (
+       id, project_id, source_file_id, source_revision_id, source_content_hash, created_by,
+       created_by_label, project_type, compiler, format, main_path, display_name
+     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+     RETURNING created_at`,
+    [
+      id, projectId, sourceFileId, sourceRevisionId, sourceContentHash, user.sub,
+      versionAuthorLabel(user), projectType, compiler, format, mainPath, displayName,
+    ]
+  );
+  return rows[0].created_at;
+}
+
+async function finalizeBuildOutput({ id, status, storagePath, artifacts, result }) {
+  const succeeded = status === "succeeded";
+  const size = succeeded ? artifacts.reduce((total, artifact) => total + artifact.size, 0) : 0;
+  const contentHash = succeeded ? hashBuildArtifacts(artifacts) : null;
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN");
+    if (succeeded) {
+      for (const artifact of artifacts) {
+        await client.query(
+          `INSERT INTO build_artifacts (id, build_id, name, storage_path, mime_type, size, content_hash)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+          [artifact.id, id, artifact.fileName, artifact.storagePath, artifact.mimeType, artifact.size, artifact.contentHash]
+        );
+      }
+    }
+    const update = await client.query(
+      `UPDATE build_outputs SET
+         completed_at = CURRENT_TIMESTAMP, status = $2, storage_path = $3, size = $4,
+         content_hash = $5, artifact_count = $6, duration_ms = $7, exit_code = $8,
+         signal = $9, timed_out = $10, log = $11, warnings = $12::jsonb, errors = $13::jsonb
+       WHERE id = $1 AND status = 'running'`,
+      [
+        id, status, succeeded ? storagePath : null, size, contentHash, succeeded ? artifacts.length : 0,
+        result.durationMs ?? null, result.code ?? null, result.signal || null, result.timedOut === true,
+        String(result.log || "").slice(0, COMPILE_LOG_LIMIT), JSON.stringify(result.warnings || []), JSON.stringify(result.errors || []),
+      ]
+    );
+    if (update.rowCount !== 1) throw new Error(`Build ${id} is no longer running`);
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+  return { size, contentHash };
+}
+
+async function listBuildOutputs(req, res, user, projectId, url) {
+  await authorizeProject(projectId, user, "read");
+  const requestedLimit = Number(url.searchParams.get("limit"));
+  const requestedOffset = Number(url.searchParams.get("offset"));
+  const limit = Number.isSafeInteger(requestedLimit) && requestedLimit > 0 ? Math.min(requestedLimit, 200) : 50;
+  const offset = Number.isSafeInteger(requestedOffset) && requestedOffset >= 0
+    ? Math.min(requestedOffset, 1_000_000)
+    : 0;
+  const [{ rows }, latest] = await Promise.all([
+    db.query(
+      `SELECT ${BUILD_OUTPUT_FIELDS} FROM build_outputs
+       WHERE project_id = $1 ORDER BY created_at DESC, id DESC LIMIT $2 OFFSET $3`,
+      [projectId, limit + 1, offset]
+    ),
+    db.query(
+      `SELECT id FROM build_outputs
+       WHERE project_id = $1 AND status = 'succeeded'
+       ORDER BY created_at DESC, id DESC LIMIT 1`,
+      [projectId]
+    ),
+  ]);
+  const hasMore = rows.length > limit;
+  const builds = rows.slice(0, limit).map((row) => buildOutputView(row));
+  json(res, 200, {
+    builds,
+    latestSuccessfulId: latest.rows[0] ? latest.rows[0].id : null,
+    offset,
+    nextOffset: hasMore ? offset + limit : null,
+  });
+}
+
+async function getBuildOutput(req, res, user, projectId, buildId) {
+  await authorizeProject(projectId, user, "read");
+  const { rows } = await db.query(
+    `SELECT ${BUILD_OUTPUT_FIELDS}, log, warnings, errors FROM build_outputs
+     WHERE id = $1 AND project_id = $2`,
+    [buildId, projectId]
+  );
+  if (!rows.length) throw requestError("BUILD_NOT_FOUND", 404);
+  const { rows: artifacts } = await db.query(
+    `SELECT id, name, storage_path, mime_type, size, content_hash
+     FROM build_artifacts WHERE build_id = $1 ORDER BY name`,
+    [buildId]
+  );
+  json(res, 200, {
+    build: buildOutputView(rows[0], true),
+    artifacts: artifacts.map((artifact) => buildArtifactView(artifact, projectId, buildId)),
+  });
+}
+
+async function downloadBuildArtifact(req, res, user, projectId, buildId, artifactId, url) {
+  const project = await authorizeProject(projectId, user, "read");
+  const { rows } = await db.query(
+    `SELECT a.name, a.storage_path, a.mime_type, a.size,
+            b.storage_path AS build_storage_path
+     FROM build_artifacts a JOIN build_outputs b ON b.id = a.build_id
+     WHERE a.id = $1 AND a.build_id = $2 AND b.project_id = $3 AND b.status = 'succeeded'`,
+    [artifactId, buildId, projectId]
+  );
+  if (!rows.length) throw requestError("BUILD_ARTIFACT_NOT_FOUND", 404);
+  const artifact = rows[0];
+  const file = await resolveBuildArtifact(
+    project.storageDir, buildId, artifact.build_storage_path, artifact.storage_path
+  );
+  if (!file) throw requestError("BUILD_ARTIFACT_NOT_FOUND", 404);
+  const fallbackName = artifact.name.replace(/[^A-Za-z0-9._-]/g, "_") || "download";
+  const disposition = url.searchParams.get("download") === "1" ? "attachment" : "inline";
+  res.writeHead(200, {
+    "content-type": artifact.mime_type,
+    "content-length": file.size,
+    "content-disposition": `${disposition}; filename="${fallbackName}"; filename*=UTF-8''${encodeURIComponent(artifact.name)}`,
+    "cache-control": "private, no-store",
+  });
+  await new Promise((resolve, reject) => {
+    const stream = fsSync.createReadStream(file.path);
+    stream.on("error", reject);
+    res.on("finish", resolve);
+    res.on("close", resolve);
+    stream.pipe(res);
+  });
+}
+
+async function deleteBuildOutput(req, res, user, projectId, buildId) {
+  const project = await authorizeProject(projectId, user, "deleteBuild");
+  const client = await db.connect();
+  let build;
+  let originalDirectory = null;
+  let quarantinedDirectory = null;
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query(
+      `SELECT id, status, format, storage_path FROM build_outputs
+       WHERE id = $1 AND project_id = $2 FOR UPDATE`,
+      [buildId, projectId]
+    );
+    if (!rows.length) throw requestError("BUILD_NOT_FOUND", 404);
+    build = rows[0];
+    if (build.status === "running" && activeBuilds.has(buildId)) throw requestError("BUILD_IN_PROGRESS", 409);
+    originalDirectory = await resolveBuildDirectory(
+      project.storageDir, buildId, build.storage_path || buildStoragePath(buildId)
+    );
+    if (originalDirectory) {
+      quarantinedDirectory = `${originalDirectory}.deleting-${uuidv7()}`;
+      await fs.rename(originalDirectory, quarantinedDirectory);
+    }
+    await client.query("DELETE FROM build_outputs WHERE id = $1", [buildId]);
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    if (quarantinedDirectory && originalDirectory) {
+      await fs.rename(quarantinedDirectory, originalDirectory).catch((restoreError) => {
+        console.error(`Could not restore build ${buildId} after database rollback`, restoreError);
+      });
+    }
+    throw err;
+  } finally {
+    client.release();
+  }
+  if (quarantinedDirectory) await fs.rm(quarantinedDirectory, { recursive: true, force: true });
+  await fs.rm(path.join(DATA_DIR, ".build-staging", projectId, buildId), { recursive: true, force: true }).catch(() => {});
+  await audit({
+    ...sessionActor(req, user),
+    action: "build.deleted",
+    targetType: "build",
+    targetId: buildId,
+    metadata: { projectId, status: build.status, format: build.format },
+  });
+  json(res, 200, { ok: true });
 }
 
 async function compileProject(req, res, user, id) {
@@ -2341,56 +2615,159 @@ async function compileProject(req, res, user, id) {
   data.createdAt = toMillis(row.created_at);
   data.updatedAt = Date.now();
   const { renames } = await syncProjectFiles(id, data);
+  const buildFiles = collectProjectFiles(data.project.nodes).map((entry) => ({
+    id: entry.node.id,
+    path: entry.path,
+    kind: entry.kind,
+  }));
   await writeProjectFile(row.storageDir, data, renames);
   await db.query("UPDATE projects SET name = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2", [name, id]);
-  // Checkpoint the sources that produced this build, so a compilation is a point
-  // in history and phase 4 can link an output to the revision it came from.
-  await captureProjectCheckpoint({ projectId: id, storageDir: row.storageDir, user, reason: "compile" });
-
   const jobname = path.basename(mainPath).replace(/\.[^.]+$/, "");
   const outputName = `${jobname}.${outputFormat}`;
-  const outputDir = path.join(row.storageDir, "output");
-  await fs.mkdir(outputDir, { recursive: true });
-  const formatsToClean = projectType === "lilypond" ? Array.from(LILYPOND_OUTPUT_FORMATS) : ["pdf"];
-  await Promise.all(formatsToClean.map((format) => removePriorCompileArtifacts(outputDir, jobname, format)));
-  const fontDir = path.join(row.storageDir, "fonts");
-  const texmfVar = path.join(row.storageDir, ".iris", "texmf-var");
-  await fs.mkdir(texmfVar, { recursive: true });
-  const preLog = /^(xelatex|lualatex)$/i.test(engine) ? await refreshFontCache(fontDir) : "";
-  const result = await runCompilePipeline({ profile: compileProfile, binPath, cwd: row.storageDir, fontDir, texmfVar, preLog });
-  const artifacts = await readCompileArtifacts(outputDir, jobname, outputFormat);
-  const outputTree = await generatedOutputTree(row.storageDir);
-  const primaryArtifact = artifacts[0] || null;
-  const pdfArtifact = outputFormat === "pdf" ? primaryArtifact : null;
-  const success = result.code === 0 && artifacts.length > 0;
-  json(res, 200, {
-    success,
-    projectType,
-    engine,
-    mainPath,
-    outputDir: "output",
-    outputFormat,
-    outputName: primaryArtifact ? primaryArtifact.name : `output/${outputName}`,
-    artifacts,
-    outputTree,
-    artifactCount: artifacts.length,
-    pdfName: pdfArtifact ? pdfArtifact.name : null,
-    pdfBase64: pdfArtifact ? pdfArtifact.base64 : null,
-    pdfSize: pdfArtifact ? pdfArtifact.size : 0,
-    compileProfile,
-    lilypondArgs: storedLilypondArgs,
-    durationMs: result.durationMs,
-    exitCode: result.code,
-    signal: result.signal,
-    timedOut: result.timedOut,
-    log: result.log,
-    warnings: result.warnings,
-    errors: result.errors,
-  });
+  const buildId = uuidv7();
+  const stagingDir = path.join(DATA_DIR, ".build-staging", id, buildId);
+  let source = null;
+  let buildCreatedAt = null;
+  let buildCreated = false;
+  let result = {
+    code: null,
+    signal: null,
+    timedOut: false,
+    durationMs: 0,
+    log: "",
+    warnings: [],
+    errors: [],
+  };
+  let publishedPath = null;
+  let finalized = false;
+  activeBuilds.add(buildId);
+  try {
+    await fs.mkdir(path.dirname(stagingDir), { recursive: true });
+    // Materialize from the exact request snapshot rather than copying the live
+    // project, which another save could change while this build is starting.
+    await writeProjectFile(stagingDir, data);
+    const checkpoint = await captureProjectCheckpoint({
+      projectId: id,
+      storageDir: stagingDir,
+      user,
+      reason: "compile",
+      files: buildFiles,
+    });
+    source = await sourceRevisionForBuild(
+      stagingDir, mainPath, main.id, checkpoint.versions.get(main.id) || null
+    );
+    buildCreatedAt = await createBuildOutput({
+      id: buildId,
+      projectId: id,
+      sourceFileId: source.sourceFileId,
+      sourceRevisionId: source.sourceRevisionId,
+      sourceContentHash: source.sourceContentHash,
+      user,
+      projectType,
+      compiler: engine,
+      format: outputFormat,
+      mainPath,
+      displayName: outputName,
+    });
+    buildCreated = true;
+    const stagingOutputDir = path.join(stagingDir, "output");
+    await fs.mkdir(stagingOutputDir, { recursive: true });
+    const fontDir = path.join(stagingDir, "fonts");
+    const texmfVar = path.join(stagingDir, ".iris", "texmf-var");
+    await fs.mkdir(texmfVar, { recursive: true });
+    const preLog = /^(xelatex|lualatex)$/i.test(engine) ? await refreshFontCache(fontDir) : "";
+    result = await runCompilePipeline({ profile: compileProfile, binPath, cwd: stagingDir, fontDir, texmfVar, preLog });
+    const generatedArtifacts = await readCompileArtifacts(stagingOutputDir, jobname, outputFormat);
+    const success = result.code === 0 && generatedArtifacts.length > 0;
+    const artifacts = success ? versionCompileArtifacts(generatedArtifacts, buildId, uuidv7) : [];
+    if (success) publishedPath = await publishCompileOutput(stagingOutputDir, row.storageDir, buildId);
+    const status = success ? "succeeded" : "failed";
+    await finalizeBuildOutput({ id: buildId, status, storagePath: publishedPath, artifacts, result });
+    finalized = true;
+    await audit({
+      ...sessionActor(req, user),
+      action: "build.completed",
+      outcome: success ? "success" : "failure",
+      targetType: "build",
+      targetId: buildId,
+      metadata: { projectId: id, compiler: engine, format: outputFormat, artifactCount: artifacts.length },
+    });
+
+    const outputTree = await generatedOutputTree(row.storageDir);
+    const primaryArtifact = artifacts[0] || null;
+    const pdfArtifact = outputFormat === "pdf" ? primaryArtifact : null;
+    json(res, 200, {
+      buildId,
+      buildStatus: status,
+      buildCreatedAt: toMillis(buildCreatedAt),
+      sourceFileId: source.sourceFileId,
+      sourceRevisionId: source.sourceRevisionId,
+      sourceContentHash: source.sourceContentHash,
+      success,
+      projectType,
+      engine,
+      mainPath,
+      outputDir: publishedPath,
+      outputFormat,
+      outputName: primaryArtifact ? primaryArtifact.name : `${buildStoragePath(buildId)}/${outputName}`,
+      artifacts,
+      outputTree,
+      artifactCount: artifacts.length,
+      pdfName: pdfArtifact ? pdfArtifact.name : null,
+      pdfBase64: pdfArtifact ? pdfArtifact.base64 : null,
+      pdfSize: pdfArtifact ? pdfArtifact.size : 0,
+      compileProfile,
+      lilypondArgs: storedLilypondArgs,
+      durationMs: result.durationMs,
+      exitCode: result.code,
+      signal: result.signal,
+      timedOut: result.timedOut,
+      log: result.log,
+      warnings: result.warnings,
+      errors: result.errors,
+    });
+  } catch (err) {
+    if (buildCreated && !finalized) {
+      if (publishedPath) {
+        const publishedDir = await resolveBuildDirectory(row.storageDir, buildId, publishedPath).catch(() => null);
+        if (publishedDir) await fs.rm(publishedDir, { recursive: true, force: true }).catch(() => {});
+      }
+      const message = `Iris: build setup or publication failed: ${err.message || err}`;
+      const failedResult = {
+        ...result,
+        log: `${result.log || ""}\n${message}\n`,
+        errors: Array.from(new Set([...(result.errors || []), message])).slice(0, 80),
+      };
+      await finalizeBuildOutput({
+        id: buildId,
+        status: "failed",
+        storagePath: null,
+        artifacts: [],
+        result: failedResult,
+      }).catch(() => {});
+      await audit({
+        ...sessionActor(req, user),
+        action: "build.completed",
+        outcome: "failure",
+        targetType: "build",
+        targetId: buildId,
+        metadata: { projectId: id, compiler: engine, format: outputFormat, internalError: true },
+      }).catch(() => {});
+    }
+    throw err;
+  } finally {
+    activeBuilds.delete(buildId);
+    await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 const PROJECT_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})$`);
 const PROJECT_COMPILE_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/compile$`);
+const PROJECT_BUILDS_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/builds$`);
+const PROJECT_BUILD_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/builds/(${UUID_PATTERN})$`);
+const PROJECT_BUILD_ARTIFACT_ROUTE = new RegExp(
+  `^/api/projects/(${UUID_PATTERN})/builds/(${UUID_PATTERN})/artifacts/(${UUID_PATTERN})$`
+);
 const PROJECT_ARCHIVE_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/archive$`);
 const PROJECT_FILE_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/files/download$`);
 const ADMIN_USERS_ROUTE = "/api/admin/users";
@@ -3124,6 +3501,22 @@ async function handleApi(req, res, url) {
 
   const compileMatch = url.pathname.match(PROJECT_COMPILE_ROUTE);
   if (compileMatch && req.method === "POST") return compileProject(req, res, user, compileMatch[1]);
+
+  const buildArtifactMatch = url.pathname.match(PROJECT_BUILD_ARTIFACT_ROUTE);
+  if (buildArtifactMatch && req.method === "GET") {
+    return downloadBuildArtifact(
+      req, res, user, buildArtifactMatch[1], buildArtifactMatch[2], buildArtifactMatch[3], url
+    );
+  }
+
+  const buildMatch = url.pathname.match(PROJECT_BUILD_ROUTE);
+  if (buildMatch) {
+    if (req.method === "GET") return getBuildOutput(req, res, user, buildMatch[1], buildMatch[2]);
+    if (req.method === "DELETE") return deleteBuildOutput(req, res, user, buildMatch[1], buildMatch[2]);
+  }
+
+  const buildsMatch = url.pathname.match(PROJECT_BUILDS_ROUTE);
+  if (buildsMatch && req.method === "GET") return listBuildOutputs(req, res, user, buildsMatch[1], url);
 
   const archiveMatch = url.pathname.match(PROJECT_ARCHIVE_ROUTE);
   if (archiveMatch && req.method === "GET") return downloadProjectArchive(req, res, user, archiveMatch[1]);

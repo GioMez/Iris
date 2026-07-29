@@ -6,7 +6,7 @@
   const $ = (id) => document.getElementById(id);
   const t = (key, params) => window.IrisI18n.t(key, params);
   const openDialog = (id) => window.IrisMotion.openDialog(id);
-  const closeDialog = (id) => window.IrisMotion.closeDialog(id);
+  const closeDialog = (id, options) => window.IrisMotion.closeDialog(id, options);
   const ti = (name) => (window.IrisIcons ? window.IrisIcons.icon(name) : "");
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
@@ -14,20 +14,25 @@
   let editingId = null;
   let loadSequence = 0;
   let adminTab = "users";
+  let loadFailed = false;
 
   // The admin area hosts two sibling dashboards (users, projects) behind one
   // switch. The projects dashboard is a separate module, activated lazily.
-  function setAdminTab(tab) {
+  function setAdminTab(tab, { focusTab = false, focusPanel = false } = {}) {
     adminTab = tab === "projects" ? "projects" : "users";
     document.querySelectorAll("#adminSwitch [data-admin-tab]").forEach((b) => {
       const on = b.dataset.adminTab === adminTab;
       b.classList.toggle("on", on);
       b.setAttribute("aria-selected", on ? "true" : "false");
+      b.tabIndex = on ? 0 : -1;
+      if (on && focusTab) b.focus();
     });
     document.querySelectorAll("[data-admin-panel]").forEach((panel) => {
       panel.hidden = panel.dataset.adminPanel !== adminTab;
     });
     if (adminTab === "projects" && window.IrisAdminProjects) window.IrisAdminProjects.activate();
+    document.title = `${t(adminTab === "projects" ? "adminProjects.title" : "admin.title")} · Iris`;
+    if (focusPanel) setTimeout(() => $(adminTab === "projects" ? "adminProjectsTitle" : "adminUsersTitle").focus(), 0);
   }
 
   // A 401 here means my own session fell (self-disable, self password reset):
@@ -39,10 +44,18 @@
   const isAdmin = () => document.documentElement.dataset.role === "admin";
   const myId = () => document.documentElement.dataset.uid || "";
 
-  function status(message, isError) {
+  function status(message, isError, retry) {
     const el = $("adminStatusMsg");
-    el.textContent = message || "";
+    const button = $("adminStatusRetry");
+    el.setAttribute("role", isError ? "alert" : "status");
+    el.setAttribute("aria-live", isError ? "assertive" : "polite");
     el.classList.toggle("error", !!isError);
+    el.textContent = message || "";
+    button.hidden = !retry;
+    button.onclick = retry ? () => {
+        $(adminTab === "projects" ? "adminProjectsTitle" : "adminUsersTitle").focus();
+        retry();
+      } : null;
   }
 
   function fmtTime(ts) {
@@ -53,19 +66,36 @@
   function open() {
     if (!isAdmin()) return;
     document.documentElement.classList.add("iris-inadmin");
+    window.IrisMotion.setActiveSurface("admin");
     if (window.location.hash !== "#admin") history.pushState(null, "", "#admin");
     setAdminTab("users");
+    setTimeout(() => {
+      if (window.IrisMotion.activeSurface() === "admin") $("adminUsersTitle").focus();
+    }, 0);
     void load();
   }
 
   function close() {
+    loadSequence += 1;
+    document.querySelectorAll('[id^="admin"][class~="scrim"].on, [id^="admin"][class~="scrim"].is-closing').forEach((dialog) => {
+      void closeDialog(dialog, { immediate: true, restoreFocus: false });
+    });
     document.documentElement.classList.remove("iris-inadmin");
     if (window.location.hash === "#admin") history.replaceState(null, "", window.location.pathname + window.location.search);
+    document.title = `${t("projects.yourProjects")} · Iris`;
+    window.IrisMotion.setActiveSurface("picker");
+    setTimeout(() => {
+      if (window.IrisMotion.activeSurface() !== "picker") return;
+      const trigger = $("pkAdmin");
+      if (trigger && trigger.getClientRects().length) trigger.focus();
+      else $("projectPickerTitle").focus();
+    }, 0);
   }
 
   async function load({ preserveStatus = false } = {}) {
     const sequence = ++loadSequence;
-    if (!preserveStatus) status("");
+    loadFailed = false;
+    if (!preserveStatus) status(t("common.loading"));
     $("adminTableWrap").setAttribute("aria-busy", "true");
     $("adminTableWrap").classList.add("loading");
     const params = new URLSearchParams();
@@ -77,13 +107,16 @@
       const data = await api(`/api/admin/users${params.toString() ? `?${params}` : ""}`);
       if (sequence !== loadSequence) return false;
       users = data.users || [];
+      loadFailed = false;
       render();
+      if (!preserveStatus) status("");
       return true;
     } catch (err) {
       if (sequence !== loadSequence) return false;
       users = [];
+      loadFailed = true;
       render();
-      status(window.IrisI18n.error(err), true);
+      status(window.IrisI18n.error(err), true, () => { void load(); });
       return false;
     } finally {
       if (sequence === loadSequence) {
@@ -101,20 +134,23 @@
     const body = $("adminRows");
     const empty = $("adminEmpty");
     body.innerHTML = "";
+    if (loadFailed) { empty.style.display = "none"; return; }
     if (!users.length) { empty.style.display = ""; return; }
     empty.style.display = "none";
     for (const u of users) {
       const tr = document.createElement("tr");
+      tr.dataset.userId = u.id;
       const you = u.id === myId() ? ` <span class="admin-me-tag">${esc(t("admin.you"))}</span>` : "";
       tr.innerHTML =
         `<td><div class="admin-user-cell"><span class="avatar">${esc(initials(u.name))}</span>` +
           `<span><span class="admin-user-name">${esc(u.name)}</span>${you}<br>` +
-          `<span class="admin-user-sub">${esc(u.username)} · ${esc(u.email)}</span></span></div></td>` +
+          `<span class="admin-user-sub">${esc(u.username)} · ${esc(u.email)}</span>` +
+          `<span class="admin-mobile-meta">${esc(u.authSource === "oidc" ? t("admin.sourceOidc") : t("admin.sourceLocal"))} · ${esc(fmtTime(u.lastLoginAt))}</span></span></div></td>` +
         `<td>${badge("role", u.role, u.role === "admin" ? t("admin.roleAdmin") : t("admin.roleRegular"))}</td>` +
         `<td>${badge("status", u.status, u.status === "active" ? t("admin.statusActive") : t("admin.statusDisabled"))}</td>` +
         `<td class="admin-hide-sm"><span class="admin-source">${esc(u.authSource === "oidc" ? t("admin.sourceOidc") : t("admin.sourceLocal"))}</span></td>` +
         `<td class="admin-hide-sm"><span class="admin-time">${esc(fmtTime(u.lastLoginAt))}</span></td>` +
-        `<td class="admin-col-actions"><button class="admin-row-edit" type="button">${ti("edit")}<span>${esc(t("admin.manage"))}</span></button></td>`;
+        `<td class="admin-col-actions"><button class="admin-row-edit" type="button" aria-label="${esc(t("admin.manageUserAria", { name: u.name || u.username }))}">${ti("edit")}<span>${esc(t("admin.manage"))}</span></button></td>`;
       tr.querySelector(".admin-row-edit").addEventListener("click", () => openEdit(u));
       body.appendChild(tr);
     }
@@ -123,6 +159,7 @@
   /* ---------------- create ---------------- */
   function openCreate() {
     $("adminCreateError").style.display = "none";
+    $("adminCreateForm").querySelectorAll("[aria-invalid]").forEach((field) => field.removeAttribute("aria-invalid"));
     $("adminCreateUsername").value = "";
     $("adminCreateEmail").value = "";
     $("adminCreateName").value = "";
@@ -164,6 +201,7 @@
   function openEdit(u) {
     editingId = u.id;
     $("adminEditError").style.display = "none";
+    $("adminEditForm").querySelectorAll("[aria-invalid]").forEach((field) => field.removeAttribute("aria-invalid"));
     $("adminEditTitle").textContent = t("admin.editTitle", { name: u.username });
     $("adminEditIdentity").textContent = `${u.email} · ${u.authSource === "oidc" ? t("admin.sourceOidc") : t("admin.sourceLocal")}`;
     $("adminEditUsername").value = u.username || "";
@@ -210,7 +248,12 @@
         await window.IrisAuth.refreshSession();
         if (!isAdmin()) { close(); return; }
       }
-      if (await load({ preserveStatus: true })) status(t("admin.userUpdated", { name: data.user.username }));
+      if (await load({ preserveStatus: true })) {
+        status(t("admin.userUpdated", { name: data.user.username }));
+        const rowAction = document.querySelector(`#adminRows tr[data-user-id="${editingId}"] .admin-row-edit`);
+        if (rowAction) rowAction.focus();
+        else $("adminUsersTitle").focus();
+      }
     } catch (err) {
       modalError("adminEditError", err);
     } finally {
@@ -319,6 +362,7 @@
     const input = $("adminDeleteUserConfirm");
     input.value = "";
     input.classList.remove("nomatch");
+    input.removeAttribute("aria-invalid");
     $("adminDeleteUserOk").disabled = blocked;
   }
 
@@ -328,7 +372,10 @@
     const { id, username } = deleteUserTarget;
     const input = $("adminDeleteUserConfirm");
     if (input.value.trim() !== username) {
-      input.classList.add("nomatch"); input.focus();
+      input.classList.add("nomatch"); input.setAttribute("aria-invalid", "true"); input.focus();
+      const error = $("adminDeleteUserError");
+      error.textContent = t("api.ADMIN_DELETE_CONFIRMATION");
+      error.style.display = "flex";
       return;
     }
     const btn = $("adminDeleteUserOk");
@@ -337,7 +384,10 @@
       await api(`/api/admin/users/${id}`, { method: "DELETE", body: JSON.stringify({ confirmation: username }) });
       await closeDialog("adminDeleteUserModal");
       deleteUserTarget = null;
-      if (await load({ preserveStatus: true })) status(t("admin.deleteUserDone", { name: username }));
+      if (await load({ preserveStatus: true })) {
+        status(t("admin.deleteUserDone", { name: username }));
+        $("adminUsersTitle").focus();
+      }
     } catch (err) {
       const el = $("adminDeleteUserError");
       el.textContent = window.IrisI18n.error(err);
@@ -347,9 +397,9 @@
     }
   }
 
-  function openProjectsFromDelete() {
-    void closeDialog("adminDeleteUserModal");
-    setAdminTab("projects");
+  async function openProjectsFromDelete() {
+    await closeDialog("adminDeleteUserModal", { restoreFocus: false });
+    setAdminTab("projects", { focusPanel: true });
   }
 
   /* ---------------- credentials (shown once) ---------------- */
@@ -364,8 +414,21 @@
   function wire() {
     $("pkAdmin").addEventListener("click", open);
     $("adminBack").addEventListener("click", close);
-    document.querySelectorAll("#adminSwitch [data-admin-tab]").forEach((b) =>
-      b.addEventListener("click", () => setAdminTab(b.dataset.adminTab)));
+    const adminTabs = Array.from(document.querySelectorAll("#adminSwitch [data-admin-tab]"));
+    adminTabs.forEach((b) => {
+      b.addEventListener("click", () => setAdminTab(b.dataset.adminTab));
+      b.addEventListener("keydown", (event) => {
+        const current = adminTabs.indexOf(b);
+        let next = current;
+        if (event.key === "ArrowRight") next = (current + 1) % adminTabs.length;
+        else if (event.key === "ArrowLeft") next = (current - 1 + adminTabs.length) % adminTabs.length;
+        else if (event.key === "Home") next = 0;
+        else if (event.key === "End") next = adminTabs.length - 1;
+        else return;
+        event.preventDefault();
+        setAdminTab(adminTabs[next].dataset.adminTab, { focusTab: true });
+      });
+    });
     $("adminNew").addEventListener("click", openCreate);
     let searchTimer;
     $("adminSearch").addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(load, 220); });
@@ -380,8 +443,20 @@
     $("adminUnlinkBtn").addEventListener("click", unlinkSso);
     $("adminDeleteUserBtn").addEventListener("click", () => { void askDeleteUser(); });
     $("adminDeleteUserForm").addEventListener("submit", (e) => { void confirmDeleteUser(e); });
-    $("adminDeleteUserOpenProjects").addEventListener("click", openProjectsFromDelete);
-    $("adminDeleteUserConfirm").addEventListener("input", () => $("adminDeleteUserConfirm").classList.remove("nomatch"));
+    $("adminDeleteUserOpenProjects").addEventListener("click", () => { void openProjectsFromDelete(); });
+    $("adminDeleteUserConfirm").addEventListener("input", () => {
+      $("adminDeleteUserConfirm").classList.remove("nomatch");
+      $("adminDeleteUserConfirm").removeAttribute("aria-invalid");
+      $("adminDeleteUserError").style.display = "none";
+    });
+    ["adminCreateForm", "adminEditForm"].forEach((id) => {
+      const clear = (event) => {
+        event.target.removeAttribute("aria-invalid");
+        $(id === "adminCreateForm" ? "adminCreateError" : "adminEditError").style.display = "none";
+      };
+      $(id).addEventListener("input", clear);
+      $(id).addEventListener("change", clear);
+    });
     $("adminCredsCopy").addEventListener("click", async () => {
       try {
         await navigator.clipboard.writeText($("adminCredsPass").textContent);
@@ -424,6 +499,7 @@
     // opens then if the page was loaded directly at #admin.
     document.addEventListener("iris:languagechange", () => {
       if (!document.documentElement.classList.contains("iris-inadmin")) return;
+      document.title = `${t(adminTab === "projects" ? "adminProjects.title" : "admin.title")} · Iris`;
       render();
       if ($("adminDeleteUserModal").classList.contains("on")) renderDeleteUser();
     });

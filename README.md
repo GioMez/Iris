@@ -99,9 +99,9 @@ A typical session follows this sequence:
 4. Saving synchronizes the browser's project tree to real files below
    `DATA_DIR`.
 5. Compiling first saves the current project, then runs the selected allowlisted
-   tools in the project directory without invoking a shell.
-6. Generated files are written to the project's `output/` directory and sent
-   back to the browser for preview or download.
+   tools in an isolated copy of the project without invoking a shell.
+6. A successful build is atomically published below `output/<build-id>/`; prior
+   builds remain available, and the new artifacts are sent back to the browser.
 
 PostgreSQL stores accounts, the project index, and the audit trail. The filesystem
 stores the actual project content, so a complete backup must include both the
@@ -440,6 +440,7 @@ DATA_DIR/
         │   └── texmf-var/
         ├── fonts/
         ├── output/
+        │   └── <build-id>/
         ├── main.tex or main.ly
         └── other project files and folders
 ```
@@ -467,7 +468,8 @@ Text source files carry a revision history in `document_versions`, anchored to t
 stable file id. A revision is captured on a compilation and on an explicit
 checkpoint, and only when the content actually changed since the file's previous
 revision, so the history stays meaningful rather than recording every keystroke.
-Binary assets and generated output are not versioned.
+Binary assets are not document revisions. Generated output has a separate,
+build-oriented history described below.
 
 History is append-only. A rollback does not delete the revisions in between: it
 first snapshots the current state so nothing uncommitted is lost, then writes the
@@ -481,6 +483,38 @@ The relevant endpoints are `POST /api/projects/:id/checkpoint`,
 `GET …/versions/:versionId` for a revision's content, and
 `POST …/versions/:versionId/restore`. Retention and garbage collection of old
 revisions are deferred to a later phase.
+
+### Versioned build outputs
+
+Each compilation has an immutable UUIDv7 build id. The compiler runs in a private
+workspace below `DATA_DIR/.build-staging/`, materialized from the exact submitted
+project snapshot without prior outputs. On success, the generated directory is moved atomically to
+`output/<build-id>/`; a failed build keeps its diagnostics in PostgreSQL but does
+not publish partial artifacts.
+
+`build_outputs` stores status, author, compiler, format, source file and revision,
+duration, diagnostics, aggregate size and hash. `build_artifacts` stores the
+one-or-many previewable artifacts and their individual hashes. If the main source
+is too large for document history, the build retains its source content hash while
+`source_revision_id` remains empty. Composite foreign keys prevent a build from
+referencing a source file or revision belonging to another project.
+
+The build endpoints are:
+
+- `GET /api/projects/:id/builds` for the paginated chronological list and latest
+  successful id (`limit` and `offset` are optional);
+- `GET /api/projects/:id/builds/:buildId` for diagnostics and artifact metadata;
+- `GET /api/projects/:id/builds/:buildId/artifacts/:artifactId` for inline preview;
+- the same artifact endpoint with `?download=1` for download;
+- `DELETE /api/projects/:id/builds/:buildId` for owner-authorized deletion.
+
+Project members with read access can list, inspect, preview and download builds.
+Only owners can currently delete them; editor deletion can be enabled later by a
+dedicated project setting. Automatic retention and garbage collection remain a
+later hardening task. A `running` row left by a process interruption can be
+deleted after restart; automatic crash reconciliation remains part of hardening.
+Files produced before migration `012` remain directly below `output/` as readable
+legacy output; they are preserved but are not backfilled into the build registry.
 
 Back up PostgreSQL and `DATA_DIR` together: the database holds accounts,
 ownership and the audit trail, while the filesystem holds the content itself.

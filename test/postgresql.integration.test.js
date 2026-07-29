@@ -21,6 +21,9 @@ const ALL_MIGRATIONS = [
   "007_document_versions.sql",
   "008_server_administration.sql",
   "009_project_members.sql",
+  "010_account_hardening.sql",
+  "011_oidc_linked_at.sql",
+  "012_versioned_build_outputs.sql",
 ];
 const silentLogger = { log() {}, warn() {}, error() {} };
 
@@ -397,6 +400,81 @@ test("document versions form an append-only history keyed to a stable file id", 
   await pool.query("DELETE FROM projects WHERE id = $1", [projectId]);
   const afterProject = await pool.query("SELECT COUNT(*) AS n FROM document_versions");
   assert.equal(Number(afterProject.rows[0].n), 0);
+});
+
+test("versioned build outputs retain provenance and cascade with their project", { skip: !connectionString }, async (t) => {
+  const pool = await isolatedSchema(t);
+  await runMigrations(pool);
+  const userId = await insertUser(pool, "builder", "builder@example.org");
+  const projectId = uuidv7();
+  await pool.query(
+    "INSERT INTO projects (id, created_by, name, storage_path) VALUES ($1, $2, 'Builds', $3)",
+    [projectId, userId, projectStorageKey(projectId)]
+  );
+  const fileId = uuidv7();
+  await pool.query(
+    "INSERT INTO project_files (id, project_id, client_ref, path, kind) VALUES ($1, $2, $3, 'main.tex', 'tex')",
+    [fileId, projectId, fileId]
+  );
+  const versionId = uuidv7();
+  const sourceHash = crypto.createHash("sha256").update("source").digest("hex");
+  await pool.query(
+    `INSERT INTO document_versions (id, file_id, author_id, author_label, reason, content_hash, content, size)
+     VALUES ($1, $2, $3, 'builder', 'compile', $4, 'source', 6)`,
+    [versionId, fileId, userId, sourceHash]
+  );
+  const buildId = uuidv7();
+  const artifactId = uuidv7();
+  const artifactHash = crypto.createHash("sha256").update("pdf").digest("hex");
+  const storagePath = `output/${buildId}`;
+  await pool.query(
+    `INSERT INTO build_outputs (
+       id, project_id, source_file_id, source_revision_id, source_content_hash, created_by, created_by_label,
+       completed_at, status, project_type, compiler, format, main_path, display_name,
+       storage_path, size, content_hash, artifact_count, duration_ms, exit_code
+     ) VALUES ($1, $2, $3, $4, $5, $6, 'builder', CURRENT_TIMESTAMP, 'succeeded',
+       'latex', 'pdflatex', 'pdf', 'main.tex', 'main.pdf', $7, 3, $8, 1, 25, 0)`,
+    [buildId, projectId, fileId, versionId, sourceHash, userId, storagePath, artifactHash]
+  );
+  await pool.query(
+    `INSERT INTO build_artifacts (id, build_id, name, storage_path, mime_type, size, content_hash)
+     VALUES ($1, $2, 'main.pdf', $3, 'application/pdf', 3, $4)`,
+    [artifactId, buildId, `${storagePath}/main.pdf`, artifactHash]
+  );
+
+  await assert.rejects(
+    pool.query(
+      `INSERT INTO build_outputs (
+         id, project_id, source_file_id, source_content_hash, created_by_label, completed_at, status,
+         project_type, compiler, format, main_path, display_name, storage_path, size,
+         content_hash, artifact_count
+       ) VALUES ($1, $2, $3, $4, 'builder', CURRENT_TIMESTAMP, 'succeeded', 'latex',
+         'pdflatex', 'pdf', 'main.tex', 'bad.pdf', 'output/not-the-id', 1, $4, 1)`,
+      [uuidv7(), projectId, fileId, artifactHash]
+    ),
+    (error) => error.code === "23514"
+  );
+  await assert.rejects(
+    pool.query(
+      `INSERT INTO build_artifacts (id, build_id, name, storage_path, mime_type, size, content_hash)
+       VALUES ($1, $2, '../escape.pdf', 'output/escape.pdf', 'application/pdf', 1, $3)`,
+      [uuidv7(), buildId, artifactHash]
+    ),
+    (error) => error.code === "23514"
+  );
+
+  // User deletion preserves readable attribution and the build itself.
+  await pool.query("DELETE FROM users WHERE id = $1", [userId]);
+  const retained = await pool.query("SELECT created_by, created_by_label, source_revision_id FROM build_outputs WHERE id = $1", [buildId]);
+  assert.deepEqual(retained.rows[0], {
+    created_by: null,
+    created_by_label: "builder",
+    source_revision_id: versionId,
+  });
+
+  await pool.query("DELETE FROM projects WHERE id = $1", [projectId]);
+  assert.equal(Number((await pool.query("SELECT COUNT(*) AS n FROM build_outputs")).rows[0].n), 0);
+  assert.equal(Number((await pool.query("SELECT COUNT(*) AS n FROM build_artifacts")).rows[0].n), 0);
 });
 
 test("admin user deletion: sole-owner detection and membership cascade", { skip: !connectionString }, async (t) => {
