@@ -13,6 +13,7 @@ const admin = fs.readFileSync(path.join(root, "public/iris-admin.js"), "utf8");
 const adminProjects = fs.readFileSync(path.join(root, "public/iris-admin-projects.js"), "utf8");
 const auth = fs.readFileSync(path.join(root, "public/iris-auth.js"), "utf8");
 const motion = fs.readFileSync(path.join(root, "public/iris-motion.js"), "utf8");
+const server = fs.readFileSync(path.join(root, "src/server.js"), "utf8");
 
 function token(name) {
   const match = css.match(new RegExp(`--${name}:\\s*(#[0-9a-f]{6})`, "i"));
@@ -79,10 +80,17 @@ test("preview controls support PDFs and image artifacts without format-specific 
   assert.match(css, /\.image-preview img\{[^}]*width:100%/);
 });
 
-test("compiled outputs sync into the tree and every file exposes download", () => {
-  assert.match(app, /function syncOutputTree\(outputTree\)/);
-  assert.match(app, /data-act="download"/);
-  assert.match(projects, /function downloadCurrentFile\(filePath, fileName\)/);
+test("all build files download from history instead of appearing in the source tree", () => {
+  assert.doesNotMatch(app, /function syncOutputTree\(outputTree\)/);
+  assert.doesNotMatch(app, /function removeBuildFromOutputTree\(buildId\)/);
+  assert.match(projects, /function downloadBuildFile\(file\)/);
+  assert.match(projects, /function downloadBuildArchive\(detail\)/);
+  assert.match(builds, /data-build-file/);
+  assert.match(builds, /data-build-act="download-archive"/);
+  assert.match(server, /builds\/\(\$\{UUID_PATTERN\}\)\/files\/download/);
+  assert.match(server, /builds\/\(\$\{UUID_PATTERN\}\)\/archive/);
+  assert.match(server, /validateProjectSourceTree\(data\);[\s\S]*syncProjectFiles\(id, data\)/);
+  assert.match(app, /\["output", "\.iris"\]\.includes/);
 });
 
 test("versioned builds are discoverable, previewable, and restored on project open", () => {
@@ -103,7 +111,6 @@ test("versioned builds are discoverable, previewable, and restored on project op
   assert.match(builds, /clearBuildOutput\(latestCompleted\.id\)/);
   assert.match(app, /async function showBuildOutput\(payload, options = \{\}\)/);
   assert.match(app, /suppliedBytes instanceof Uint8Array/);
-  assert.match(app, /function removeBuildFromOutputTree\(buildId\)/);
   assert.match(css, /\.build-grid\{[^}]*grid-template-columns:292px minmax\(0,1fr\)/);
   assert.match(css, /@media\(max-width:760px\)[\s\S]*\.build-grid\{grid-template-columns:1fr/);
 });

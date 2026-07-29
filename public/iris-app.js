@@ -592,6 +592,9 @@
   function validTreeName(name) {
     return !!name && name !== "." && name !== ".." && !/[\/\\]/.test(name);
   }
+  function isReservedTreeName(name, parentPath = "") {
+    return !parentPath && ["output", ".iris"].includes(String(name || "").toLowerCase());
+  }
   function inferKind(name, prev) {
     if (prev === "img") return "img";
     if (/\.bib$/i.test(name)) return "bib";
@@ -776,9 +779,9 @@
     const dest = folderNodeByPath(destPath) || { nodes: project.nodes, path: "" };
     let name = input.value.trim();
     if (newItemMode === "file" && name && !/\.[A-Za-z0-9]{1,12}$/.test(name)) name += isLilyPondProject() ? ".ly" : ".tex";
-    if (!validTreeName(name)) {
+    if (!validTreeName(name) || isReservedTreeName(name, dest.path)) {
       input.classList.add("nomatch");
-      hint.textContent = t("tree.invalidName");
+      hint.textContent = t(isReservedTreeName(name, dest.path) ? "tree.rootNameReserved" : "tree.invalidName");
       input.focus();
       return;
     }
@@ -834,9 +837,9 @@
     const name = $("treeRenameInput").value.trim();
     const input = $("treeRenameInput");
     const hint = $("treeRenameHint");
-    if (!validTreeName(name)) {
+    if (!validTreeName(name) || isReservedTreeName(name, treeAction.parentPath)) {
       input.classList.add("nomatch");
-      hint.textContent = t("tree.invalidName");
+      hint.textContent = t(isReservedTreeName(name, treeAction.parentPath) ? "tree.rootNameReserved" : "tree.invalidName");
       input.focus();
       return;
     }
@@ -992,26 +995,6 @@
       });
     };
     build(project.nodes, 0, "");
-  }
-
-  function syncOutputTree(outputTree) {
-    if (!outputTree || outputTree.type !== "folder" || outputTree.name !== "output") return;
-    const index = project.nodes.findIndex((node) => node.type === "folder" && node.name === "output" && (node.generated || node.readOnly));
-    outputTree.open = index >= 0 ? !!project.nodes[index].open : true;
-    if (index >= 0) project.nodes.splice(index, 1, outputTree);
-    else project.nodes.push(outputTree);
-    renderTree();
-  }
-
-  function removeBuildFromOutputTree(buildId) {
-    const output = project.nodes.find((node) => node.type === "folder" && node.name === "output" && (node.generated || node.readOnly));
-    if (!output || !Array.isArray(output.children)) return false;
-    const buildPath = `output/${buildId}`;
-    const nextChildren = output.children.filter((node) => node.name !== buildId && node.path !== buildPath);
-    if (nextChildren.length === output.children.length) return false;
-    output.children = nextChildren;
-    renderTree();
-    return true;
   }
 
   function applyRefreshedFileTree(data) {
@@ -1345,7 +1328,6 @@
       const outputGeneration = ++state.outputGeneration;
       state.previewBuildId = res.buildId || null;
       const ms = ((res.durationMs || (performance.now() - t0)) / 1000).toFixed(1);
-      syncOutputTree(res.outputTree);
       buildLog(f, res, ms);
       updateCompileStatus(res, ms);
       if (res.success && Array.isArray(res.artifacts) && res.artifacts.length) await renderCompiledOutput(res);
@@ -2865,7 +2847,6 @@
     currentBuildId() { return state.previewBuildId; },
     cancelPendingBuild,
     cancelPendingProjectLoad,
-    removeBuildFromOutputTree,
   };
 
   /* ---------------- boot ---------------- */

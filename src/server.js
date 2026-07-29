@@ -30,6 +30,9 @@ const {
   hashBuildArtifacts,
   resolveBuildDirectory,
   resolveBuildArtifact,
+  listBuildFiles,
+  collectBuildArchiveEntries,
+  resolveBuildFile,
 } = require("./builds");
 
 loadDotEnv(path.resolve(".env"));
@@ -63,6 +66,10 @@ const SHUTDOWN_TIMEOUT_MS = positiveIntEnv("SHUTDOWN_TIMEOUT_MS", 15000);
 const MAX_BODY = Number(process.env.MAX_BODY_MB || 25) * 1024 * 1024;
 const COMPILE_TIMEOUT_MS = Number(process.env.COMPILE_TIMEOUT_MS || 30000);
 const COMPILE_LOG_LIMIT = Number(process.env.COMPILE_LOG_LIMIT || 1024 * 1024);
+const BUILD_ARCHIVE_MAX_BYTES = positiveIntEnv("BUILD_ARCHIVE_MAX_MB", 128) * 1024 * 1024;
+const BUILD_ARCHIVE_MAX_ENTRIES = positiveIntEnv("BUILD_ARCHIVE_MAX_ENTRIES", 10000);
+const PROJECT_ARCHIVE_MAX_BYTES = positiveIntEnv("PROJECT_ARCHIVE_MAX_MB", 256) * 1024 * 1024;
+const PROJECT_ARCHIVE_MAX_ENTRIES = positiveIntEnv("PROJECT_ARCHIVE_MAX_ENTRIES", 20000);
 const ARGON2_MEMORY_COST = positiveIntEnv("ARGON2_MEMORY_COST", 65536);
 const ARGON2_TIME_COST = positiveIntEnv("ARGON2_TIME_COST", 3);
 const ARGON2_PARALLELISM = positiveIntEnv("ARGON2_PARALLELISM", 1);
@@ -641,6 +648,11 @@ function slugify(name) {
     .toLowerCase() || "project";
 }
 
+function encodeDispositionValue(value) {
+  return encodeURIComponent(String(value || "download"))
+    .replace(/['()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
+}
+
 function toMillis(value) {
   if (!value) return Date.now();
   if (value instanceof Date) return value.getTime();
@@ -675,9 +687,35 @@ function safeRelPath(relPath) {
   return normalized;
 }
 
+function safeProjectSourcePath(relPath) {
+  const normalized = safeRelPath(relPath);
+  const rootName = normalized.split("/", 1)[0].toLowerCase();
+  if (rootName === "output" || rootName === ".iris") {
+    throw requestError("PROJECT_PATH_INVALID", 400);
+  }
+  return normalized;
+}
+
 function nodeRelPath(node, fallbackName, parentPath = "") {
   const rel = node.path || path.posix.join(parentPath, node.name || fallbackName || "");
-  return safeRelPath(rel);
+  return safeProjectSourcePath(rel);
+}
+
+function validateProjectSourceTree(data) {
+  const walk = (nodes, parentPath = "") => {
+    if (!Array.isArray(nodes)) return;
+    for (const node of nodes) {
+      if (!node || node.generated) continue;
+      if (node.readOnly) throw requestError("PROJECT_PATH_INVALID", 400);
+      if (node.type === "folder") {
+        const relative = safeProjectSourcePath(path.posix.join(parentPath, node.name || ""));
+        walk(node.children, relative);
+      } else {
+        nodeRelPath(node, node.name, parentPath);
+      }
+    }
+  };
+  walk(data && data.project && data.project.nodes);
 }
 
 function dataUrlToBuffer(value) {
@@ -695,7 +733,8 @@ function dataUrlMime(value) {
 
 function mimeForProjectFile(filePath) {
   const ext = path.extname(filePath).toLowerCase();
-  if ([".tex", ".ly", ".ily", ".bib", ".txt", ".sty", ".cls", ".md", ".log"].includes(ext)) return "text/plain; charset=utf-8";
+  if ([".tex", ".ly", ".ily", ".bib", ".txt", ".sty", ".cls", ".md", ".log", ".aux", ".bbl", ".blg", ".idx", ".ilg", ".ind", ".out", ".toc", ".bcf", ".fls", ".fdb_latexmk"].includes(ext)) return "text/plain; charset=utf-8";
+  if (ext === ".xml") return "application/xml; charset=utf-8";
   if (ext === ".png") return "image/png";
   if (ext === ".jpg" || ext === ".jpeg") return "image/jpeg";
   if (ext === ".gif") return "image/gif";
@@ -703,6 +742,7 @@ function mimeForProjectFile(filePath) {
   if (ext === ".svg") return "image/svg+xml";
   if (ext === ".pdf") return "application/pdf";
   if (ext === ".ps" || ext === ".eps") return "application/postscript";
+  if (ext === ".mid" || ext === ".midi") return "audio/midi";
   if (ext === ".ttf") return "font/ttf";
   if (ext === ".otf") return "font/otf";
   if (ext === ".woff") return "font/woff";
@@ -728,9 +768,9 @@ function reconcileProjectFonts(data) {
   const walk = (nodes, parentPath = "") => {
     if (!Array.isArray(nodes)) return;
     for (const node of nodes) {
-      if (!node || node.generated) continue;
+      if (!node || node.generated || node.readOnly) continue;
       if (node.type === "folder") {
-        const rel = safeRelPath(path.posix.join(parentPath, node.name || ""));
+        const rel = safeProjectSourcePath(path.posix.join(parentPath, node.name || ""));
         walk(node.children, rel);
         continue;
       }
@@ -780,13 +820,14 @@ function generatedIdFor(relPath) {
 }
 
 function isIgnoredProjectFsEntry(name) {
-  return name === ".iris" || name === ".DS_Store" || name === "Thumbs.db" || name === "desktop.ini";
+  const normalized = String(name || "").toLowerCase();
+  return normalized === ".iris" || normalized === ".ds_store" || normalized === "thumbs.db" || normalized === "desktop.ini";
 }
 
 function stripGeneratedNodes(nodes, isRoot = true) {
   if (!Array.isArray(nodes)) return [];
   return nodes
-    .filter((node) => !node.generated && !node.readOnly && !(isRoot && node.name === "output"))
+    .filter((node) => !node.generated && !node.readOnly && !(isRoot && String(node.name || "").toLowerCase() === "output"))
     .map((node) => {
       if (node.type === "folder") node.children = stripGeneratedNodes(node.children, false);
       return node;
@@ -827,7 +868,7 @@ async function ensureProjectDirs(storagePath, data) {
     nodes.forEach((node) => {
       if (node.generated) return;
       if (node.type === "folder") {
-        const rel = safeRelPath(path.posix.join(parentPath, node.name || ""));
+        const rel = safeProjectSourcePath(path.posix.join(parentPath, node.name || ""));
         dirs.add(rel);
         walk(node.children, rel);
       }
@@ -846,7 +887,7 @@ async function writeProjectNodes(storagePath, data) {
     for (const node of nodes) {
       if (node.generated) continue;
       if (node.type === "folder") {
-        const rel = safeRelPath(path.posix.join(parentPath, node.name || ""));
+        const rel = safeProjectSourcePath(path.posix.join(parentPath, node.name || ""));
         await walk(node.children, rel);
         continue;
       }
@@ -884,8 +925,8 @@ async function pruneProjectFiles(storagePath, expectedFiles) {
   async function walkDir(dir, relBase = "") {
     const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
     for (const entry of entries) {
-      if (entry.name === ".iris") continue;
-      if (!relBase && entry.name === "output") continue;
+      if (entry.name.toLowerCase() === ".iris") continue;
+      if (!relBase && entry.name.toLowerCase() === "output") continue;
       const rel = relBase ? path.posix.join(relBase, entry.name) : entry.name;
       const abs = path.join(dir, entry.name);
       if (entry.isDirectory()) {
@@ -944,21 +985,11 @@ async function scanFsTree(storagePath, relBase = "", generated = false) {
   const nodes = [];
   for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
     if (isIgnoredProjectFsEntry(entry.name)) continue;
-    if (!relBase && entry.name === "output") {
-      nodes.push(await buildFsNode(storagePath, "output", entry, true));
-      continue;
-    }
+    if (!relBase && entry.name.toLowerCase() === "output") continue;
     const rel = relBase ? path.posix.join(relBase, entry.name) : entry.name;
     nodes.push(await buildFsNode(storagePath, rel, entry, generated));
   }
   return nodes;
-}
-
-async function generatedOutputTree(storagePath) {
-  const outputPath = path.join(storagePath, "output");
-  const stat = await fs.stat(outputPath).catch(() => null);
-  if (!stat || !stat.isDirectory()) return null;
-  return buildFsNode(storagePath, "output", { name: "output", isDirectory: () => true }, true);
 }
 
 async function resolveProjectFile(storagePath, requestedPath) {
@@ -981,7 +1012,7 @@ async function syncNodesWithFilesystem(storagePath, data) {
   const merge = async (nodes, relBase = "") => {
     const absBase = path.join(storagePath, relBase);
     const entries = await fs.readdir(absBase, { withFileTypes: true }).catch(() => []);
-    const visibleEntries = entries.filter((entry) => !isIgnoredProjectFsEntry(entry.name) && (relBase || entry.name !== "output"));
+    const visibleEntries = entries.filter((entry) => !isIgnoredProjectFsEntry(entry.name) && (relBase || entry.name.toLowerCase() !== "output"));
     const entryByName = new Map(visibleEntries.map((entry) => [entry.name, entry]));
     const synced = [];
 
@@ -1015,7 +1046,7 @@ async function syncNodesWithFilesystem(storagePath, data) {
     const known = new Set(synced.map((node) => node.name));
     for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
       if (isIgnoredProjectFsEntry(entry.name)) continue;
-      if (!relBase && entry.name === "output") continue;
+      if (!relBase && entry.name.toLowerCase() === "output") continue;
       if (known.has(entry.name)) continue;
       const rel = relBase ? path.posix.join(relBase, entry.name) : entry.name;
       synced.push(await buildFsNode(storagePath, rel, entry, false));
@@ -1024,11 +1055,6 @@ async function syncNodesWithFilesystem(storagePath, data) {
   };
 
   data.project.nodes = await merge(data.project.nodes, "");
-  const outputStat = await fs.stat(path.join(storagePath, "output")).catch(() => null);
-  if (outputStat && outputStat.isDirectory()) {
-    const fakeEntry = { name: "output", isDirectory: () => true };
-    data.project.nodes.push(await buildFsNode(storagePath, "output", fakeEntry, true));
-  }
 }
 
 async function readProjectFile(storagePath) {
@@ -1050,7 +1076,7 @@ async function readProjectFile(storagePath) {
     if (!Array.isArray(nodes)) return;
     for (const node of nodes) {
       if (node.type === "folder") {
-        const rel = safeRelPath(path.posix.join(parentPath, node.name || ""));
+        const rel = safeProjectSourcePath(path.posix.join(parentPath, node.name || ""));
         await hydrate(node.children, rel);
         continue;
       }
@@ -1131,6 +1157,7 @@ async function applyProjectRenames(storagePath, renames) {
 }
 
 async function writeProjectFile(storagePath, data, renames = []) {
+  validateProjectSourceTree(data);
   await fs.mkdir(storagePath, { recursive: true });
   reconcileProjectFonts(data);
   await ensureProjectDirs(storagePath, data);
@@ -1142,8 +1169,21 @@ async function writeProjectFile(storagePath, data, renames = []) {
   await fs.rm(path.join(storagePath, "project.json"), { force: true }).catch(() => {});
 }
 
-async function collectProjectArchiveEntries(storagePath, projectName) {
+async function collectProjectArchiveEntries(storagePath, projectName, limits = {}) {
   const entries = [];
+  const maxBytes = Number.isSafeInteger(limits.maxBytes) && limits.maxBytes >= 0 ? limits.maxBytes : Infinity;
+  const maxEntries = Number.isSafeInteger(limits.maxEntries) && limits.maxEntries >= 0 ? limits.maxEntries : Infinity;
+  let totalBytes = 0;
+  let totalEntries = 0;
+  const reserve = (size = 0) => {
+    totalEntries += 1;
+    totalBytes += size;
+    if (totalEntries > maxEntries || totalBytes > maxBytes) {
+      const error = new Error("Project archive exceeds configured limits");
+      error.code = "PROJECT_ARCHIVE_TOO_LARGE";
+      throw error;
+    }
+  };
   const walk = async (directory, relBase = "") => {
     const children = await fs.readdir(directory, { withFileTypes: true });
     for (const child of children.sort((a, b) => a.name.localeCompare(b.name))) {
@@ -1152,9 +1192,12 @@ async function collectProjectArchiveEntries(storagePath, projectName) {
       const absolute = path.join(directory, child.name);
       if (child.isSymbolicLink()) continue;
       if (child.isDirectory()) {
+        reserve();
         entries.push({ name: rel, directory: true });
         await walk(absolute, rel);
       } else if (child.isFile()) {
+        const stat = await fs.stat(absolute);
+        reserve(stat.size);
         entries.push({ name: rel, data: await fs.readFile(absolute) });
       }
     }
@@ -1169,13 +1212,16 @@ async function collectProjectArchiveEntries(storagePath, projectName) {
     version: 1,
     exportedAt: new Date().toISOString(),
   };
+  const manifestData = Buffer.from(JSON.stringify(manifest, null, 2), "utf8");
+  reserve();
+  reserve(manifestData.length);
   entries.push({ name: ".iris", directory: true });
-  entries.push({ name: ".iris/project.json", data: Buffer.from(JSON.stringify(manifest, null, 2), "utf8") });
+  entries.push({ name: ".iris/project.json", data: manifestData });
   return entries;
 }
 
-async function buildProjectArchive(storagePath, projectName) {
-  return createZip(await collectProjectArchiveEntries(storagePath, projectName));
+async function buildProjectArchive(storagePath, projectName, limits = {}) {
+  return createZip(await collectProjectArchiveEntries(storagePath, projectName, limits));
 }
 
 // storage_path is relative to DATA_DIR; every caller works with the absolute
@@ -1570,6 +1616,7 @@ async function checkpointProject(req, res, user, id) {
     data.project = data.project && Array.isArray(data.project.nodes) ? data.project : { nodes: [] };
     data.project.name = row.name;
     data.projectType = inferProjectType(data);
+    validateProjectSourceTree(data);
     const { renames } = await syncProjectFiles(id, data);
     await writeProjectFile(row.storageDir, data, renames);
     await db.query("UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = $1", [id]);
@@ -1678,6 +1725,7 @@ async function createProject(req, res, user) {
   data.lilypondFormat = data.projectType === "lilypond" ? normalizeLilypondFormat(data.lilypondFormat) : "pdf";
   data.createdAt = now;
   data.updatedAt = now;
+  validateProjectSourceTree(data);
   // The project row must exist before the ledger references it, and the manifest
   // must be written after ids are stamped. On any failure the whole project is
   // rolled back so a half-created project never lingers. The creator becomes the
@@ -1728,6 +1776,7 @@ async function updateProject(req, res, user, id) {
   }
   data.createdAt = toMillis(row.created_at);
   data.updatedAt = Date.now();
+  validateProjectSourceTree(data);
   const { renames } = await syncProjectFiles(id, data);
   await writeProjectFile(row.storageDir, data, renames);
   await db.query("UPDATE projects SET name = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2", [name, id]);
@@ -1758,7 +1807,7 @@ async function downloadProjectFile(req, res, user, id, url) {
   res.writeHead(200, {
     "content-type": file.mimeType,
     "content-length": file.size,
-    "content-disposition": `attachment; filename="${fallbackName}"; filename*=UTF-8''${encodeURIComponent(file.name)}`,
+    "content-disposition": `attachment; filename="${fallbackName}"; filename*=UTF-8''${encodeDispositionValue(file.name)}`,
     "cache-control": "private, no-store",
   });
   await new Promise((resolve, reject) => {
@@ -1772,12 +1821,23 @@ async function downloadProjectFile(req, res, user, id, url) {
 
 async function downloadProjectArchive(req, res, user, id) {
   const row = await authorizeProject(id, user, "read");
-  const archive = await buildProjectArchive(row.storageDir, row.name);
+  let archive;
+  try {
+    archive = await buildProjectArchive(row.storageDir, row.name, {
+      maxBytes: PROJECT_ARCHIVE_MAX_BYTES,
+      maxEntries: PROJECT_ARCHIVE_MAX_ENTRIES,
+    });
+  } catch (error) {
+    if (["PROJECT_ARCHIVE_TOO_LARGE", "ZIP_TOO_MANY_ENTRIES", "ZIP_ENTRY_TOO_LARGE"].includes(error && error.code)) {
+      throw requestError("PROJECT_ARCHIVE_TOO_LARGE", 413);
+    }
+    throw error;
+  }
   const fileName = `${slugify(row.name)}.zip`;
   res.writeHead(200, {
     "content-type": "application/zip",
     "content-length": archive.length,
-    "content-disposition": `attachment; filename="${fileName}"; filename*=UTF-8''${encodeURIComponent(`${row.name}.zip`)}`,
+    "content-disposition": `attachment; filename="${fileName}"; filename*=UTF-8''${encodeDispositionValue(`${row.name}.zip`)}`,
     "cache-control": "private, no-store",
   });
   res.end(archive);
@@ -1785,6 +1845,18 @@ async function downloadProjectArchive(req, res, user, id) {
 
 function invalidProjectArchive() {
   return requestError("PROJECT_ARCHIVE_INVALID", 400);
+}
+
+function validateArchiveReservedPath(name, manifest = false) {
+  const normalized = String(name || "").replace(/\/$/, "");
+  const rootName = normalized.split("/", 1)[0];
+  const lowerRoot = rootName.toLowerCase();
+  if (lowerRoot === ".iris" && !(manifest && normalized === ".iris/project.json") && normalized !== ".iris") {
+    throw invalidProjectArchive();
+  }
+  if ((lowerRoot === ".iris" || lowerRoot === "output") && rootName !== lowerRoot) {
+    throw invalidProjectArchive();
+  }
 }
 
 function parseProjectArchive(body) {
@@ -1801,11 +1873,13 @@ function parseProjectArchive(body) {
   const manifestBuffer = archive.files.get(".iris/project.json");
   if (!manifestBuffer) throw invalidProjectArchive();
   for (const name of archive.files.keys()) {
+    validateArchiveReservedPath(name, true);
     if ((name === ".iris" || name.startsWith(".iris/")) && name !== ".iris/project.json") {
       throw invalidProjectArchive();
     }
   }
   for (const name of archive.directories) {
+    validateArchiveReservedPath(name);
     if (name.startsWith(".iris/") && name !== ".iris/") throw invalidProjectArchive();
   }
 
@@ -1836,6 +1910,7 @@ function normalizeImportedProject(data, name, now) {
   data.lilypondFormat = data.projectType === "lilypond" ? normalizeLilypondFormat(data.lilypondFormat) : "pdf";
   data.createdAt = now;
   data.updatedAt = now;
+  validateProjectSourceTree(data);
   return data;
 }
 
@@ -2396,6 +2471,22 @@ function buildArtifactView(row, projectId, buildId) {
   };
 }
 
+function buildFileView(file, projectId, buildId) {
+  return {
+    name: file.name,
+    path: file.path,
+    mimeType: mimeForProjectFile(file.path),
+    size: Number(file.size),
+    downloadUrl: `/api/projects/${projectId}/builds/${buildId}/files/download?path=${encodeURIComponent(file.path)}`,
+  };
+}
+
+function buildArchiveFileName(row) {
+  const displayName = String(row.display_name || "build-output");
+  const stem = path.basename(displayName, path.extname(displayName));
+  return `${slugify(stem || "build-output")}-${String(row.id).slice(0, 8)}.zip`;
+}
+
 async function createBuildOutput({
   id, projectId, sourceFileId, sourceRevisionId, sourceContentHash, user, projectType, compiler, format, mainPath, displayName,
 }) {
@@ -2484,21 +2575,38 @@ async function listBuildOutputs(req, res, user, projectId, url) {
 }
 
 async function getBuildOutput(req, res, user, projectId, buildId) {
-  await authorizeProject(projectId, user, "read");
+  const project = await authorizeProject(projectId, user, "read");
   const { rows } = await db.query(
     `SELECT ${BUILD_OUTPUT_FIELDS}, log, warnings, errors FROM build_outputs
      WHERE id = $1 AND project_id = $2`,
     [buildId, projectId]
   );
   if (!rows.length) throw requestError("BUILD_NOT_FOUND", 404);
-  const { rows: artifacts } = await db.query(
-    `SELECT id, name, storage_path, mime_type, size, content_hash
-     FROM build_artifacts WHERE build_id = $1 ORDER BY name`,
-    [buildId]
-  );
+  const build = rows[0];
+  const filesPromise = build.status === "succeeded" && build.storage_path
+    ? listBuildFiles(project.storageDir, buildId, build.storage_path, {
+      maxEntries: BUILD_ARCHIVE_MAX_ENTRIES,
+      errorCode: "BUILD_FILE_LIST_TOO_LARGE",
+    }).catch((error) => {
+      if (error && error.code === "BUILD_FILE_LIST_TOO_LARGE") throw requestError("BUILD_FILE_LIST_TOO_LARGE", 413);
+      throw error;
+    })
+    : Promise.resolve([]);
+  const [{ rows: artifacts }, files] = await Promise.all([
+    db.query(
+      `SELECT id, name, storage_path, mime_type, size, content_hash
+       FROM build_artifacts WHERE build_id = $1 ORDER BY name`,
+      [buildId]
+    ),
+    filesPromise,
+  ]);
   json(res, 200, {
-    build: buildOutputView(rows[0], true),
+    build: buildOutputView(build, true),
     artifacts: artifacts.map((artifact) => buildArtifactView(artifact, projectId, buildId)),
+    files: files.map((file) => buildFileView(file, projectId, buildId)),
+    directorySize: files.reduce((total, file) => total + Number(file.size), 0),
+    archiveUrl: build.status === "succeeded" && files.length ? `/api/projects/${projectId}/builds/${buildId}/archive` : null,
+    archiveName: build.status === "succeeded" && files.length ? buildArchiveFileName(build) : null,
   });
 }
 
@@ -2522,16 +2630,85 @@ async function downloadBuildArtifact(req, res, user, projectId, buildId, artifac
   res.writeHead(200, {
     "content-type": artifact.mime_type,
     "content-length": file.size,
-    "content-disposition": `${disposition}; filename="${fallbackName}"; filename*=UTF-8''${encodeURIComponent(artifact.name)}`,
+    "content-disposition": `${disposition}; filename="${fallbackName}"; filename*=UTF-8''${encodeDispositionValue(artifact.name)}`,
     "cache-control": "private, no-store",
   });
   await new Promise((resolve, reject) => {
-    const stream = fsSync.createReadStream(file.path);
+    const stream = file.handle.createReadStream({ autoClose: true });
     stream.on("error", reject);
     res.on("finish", resolve);
     res.on("close", resolve);
     stream.pipe(res);
   });
+}
+
+async function downloadBuildFile(req, res, user, projectId, buildId, url) {
+  const project = await authorizeProject(projectId, user, "read");
+  const { rows } = await db.query(
+    `SELECT id, storage_path FROM build_outputs
+     WHERE id = $1 AND project_id = $2 AND status = 'succeeded'`,
+    [buildId, projectId]
+  );
+  if (!rows.length) throw requestError("BUILD_FILE_NOT_FOUND", 404);
+  let file;
+  try {
+    file = await resolveBuildFile(
+      project.storageDir, buildId, rows[0].storage_path, url.searchParams.get("path")
+    );
+  } catch (error) {
+    throw requestError("BUILD_FILE_NOT_FOUND", 404);
+  }
+  if (!file) throw requestError("BUILD_FILE_NOT_FOUND", 404);
+  const fallbackName = file.name.replace(/[^A-Za-z0-9._-]/g, "_") || "download";
+  res.writeHead(200, {
+    "content-type": mimeForProjectFile(file.relativePath),
+    "content-length": file.size,
+    "content-disposition": `attachment; filename="${fallbackName}"; filename*=UTF-8''${encodeDispositionValue(file.name)}`,
+    "cache-control": "private, no-store",
+    "x-content-type-options": "nosniff",
+  });
+  await new Promise((resolve, reject) => {
+    const stream = file.handle.createReadStream({ autoClose: true });
+    stream.on("error", reject);
+    res.on("finish", resolve);
+    res.on("close", resolve);
+    stream.pipe(res);
+  });
+}
+
+async function downloadBuildArchive(req, res, user, projectId, buildId) {
+  const project = await authorizeProject(projectId, user, "read");
+  const { rows } = await db.query(
+    `SELECT id, display_name, storage_path FROM build_outputs
+     WHERE id = $1 AND project_id = $2 AND status = 'succeeded'`,
+    [buildId, projectId]
+  );
+  if (!rows.length) throw requestError("BUILD_ARCHIVE_UNAVAILABLE", 404);
+  let archive;
+  try {
+    const entries = await collectBuildArchiveEntries(
+      project.storageDir,
+      buildId,
+      rows[0].storage_path,
+      { maxBytes: BUILD_ARCHIVE_MAX_BYTES, maxEntries: BUILD_ARCHIVE_MAX_ENTRIES }
+    );
+    if (!entries) throw requestError("BUILD_ARCHIVE_UNAVAILABLE", 404);
+    archive = createZip(entries);
+  } catch (error) {
+    if (["BUILD_ARCHIVE_TOO_LARGE", "ZIP_TOO_MANY_ENTRIES", "ZIP_ENTRY_TOO_LARGE"].includes(error && error.code)) {
+      throw requestError("BUILD_ARCHIVE_TOO_LARGE", 413);
+    }
+    throw error;
+  }
+  const fileName = buildArchiveFileName(rows[0]);
+  res.writeHead(200, {
+    "content-type": "application/zip",
+    "content-length": archive.length,
+    "content-disposition": `attachment; filename="${fileName}"; filename*=UTF-8''${encodeDispositionValue(fileName)}`,
+    "cache-control": "private, no-store",
+    "x-content-type-options": "nosniff",
+  });
+  res.end(archive);
 }
 
 async function deleteBuildOutput(req, res, user, projectId, buildId) {
@@ -2591,6 +2768,7 @@ async function compileProject(req, res, user, id) {
   data.project.name = name;
   const projectType = inferProjectType(data);
   data.projectType = projectType;
+  validateProjectSourceTree(data);
   const engine = projectType === "lilypond" ? "lilypond" : String(body.engine || data.engine || "pdflatex").trim();
   if (projectType === "latex" && !LATEX_ENGINES.has(engine)) {
     throw requestError("LATEX_ENGINE_UNSUPPORTED", 400);
@@ -2599,7 +2777,7 @@ async function compileProject(req, res, user, id) {
     ? (LILYPOND_PATH_LOCKED ? LILYPOND_BIN_PATH : String(body.lilypondPath || LILYPOND_BIN_PATH || "").trim())
     : (TEX_PATH_LOCKED ? TEX_BIN_PATH : String(body.texPath || TEX_BIN_PATH || "").trim());
   const main = findCompileFile(data, body.mainPath, projectType);
-  const mainPath = safeRelPath(main.path);
+  const mainPath = safeProjectSourcePath(main.path);
   const storedLilypondArgs = projectType === "lilypond"
     ? sanitizeLilypondArgsForStorage(body.lilypondArgs ?? data.lilypondArgs)
     : "";
@@ -2693,7 +2871,6 @@ async function compileProject(req, res, user, id) {
       metadata: { projectId: id, compiler: engine, format: outputFormat, artifactCount: artifacts.length },
     });
 
-    const outputTree = await generatedOutputTree(row.storageDir);
     const primaryArtifact = artifacts[0] || null;
     const pdfArtifact = outputFormat === "pdf" ? primaryArtifact : null;
     json(res, 200, {
@@ -2711,7 +2888,6 @@ async function compileProject(req, res, user, id) {
       outputFormat,
       outputName: primaryArtifact ? primaryArtifact.name : `${buildStoragePath(buildId)}/${outputName}`,
       artifacts,
-      outputTree,
       artifactCount: artifacts.length,
       pdfName: pdfArtifact ? pdfArtifact.name : null,
       pdfBase64: pdfArtifact ? pdfArtifact.base64 : null,
@@ -2767,6 +2943,12 @@ const PROJECT_BUILDS_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/builds
 const PROJECT_BUILD_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/builds/(${UUID_PATTERN})$`);
 const PROJECT_BUILD_ARTIFACT_ROUTE = new RegExp(
   `^/api/projects/(${UUID_PATTERN})/builds/(${UUID_PATTERN})/artifacts/(${UUID_PATTERN})$`
+);
+const PROJECT_BUILD_FILE_ROUTE = new RegExp(
+  `^/api/projects/(${UUID_PATTERN})/builds/(${UUID_PATTERN})/files/download$`
+);
+const PROJECT_BUILD_ARCHIVE_ROUTE = new RegExp(
+  `^/api/projects/(${UUID_PATTERN})/builds/(${UUID_PATTERN})/archive$`
 );
 const PROJECT_ARCHIVE_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/archive$`);
 const PROJECT_FILE_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/files/download$`);
@@ -3509,6 +3691,16 @@ async function handleApi(req, res, url) {
     );
   }
 
+  const buildFileMatch = url.pathname.match(PROJECT_BUILD_FILE_ROUTE);
+  if (buildFileMatch && req.method === "GET") {
+    return downloadBuildFile(req, res, user, buildFileMatch[1], buildFileMatch[2], url);
+  }
+
+  const buildArchiveMatch = url.pathname.match(PROJECT_BUILD_ARCHIVE_ROUTE);
+  if (buildArchiveMatch && req.method === "GET") {
+    return downloadBuildArchive(req, res, user, buildArchiveMatch[1], buildArchiveMatch[2]);
+  }
+
   const buildMatch = url.pathname.match(PROJECT_BUILD_ROUTE);
   if (buildMatch) {
     if (req.method === "GET") return getBuildOutput(req, res, user, buildMatch[1], buildMatch[2]);
@@ -3697,7 +3889,9 @@ module.exports = {
   parseCompileArguments,
   sanitizeLilypondArgsForStorage,
   normalizeLilypondFormat,
-  generatedOutputTree,
+  safeProjectSourcePath,
+  validateProjectSourceTree,
+  syncNodesWithFilesystem,
   resolveProjectFile,
   readCompileArtifacts,
   runCompilePipeline,

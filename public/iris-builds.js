@@ -260,18 +260,18 @@
       return;
     }
     const build = buildState.detail.build;
-    const artifacts = buildState.detail.artifacts || [];
+    const files = buildState.detail.files || [];
     const warnings = Array.isArray(build.warnings) ? build.warnings.length : 0;
     const errors = Array.isArray(build.errors) ? build.errors.length : 0;
     const revision = build.sourceRevisionId ? build.sourceRevisionId.slice(0, 8) : t("builds.hashOnly");
-    const artifactRows = artifacts.length
-      ? artifacts.map((artifact) =>
+    const fileRows = files.length
+      ? files.map((file, index) =>
         `<div class="build-artifact">` +
           `<span class="build-artifact-icon">${ti("file")}</span>` +
-          `<span class="build-artifact-name"><b>${esc(artifact.name)}</b><span>${esc(formatSize(artifact.size))} · ${esc(artifact.mimeType)}</span></span>` +
-          `<button class="node-act" type="button" data-build-download="${esc(artifact.id)}" aria-label="${esc(t("builds.downloadAria", { name: artifact.name }))}" title="${esc(t("common.download"))}">${ti("download")}</button>` +
+          `<span class="build-artifact-name"><b>${esc(file.path)}</b><span>${esc(formatSize(file.size))} · ${esc(file.mimeType)}</span></span>` +
+          `<button class="node-act" type="button" data-build-file="${index}" aria-label="${esc(t("builds.downloadAria", { name: file.path }))}" title="${esc(t("common.download"))}">${ti("download")}</button>` +
         `</div>`).join("")
-      : `<div class="build-empty-block">${esc(t("builds.noArtifacts"))}</div>`;
+      : `<div class="build-empty-block">${esc(t("builds.noFiles"))}</div>`;
     const log = build.log
       ? `<details class="build-log"${build.status === "failed" ? " open" : ""}><summary>${esc(t("builds.compilerLog"))}</summary><pre>${esc(build.log)}</pre></details>`
       : "";
@@ -281,20 +281,20 @@
           `<div><span>${esc(t("builds.compiler"))}</span><b>${esc(build.compiler)}</b></div>` +
           `<div><span>${esc(t("builds.format"))}</span><b>${esc(String(build.format || "").toUpperCase())}</b></div>` +
           `<div><span>${esc(t("builds.duration"))}</span><b>${esc(t("builds.seconds", { value: ((Number(build.durationMs) || 0) / 1000).toFixed(1) }))}</b></div>` +
-          `<div><span>${esc(t("builds.totalSize"))}</span><b>${esc(formatSize(build.size))}</b></div>` +
+          `<div><span>${esc(t("builds.totalSize"))}</span><b>${esc(formatSize(buildState.detail.directorySize == null ? build.size : buildState.detail.directorySize))}</b></div>` +
         `</div>` +
         `<div class="build-source"><span>${ti("file-code-2")}</span><div><span>${esc(t("builds.source"))}</span><b>${esc(build.mainPath)}</b><code>${esc(t("builds.revision", { id: revision }))}</code></div></div>` +
         `<div class="build-diagnostics">` +
           `<span class="${warnings ? "warn" : ""}">${ti("alert-triangle")} ${esc(t("builds.warningCount", { count: warnings }))}</span>` +
           `<span class="${errors ? "error" : ""}">${ti("circle-x")} ${esc(t("builds.errorCount", { count: errors }))}</span>` +
         `</div>` +
-        `<h4>${esc(t("builds.artifacts", { count: artifacts.length }))}</h4>` +
-        `<div class="build-artifacts">${artifactRows}</div>` +
+        `<h4>${esc(t("builds.files", { count: files.length }))}</h4>` +
+        `<div class="build-artifacts">${fileRows}</div>` +
         log +
       `</div>`;
-    view.querySelectorAll("[data-build-download]").forEach((button) => button.addEventListener("click", () => {
-      const artifact = artifacts.find((item) => item.id === button.dataset.buildDownload);
-      if (artifact) void downloadArtifact(artifact, button);
+    view.querySelectorAll("[data-build-file]").forEach((button) => button.addEventListener("click", () => {
+      const file = files[Number(button.dataset.buildFile)];
+      if (file) void downloadFile(file, button);
     }));
     renderActions();
   }
@@ -304,7 +304,6 @@
     const detail = buildState.detail;
     if (!detail) { actions.innerHTML = ""; return; }
     const build = detail.build;
-    const artifacts = detail.artifacts || [];
     const disabled = buildState.busy ? " disabled" : "";
     if (buildState.confirmDelete) {
       actions.innerHTML =
@@ -317,15 +316,15 @@
           ? `<button class="btn danger sm build-delete" type="button" data-build-act="delete"${disabled}>${ti("trash")}<span>${esc(t("common.delete"))}</span></button>`
           : "") +
         `<span class="spring"></span>` +
-        (artifacts.length
-          ? `<button class="btn sm" type="button" data-build-act="download-all"${disabled}>${ti("download")}<span>${esc(t("builds.downloadAll"))}</span></button>`
+        (detail.archiveUrl
+          ? `<button class="btn sm" type="button" data-build-act="download-archive"${disabled}>${ti("download")}<span>${esc(t("builds.downloadArchive"))}</span></button>`
           : "") +
         `<button class="btn cta sm" type="button" data-build-act="preview"${build.status === "running" || buildState.busy ? " disabled" : ""}>${ti("file")}<span>${esc(t("builds.showPreview"))}</span></button>`;
     }
     actions.querySelectorAll("[data-build-act]").forEach((button) => button.addEventListener("click", () => {
       const action = button.dataset.buildAct;
       if (action === "preview") void previewSelected();
-      else if (action === "download-all") void downloadAll();
+      else if (action === "download-archive") void downloadArchive();
       else if (action === "delete") {
         buildState.confirmDelete = true;
         renderActions();
@@ -363,10 +362,10 @@
     }
   }
 
-  async function downloadArtifact(artifact, button = null) {
+  async function downloadFile(file, button = null) {
     if (button) button.disabled = true;
     try {
-      await window.IrisProjects.downloadBuildArtifact(artifact);
+      await window.IrisProjects.downloadBuildFile(file);
       setNotice("");
     } catch (error) {
       setNotice(window.IrisI18n.error(error, "builds.downloadFailed"), true);
@@ -375,15 +374,15 @@
     }
   }
 
-  async function downloadAll() {
+  async function downloadArchive() {
     if (buildState.busy || !buildState.detail) return;
     const busySeq = beginBusy("download");
     renderActions();
     try {
-      for (const artifact of buildState.detail.artifacts || []) await window.IrisProjects.downloadBuildArtifact(artifact);
+      await window.IrisProjects.downloadBuildArchive(buildState.detail);
       setNotice("");
     } catch (error) {
-      setNotice(window.IrisI18n.error(error, "builds.downloadFailed"), true);
+      setNotice(window.IrisI18n.error(error, "builds.archiveFailed"), true);
     } finally {
       finishBusy(busySeq);
     }
@@ -409,7 +408,6 @@
       if (operationSeq !== buildState.operationSeq || window.IrisProjects.currentProjectId() !== projectId) return;
 
       const wasPreviewed = window.IrisApp.currentBuildId() === deletedId;
-      if (window.IrisApp.removeBuildFromOutputTree) window.IrisApp.removeBuildFromOutputTree(deletedId);
       buildState.selectedId = null;
       buildState.detail = null;
       buildState.confirmDelete = false;

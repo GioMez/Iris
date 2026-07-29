@@ -17,7 +17,9 @@ const {
   sanitizeLilypondArgsForStorage,
   normalizeLilypondFormat,
   reconcileProjectFonts,
-  generatedOutputTree,
+  safeProjectSourcePath,
+  validateProjectSourceTree,
+  syncNodesWithFilesystem,
   resolveProjectFile,
   readCompileArtifacts,
   runCompilePipeline,
@@ -112,17 +114,40 @@ test("collects all numbered artifacts for the selected format", async (t) => {
   assert.equal(Buffer.from(artifacts[1].base64, "base64").toString(), "page two");
 });
 
-test("builds a generated output tree immediately after compilation", async (t) => {
+test("keeps versioned build storage out of the editor source tree", async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "iris-output-tree-test-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
-  await fs.mkdir(path.join(root, "output"));
-  await fs.writeFile(path.join(root, "output", "main.pdf"), "pdf");
-  await fs.writeFile(path.join(root, "output", "main.log"), "log");
-  const output = await generatedOutputTree(root);
-  assert.equal(output.name, "output");
-  assert.equal(output.generated, true);
-  assert.deepEqual(output.children.map((node) => node.path), ["output/main.log", "output/main.pdf"]);
-  assert.ok(output.children.every((node) => node.generated && node.readOnly));
+  await fs.mkdir(path.join(root, "output", "build-id"), { recursive: true });
+  await fs.writeFile(path.join(root, "output", "build-id", "main.pdf"), "pdf");
+  await fs.writeFile(path.join(root, "main.tex"), "source");
+  const data = { project: { nodes: [{ type: "file", id: "main", name: "main.tex", path: "main.tex", content: "" }] } };
+  await syncNodesWithFilesystem(root, data);
+  assert.deepEqual(data.project.nodes.map((node) => node.name), ["main.tex"]);
+});
+
+test("reserves the output namespace for immutable build storage", () => {
+  assert.equal(safeProjectSourcePath("sources/output.tex"), "sources/output.tex");
+  for (const filePath of ["output", "Output/main.pdf", "output/build-id/main.midi", ".iris/project.json"]) {
+    assert.throws(
+      () => safeProjectSourcePath(filePath),
+      (error) => error.errorCode === "PROJECT_PATH_INVALID" && error.status === 400
+    );
+  }
+  assert.throws(
+    () => validateProjectSourceTree({
+      project: { nodes: [{ type: "file", name: "injected.pdf", path: "output/build-id/injected.pdf" }] },
+    }),
+    (error) => error.errorCode === "PROJECT_PATH_INVALID"
+  );
+  assert.throws(
+    () => validateProjectSourceTree({
+      project: { nodes: [{ type: "file", name: "injected.pdf", path: "output/build-id/injected.pdf", readOnly: true }] },
+    }),
+    (error) => error.errorCode === "PROJECT_PATH_INVALID"
+  );
+  assert.doesNotThrow(() => validateProjectSourceTree({
+    project: { nodes: [{ type: "folder", name: "output", generated: true, readOnly: true, children: [] }] },
+  }));
 });
 
 test("resolves downloadable files only inside the project", async (t) => {

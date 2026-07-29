@@ -422,6 +422,10 @@ The web application receives only the restricted `iris` credential.
 | `LILYPOND_PATH_LOCKED` | `false` | Prevent projects from overriding the LilyPond binary directory. |
 | `COMPILE_TIMEOUT_MS` | `30000` | Maximum duration of each compiler step. |
 | `COMPILE_LOG_LIMIT` | `1048576` | Maximum captured log size in bytes. |
+| `BUILD_ARCHIVE_MAX_MB` | `128` | Maximum aggregate build-file size buffered into one ZIP download. |
+| `BUILD_ARCHIVE_MAX_ENTRIES` | `10000` | Maximum number of files and directories in one build ZIP. |
+| `PROJECT_ARCHIVE_MAX_MB` | `256` | Maximum aggregate project size buffered into one portable ZIP export. |
+| `PROJECT_ARCHIVE_MAX_ENTRIES` | `20000` | Maximum number of files and directories in one project ZIP. |
 
 The OIDC and Argon2id variables are documented in their respective sections
 above and listed together in [`.env.example`](.env.example).
@@ -499,13 +503,28 @@ is too large for document history, the build retains its source content hash whi
 `source_revision_id` remains empty. Composite foreign keys prevent a build from
 referencing a source file or revision belonging to another project.
 
+The build detail also scans the immutable build directory and exposes every
+safely addressable regular generated file, including MIDI and LaTeX
+bibliography/auxiliary products.
+These safely addressable files are deliberately separate from the preview artifact registry, so
+opening a PDF does not load the whole build into browser memory. Symlinks and
+special filesystem entries, plus names containing ambiguous path separators, are
+never exposed or archived. ZIP generation is bounded by `BUILD_ARCHIVE_MAX_MB`
+and `BUILD_ARCHIVE_MAX_ENTRIES`. The physical `output/`
+directory remains storage-only and is not shown in the editor's source tree.
+
 The build endpoints are:
 
 - `GET /api/projects/:id/builds` for the paginated chronological list and latest
   successful id (`limit` and `offset` are optional);
-- `GET /api/projects/:id/builds/:buildId` for diagnostics and artifact metadata;
+- `GET /api/projects/:id/builds/:buildId` for diagnostics, preview artifacts and
+  metadata for every file in the published build directory;
 - `GET /api/projects/:id/builds/:buildId/artifacts/:artifactId` for inline preview;
 - the same artifact endpoint with `?download=1` for download;
+- `GET /api/projects/:id/builds/:buildId/files/download?path=...` to download any
+  regular file from that immutable build;
+- `GET /api/projects/:id/builds/:buildId/archive` to download the complete build
+  directory as a ZIP archive;
 - `DELETE /api/projects/:id/builds/:buildId` for owner-authorized deletion.
 
 Project members with read access can list, inspect, preview and download builds.

@@ -11,7 +11,12 @@ const {
   hashBuildArtifacts,
   resolveBuildDirectory,
   resolveBuildArtifact,
+  normalizeBuildRelativePath,
+  listBuildFiles,
+  collectBuildArchiveEntries,
+  resolveBuildFile,
 } = require("../src/builds");
+const { createZip, extractZip } = require("../src/zip");
 
 const BUILD_ID = "019c01f0-3aa0-7000-8000-000000000001";
 
@@ -91,9 +96,72 @@ test("artifact resolution stays inside the published build", async (t) => {
   const file = await resolveBuildArtifact(project, BUILD_ID, buildPath, `${buildPath}/main.pdf`);
   assert.equal(file.size, 3);
   assert.equal(file.path, await fs.realpath(path.join(directory, "main.pdf")));
+  await file.handle.close();
   assert.equal(await resolveBuildArtifact(project, BUILD_ID, buildPath, `${buildPath}/missing.pdf`), null);
   await assert.rejects(
     resolveBuildArtifact(project, BUILD_ID, buildPath, `${buildPath}/../outside.pdf`),
     /Invalid artifact path/
   );
+});
+
+test("every regular file in a build is listed and securely downloadable", async (t) => {
+  const project = await tempDir(t, "iris-build-files-");
+  const buildPath = buildStoragePath(BUILD_ID);
+  const directory = path.join(project, "output", BUILD_ID);
+  const outside = path.join(project, "outside.txt");
+  await fs.mkdir(path.join(directory, "bibliography"), { recursive: true });
+  await fs.writeFile(path.join(directory, "main.pdf"), "pdf");
+  await fs.writeFile(path.join(directory, "main.midi"), "midi");
+  await fs.writeFile(path.join(directory, "bibliography", "main.bbl"), "bbl");
+  await fs.writeFile(outside, "outside");
+  await fs.symlink(outside, path.join(directory, "linked.txt"));
+
+  await assert.rejects(
+    listBuildFiles(project, BUILD_ID, buildPath, { maxEntries: 2, errorCode: "BUILD_FILE_LIST_TOO_LARGE" }),
+    (error) => error.code === "BUILD_FILE_LIST_TOO_LARGE"
+  );
+  const files = await listBuildFiles(project, BUILD_ID, buildPath);
+  assert.deepEqual(files.map((file) => file.path), [
+    "bibliography/main.bbl",
+    "main.midi",
+    "main.pdf",
+  ]);
+  assert.equal(files.find((file) => file.path === "main.midi").size, 4);
+
+  const nested = await resolveBuildFile(project, BUILD_ID, buildPath, "bibliography/main.bbl");
+  assert.equal((await nested.handle.readFile()).toString("utf8"), "bbl");
+  await nested.handle.close();
+  assert.equal(await resolveBuildFile(project, BUILD_ID, buildPath, "linked.txt"), null);
+  assert.throws(() => normalizeBuildRelativePath("../outside.txt"), /Invalid build file path/);
+  await assert.rejects(
+    resolveBuildFile(project, BUILD_ID, buildPath, "bibliography/../main.pdf"),
+    /Invalid build file path/
+  );
+  const stable = await resolveBuildFile(project, BUILD_ID, buildPath, "main.pdf");
+  await fs.rm(directory, { recursive: true, force: true });
+  assert.equal((await stable.handle.readFile()).toString("utf8"), "pdf");
+  await stable.handle.close();
+});
+
+test("a build archive preserves all files and empty directories", async (t) => {
+  const project = await tempDir(t, "iris-build-archive-");
+  const buildPath = buildStoragePath(BUILD_ID);
+  const directory = path.join(project, "output", BUILD_ID);
+  await fs.mkdir(path.join(directory, "empty"), { recursive: true });
+  await fs.mkdir(path.join(directory, "nested"), { recursive: true });
+  await fs.writeFile(path.join(directory, "main.pdf"), Buffer.from([1, 2, 3]));
+  await fs.writeFile(path.join(directory, "main.midi"), Buffer.from([4, 5, 6]));
+  await fs.writeFile(path.join(directory, "nested", "main.bbl"), "bibliography");
+
+  await assert.rejects(
+    collectBuildArchiveEntries(project, BUILD_ID, buildPath, { maxBytes: 8, maxEntries: 100 }),
+    (error) => error.code === "BUILD_ARCHIVE_TOO_LARGE"
+  );
+
+  const entries = await collectBuildArchiveEntries(project, BUILD_ID, buildPath);
+  const archive = extractZip(createZip(entries));
+  assert.deepEqual(archive.files.get("main.pdf"), Buffer.from([1, 2, 3]));
+  assert.deepEqual(archive.files.get("main.midi"), Buffer.from([4, 5, 6]));
+  assert.equal(archive.files.get("nested/main.bbl").toString("utf8"), "bibliography");
+  assert.ok(archive.directories.has("empty/"));
 });

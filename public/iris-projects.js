@@ -485,6 +485,18 @@
     saveBlob(await response.blob(), artifact.name || "output");
   }
 
+  async function downloadBuildFile(file) {
+    const response = await fetch(file.downloadUrl, { credentials: "same-origin" });
+    if (!response.ok) throw await errorFromResponse(response);
+    saveBlob(await response.blob(), file.name || "build-file");
+  }
+
+  async function downloadBuildArchive(detail) {
+    const response = await fetch(detail.archiveUrl, { credentials: "same-origin" });
+    if (!response.ok) throw await errorFromResponse(response);
+    saveBlob(await response.blob(), detail.archiveName || "build-output.zip");
+  }
+
   async function deleteBuildOutput(buildId) {
     if (!currentId) throw new Error(t("projects.noneOpen"));
     return api(`/api/projects/${currentId}/builds/${buildId}`, { method: "DELETE" });
@@ -982,7 +994,7 @@
     downloadCurrentFile, refreshCurrent, renderPicker, onLogout, resolveFileId,
     listFileVersions, getFileVersion, restoreFileVersion, checkpointCurrent,
     currentProjectId, currentRole, listBuildOutputs, getBuildOutput, loadBuildOutput,
-    downloadBuildArtifact, deleteBuildOutput,
+    downloadBuildArtifact, downloadBuildFile, downloadBuildArchive, deleteBuildOutput,
   };
 
   /* ---------------- wiring ---------------- */

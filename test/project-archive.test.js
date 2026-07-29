@@ -62,6 +62,15 @@ test("project import accepts only versioned Iris archives", () => {
     ])),
     (error) => error.errorCode === "PROJECT_ARCHIVE_INVALID"
   );
+  for (const reservedName of [".Iris/private-cache", "Output/injected.pdf"]) {
+    assert.throws(
+      () => parseProjectArchive(createZip([
+        { name: ".iris/project.json", data: manifest() },
+        { name: reservedName, data: "reserved" },
+      ])),
+      (error) => error.errorCode === "PROJECT_ARCHIVE_INVALID"
+    );
+  }
 });
 
 test("project export includes the filesystem and a portable Iris manifest", async (t) => {
@@ -92,6 +101,11 @@ test("project export includes the filesystem and a portable Iris manifest", asyn
     fonts: [{ name: "Custom.otf", path: "fonts/Custom.otf", data: "duplicated" }],
     assets: { "fonts/Custom.otf": "duplicated" },
   }), "utf8");
+
+  await assert.rejects(
+    buildProjectArchive(root, "Portable score", { maxBytes: 8, maxEntries: 100 }),
+    (error) => error.code === "PROJECT_ARCHIVE_TOO_LARGE"
+  );
 
   const unpacked = extractZip(await buildProjectArchive(root, "Portable score"));
   assert.equal(unpacked.files.get("main.ly").toString("utf8"), "\\score { { c1 } }");
