@@ -115,6 +115,16 @@ test("versioned builds are discoverable, previewable, and restored on project op
   assert.match(css, /@media\(max-width:760px\)[\s\S]*\.build-grid\{grid-template-columns:1fr/);
 });
 
+test("build metadata uses full-width rows without truncation", () => {
+  assert.match(builds, /class="build-meta-flags"/);
+  assert.match(builds, /class="build-meta-line"><span>/);
+  assert.match(css, /\.build-detail-head\{[^}]*align-items:flex-start;[^}]*flex-direction:column/);
+  assert.match(css, /\.build-facts\{[^}]*flex-direction:column;[^}]*border:1px solid var\(--border\)/);
+  assert.match(css, /\.build-facts>div\{[^}]*grid-template-columns:minmax\(100px,28%\) minmax\(0,1fr\)/);
+  assert.match(css, /\.build-facts b\{[^}]*white-space:normal;[^}]*overflow-wrap:anywhere/);
+  assert.doesNotMatch(css, /\.build-facts\{[^}]*repeat\(4/);
+});
+
 test("file tree supports server refresh and font uploads sync immediately", () => {
   assert.match(html, /id="refreshTreeBtn"[^>]*data-i18n-title="sidebar\.refreshTree"/);
   assert.match(app, /function refreshFileTree\(\)/);

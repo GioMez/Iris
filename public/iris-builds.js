@@ -241,9 +241,11 @@
     }
     const latest = summary.id === buildState.latestSuccessfulId;
     meta.innerHTML =
-      `<span class="build-status-pill status-${esc(summary.status)}">${esc(statusLabel(summary.status))}</span>` +
-      (latest ? `<span class="build-latest">${esc(t("builds.latestSuccessful"))}</span>` : "") +
-      `<span class="build-meta-line">${esc(formatTime(summary.completedAt || summary.createdAt))} · ${esc(summary.author)}</span>`;
+      `<div class="build-meta-flags">` +
+        `<span class="build-status-pill status-${esc(summary.status)}">${esc(statusLabel(summary.status))}</span>` +
+        (latest ? `<span class="build-latest">${esc(t("builds.latestSuccessful"))}</span>` : "") +
+      `</div>` +
+      `<div class="build-meta-line"><span>${esc(formatTime(summary.completedAt || summary.createdAt))}</span><span>${esc(summary.author)}</span></div>`;
     if (options.loading) {
       view.innerHTML = `<div class="build-placeholder">${esc(t("builds.loadingDetail"))}</div>`;
       actions.innerHTML = "";
