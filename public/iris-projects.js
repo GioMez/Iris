@@ -969,7 +969,7 @@
     setPickerLoading();
     if (hadProject) await Promise.all([window.IrisMotion.closeProject(), renderPicker()]);
     else await renderPicker();
-    focusPicker();
+    if (hadProject) focusPicker();
     return true;
   }
   function onLogout() {

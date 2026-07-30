@@ -285,7 +285,7 @@
           `<div><span>${esc(t("builds.duration"))}</span><b>${esc(t("builds.seconds", { value: ((Number(build.durationMs) || 0) / 1000).toFixed(1) }))}</b></div>` +
           `<div><span>${esc(t("builds.totalSize"))}</span><b>${esc(formatSize(buildState.detail.directorySize == null ? build.size : buildState.detail.directorySize))}</b></div>` +
         `</div>` +
-        `<div class="build-source"><span>${ti("file-code-2")}</span><div><span>${esc(t("builds.source"))}</span><b>${esc(build.mainPath)}</b><code>${esc(t("builds.revision", { id: revision }))}</code></div></div>` +
+        `<div class="build-source"><span class="build-source-icon">${ti("file-code-2")}</span><div><span>${esc(t("builds.source"))}</span><b>${esc(build.mainPath)}</b><code>${esc(t("builds.revision", { id: revision }))}</code></div></div>` +
         `<div class="build-diagnostics">` +
           `<span class="${warnings ? "warn" : ""}">${ti("alert-triangle")} ${esc(t("builds.warningCount", { count: warnings }))}</span>` +
           `<span class="${errors ? "error" : ""}">${ti("circle-x")} ${esc(t("builds.errorCount", { count: errors }))}</span>` +
