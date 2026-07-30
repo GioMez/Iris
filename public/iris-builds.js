@@ -11,9 +11,12 @@
     builds: [],
     latestSuccessfulId: null,
     selectedId: null,
+    selectedIds: new Set(),
     detail: null,
     nextOffset: null,
     confirmDelete: false,
+    confirmBulkDelete: false,
+    bulkDeleteCount: 0,
     busy: false,
     busyKind: null,
     busySeq: 0,
@@ -77,9 +80,12 @@
     buildState.builds = [];
     buildState.latestSuccessfulId = null;
     buildState.selectedId = null;
+    buildState.selectedIds = new Set();
     buildState.detail = null;
     buildState.nextOffset = null;
     buildState.confirmDelete = false;
+    buildState.confirmBulkDelete = false;
+    buildState.bulkDeleteCount = 0;
     buildState.busy = false;
     buildState.busyKind = null;
     if ($("buildsModal").classList.contains("on")) {
@@ -107,9 +113,12 @@
     if (!window.IrisProjects.currentProjectId()) return;
     buildState.builds = [];
     buildState.selectedId = null;
+    buildState.selectedIds = new Set();
     buildState.detail = null;
     buildState.nextOffset = null;
     buildState.confirmDelete = false;
+    buildState.confirmBulkDelete = false;
+    buildState.bulkDeleteCount = 0;
     setNotice("");
     $("buildsList").innerHTML = "";
     renderDetail();
@@ -130,12 +139,17 @@
     more.disabled = true;
     try {
       const out = await window.IrisProjects.listBuildOutputs({ limit: PAGE_SIZE, offset });
-      if (seq !== buildState.listSeq) return;
+      if (seq !== buildState.listSeq) return false;
       const incoming = Array.isArray(out.builds) ? out.builds : [];
       const known = new Set(buildState.builds.map((build) => build.id));
       buildState.builds = append
         ? buildState.builds.concat(incoming.filter((build) => !known.has(build.id)))
         : incoming;
+      if (!append) {
+        const availableIds = new Set(buildState.builds.map((build) => build.id));
+        buildState.selectedIds = new Set([...buildState.selectedIds].filter((id) => availableIds.has(id)));
+        buildState.confirmBulkDelete = false;
+      }
       buildState.latestSuccessfulId = out.latestSuccessfulId || null;
       buildState.nextOffset = out.nextOffset == null ? null : Number(out.nextOffset);
       setListState(buildState.builds.length ? "" : t("builds.empty"));
@@ -149,10 +163,12 @@
       } else {
         renderDetail();
       }
+      return true;
     } catch (error) {
-      if (seq !== buildState.listSeq) return;
+      if (seq !== buildState.listSeq) return false;
       setListState(window.IrisI18n.error(error, "builds.loadFailed"), true);
       renderList();
+      return false;
     } finally {
       if (seq === buildState.listSeq) more.disabled = false;
     }
@@ -161,34 +177,102 @@
   function renderList() {
     const host = $("buildsList");
     host.innerHTML = "";
+    const selectable = isOwner();
     buildState.builds.forEach((build, index) => {
       const selected = build.id === buildState.selectedId;
+      const checked = buildState.selectedIds.has(build.id);
       const latest = build.id === (buildState.builds[0] && buildState.builds[0].id);
-      const item = document.createElement("button");
-      item.type = "button";
-      item.className = `build-item status-${build.status}${selected ? " on" : ""}`;
-      item.setAttribute("role", "option");
-      item.setAttribute("aria-selected", selected ? "true" : "false");
+      const item = document.createElement("div");
+      item.className = `build-item status-${build.status}${selectable ? " selectable" : ""}${selected ? " on" : ""}${checked ? " checked" : ""}`;
+      item.setAttribute("role", "listitem");
       item.dataset.buildId = build.id;
-      item.tabIndex = selected || (!buildState.selectedId && index === 0) ? 0 : -1;
       item.innerHTML =
-        `<span class="build-status-dot" aria-hidden="true"></span>` +
-        `<span class="build-item-body">` +
-          `<span class="build-item-top"><span class="build-status">${esc(statusLabel(build.status))}</span>` +
-          (latest ? `<span class="build-latest">${esc(t("builds.latest"))}</span>` : "") + `</span>` +
-          `<span class="build-when">${esc(formatTime(build.completedAt || build.createdAt))}</span>` +
-          `<span class="build-who">${esc(build.author)} · ${esc(build.compiler)} · ${esc(String(build.format || "").toUpperCase())}</span>` +
-        `</span>`;
-      item.addEventListener("click", () => { if (!selected) void selectBuild(build.id); });
+        (selectable
+          ? `<label class="build-select-wrap"><input class="build-select" type="checkbox" data-build-select="${esc(build.id)}" aria-label="${esc(t("builds.selectAria", { date: formatTime(build.completedAt || build.createdAt) }))}"${checked ? " checked" : ""}${buildState.busy ? " disabled" : ""}></label>`
+          : "") +
+        `<button class="build-item-open" type="button" data-build-open="${esc(build.id)}"${selected ? ' aria-current="true"' : ""}>` +
+          `<span class="build-status-dot" aria-hidden="true"></span>` +
+          `<span class="build-item-body">` +
+            `<span class="build-item-top"><span class="build-status">${esc(statusLabel(build.status))}</span>` +
+            (latest ? `<span class="build-latest">${esc(t("builds.latest"))}</span>` : "") + `</span>` +
+            `<span class="build-when">${esc(formatTime(build.completedAt || build.createdAt))}</span>` +
+            `<span class="build-who">${esc(build.author)} · ${esc(build.compiler)} · ${esc(String(build.format || "").toUpperCase())}</span>` +
+          `</span>` +
+        `</button>`;
+      const checkbox = item.querySelector("[data-build-select]");
+      if (checkbox) checkbox.addEventListener("change", () => toggleBuildSelection(build.id, checkbox.checked));
+      const openButton = item.querySelector("[data-build-open]");
+      openButton.tabIndex = selected || (!buildState.selectedId && index === 0) ? 0 : -1;
+      openButton.addEventListener("click", () => { if (!selected) void selectBuild(build.id); });
       host.appendChild(item);
     });
     $("buildsMore").hidden = buildState.nextOffset == null;
+    renderBulkActions();
+  }
+
+  function toggleBuildSelection(buildId, checked) {
+    if (buildState.busy) {
+      const checkbox = $("buildsList").querySelector(`[data-build-select="${buildId}"]`);
+      if (checkbox) checkbox.checked = buildState.selectedIds.has(buildId);
+      return;
+    }
+    if (checked) buildState.selectedIds.add(buildId);
+    else buildState.selectedIds.delete(buildId);
+    buildState.confirmBulkDelete = false;
+    const item = $("buildsList").querySelector(`[data-build-id="${buildId}"]`);
+    if (item) item.classList.toggle("checked", checked);
+    renderBulkActions();
+  }
+
+  function renderBulkActions() {
+    const host = $("buildsBulk");
+    const bulkBusy = buildState.busyKind === "bulk-delete";
+    const count = bulkBusy ? buildState.bulkDeleteCount : buildState.selectedIds.size;
+    host.setAttribute("aria-busy", bulkBusy ? "true" : "false");
+    if (!isOwner() || !count) {
+      host.hidden = true;
+      host.innerHTML = "";
+      return;
+    }
+    host.hidden = false;
+    if (bulkBusy) {
+      host.innerHTML = `<span class="build-bulk-count">${esc(t("builds.deletingSelected", { count }))}</span>`;
+      return;
+    }
+    const disabled = buildState.busy ? " disabled" : "";
+    if (buildState.confirmBulkDelete) {
+      host.innerHTML =
+        `<span class="build-bulk-confirm">${esc(t("builds.deleteSelectedConfirm", { count }))}</span>` +
+        `<span class="build-bulk-buttons">` +
+          `<button class="btn sm" type="button" data-build-bulk-act="cancel"${disabled}>${esc(t("common.cancel"))}</button>` +
+          `<button class="btn danger sm" type="button" data-build-bulk-act="confirm"${disabled}>${esc(t("common.delete"))}</button>` +
+        `</span>`;
+    } else {
+      host.innerHTML =
+        `<span class="build-bulk-count">${esc(t("builds.selectedCount", { count }))}</span>` +
+        `<button class="btn danger sm" type="button" data-build-bulk-act="delete"${disabled}>${ti("trash")}<span>${esc(t("builds.deleteSelected"))}</span></button>`;
+    }
+    host.querySelectorAll("[data-build-bulk-act]").forEach((button) => button.addEventListener("click", () => {
+      const action = button.dataset.buildBulkAct;
+      if (action === "delete") {
+        buildState.confirmBulkDelete = true;
+        renderBulkActions();
+        host.querySelector('[data-build-bulk-act="cancel"]')?.focus();
+      } else if (action === "cancel") {
+        buildState.confirmBulkDelete = false;
+        renderBulkActions();
+        host.querySelector('[data-build-bulk-act="delete"]')?.focus();
+      } else if (action === "confirm") {
+        void deleteChecked();
+      }
+    }));
   }
 
   function beginBusy(kind) {
     const seq = ++buildState.busySeq;
     buildState.busy = true;
     buildState.busyKind = kind;
+    renderBulkActions();
     return seq;
   }
 
@@ -197,6 +281,7 @@
     buildState.busy = false;
     buildState.busyKind = null;
     renderActions();
+    renderBulkActions();
   }
 
   function cancelPreviewRequest() {
@@ -206,6 +291,7 @@
     buildState.busy = false;
     buildState.busyKind = null;
     renderActions();
+    renderBulkActions();
   }
 
   async function selectBuild(buildId) {
@@ -395,6 +481,7 @@
     const deletedId = buildState.selectedId;
     const projectId = window.IrisProjects.currentProjectId();
     const operationSeq = ++buildState.operationSeq;
+    buildState.previewSeq += 1;
     const busySeq = beginBusy("delete");
     renderActions();
     try {
@@ -411,6 +498,7 @@
 
       const wasPreviewed = window.IrisApp.currentBuildId() === deletedId;
       buildState.selectedId = null;
+      buildState.selectedIds.delete(deletedId);
       buildState.detail = null;
       buildState.confirmDelete = false;
       await loadBuilds({ selectFirst: true });
@@ -423,13 +511,14 @@
         await window.IrisApp.clearBuildOutput(deletedId);
         return;
       }
-      const previewSeq = ++buildState.previewSeq;
       try {
         const payload = await window.IrisProjects.loadBuildOutput(latestCompleted.id);
-        if (previewSeq !== buildState.previewSeq || window.IrisProjects.currentProjectId() !== projectId) return;
+        if (operationSeq !== buildState.operationSeq || window.IrisProjects.currentProjectId() !== projectId) return;
+        if (window.IrisApp.currentBuildId() !== deletedId) return;
         await window.IrisApp.showBuildOutput(payload, { activateWorkspace: false });
       } catch (error) {
-        if (previewSeq !== buildState.previewSeq) return;
+        if (operationSeq !== buildState.operationSeq || window.IrisProjects.currentProjectId() !== projectId) return;
+        if (window.IrisApp.currentBuildId() !== deletedId) return;
         await window.IrisApp.clearBuildOutput(latestCompleted.id);
         await window.IrisApp.clearBuildOutput(deletedId);
         setNotice(t("builds.deletedPreviewFailed"), true);
@@ -439,7 +528,110 @@
     }
   }
 
+  async function deleteChecked() {
+    const deleteIds = [...buildState.selectedIds];
+    if (buildState.busy || !deleteIds.length || !isOwner()) return;
+    const projectId = window.IrisProjects.currentProjectId();
+    const loadedCount = buildState.builds.length;
+    const loadedBuilds = buildState.builds.slice();
+    const operationSeq = ++buildState.operationSeq;
+    buildState.previewSeq += 1;
+    buildState.confirmBulkDelete = false;
+    buildState.bulkDeleteCount = deleteIds.length;
+    const busySeq = beginBusy("bulk-delete");
+    const deletedIds = [];
+    const failedIds = [];
+    let firstError = null;
+    renderList();
+    renderActions();
+    $("buildsBulk").focus();
+    try {
+      for (const buildId of deleteIds) {
+        if (operationSeq !== buildState.operationSeq || window.IrisProjects.currentProjectId() !== projectId) return;
+        try {
+          await window.IrisProjects.deleteBuildOutput(buildId);
+          deletedIds.push(buildId);
+        } catch (error) {
+          failedIds.push(buildId);
+          if (!firstError) firstError = error;
+        }
+      }
+      if (operationSeq !== buildState.operationSeq || window.IrisProjects.currentProjectId() !== projectId) return;
+
+      if (!deletedIds.length) {
+        buildState.selectedIds = new Set(failedIds);
+        setNotice(window.IrisI18n.error(firstError, "builds.deleteSelectedFailed"), true);
+        return;
+      }
+
+      const deletedSet = new Set(deletedIds);
+      const previewedId = window.IrisApp.currentBuildId();
+      const wasPreviewed = deletedSet.has(previewedId);
+      const resultMessage = failedIds.length
+        ? t("builds.deleteSelectedPartial", { deleted: deletedIds.length, failed: failedIds.length })
+        : t("builds.deletedSelected", { count: deletedIds.length });
+      if (deletedSet.has(buildState.selectedId)) {
+        buildState.selectedId = null;
+        buildState.detail = null;
+        buildState.confirmDelete = false;
+      }
+      buildState.selectedIds = new Set();
+      const reloaded = await loadBuilds({ selectFirst: true, reloadSelected: true });
+      if (!reloaded) {
+        if (operationSeq !== buildState.operationSeq || window.IrisProjects.currentProjectId() !== projectId) return;
+        buildState.builds = loadedBuilds.filter((build) => !deletedSet.has(build.id));
+        buildState.selectedIds = new Set(failedIds);
+        renderList();
+        renderDetail();
+      } else {
+        while (operationSeq === buildState.operationSeq && window.IrisProjects.currentProjectId() === projectId &&
+          buildState.nextOffset != null && buildState.builds.length < loadedCount + PAGE_SIZE &&
+          failedIds.some((id) => !buildState.builds.some((build) => build.id === id))) {
+          const appended = await loadBuilds({ append: true });
+          if (!appended) break;
+        }
+        if (operationSeq !== buildState.operationSeq || window.IrisProjects.currentProjectId() !== projectId) return;
+        buildState.selectedIds = new Set(failedIds);
+        renderList();
+      }
+      if (operationSeq !== buildState.operationSeq || window.IrisProjects.currentProjectId() !== projectId) return;
+      setNotice(resultMessage, failedIds.length > 0);
+      if (!wasPreviewed) return;
+
+      const latestCompleted = buildState.builds.find((build) => build.status !== "running");
+      if (!latestCompleted) {
+        await window.IrisApp.clearBuildOutput(previewedId);
+        return;
+      }
+      try {
+        const payload = await window.IrisProjects.loadBuildOutput(latestCompleted.id);
+        if (operationSeq !== buildState.operationSeq || window.IrisProjects.currentProjectId() !== projectId) return;
+        if (window.IrisApp.currentBuildId() !== previewedId) return;
+        await window.IrisApp.showBuildOutput(payload, { activateWorkspace: false });
+      } catch (error) {
+        if (operationSeq !== buildState.operationSeq || window.IrisProjects.currentProjectId() !== projectId) return;
+        if (window.IrisApp.currentBuildId() !== previewedId) return;
+        await window.IrisApp.clearBuildOutput(latestCompleted.id);
+        await window.IrisApp.clearBuildOutput(previewedId);
+        setNotice(`${resultMessage} ${t("builds.replacementPreviewFailed")}`, true);
+      }
+    } finally {
+      if (busySeq === buildState.busySeq) {
+        buildState.bulkDeleteCount = 0;
+        finishBusy(busySeq);
+        renderList();
+        if ($("buildsModal").classList.contains("on")) {
+          requestAnimationFrame(() => {
+            const target = $("buildsList").querySelector(`[data-build-open="${buildState.selectedId}"]`) || $("buildsRefresh");
+            target.focus();
+          });
+        }
+      }
+    }
+  }
+
   async function refreshBuilds() {
+    if (buildState.busy) return;
     const button = $("buildsRefresh");
     button.disabled = true;
     try {
@@ -450,7 +642,7 @@
   }
 
   function moveListSelection(event) {
-    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key) || !buildState.builds.length) return;
+    if (!event.target.closest("[data-build-open]") || !["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key) || !buildState.builds.length) return;
     event.preventDefault();
     let index = buildState.builds.findIndex((build) => build.id === buildState.selectedId);
     if (event.key === "Home") index = 0;
@@ -460,7 +652,7 @@
     const buildId = buildState.builds[index].id;
     void selectBuild(buildId);
     requestAnimationFrame(() => {
-      const option = $("buildsList").querySelector(`[data-build-id="${buildId}"]`);
+      const option = $("buildsList").querySelector(`[data-build-open="${buildId}"]`);
       if (option) option.focus();
     });
   }
@@ -474,11 +666,11 @@
   function wire() {
     $("btnBuilds").addEventListener("click", () => { void openHistory(); });
     $("buildsRefresh").addEventListener("click", () => { void refreshBuilds(); });
-    $("buildsMore").addEventListener("click", () => { void loadBuilds({ append: true }); });
+    $("buildsMore").addEventListener("click", () => { if (!buildState.busy) void loadBuilds({ append: true }); });
     $("buildsList").addEventListener("keydown", moveListSelection);
     document.addEventListener("iris:buildcompleted", () => {
       cancelPreviewRequest();
-      if ($("buildsModal").classList.contains("on")) void loadBuilds({ selectFirst: true, reloadSelected: true });
+      if ($("buildsModal").classList.contains("on") && !buildState.busy) void loadBuilds({ selectFirst: true, reloadSelected: true });
     });
     document.addEventListener("iris:languagechange", refreshLocalizedUi);
   }

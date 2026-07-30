@@ -99,7 +99,7 @@ test("all build files download from history instead of appearing in the source t
 test("versioned builds are discoverable, previewable, and restored on project open", () => {
   assert.match(html, /id="btnBuilds"[^>]*data-i18n-title="toolbar\.buildsTitle"/);
   assert.match(html, /id="buildsRefresh"[^>]*data-i18n-aria-label="builds\.refresh"/);
-  assert.match(html, /id="buildsModal"[\s\S]*role="dialog"[\s\S]*id="buildsList"[^>]*role="listbox"/);
+  assert.match(html, /id="buildsModal"[\s\S]*role="dialog"[\s\S]*id="buildsList"[^>]*role="list"/);
   assert.match(projects, /\/api\/projects\/\$\{currentId\}\/builds\?\$\{query\}/);
   assert.match(projects, /\/api\/projects\/\$\{projectId\}\/builds\/\$\{buildId\}/);
   assert.match(projects, /IrisBuilds\.loadLatest\(id\)/);
@@ -110,12 +110,30 @@ test("versioned builds are discoverable, previewable, and restored on project op
   assert.match(builds, /function moveListSelection\(event\)/);
   assert.match(builds, /\["ArrowDown", "ArrowUp", "Home", "End"\]/);
   assert.match(builds, /reloadSelected: true/);
-  assert.match(builds, /previewSeq !== buildState\.previewSeq/);
+  assert.match(builds, /seq !== buildState\.previewSeq/);
   assert.match(builds, /clearBuildOutput\(latestCompleted\.id\)/);
   assert.match(app, /async function showBuildOutput\(payload, options = \{\}\)/);
   assert.match(app, /suppliedBytes instanceof Uint8Array/);
   assert.match(css, /\.build-grid\{[^}]*grid-template-columns:292px minmax\(0,1fr\)/);
   assert.match(css, /@media\(max-width:760px\)[\s\S]*\.build-grid\{grid-template-columns:1fr/);
+});
+
+test("build history supports owner-only multiple selection and bulk deletion", () => {
+  assert.match(html, /id="buildsBulk"[^>]*aria-live="polite"/);
+  assert.match(builds, /selectedIds: new Set\(\)/);
+  assert.match(builds, /const selectable = isOwner\(\)/);
+  assert.match(builds, /data-build-select=/);
+  assert.match(builds, /data-build-bulk-act="delete"/);
+  assert.match(builds, /function deleteChecked\(\)/);
+  assert.match(builds, /for \(const buildId of deleteIds\)[\s\S]*deleteBuildOutput\(buildId\)/);
+  assert.match(builds, /failedIds\.some\([\s\S]*loadBuilds\(\{ append: true \}\)/);
+  assert.match(builds, /const appended = await loadBuilds\(\{ append: true \}\);[\s\S]*if \(!appended\) break/);
+  assert.match(builds, /currentBuildId\(\) !== previewedId/);
+  assert.match(builds, /aria-busy/);
+  assert.match(builds, /deleteSelectedPartial/);
+  assert.match(css, /\.build-bulk\{/);
+  assert.match(css, /\.build-select-wrap\{[^}]*min-height:44px/);
+  assert.match(css, /\.build-select\{[^}]*accent-color/);
 });
 
 test("build metadata uses full-width rows without truncation", () => {
