@@ -2230,6 +2230,18 @@
       const btn = e.target.closest("[data-ver-view]");
       if (btn) setVersionView(btn.dataset.verView);
     });
+    $("versionsViewSwitch").addEventListener("keydown", (e) => {
+      const btn = e.target.closest("[data-ver-view]");
+      if (!btn || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
+      const tabs = [...$("versionsViewSwitch").querySelectorAll("[data-ver-view]")];
+      let index = tabs.indexOf(btn);
+      if (e.key === "Home") index = 0;
+      else if (e.key === "End") index = tabs.length - 1;
+      else index = (index + (e.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+      e.preventDefault();
+      setVersionView(tabs[index].dataset.verView);
+      tabs[index].focus();
+    });
 
     // attach modal
     $("attachDrop").addEventListener("click", () => $("attachInput").click());
@@ -2679,6 +2691,8 @@
       const active = b.dataset.verView === verState.view;
       b.classList.toggle("on", active);
       b.setAttribute("aria-selected", active ? "true" : "false");
+      b.tabIndex = active ? 0 : -1;
+      if (active) view.setAttribute("aria-labelledby", b.id);
     });
     if (opts.loading) { view.innerHTML = `<div class="ver-placeholder">${esc(t("versions.loading"))}</div>`; actions.innerHTML = ""; return; }
     if (opts.error) { view.innerHTML = `<div class="ver-placeholder error">${esc(opts.error)}</div>`; actions.innerHTML = ""; return; }

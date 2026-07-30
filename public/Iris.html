@@ -1068,12 +1068,12 @@
       <div class="ver-detail-pane" id="versionsDetail">
         <div class="ver-detail-head">
           <div class="ver-meta" id="versionsMeta"></div>
-          <div class="ver-viewswitch" id="versionsViewSwitch" role="tablist" aria-label="View mode" hidden>
-            <button class="on" type="button" role="tab" data-ver-view="preview" data-i18n="versions.viewPreview">Preview</button>
-            <button type="button" role="tab" data-ver-view="diff" data-i18n="versions.viewDiff">Changes</button>
-          </div>
         </div>
-        <div class="ver-view" id="versionsView"></div>
+        <div class="ver-viewswitch" id="versionsViewSwitch" role="tablist" aria-label="View mode" hidden>
+          <button class="on" id="versionsPreviewTab" type="button" role="tab" aria-selected="true" aria-controls="versionsView" data-ver-view="preview" data-i18n="versions.viewPreview">Preview</button>
+          <button id="versionsDiffTab" type="button" role="tab" aria-selected="false" aria-controls="versionsView" tabindex="-1" data-ver-view="diff" data-i18n="versions.viewDiff">Changes</button>
+        </div>
+        <div class="ver-view" id="versionsView" role="tabpanel" aria-labelledby="versionsPreviewTab" tabindex="0"></div>
         <div class="ver-actions" id="versionsActions"></div>
       </div>
     </div>

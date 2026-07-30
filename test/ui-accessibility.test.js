@@ -150,6 +150,19 @@ test("build metadata uses full-width rows without truncation", () => {
   assert.doesNotMatch(css, /\.build-facts\{[^}]*repeat\(4/);
 });
 
+test("file history preview and changes are tabs of the content panel", () => {
+  const metaIndex = html.indexOf('id="versionsMeta"');
+  const tabsIndex = html.indexOf('id="versionsViewSwitch"');
+  const viewIndex = html.indexOf('id="versionsView"');
+  assert.ok(metaIndex < tabsIndex && tabsIndex < viewIndex);
+  assert.match(html, /id="versionsPreviewTab"[^>]*role="tab"[^>]*aria-controls="versionsView"/);
+  assert.match(html, /id="versionsDiffTab"[^>]*role="tab"[^>]*aria-controls="versionsView"/);
+  assert.match(html, /id="versionsView"[^>]*role="tabpanel"[^>]*aria-labelledby="versionsPreviewTab"/);
+  assert.match(app, /versionsViewSwitch[\s\S]*\["ArrowLeft", "ArrowRight", "Home", "End"\]/);
+  assert.match(css, /\.ver-viewswitch\{[^}]*grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
+  assert.match(css, /\.ver-viewswitch button\.on\{[^}]*border-bottom-color:var\(--accent\)/);
+});
+
 test("file tree supports server refresh and font uploads sync immediately", () => {
   assert.match(html, /id="refreshTreeBtn"[^>]*data-i18n-title="sidebar\.refreshTree"/);
   assert.match(app, /function refreshFileTree\(\)/);
