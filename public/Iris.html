@@ -17,6 +17,7 @@
     "@codemirror/view": "/vendor/codemirror/view.js",
     "@codemirror/language": "/vendor/codemirror/language.js",
     "@codemirror/commands": "/vendor/codemirror/commands.js",
+    "@codemirror/collab": "/vendor/codemirror/collab.js",
     "@lezer/common": "/vendor/codemirror/lezer-common.js",
     "@lezer/highlight": "/vendor/codemirror/lezer-highlight.js",
     "style-mod": "/vendor/codemirror/style-mod.js",
@@ -122,13 +123,7 @@
             <button class="findbtn txt" id="replaceAll" data-i18n="find.replaceAll">All</button>
           </div>
         </div>
-        <div class="gutter" id="gutter"></div>
-        <div class="code-wrap" id="codeWrap">
-          <div class="cur-hl" id="curHl" style="display:none"></div>
-          <pre class="code-layer" id="codeLayer" aria-hidden="true"></pre>
-          <textarea class="code-area" id="codeArea" spellcheck="false" autocomplete="off" autocapitalize="off" wrap="off"></textarea>
-          <div class="line-measure" id="lineMeasure" aria-hidden="true"></div>
-        </div>
+        <!-- The CodeMirror view is mounted here by iris-editor.js -->
       </div>
     </section>
 
@@ -177,6 +172,7 @@
       <span class="st" data-i18n="status.spaces">Spaces: 2</span>
       <span class="st">UTF-8</span>
       <span class="st" id="stLanguage">LaTeX</span>
+      <span class="st sb-sync" id="stSync" role="status" aria-live="polite" hidden><span class="sync-dot" aria-hidden="true"></span><span id="stSyncLabel"></span></span>
       <div class="spring"></div>
       <span class="st" id="stMath"></span>
       <button class="st warn btnlike" id="stWarn" type="button" style="display:none"></button>
@@ -1157,8 +1153,8 @@
 <script src="iris-motion.js"></script>
 <script src="iris-latex.js"></script>
 <script src="iris-lilypond.js"></script>
-<script src="iris-editor-legacy.js"></script>
 <script src="iris-editor.js"></script>
+<script src="iris-collab.js"></script>
 <script src="iris-app.js"></script>
 <script src="iris-projects.js"></script>
 <script src="iris-builds.js"></script>

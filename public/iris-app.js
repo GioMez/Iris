@@ -94,6 +94,9 @@
         renderTabs();
         if (!state.dirtyFiles.size) clearTimeout(persistT);
       }
+      // The save is what gives a file created in this session its canonical id,
+      // and with it the ability to join a realtime room.
+      syncRealtimeSession();
       return true;
     };
     persistQueue = persistQueue.then(operation, operation);
@@ -206,20 +209,98 @@
 
   // Every edit — typing, Tab/Enter inserts, find & replace, formatter — flows
   // through the adapter's change event; the app only owns the model side.
+  //
+  // In a realtime session the server owns persistence, so an edit is not "unsaved
+  // work" the user must remember to save: the local tree is kept current for the
+  // outline and the compiler, but the file is not marked dirty and no autosave is
+  // scheduled. Without a session, the ordinary save path is unchanged.
   function wireEditorEvents() {
     ed().onChange(() => {
       const f = findFile(state.activeId);
+      const realtime = isRealtimeFile(state.activeId);
       if (f) {
         f.content = ed().getValue();
-        markFileDirty(f.id);
+        if (!realtime) markFileDirty(f.id);
       }
       renderOutline();
-      schedulePersist();
+      if (!realtime) schedulePersist();
     });
     ed().onCursor((pos) => {
       lastCursor = pos;
       renderCursorStatus();
     });
+    window.IrisCollab.onStatus(renderSyncStatus);
+    // Losing write access mid-session drops the workspace to read-only in place,
+    // exactly like the projects layer does when a write is refused.
+    document.addEventListener("iris:collabrole", (event) => {
+      if (event.detail.role === "viewer" && !isReadOnly()) {
+        state.role = "viewer";
+        applyRoleGate();
+        toast(t("projects.writeForbidden"), "err");
+      }
+    });
+    document.addEventListener("iris:collabrevoked", () => {
+      toast(t("collab.revoked"), "err");
+    });
+    // A file the server will not share in realtime keeps the ordinary save path;
+    // anything typed before that answer is still local, so it must be flagged.
+    document.addEventListener("iris:collabunavailable", () => {
+      const f = findFile(state.activeId);
+      if (f && f.content !== undefined) markFileDirty(f.id);
+      renderSyncStatus();
+    });
+  }
+
+  /* ---------------- realtime session ---------------- */
+  // Realtime needs the file's canonical id, so a document created in this session
+  // joins only after the save that reconciles it (same rule as its history).
+  function isRealtimeFile(id) {
+    return !!id && window.IrisCollab.active() && window.IrisCollab.fileId() === canonicalFileId(id);
+  }
+  function canonicalFileId(id) {
+    if (isCanonicalFileId(id)) return id;
+    const node = findFile(id);
+    const resolved = node && window.IrisProjects && window.IrisProjects.resolveFileId
+      ? window.IrisProjects.resolveFileId(node.path)
+      : null;
+    return isCanonicalFileId(resolved) ? resolved : null;
+  }
+  // Joins the room for the open file, or leaves realtime behind for a file that
+  // cannot have one yet.
+  function syncRealtimeSession() {
+    const node = findFile(state.activeId);
+    if (!node || node.kind === "img" || node.generated || node.readOnly) {
+      window.IrisCollab.leave();
+      renderSyncStatus();
+      return;
+    }
+    const fileId = canonicalFileId(node.id);
+    if (!fileId) {
+      window.IrisCollab.leave();
+      renderSyncStatus();
+      return;
+    }
+    window.IrisCollab.join(fileId, node.kind);
+  }
+  const SYNC_LABEL = {
+    connecting: "collab.connecting",
+    live: "collab.live",
+    readonly: "collab.readonly",
+    offline: "collab.offline",
+    revoked: "collab.revoked",
+    error: "collab.error",
+  };
+  function renderSyncStatus() {
+    const chip = $("stSync");
+    const label = $("stSyncLabel");
+    if (!chip || !label) return;
+    const status = window.IrisCollab.status();
+    const key = SYNC_LABEL[status];
+    chip.hidden = !key;
+    if (!key) return;
+    chip.dataset.sync = status;
+    label.textContent = t(key);
+    chip.title = t("collab.title");
   }
 
   let persistT;
@@ -408,7 +489,12 @@
     if (state.activeId === id) {
       const next = state.openTabs[Math.max(0, i - 1)] || state.openTabs[0];
       if (next) openFile(next);
-      else { state.activeId = null; ed().load("", null); }
+      else {
+        state.activeId = null;
+        ed().load("", null);
+        window.IrisCollab.leave();
+        renderSyncStatus();
+      }
     }
     renderTabs();
   }
@@ -426,6 +512,9 @@
     renderTabs();
     renderOutline();
     markTree(id);
+    // Joining replaces the document just loaded with the authoritative one; the
+    // local content stands in until the server answers.
+    syncRealtimeSession();
     ed().focus();
   }
 
@@ -535,6 +624,8 @@
     state.activeId = null;
     state.openTabs = [];
     ed().load("", null);
+    window.IrisCollab.leave();
+    renderSyncStatus();
     renderTabs();
     renderOutline();
   }
@@ -873,6 +964,9 @@
       ed().load(active.content || "", active.kind);
       renderOutline();
       markTree(active.id);
+      // Reloading the document leaves any realtime session behind, so it is
+      // re-established for whichever file ended up active.
+      syncRealtimeSession();
     }
   }
 
@@ -1098,11 +1192,24 @@
   }
 
   /* ---------------- compile ---------------- */
+  // A save carries the content of the files this client actually edited. Files it
+  // only read are sent without content, and the server keeps the bytes already on
+  // disk — which may be newer, written by a collaborator. This is what stops two
+  // people with the same project open from overwriting each other's files.
+  function snapshotNodes(nodes) {
+    return (nodes || []).map((node) => {
+      if (node.type === "folder") return { ...node, children: snapshotNodes(node.children) };
+      const writable = state.dirtyFiles.has(node.id) || isRealtimeFile(node.id);
+      if (writable || node.kind === "img" || node.data != null) return node;
+      const { content, ...rest } = node;
+      return rest;
+    });
+  }
   function projectSnapshot() {
     const f = findFile(state.activeId);
     if (f && (f.kind === "tex" || f.kind === "ly" || f.kind === "bib")) f.content = ed().getValue();
     return {
-      project: { name: project.name, nodes: project.nodes },
+      project: { name: project.name, nodes: snapshotNodes(project.nodes) },
       projectType: state.projectType,
       language: state.projectLanguage,
       assets: state.assets,
@@ -1218,8 +1325,12 @@
     $("btnCompile").disabled = false;
   }
 
+  // Called by the projects layer whenever the open project goes away (closed,
+  // deleted, left, or replaced), which is also when the realtime session must go.
   function cancelPendingProjectLoad() {
     state.projectLoadGeneration += 1;
+    window.IrisCollab.disconnect();
+    renderSyncStatus();
   }
   function buildLog(f, res, ms, remember = true) {
     if (remember) state.lastCompile = { f, res, ms, compiledAt: new Date() };
@@ -2500,7 +2611,13 @@
       if (node) {
         node.content = out.content;
         state.dirtyFiles.delete(node.id);
-        if (node.id === state.activeId) { ed().load(out.content, node.kind); renderOutline(); }
+        // In a realtime session the server resets the room and pushes the
+        // restored text to every participant, this tab included, so replacing the
+        // document here would drop it out of the session.
+        if (node.id === state.activeId && !isRealtimeFile(node.id)) {
+          ed().load(out.content, node.kind);
+          renderOutline();
+        }
       }
       renderTabs();
       verState.confirm = null;
@@ -2668,7 +2785,9 @@
       updateZoomLabel();
       return true;
     },
-    // Snapshot the active project for persistence.
+    // Snapshot the active project for persistence. Source files this client did
+    // not edit are sent without content so the server keeps what is on disk; see
+    // snapshotNodes.
     serialize() {
       return projectSnapshot();
     },

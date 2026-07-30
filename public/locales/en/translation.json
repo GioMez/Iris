@@ -483,7 +483,17 @@
     "documentSaved": "Document saved",
     "saveFailed": "Save failed",
     "opened": "Opened {{name}}",
-    "formatted": "Source formatted"
+    "formatted": "Source formatted",
+    "unavailable": "The editor could not be loaded. Reload the page; if the problem persists, contact your Iris administrator."
+  },
+  "collab": {
+    "title": "Realtime collaboration state for the open file",
+    "connecting": "Connecting…",
+    "live": "Realtime",
+    "readonly": "Realtime · read-only",
+    "offline": "Reconnecting…",
+    "revoked": "Realtime session ended: your access to this project changed",
+    "error": "Realtime unavailable"
   },
   "templates": {
     "newScore": "New score",

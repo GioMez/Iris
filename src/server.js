@@ -1,4 +1,5 @@
 const http = require("node:http");
+const { WebSocketServer } = require("ws");
 const fsSync = require("node:fs");
 const fs = require("node:fs/promises");
 const path = require("node:path");
@@ -13,6 +14,7 @@ const { lifecycleGate, healthStatus, isMutatingMethod, HEALTH_PATH } = require("
 const { recordAuditEvent } = require("./audit");
 const { collectProjectFiles, reconcileProjectFiles } = require("./project-files");
 const { hashContent, isVersionableText, contentChanged } = require("./versions");
+const { CollabRooms, CollabError } = require("./collab");
 const { isSystemRole, isUserStatus, leavesNoActiveAdmin, normalizeSearch, userDeletionBlock } = require("./admin");
 const {
   isProjectRole,
@@ -97,6 +99,7 @@ const CODEMIRROR_MODULES = {
   "view.js": path.join(path.dirname(require.resolve("@codemirror/view")), "index.js"),
   "language.js": path.join(path.dirname(require.resolve("@codemirror/language")), "index.js"),
   "commands.js": path.join(path.dirname(require.resolve("@codemirror/commands")), "index.js"),
+  "collab.js": path.join(path.dirname(require.resolve("@codemirror/collab")), "index.js"),
   "lezer-common.js": path.join(path.dirname(require.resolve("@lezer/common")), "index.js"),
   "lezer-highlight.js": path.join(path.dirname(require.resolve("@lezer/highlight")), "index.js"),
   "style-mod.js": path.join(path.dirname(require.resolve("style-mod")), "..", "src", "style-mod.js"),
@@ -913,8 +916,15 @@ async function writeProjectNodes(storagePath, data) {
       if (fileIsBinaryNode(node)) {
         const dataUrl = node.data || assets[rel] || assets[node.path];
         if (dataUrl != null) await fs.writeFile(abs, dataUrlToBuffer(dataUrl));
+      } else if (node.content == null) {
+        // A source node without content means the client is not writing this
+        // file: it never edited it in this session. The bytes on disk stay, so a
+        // save can no longer overwrite a collaborator's newer text with the copy
+        // this client happened to load. A file that does not exist yet is still
+        // created, so the tree on disk always matches the manifest.
+        if (!await fs.stat(abs).then(() => true, () => false)) await fs.writeFile(abs, "", "utf8");
       } else {
-        await fs.writeFile(abs, String(node.content || ""), "utf8");
+        await fs.writeFile(abs, String(node.content), "utf8");
       }
     }
   };
@@ -1386,6 +1396,7 @@ async function addProjectMember(req, res, user, projectId) {
     targetId: projectId,
     metadata: { userId: target.id, username: target.username, role },
   });
+  await collabRecheckProject(projectId);
   json(res, 201, {
     member: memberView({ user_id: target.id, username: target.username, email: target.email, display_name: target.display_name, role, invited_by: user.sub, created_at: new Date() }),
   });
@@ -1432,6 +1443,9 @@ async function updateProjectMember(req, res, user, projectId, memberId) {
       metadata: { userId: memberId, from: previousRole, to: nextRole },
     });
   }
+  // A role change reaches sessions already open: losing write turns the
+  // workspace read-only in place, losing membership closes the connection.
+  await collabRecheckProject(projectId);
   json(res, 200, { ok: true });
 }
 
@@ -1472,6 +1486,7 @@ async function removeProjectMember(req, res, user, projectId, memberId) {
       metadata: { userId: memberId },
     });
   }
+  await collabRecheckProject(projectId);
   json(res, 200, { ok: true });
 }
 
@@ -1633,6 +1648,7 @@ async function checkpointProject(req, res, user, id) {
     data.projectType = inferProjectType(data);
     validateProjectSourceTree(data);
     const { renames } = await syncProjectFiles(id, data);
+    applyCollabAuthority(id, data);
     await writeProjectFile(row.storageDir, data, renames);
     await db.query("UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = $1", [id]);
   }
@@ -1706,6 +1722,10 @@ async function restoreFileVersion(req, res, user, projectId, fileId, versionId) 
   const abs = path.join(project.storageDir, file.path);
   await fs.mkdir(path.dirname(abs), { recursive: true });
   await fs.writeFile(abs, target.content, "utf8");
+  // A rollback replaces the text outside the update stream, so anyone editing
+  // this file in realtime is moved onto the restored content instead of carrying
+  // on from a version that no longer exists.
+  collabResetFile(fileId, target.content);
   const previous = await latestVersion(fileId);
   const newVersionId = await insertVersion({
     fileId,
@@ -1723,6 +1743,343 @@ async function restoreFileVersion(req, res, user, projectId, fileId, versionId) 
     metadata: { fileId, fromVersion: versionId, path: file.path },
   });
   json(res, 200, { ok: true, versionId: newVersionId, content: target.content });
+}
+
+/* ---------------- realtime collaboration (OT sessions) ---------------- */
+// Transport and storage for the OT engine in ./collab. One WebSocket carries all
+// of a browser tab's rooms; one room per file, keyed by the file's canonical id.
+//
+// While a room is live it is the authority for that file's content: a save from
+// another client cannot overwrite it (see collabContentForProject), and the room
+// is what writes the file to disk.
+const COLLAB_PATH = "/api/collab";
+// Idle debounce before the authoritative text reaches disk, and the longest a
+// continuously typing room may go unwritten.
+const COLLAB_FLUSH_MS = positiveIntEnv("COLLAB_FLUSH_MS", 2000);
+const COLLAB_FLUSH_MAX_MS = positiveIntEnv("COLLAB_FLUSH_MAX_MS", 15000);
+// Realtime edits are consolidated into one revision after this much quiet, so
+// history records meaningful checkpoints instead of one entry per keystroke.
+const COLLAB_REVISION_IDLE_MS = positiveIntEnv("COLLAB_REVISION_IDLE_MS", 120000);
+const COLLAB_MAX_MESSAGE_BYTES = positiveIntEnv("COLLAB_MAX_MESSAGE_BYTES", 4 * 1024 * 1024);
+const COLLAB_HEARTBEAT_MS = positiveIntEnv("COLLAB_HEARTBEAT_MS", 30000);
+
+const collabRooms = new CollabRooms();
+const collabSessions = new Set();
+let collabHeartbeat = null;
+
+function collabSend(socket, message) {
+  if (socket.readyState !== socket.OPEN) return;
+  socket.send(JSON.stringify(message));
+}
+
+// Membership is re-read from the database for every join and every re-check, so a
+// permission change lands on an open session exactly as it lands on a request.
+async function collabMembership(projectId, userId) {
+  const { rows } = await db.query(
+    `SELECT p.id, p.name, p.storage_path, m.role
+     FROM projects p JOIN project_members m ON m.project_id = p.id
+     WHERE p.id = $1 AND m.user_id = $2`,
+    [projectId, userId]
+  );
+  if (!rows.length) return null;
+  return { ...withStorageDir(rows[0]), role: rows[0].role };
+}
+
+async function collabJoin(session, fileId) {
+  if (!isUuid(fileId)) throw new CollabError("COLLAB_BAD_FILE");
+  if (session.rooms.has(fileId)) return session.rooms.get(fileId);
+  const { rows } = await db.query(
+    "SELECT id, project_id, path, kind, deleted_at FROM project_files WHERE id = $1",
+    [fileId]
+  );
+  const file = rows[0];
+  // A non-member must not be able to tell an existing file from a missing one.
+  if (!file || file.deleted_at) throw new CollabError("COLLAB_FILE_NOT_FOUND");
+  const project = await collabMembership(file.project_id, session.user.sub);
+  if (!project) throw new CollabError("COLLAB_FILE_NOT_FOUND");
+  if (file.kind === "img" || file.kind === "font") throw new CollabError("COLLAB_NOT_TEXT");
+
+  const existing = collabRooms.get(fileId);
+  // Only the first participant reads from disk; later joins take the in-memory
+  // text, which is newer than anything on disk.
+  const content = existing ? existing.text() : await fs.readFile(path.join(project.storageDir, file.path), "utf8").catch(() => "");
+  const room = collabRooms.open({ fileId, projectId: file.project_id, path: file.path, content });
+  room.storageDir = project.storageDir;
+  room.kind = file.kind || null;
+  room.clients.add(session);
+  session.rooms.set(fileId, { room, role: project.role, projectId: file.project_id });
+  return session.rooms.get(fileId);
+}
+
+function collabLeave(session, fileId) {
+  const entry = session.rooms.get(fileId);
+  if (!entry) return;
+  session.rooms.delete(fileId);
+  const room = entry.room;
+  room.clients.delete(session);
+  if (room.clients.size) return;
+  clearTimeout(room.flushTimer);
+  clearTimeout(room.revisionTimer);
+  // Last one out persists the document and records the consolidated revision
+  // before the room — and with it the authoritative text — is released. The room
+  // is only dropped if nobody rejoined while the write was in flight.
+  collabTrack(collabPersist(room, { revision: true }).then(() => {
+    if (!room.clients.size) collabRooms.close(room.fileId);
+  }));
+}
+
+// Tracks in-flight persistence so shutdown can wait for it.
+const collabPending = new Set();
+function collabTrack(promise) {
+  const tracked = promise
+    .catch((err) => console.error("Realtime persistence failed", err))
+    .finally(() => collabPending.delete(tracked));
+  collabPending.add(tracked);
+  return tracked;
+}
+
+// Writes the room's authoritative text to disk, and optionally consolidates the
+// burst of realtime edits into a single revision. Serialized per room so two
+// flushes cannot interleave and write stale text.
+async function collabPersist(room, { revision = false } = {}) {
+  if (room.persisting) {
+    room.persisting = room.persisting.then(() => collabPersistNow(room, revision));
+    return room.persisting;
+  }
+  room.persisting = collabPersistNow(room, revision).finally(() => { room.persisting = null; });
+  return room.persisting;
+}
+
+async function collabPersistNow(room, revision) {
+  if (!room.storageDir) return;
+  if (room.needsPersist()) {
+    const version = room.version;
+    const text = room.text();
+    const abs = path.join(room.storageDir, room.path);
+    await fs.mkdir(path.dirname(abs), { recursive: true });
+    await fs.writeFile(abs, text, "utf8");
+    room.markPersisted(version);
+    room.flushDeadline = 0;
+    await db.query("UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = $1", [room.projectId]);
+  }
+  if (!revision || !room.needsRevision()) return;
+  const version = room.version;
+  // The revision is attributed to whoever made the most recent accepted edit.
+  const author = room.lastAuthor || null;
+  if (!author) return;
+  await captureProjectCheckpoint({
+    projectId: room.projectId,
+    storageDir: room.storageDir,
+    user: author,
+    reason: "realtime",
+    files: [{ id: room.fileId, path: room.path, kind: room.kind || null }],
+  }).catch((err) => console.error("Realtime revision failed", err));
+  room.markRevisioned(version);
+}
+
+// Debounced persistence: writes after a quiet moment, and at least every
+// COLLAB_FLUSH_MAX_MS while editing never stops.
+function collabSchedulePersist(room) {
+  const now = Date.now();
+  if (!room.flushDeadline) room.flushDeadline = now + COLLAB_FLUSH_MAX_MS;
+  clearTimeout(room.flushTimer);
+  clearTimeout(room.revisionTimer);
+  const delay = Math.max(0, Math.min(COLLAB_FLUSH_MS, room.flushDeadline - now));
+  room.flushTimer = setTimeout(() => {
+    if (collabRooms.get(room.fileId) === room) collabTrack(collabPersist(room));
+  }, delay);
+  room.revisionTimer = setTimeout(() => {
+    if (collabRooms.get(room.fileId) === room) collabTrack(collabPersist(room, { revision: true }));
+  }, COLLAB_REVISION_IDLE_MS);
+}
+
+function collabBroadcast(room, message, except = null) {
+  room.clients.forEach((client) => {
+    if (client === except) return;
+    collabSend(client.socket, message);
+  });
+}
+
+async function collabHandleMessage(session, raw) {
+  let message;
+  try {
+    message = JSON.parse(raw);
+  } catch {
+    throw new CollabError("COLLAB_BAD_MESSAGE");
+  }
+  const fileId = message && message.fileId;
+
+  if (message.t === "open") {
+    const entry = await collabJoin(session, fileId);
+    return collabSend(session.socket, {
+      t: "opened",
+      fileId,
+      version: entry.room.version,
+      doc: entry.room.text(),
+      role: entry.role,
+    });
+  }
+
+  if (message.t === "close") return collabLeave(session, fileId);
+
+  if (message.t === "pull") {
+    const entry = session.rooms.get(fileId);
+    if (!entry) throw new CollabError("COLLAB_NOT_JOINED");
+    const updates = entry.room.since(Number(message.version));
+    if (updates === null) {
+      // The client is older than the retained log: only a full resync converges.
+      return collabSend(session.socket, { t: "resync", fileId, version: entry.room.version, doc: entry.room.text() });
+    }
+    return collabSend(session.socket, { t: "updates", fileId, version: entry.room.version, updates });
+  }
+
+  if (message.t === "push") {
+    const entry = session.rooms.get(fileId);
+    if (!entry) throw new CollabError("COLLAB_NOT_JOINED");
+    if (!roleHasCapability(entry.role, "write")) throw new CollabError("COLLAB_READ_ONLY");
+    const result = entry.room.receive(Number(message.version), message.updates, { userId: session.user.sub });
+    collabSend(session.socket, { t: "pushed", fileId, accepted: result.accepted, version: result.version });
+    if (!result.accepted) return;
+    entry.room.lastAuthor = session.user;
+    collabBroadcast(entry.room, { t: "updates", fileId, version: result.version, updates: result.updates }, session);
+    return collabSchedulePersist(entry.room);
+  }
+
+  if (message.t === "ping") return collabSend(session.socket, { t: "pong" });
+  throw new CollabError("COLLAB_BAD_MESSAGE");
+}
+
+function collabCloseSession(session, code = 1000, reason = "") {
+  Array.from(session.rooms.keys()).forEach((fileId) => collabLeave(session, fileId));
+  collabSessions.delete(session);
+  try {
+    session.socket.close(code, reason);
+  } catch {}
+}
+
+// Re-authorizes every open session on a project. Losing membership closes the
+// session at once; losing write keeps it open as a read-only observer. Called
+// after any membership or project mutation, so a permission change reaches
+// sessions already in progress.
+async function collabRecheckProject(projectId) {
+  const sessions = Array.from(collabSessions).filter((session) =>
+    Array.from(session.rooms.values()).some((entry) => entry.projectId === projectId));
+  for (const session of sessions) {
+    const project = await collabMembership(projectId, session.user.sub).catch(() => null);
+    if (!project) {
+      Array.from(session.rooms.entries()).forEach(([fileId, entry]) => {
+        if (entry.projectId !== projectId) return;
+        collabSend(session.socket, { t: "revoked", fileId });
+        collabLeave(session, fileId);
+      });
+      if (!session.rooms.size) collabCloseSession(session, 4403, "permission revoked");
+      continue;
+    }
+    session.rooms.forEach((entry, fileId) => {
+      if (entry.projectId !== projectId || entry.role === project.role) return;
+      entry.role = project.role;
+      collabSend(session.socket, { t: "role", fileId, role: project.role });
+    });
+  }
+}
+
+// Stamps the authoritative text of every live room onto the tree about to be
+// written, so a whole-project save can never overwrite a document currently
+// being edited in realtime. Runs after syncProjectFiles, which is what gives the
+// nodes the canonical ids the rooms are keyed by.
+function applyCollabAuthority(projectId, data) {
+  const rooms = collabRooms.forProject(projectId);
+  if (!rooms.length) return;
+  const authoritative = new Map(rooms.map((room) => [room.fileId, room.text()]));
+  const walk = (nodes) => {
+    if (!Array.isArray(nodes)) return;
+    for (const node of nodes) {
+      if (!node) continue;
+      if (node.type === "folder") { walk(node.children); continue; }
+      const text = node.id == null ? undefined : authoritative.get(String(node.id));
+      if (text !== undefined) node.content = text;
+    }
+  };
+  walk(data && data.project && data.project.nodes);
+}
+
+// A file replaced outside the update stream (a rollback, or a refresh from disk)
+// invalidates every client's version, so the room is reset and clients resync.
+function collabResetFile(fileId, content) {
+  const room = collabRooms.get(fileId);
+  if (!room) return;
+  const version = room.reset(content);
+  room.markPersisted(version);
+  room.markRevisioned(version);
+  collabBroadcast(room, { t: "resync", fileId, version, doc: room.text() });
+}
+
+async function collabUpgrade(req, socket, head, wss) {
+  const finish = (status, body) => {
+    socket.write(`HTTP/1.1 ${status}\r\nConnection: close\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`);
+    socket.destroy();
+  };
+  if (shuttingDown || maintenanceActive()) return finish("503 Service Unavailable", "Iris is unavailable");
+  let user;
+  try {
+    user = await requireUser(req);
+  } catch {
+    return finish("401 Unauthorized", "Not authenticated");
+  }
+  wss.handleUpgrade(req, socket, head, (ws) => {
+    const session = { socket: ws, user, rooms: new Map(), alive: true };
+    collabSessions.add(session);
+    ws.on("pong", () => { session.alive = true; });
+    ws.on("message", (data) => {
+      collabHandleMessage(session, data.toString("utf8")).catch((err) => {
+        const code = err instanceof CollabError ? err.code : "COLLAB_ERROR";
+        if (!(err instanceof CollabError)) console.error("Realtime session error", err);
+        collabSend(ws, { t: "error", code });
+      });
+    });
+    ws.on("close", () => {
+      Array.from(session.rooms.keys()).forEach((fileId) => collabLeave(session, fileId));
+      collabSessions.delete(session);
+    });
+    ws.on("error", () => {});
+    collabSend(ws, { t: "ready", clientId: uuidv7() });
+  });
+}
+
+function collabAttach(server) {
+  const wss = new WebSocketServer({ noServer: true, maxPayload: COLLAB_MAX_MESSAGE_BYTES });
+  server.on("upgrade", (req, socket, head) => {
+    const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+    if (url.pathname !== COLLAB_PATH) {
+      socket.destroy();
+      return;
+    }
+    collabUpgrade(req, socket, head, wss).catch(() => socket.destroy());
+  });
+  // Drops sockets whose peer vanished without a close frame, so rooms do not
+  // keep phantom participants and stay the authority forever.
+  collabHeartbeat = setInterval(() => {
+    collabSessions.forEach((session) => {
+      if (!session.alive) return collabCloseSession(session, 1001, "unresponsive");
+      session.alive = false;
+      try { session.socket.ping(); } catch {}
+    });
+  }, COLLAB_HEARTBEAT_MS);
+  if (typeof collabHeartbeat.unref === "function") collabHeartbeat.unref();
+  return wss;
+}
+
+// Flushes every room and closes every session, so a restart never loses realtime
+// work that had not yet reached its debounce.
+async function collabShutdown() {
+  clearInterval(collabHeartbeat);
+  Array.from(collabSessions).forEach((session) => collabCloseSession(session, 1001, "server shutting down"));
+  for (const room of collabRooms.all()) {
+    clearTimeout(room.flushTimer);
+    clearTimeout(room.revisionTimer);
+    collabTrack(collabPersist(room, { revision: true }));
+  }
+  await Promise.allSettled(Array.from(collabPending));
 }
 
 async function createProject(req, res, user) {
@@ -1793,6 +2150,7 @@ async function updateProject(req, res, user, id) {
   data.updatedAt = Date.now();
   validateProjectSourceTree(data);
   const { renames } = await syncProjectFiles(id, data);
+  applyCollabAuthority(id, data);
   await writeProjectFile(row.storageDir, data, renames);
   await db.query("UPDATE projects SET name = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2", [name, id]);
   json(res, 200, {
@@ -1812,6 +2170,8 @@ async function deleteProject(req, res, user, id) {
     targetId: id,
     metadata: { name: row.name },
   });
+  // The project is gone, so every open realtime session on it loses membership.
+  await collabRecheckProject(id);
   json(res, 200, { ok: true });
 }
 
@@ -3286,6 +3646,7 @@ async function adminAddProjectMember(req, res, actor, projectId) {
     targetId: projectId,
     metadata: { userId: target.id, username: target.username, role, via: "admin" },
   });
+  await collabRecheckProject(projectId);
   json(res, 201, {
     member: memberView({ user_id: target.id, username: target.username, email: target.email, display_name: target.display_name, role, invited_by: actor.sub, created_at: new Date() }),
   });
@@ -3332,6 +3693,7 @@ async function adminUpdateProjectMember(req, res, actor, projectId, memberId) {
       metadata: { userId: memberId, from: previousRole, to: nextRole, via: "admin" },
     });
   }
+  await collabRecheckProject(projectId);
   json(res, 200, { ok: true });
 }
 
@@ -3370,6 +3732,7 @@ async function adminRemoveProjectMember(req, res, actor, projectId, memberId) {
       metadata: { userId: memberId, via: "admin" },
     });
   }
+  await collabRecheckProject(projectId);
   json(res, 200, { ok: true });
 }
 
@@ -3385,6 +3748,7 @@ async function adminDeleteProject(req, res, actor, projectId) {
     targetId: projectId,
     metadata: { name: row.name, via: "admin" },
   });
+  await collabRecheckProject(projectId);
   json(res, 200, { ok: true });
 }
 
@@ -3857,6 +4221,9 @@ function startGracefulShutdown(signal, server) {
   const deadline = Date.now() + SHUTDOWN_TIMEOUT_MS;
   const finish = async () => {
     if (inFlight > 0 && typeof server.closeAllConnections === "function") server.closeAllConnections();
+    // Realtime documents live in memory between debounced writes, so they are
+    // flushed before the process exits.
+    await collabShutdown().catch((err) => console.error("Realtime shutdown failed", err));
     await db.end().catch(() => {});
     console.log("Shutdown complete");
     process.exit(0);
@@ -3871,6 +4238,7 @@ function startGracefulShutdown(signal, server) {
 if (require.main === module) initDb()
   .then(() => {
     const server = http.createServer(handle);
+    collabAttach(server);
     process.on("SIGTERM", () => startGracefulShutdown("SIGTERM", server));
     process.on("SIGINT", () => startGracefulShutdown("SIGINT", server));
     server.listen(PORT, () => {
@@ -3896,6 +4264,10 @@ if (require.main === module) initDb()
   });
 
 module.exports = {
+  applyCollabAuthority,
+  collabAttach,
+  collabRooms,
+  writeProjectFile,
   buildProjectArchive,
   collectProjectArchiveEntries,
   parseProjectArchive,

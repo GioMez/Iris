@@ -149,8 +149,11 @@
     index = Array.isArray(data.projects) ? data.projects : [];
     return index;
   }
+  // Always read the project from the server when opening it. Another member may
+  // have changed it since this tab last looked, and the cached copy only carries
+  // the content of the files this client itself wrote (see IrisApp.serialize);
+  // the cache remains the source for ids, role and counts.
   async function loadData(id) {
-    if (cache.has(id)) return cache.get(id);
     const data = await api(`/api/projects/${id}`);
     cache.set(id, data);
     return data;

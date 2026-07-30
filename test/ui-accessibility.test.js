@@ -14,7 +14,8 @@ const adminProjects = fs.readFileSync(path.join(root, "public/iris-admin-project
 const auth = fs.readFileSync(path.join(root, "public/iris-auth.js"), "utf8");
 const motion = fs.readFileSync(path.join(root, "public/iris-motion.js"), "utf8");
 const editorAdapter = fs.readFileSync(path.join(root, "public/iris-editor.js"), "utf8");
-const editorLegacy = fs.readFileSync(path.join(root, "public/iris-editor-legacy.js"), "utf8");
+const en = fs.readFileSync(path.join(root, "public/locales/en/translation.json"), "utf8");
+const it = fs.readFileSync(path.join(root, "public/locales/it/translation.json"), "utf8");
 const server = fs.readFileSync(path.join(root, "src/server.js"), "utf8");
 
 function token(name) {
@@ -283,25 +284,36 @@ test("admin member mutations retain focus and expose in-modal status", () => {
 });
 
 test("editor suppresses native boundary bounce without custom motion", () => {
-  assert.match(css, /\.code-area\{[^}]*overscroll-behavior:none/);
+  assert.match(css, /\.cm-host \.cm-scroller\{[^}]*overscroll-behavior:none/);
   assert.doesNotMatch(css, /editor-bounce|bounce-push|bounce-return/);
   assert.doesNotMatch(app, /editorBoundaryWheel|boundaryBounceAmount|editorBounceTimer/);
 });
 
+test("the textarea editor is gone and CodeMirror is the only editor", () => {
+  assert.ok(!fs.existsSync(path.join(root, "public/iris-editor-legacy.js")));
+  // No DOM, CSS or temporary switch left over from the migration.
+  ["codeArea", "codeWrap", "codeLayer", "lineMeasure", "curHl", 'id="gutter"'].forEach((leftover) => {
+    assert.ok(!html.includes(leftover), `Iris.html still contains ${leftover}`);
+  });
+  assert.doesNotMatch(css, /\.code-area|\.code-wrap|\.code-layer|\.line-measure|\.cur-hl|editor-hscroll/);
+  assert.doesNotMatch(editorAdapter, /legacyRequested|IrisEditorLegacy|iris_editor/);
+  assert.doesNotMatch(app, /\barea\.value\b|IrisEditorLegacy/);
+  // A failed module load has to be visible in the pane, not just the console.
+  assert.match(editorAdapter, /function reportUnavailable\(err\)/);
+  assert.match(editorAdapter, /cm-unavailable/);
+  assert.match(css, /\.cm-unavailable\{/);
+  assert.match(en, /"unavailable":/);
+  assert.match(it, /"unavailable":/);
+});
+
 test("word wrap is an opt-in persistent footer control", () => {
   assert.match(html, /class="sb-wrap" id="btnWrap"[^>]*role="switch"[^>]*aria-checked="false"/);
-  assert.match(html, /id="codeArea"[^>]*wrap="off"/);
-  assert.match(css, /\.editor\.wrap-on \.code-layer,\.editor\.wrap-on \.code-area/);
-  assert.match(css, /\.line-measure \.measure-line/);
   assert.match(app, /wordWrap:\s*false/);
   assert.match(app, /ed\(\)\.setWordWrap\(state\.wordWrap\)/);
   assert.match(app, /wordWrap:\s*state\.wordWrap/);
-  // The wrap mechanics live behind the editor adapter: CodeMirror toggles its
-  // lineWrapping extension, the legacy editor keeps the textarea attribute.
-  assert.match(editorAdapter, /lineWrapping/);
-  assert.match(editorLegacy, /area\.setAttribute\("wrap", flags\.wordWrap \? "soft" : "off"\)/);
-  assert.match(editorLegacy, /function sourcePositionTop\(index\)/);
-  assert.match(editorLegacy, /selectionDirection === "backward" \? area\.selectionStart : area\.selectionEnd/);
+  // The wrap mechanics live behind the adapter, which reconfigures CodeMirror's
+  // lineWrapping extension instead of touching the DOM.
+  assert.match(editorAdapter, /wrapCompartment\.reconfigure\(flags\.wordWrap \? V\.EditorView\.lineWrapping : \[\]\)/);
 });
 
 test("find matches stay highlighted inside the editor viewport", () => {
@@ -313,7 +325,6 @@ test("find matches stay highlighted inside the editor viewport", () => {
   assert.match(app, /ed\(\)\.highlightMatches\(\[\], -1\)/);
   assert.match(editorAdapter, /highlightMatches\(ranges, activeIndex\)/);
   assert.match(editorAdapter, /cm-iris-match-active/);
-  assert.match(editorLegacy, /highlightMatches\(\) \{\}/);
   assert.match(css, /\.cm-host \.cm-iris-match\{/);
   assert.match(css, /\.cm-host \.cm-iris-match-active\{/);
   // The overview ruler mirrors the matches onto the vertical scrollbar; it is

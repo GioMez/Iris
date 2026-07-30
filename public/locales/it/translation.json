@@ -483,7 +483,17 @@
     "documentSaved": "Documento salvato",
     "saveFailed": "Salvataggio non riuscito",
     "opened": "Aperto {{name}}",
-    "formatted": "Codice formattato"
+    "formatted": "Codice formattato",
+    "unavailable": "Impossibile caricare l'editor. Ricarica la pagina; se il problema persiste, contatta l'amministratore di Iris."
+  },
+  "collab": {
+    "title": "Stato della collaborazione in tempo reale sul file aperto",
+    "connecting": "Connessione…",
+    "live": "Tempo reale",
+    "readonly": "Tempo reale · sola lettura",
+    "offline": "Riconnessione…",
+    "revoked": "Sessione in tempo reale terminata: il tuo accesso al progetto è cambiato",
+    "error": "Tempo reale non disponibile"
   },
   "templates": {
     "newScore": "Nuova partitura",

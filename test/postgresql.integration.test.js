@@ -24,6 +24,7 @@ const ALL_MIGRATIONS = [
   "010_account_hardening.sql",
   "011_oidc_linked_at.sql",
   "012_versioned_build_outputs.sql",
+  "013_realtime_revisions.sql",
 ];
 const silentLogger = { log() {}, warn() {}, error() {} };
 
@@ -377,6 +378,10 @@ test("document versions form an append-only history keyed to a stable file id", 
   assert.equal(chain.rows[2].parent_version_id, v2, "rollback parents the latest, not the source");
   assert.equal(chain.rows[2].content, "one");
 
+  // Migration 013 admits the consolidated checkpoints realtime editing records.
+  const v4 = await addVersion(v3, "realtime", "one live");
+  assert.ok(isUuid(v4));
+
   // The reason vocabulary and non-empty author label are enforced.
   await assert.rejects(addVersion(null, "whatever", "x"), (error) => error.code === "23514");
   await assert.rejects(
@@ -396,7 +401,7 @@ test("document versions form an append-only history keyed to a stable file id", 
   // Soft-deleting the file keeps its history; deleting the project cascades it away.
   await pool.query("UPDATE project_files SET deleted_at = CURRENT_TIMESTAMP WHERE id = $1", [fileId]);
   const afterSoftDelete = await pool.query("SELECT COUNT(*) AS n FROM document_versions WHERE file_id = $1", [fileId]);
-  assert.equal(Number(afterSoftDelete.rows[0].n), 3);
+  assert.equal(Number(afterSoftDelete.rows[0].n), 4);
   await pool.query("DELETE FROM projects WHERE id = $1", [projectId]);
   const afterProject = await pool.query("SELECT COUNT(*) AS n FROM document_versions");
   assert.equal(Number(afterProject.rows[0].n), 0);

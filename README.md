@@ -53,6 +53,8 @@ the Node.js service handles authentication, persistence, and compilation.
 - A CodeMirror 6 source editor with syntax highlighting, document outline,
   search and replace, formatting, optional word wrapping, and configurable
   autosave.
+- Realtime collaborative editing of the same document by several members, with
+  the server as the single authority that orders concurrent changes.
 - Server-side LaTeX compilation with `pdflatex`, `xelatex`, or `lualatex`.
 - Built-in LaTeX pipelines for quick builds, BibTeX, Biber, and indexes, plus
   constrained custom pipelines.
@@ -397,6 +399,16 @@ already present in the process environment.
 | `MAINTENANCE_FILE` | `DATA_DIR/.maintenance` | Path whose presence puts Iris into maintenance mode: writes are refused, reads continue. |
 | `SHUTDOWN_TIMEOUT_MS` | `15000` | How long a graceful shutdown waits for in-flight requests before forcing connections closed. |
 
+### Realtime collaboration
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `COLLAB_FLUSH_MS` | `2000` | Idle delay before a document edited in realtime is written to disk. |
+| `COLLAB_FLUSH_MAX_MS` | `15000` | Longest a continuously edited document may go unwritten. |
+| `COLLAB_REVISION_IDLE_MS` | `120000` | Quiet period after which realtime edits are consolidated into one revision. |
+| `COLLAB_HEARTBEAT_MS` | `30000` | Ping interval used to drop connections whose peer vanished. |
+| `COLLAB_MAX_MESSAGE_BYTES` | `4194304` | Maximum size of a single collaboration message. |
+
 ### Database
 
 | Variable | Default | Purpose |
@@ -632,6 +644,44 @@ The sharing endpoints are `GET/POST /api/projects/:id/members`,
 `GET /api/projects/:id/members/search?q=...` and
 `PATCH/DELETE /api/projects/:id/members/:userId`. They require the project owner
 capability; the last owner cannot demote or remove themselves.
+
+### Realtime collaboration
+
+Members who open the same text file edit it together. Changes are exchanged over
+an authenticated WebSocket at `/api/collab` and reconciled with **operational
+transformation**, using the primitives of `@codemirror/collab` in the browser and
+a matching authority on the server.
+
+The server is the single authority. It holds the document and a version number,
+and accepts a client's changes only when they are based on that version; a client
+that is behind pulls what it missed, rebases its own pending edits on top and
+retries. Because the order is decided in one place, permissions, revocation and
+history stay under server control — which is why OT was chosen over a CRDT. The
+trade-off accepted is that robust offline editing is not supported.
+
+What this changes for a document being edited live:
+
+- Persistence belongs to the server, not to a save action. The text is written to
+  disk shortly after typing pauses, and at least every `COLLAB_FLUSH_MAX_MS`
+  while it does not. A burst of live edits later becomes a single `realtime`
+  revision in the file history rather than one revision per keystroke.
+- A save no longer risks overwriting a collaborator. A client sends the content
+  of the files it actually edited; for the rest the bytes on disk are kept, and a
+  file with a live session is always written from the server's authoritative text.
+- Losing write access mid-session takes effect at once: the workspace becomes
+  read-only in place. Losing membership closes the session immediately.
+- A rollback moves every participant onto the restored text.
+- The status bar shows the state of the session for the open file.
+
+A file can only join a session once it has a canonical id, so a document created
+in the current session becomes collaborative after its first save. Binary assets
+are never shared this way, and a viewer receives changes without being able to
+send any. On a dropped connection the client reconnects with exponential backoff
+and resumes from the version it still holds; if the server has already trimmed
+that far back in its update log, it sends the whole document instead.
+
+Presence indicators — remote cursors, who is editing where — are the subject of
+the next phase; this one delivers the correctness underneath them.
 
 ## Server administration
 

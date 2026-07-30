@@ -23,6 +23,7 @@ function vendorFiles() {
     "view.js": path.join(path.dirname(require.resolve("@codemirror/view")), "index.js"),
     "language.js": path.join(path.dirname(require.resolve("@codemirror/language")), "index.js"),
     "commands.js": path.join(path.dirname(require.resolve("@codemirror/commands")), "index.js"),
+    "collab.js": path.join(path.dirname(require.resolve("@codemirror/collab")), "index.js"),
     "lezer-common.js": path.join(path.dirname(require.resolve("@lezer/common")), "index.js"),
     "lezer-highlight.js": path.join(path.dirname(require.resolve("@lezer/highlight")), "index.js"),
     "style-mod.js": path.join(path.dirname(require.resolve("style-mod")), "..", "src", "style-mod.js"),
@@ -39,6 +40,7 @@ test("the import map points every bare specifier at the vendor route", () => {
     "@codemirror/view": "view.js",
     "@codemirror/language": "language.js",
     "@codemirror/commands": "commands.js",
+    "@codemirror/collab": "collab.js",
     "@lezer/common": "lezer-common.js",
     "@lezer/highlight": "lezer-highlight.js",
     "style-mod": "style-mod.js",
@@ -82,11 +84,15 @@ test("every vendored module resolves to an installed ES module", () => {
   });
 });
 
-test("the editor scripts load before the app and after the syntax modules", () => {
+test("the editor adapter loads after the syntax modules and before the app", () => {
   const order = [...html.matchAll(/<script src="(iris-[a-z-]+\.js)"><\/script>/g)].map((m) => m[1]);
-  const position = (nameToFind) => order.indexOf(nameToFind);
-  assert.ok(position("iris-latex.js") < position("iris-editor-legacy.js"));
-  assert.ok(position("iris-lilypond.js") < position("iris-editor-legacy.js"));
-  assert.ok(position("iris-editor-legacy.js") < position("iris-editor.js"));
+  const position = (nameToFind) => {
+    const index = order.indexOf(nameToFind);
+    assert.notEqual(index, -1, `Iris.html does not load ${nameToFind}`);
+    return index;
+  };
+  // The adapter reads window.IrisLatex/IrisLilyPond when it builds the languages.
+  assert.ok(position("iris-latex.js") < position("iris-editor.js"));
+  assert.ok(position("iris-lilypond.js") < position("iris-editor.js"));
   assert.ok(position("iris-editor.js") < position("iris-app.js"));
 });

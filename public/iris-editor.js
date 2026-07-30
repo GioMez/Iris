@@ -1,26 +1,23 @@
 /* ===================== Iris · editor adapter (CodeMirror 6) ===================== */
-// Single entry point for everything the app needs from the source editor.
-// The default implementation is CodeMirror 6, loaded as native ES modules via
-// the import map in Iris.html and served from /vendor/codemirror. The legacy
-// textarea editor (iris-editor-legacy.js) remains available behind the
-// temporary `?editor=legacy` switch (or `localStorage.iris_editor = "legacy"`)
-// while the migration is validated, and doubles as an automatic fallback when
-// the modules cannot be loaded.
+// Single entry point for everything the app needs from the source editor:
+// CodeMirror 6, loaded as native ES modules through the import map in Iris.html
+// and served from /vendor/codemirror.
 //
-// Contract (both implementations):
+// Contract:
 //   load(content, kind)        fresh document, no change event ("ly"|"tex"|null)
 //   getValue()                 current document text
-//   applyText(text)            whole-document edit (formatter); granular in CM
+//   applyText(text)            whole-document edit (formatter), applied granularly
 //   replaceRange(from, to, s)  ranged edit (find & replace)
 //   selection()                { from, to, text }
-//   select(from, to, opts)     set selection; reveals like the legacy editor,
+//   select(from, to, opts)     set selection and reveal it;
 //                              opts { align: "top", margin: lines } for outline
+//   highlightMatches(ranges, activeIndex)   find overlay + scrollbar ruler
 //   setWordWrap / setAutoIndent / setReadOnly (booleans)
 //   focus() / focusTarget() / ownsTarget(node)
 // Events: onChange(fn) after any edit; onCursor(fn) with { line, column }.
 (function () {
   const LINE_H = 21;
-  const handlers = { change: [], cursor: [] };
+  const handlers = { change: [], cursor: [], sync: [] };
   let impl = null;
 
   function emit(type, payload) {
@@ -29,24 +26,27 @@
     });
   }
 
-  function legacyRequested() {
-    try {
-      const query = new URLSearchParams(window.location.search).get("editor");
-      if (query === "legacy") return true;
-      if (query === "codemirror") return false;
-      return window.localStorage.getItem("iris_editor") === "legacy";
-    } catch (err) {
-      return false;
-    }
+  // A failed module load leaves the workspace without an editor, so it must be
+  // stated in the pane instead of failing silently in the console.
+  function reportUnavailable(err) {
+    console.error("The CodeMirror editor could not be loaded", err);
+    const editorEl = document.querySelector(".editor");
+    if (!editorEl || editorEl.querySelector(".cm-unavailable")) return;
+    const notice = document.createElement("div");
+    notice.className = "cm-unavailable";
+    notice.setAttribute("role", "alert");
+    notice.textContent = window.IrisI18n ? window.IrisI18n.t("editor.unavailable") : "The editor could not be loaded.";
+    editorEl.appendChild(notice);
   }
 
   async function createCodeMirror() {
-    const [S, V, L, C, H] = await Promise.all([
+    const [S, V, L, C, H, CO] = await Promise.all([
       import("@codemirror/state"),
       import("@codemirror/view"),
       import("@codemirror/language"),
       import("@codemirror/commands"),
       import("@lezer/highlight"),
+      import("@codemirror/collab"),
     ]);
 
     // Custom tags mapped straight onto the existing t-* token classes so the
@@ -78,6 +78,12 @@
     const wrapCompartment = new S.Compartment();
     const readOnlyCompartment = new S.Compartment();
     let suppressEvents = false;
+    // Identifies this tab's edits in the shared update stream for the lifetime of
+    // the page, so the server and the other clients can tell them apart.
+    const clientID = window.crypto && window.crypto.randomUUID
+      ? window.crypto.randomUUID()
+      : `c${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+    let collaborative = false;
 
     // Tab and Enter reproduce the legacy editor: two-space insert and the
     // syntax modules' indent-on-enter. Mod-Enter stays unbound so the global
@@ -137,6 +143,10 @@
       if (suppressEvents) return;
       if (update.docChanged) emit("change");
       if (update.docChanged || update.selectionSet) emitCursor(update.view);
+      // Local edits waiting to be pushed to the OT authority. Remote updates
+      // land through collabReceive and leave nothing sendable, so this only
+      // fires for work this tab originated.
+      if (collaborative && update.docChanged && CO.sendableUpdates(update.state).length) emit("sync");
     });
     function emitCursor(view) {
       const head = view.state.selection.main.head;
@@ -144,7 +154,11 @@
       emit("cursor", { line: line.number, column: head - line.from + 1 });
     }
 
-    function makeState(content) {
+    // `collabVersion` is the authoritative version this document starts from; it
+    // is null for a document edited on its own, which is what keeps the ordinary
+    // save path in charge when realtime is not available for a file.
+    function makeState(content, collabVersion = null) {
+      collaborative = collabVersion != null;
       return S.EditorState.create({
         doc: content,
         extensions: [
@@ -160,6 +174,7 @@
           matchesField,
           listener,
           V.EditorView.contentAttributes.of({ spellcheck: "false", autocorrect: "off", autocapitalize: "off" }),
+          collaborative ? CO.collab({ startVersion: collabVersion, clientID }) : [],
         ],
       });
     }
@@ -175,12 +190,6 @@
       host.remove();
       throw err;
     }
-    // The textarea editor's DOM is unused on this path; removing it avoids two
-    // competing focus targets inside the same pane.
-    ["gutter", "codeWrap"].forEach((id) => {
-      const node = document.getElementById(id);
-      if (node) node.remove();
-    });
 
     const ruler = document.createElement("div");
     ruler.className = "cm-iris-ruler";
@@ -258,6 +267,51 @@
         clearRuler();
         emitCursor(view);
       },
+      // Realtime variant: the document starts from an authoritative version and
+      // its edits flow through the OT update stream. Used on join and whenever
+      // the server sends a full resync.
+      loadCollab(content, kind, { version }) {
+        flags.kind = kind || null;
+        const wasFocused = view.hasFocus;
+        const previous = view.state.selection.main;
+        suppressEvents = true;
+        try {
+          view.setState(makeState(content || "", Number(version) || 0));
+        } finally {
+          suppressEvents = false;
+        }
+        clearRuler();
+        // A resync of the file already open should not throw the caret away;
+        // positions are clamped because the document may have shrunk.
+        if (previous.from || previous.to) {
+          const max = view.state.doc.length;
+          view.dispatch({ selection: { anchor: Math.min(previous.anchor, max), head: Math.min(previous.head, max) } });
+        }
+        if (wasFocused) view.focus();
+        emitCursor(view);
+      },
+      collaborative() { return collaborative; },
+      collabVersion() { return collaborative ? CO.getSyncedVersion(view.state) : 0; },
+      // Local updates the server has not confirmed yet, in wire form.
+      collabPending() {
+        if (!collaborative) return null;
+        const sendable = CO.sendableUpdates(view.state);
+        if (!sendable.length) return null;
+        return {
+          version: CO.getSyncedVersion(view.state),
+          updates: sendable.map((update) => ({ changes: update.changes.toJSON(), clientID: update.clientID })),
+        };
+      },
+      // Applies updates accepted by the server. @codemirror/collab rebases any
+      // pending local work over them and recognises this tab's own updates,
+      // which is how a confirmed push advances the synced version.
+      collabReceive(updates) {
+        if (!collaborative || !Array.isArray(updates) || !updates.length) return;
+        view.dispatch(CO.receiveUpdates(view.state, updates.map((update) => ({
+          changes: S.ChangeSet.fromJSON(update.changes),
+          clientID: String(update.clientID || ""),
+        }))));
+      },
       // Formatter output applied as one localized change: prefix/suffix diff
       // keeps the selection in place and the operation granular for history
       // (and, later, for collaborative editing).
@@ -323,34 +377,32 @@
     };
   }
 
-  async function boot() {
-    if (!legacyRequested()) {
-      try {
-        return await createCodeMirror();
-      } catch (err) {
-        console.error("CodeMirror editor unavailable, falling back to the legacy editor", err);
-      }
-    }
-    return window.IrisEditorLegacy.create(emit);
-  }
-
   const api = {
-    kind: "pending",
+    available: false,
     ready: null,
     onChange(fn) { handlers.change.push(fn); },
     onCursor(fn) { handlers.cursor.push(fn); },
+    // Fires when local edits are waiting for the realtime transport to push.
+    onSync(fn) { handlers.sync.push(fn); },
     focusTarget() { return impl ? impl.focusTarget() : null; },
     ownsTarget(node) { return impl ? impl.ownsTarget(node) : false; },
     getValue() { return impl ? impl.getValue() : ""; },
     selection() { return impl ? impl.selection() : { from: 0, to: 0, text: "" }; },
+    collaborative() { return impl ? impl.collaborative() : false; },
+    collabVersion() { return impl ? impl.collabVersion() : 0; },
+    collabPending() { return impl ? impl.collabPending() : null; },
   };
-  ["focus", "load", "applyText", "replaceRange", "select", "setWordWrap", "setAutoIndent", "setReadOnly", "highlightMatches"].forEach((method) => {
+  // Every mutating call is a no-op until the modules resolve, and stays one if
+  // they never do, so the rest of the app needs no readiness checks.
+  ["focus", "load", "loadCollab", "applyText", "replaceRange", "select", "setWordWrap", "setAutoIndent", "setReadOnly", "highlightMatches", "collabReceive"].forEach((method) => {
     api[method] = (...args) => { if (impl) impl[method](...args); };
   });
-  api.ready = boot().then((instance) => {
+  // Resolves either way: the app still boots (tree, preview, builds, history)
+  // when the editor itself is unavailable.
+  api.ready = createCodeMirror().then((instance) => {
     impl = instance;
-    api.kind = instance.kind;
-  });
+    api.available = true;
+  }, reportUnavailable);
 
   window.IrisEditor = api;
 })();
