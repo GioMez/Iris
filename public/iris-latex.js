@@ -97,6 +97,79 @@
     return out;
   }
 
+  /* ---- CodeMirror stream tokenizer: same rules as highlight() ---- */
+  // Token names map 1:1 onto the t-* CSS classes used by highlight():
+  // cmd → t-cmd, env → t-env, brace → t-brace, math → t-math,
+  // comment → t-comment, special → t-special, null → plain text.
+  const stream = {
+    startState() { return { math: null, expect: null }; },
+    copyState(s) { return { math: s.math, expect: s.expect }; },
+    token(stream, state) {
+      if (state.math) {
+        const close = state.math;
+        if (close === "$" || close === "$$") {
+          while (!stream.eol()) {
+            if (stream.peek() === "\\") { stream.next(); if (!stream.eol()) stream.next(); continue; }
+            if (close === "$$") {
+              if (stream.match("$$")) { state.math = null; return "math"; }
+              stream.next();
+            } else if (stream.next() === "$") { state.math = null; return "math"; }
+          }
+          return "math";
+        }
+        while (!stream.eol()) {
+          if (stream.match(close)) { state.math = null; return "math"; }
+          stream.next();
+        }
+        return "math";
+      }
+
+      // \begin / \end argument: { → brace, name → env, } → brace
+      if (state.expect === "open") {
+        if (stream.sol()) state.expect = null;
+        else if (stream.eatWhile(/[ \t]/)) {
+          if (stream.peek() !== "{") state.expect = null;
+          return null;
+        } else if (stream.peek() === "{") {
+          stream.next();
+          state.expect = "name";
+          return "brace";
+        } else state.expect = null;
+      }
+      if (state.expect === "name") {
+        state.expect = null;
+        if (stream.eat("}")) return "brace";
+        if (stream.match(/^[^}\n]+(?=\})/)) { state.expect = "close"; return "env"; }
+      }
+      if (state.expect === "close") {
+        state.expect = null;
+        if (stream.eat("}")) return "brace";
+      }
+
+      const c = stream.next();
+      if (c === "%") { stream.skipToEnd(); return "comment"; }
+      if (c === "\\") {
+        if (stream.eatWhile(/[a-zA-Z]/)) {
+          stream.eat("*");
+          const cmd = stream.current();
+          if (cmd === "\\begin" || cmd === "\\end") state.expect = "open";
+          return "cmd";
+        }
+        stream.next();
+        const cmd = stream.current();
+        if (cmd === "\\\\") return "special";
+        if (cmd === "\\[") { state.math = "\\]"; return "math"; }
+        if (cmd === "\\(") { state.math = "\\)"; return "math"; }
+        return "cmd";
+      }
+      if (c === "$") { state.math = stream.eat("$") ? "$$" : "$"; return "math"; }
+      if (c === "{" || c === "}" || c === "[" || c === "]") return "brace";
+      if (c === "&" || c === "~") return "special";
+      stream.eatWhile(/[^\\%${}[\]&~]/);
+      return null;
+    },
+  };
+
   /* ---- pretty printer: re-indents environments ---- */
   function format(src) {
     const unit = "  ";
@@ -149,5 +222,5 @@
     return res;
   }
 
-  window.IrisLatex = { highlight, format, indentOnEnter, outline, escAll };
+  window.IrisLatex = { highlight, format, indentOnEnter, outline, escAll, stream };
 })();

@@ -58,7 +58,7 @@
 
   function focusActiveSurface() {
     const targets = {
-      app: document.getElementById("codeArea"),
+      app: window.IrisEditor ? window.IrisEditor.focusTarget() : null,
       picker: document.getElementById("projectPickerTitle"),
       admin: document.querySelector('#adminScreen [data-admin-panel]:not([hidden]) .picker-title'),
       login: document.getElementById("loginUser"),

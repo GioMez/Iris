@@ -12,6 +12,10 @@
     "test:integration": "node --test test/postgresql.integration.test.js"
   },
   "dependencies": {
+    "@codemirror/commands": "6.10.4",
+    "@codemirror/language": "6.12.4",
+    "@codemirror/state": "6.7.1",
+    "@codemirror/view": "6.43.7",
     "argon2": "0.44.0",
     "pdfjs-dist": "6.1.200",
     "pg": "8.22.0"

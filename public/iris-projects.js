@@ -283,7 +283,7 @@
       syncShareTrigger(data.role);
       window.IrisMotion.setActiveSurface("app");
       window.IrisMotion.openProject();
-      setTimeout(() => $("codeArea").focus(), 0);
+      setTimeout(() => window.IrisEditor.focus(), 0);
       if (window.IrisBuilds) void window.IrisBuilds.loadLatest(id);
     } catch (err) {
       if (generation !== openGeneration) return;

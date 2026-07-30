@@ -89,6 +89,21 @@ const LATEX_COMPILE_TOOLS = new Set(["pdflatex", "xelatex", "lualatex", "xetex",
 const LILYPOND_COMPILE_TOOLS = new Set(["lilypond"]);
 const LILYPOND_OUTPUT_FORMATS = new Set(["pdf", "png", "svg", "ps", "eps"]);
 const PDFJS_BUILD_DIR = path.join(path.dirname(require.resolve("pdfjs-dist/package.json")), "build");
+// CodeMirror 6 is served as native ES modules resolved through the import map
+// in Iris.html; the whitelist below maps public vendor names to each package's
+// ESM entry inside node_modules (require.resolve anchors on the CJS entry).
+const CODEMIRROR_MODULES = {
+  "state.js": path.join(path.dirname(require.resolve("@codemirror/state")), "index.js"),
+  "view.js": path.join(path.dirname(require.resolve("@codemirror/view")), "index.js"),
+  "language.js": path.join(path.dirname(require.resolve("@codemirror/language")), "index.js"),
+  "commands.js": path.join(path.dirname(require.resolve("@codemirror/commands")), "index.js"),
+  "lezer-common.js": path.join(path.dirname(require.resolve("@lezer/common")), "index.js"),
+  "lezer-highlight.js": path.join(path.dirname(require.resolve("@lezer/highlight")), "index.js"),
+  "style-mod.js": path.join(path.dirname(require.resolve("style-mod")), "..", "src", "style-mod.js"),
+  "w3c-keyname.js": path.join(path.dirname(require.resolve("w3c-keyname")), "index.js"),
+  "crelt.js": path.join(path.dirname(require.resolve("crelt")), "..", "index.js"),
+  "find-cluster-break.js": path.join(path.dirname(require.resolve("@marijn/find-cluster-break")), "..", "src", "index.js"),
+};
 
 let db;
 let oauthDiscoveryCache = null;
@@ -3762,11 +3777,15 @@ async function handleApi(req, res, url) {
 async function serveStatic(req, res, url) {
   let pathname = decodeURIComponent(url.pathname);
   if (pathname === "/") pathname = "/Iris.html";
+  const codemirrorFile = pathname.match(/^\/vendor\/codemirror\/([a-z0-9.-]+)$/);
+  if (codemirrorFile && !CODEMIRROR_MODULES[codemirrorFile[1]]) return text(res, 404, "Not found");
   const pdfjsFile = pathname.match(/^\/vendor\/pdfjs\/(pdf(?:\.worker)?\.min\.mjs)$/);
   const root = pdfjsFile ? PDFJS_BUILD_DIR : PUBLIC_DIR;
   const relativePath = pdfjsFile ? pdfjsFile[1] : `.${pathname}`;
-  const filePath = path.resolve(root, relativePath);
-  if (!filePath.startsWith(root + path.sep)) return text(res, 403, "Forbidden");
+  const filePath = codemirrorFile
+    ? CODEMIRROR_MODULES[codemirrorFile[1]]
+    : path.resolve(root, relativePath);
+  if (!codemirrorFile && !filePath.startsWith(root + path.sep)) return text(res, 403, "Forbidden");
   const stat = await fs.stat(filePath).catch(() => null);
   if (!stat || !stat.isFile()) return text(res, 404, "Not found");
   const ext = path.extname(filePath).toLowerCase();

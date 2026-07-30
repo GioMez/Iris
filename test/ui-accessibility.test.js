@@ -13,6 +13,8 @@ const admin = fs.readFileSync(path.join(root, "public/iris-admin.js"), "utf8");
 const adminProjects = fs.readFileSync(path.join(root, "public/iris-admin-projects.js"), "utf8");
 const auth = fs.readFileSync(path.join(root, "public/iris-auth.js"), "utf8");
 const motion = fs.readFileSync(path.join(root, "public/iris-motion.js"), "utf8");
+const editorAdapter = fs.readFileSync(path.join(root, "public/iris-editor.js"), "utf8");
+const editorLegacy = fs.readFileSync(path.join(root, "public/iris-editor-legacy.js"), "utf8");
 const server = fs.readFileSync(path.join(root, "src/server.js"), "utf8");
 
 function token(name) {
@@ -292,10 +294,36 @@ test("word wrap is an opt-in persistent footer control", () => {
   assert.match(css, /\.editor\.wrap-on \.code-layer,\.editor\.wrap-on \.code-area/);
   assert.match(css, /\.line-measure \.measure-line/);
   assert.match(app, /wordWrap:\s*false/);
-  assert.match(app, /area\.setAttribute\("wrap", state\.wordWrap \? "soft" : "off"\)/);
+  assert.match(app, /ed\(\)\.setWordWrap\(state\.wordWrap\)/);
   assert.match(app, /wordWrap:\s*state\.wordWrap/);
-  assert.match(app, /function sourcePositionTop\(index\)/);
-  assert.match(app, /selectionDirection === "backward" \? area\.selectionStart : area\.selectionEnd/);
+  // The wrap mechanics live behind the editor adapter: CodeMirror toggles its
+  // lineWrapping extension, the legacy editor keeps the textarea attribute.
+  assert.match(editorAdapter, /lineWrapping/);
+  assert.match(editorLegacy, /area\.setAttribute\("wrap", flags\.wordWrap \? "soft" : "off"\)/);
+  assert.match(editorLegacy, /function sourcePositionTop\(index\)/);
+  assert.match(editorLegacy, /selectionDirection === "backward" \? area\.selectionStart : area\.selectionEnd/);
+});
+
+test("find matches stay highlighted inside the editor viewport", () => {
+  // CodeMirror only renders the DOM selection while focused, so the find bar
+  // relies on decorations: all occurrences marked, the current one emphasised,
+  // and the overlay cleared when the bar closes.
+  assert.match(app, /function findHighlight\(\)/);
+  assert.match(app, /ed\(\)\.highlightMatches\(fState\.matches\.map/);
+  assert.match(app, /ed\(\)\.highlightMatches\(\[\], -1\)/);
+  assert.match(editorAdapter, /highlightMatches\(ranges, activeIndex\)/);
+  assert.match(editorAdapter, /cm-iris-match-active/);
+  assert.match(editorLegacy, /highlightMatches\(\) \{\}/);
+  assert.match(css, /\.cm-host \.cm-iris-match\{/);
+  assert.match(css, /\.cm-host \.cm-iris-match-active\{/);
+  // The overview ruler mirrors the matches onto the vertical scrollbar; it is
+  // measured through requestMeasure and hidden when nothing scrolls.
+  assert.match(editorAdapter, /cm-iris-ruler/);
+  assert.match(editorAdapter, /requestMeasure/);
+  assert.match(editorAdapter, /scrollHeight <= scroller\.clientHeight/);
+  assert.match(css, /\.cm-host \.cm-iris-ruler\{/);
+  assert.match(css, /\.cm-host \.cm-iris-ruler-mark\{/);
+  assert.match(css, /\.cm-host \.cm-iris-ruler-mark-active\{/);
 });
 
 test("open file tabs expose unsaved changes until persistence succeeds", () => {

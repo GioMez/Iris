@@ -11,7 +11,7 @@ test("every referenced Tabler icon is bundled locally", () => {
   const html = read("public/Iris.html");
   const app = read("public/iris-app.js");
   const projects = read("public/iris-projects.js");
-  const fileIconBlock = app.slice(app.indexOf("function fileIcon"), app.indexOf("function paint"));
+  const fileIconBlock = app.slice(app.indexOf("function fileIcon"), app.indexOf("function renderCursorStatus"));
   const definitions = new Set(Array.from(icons.matchAll(/^\s+"([a-z0-9-]+)": "</gm), (match) => match[1]));
   const references = new Set([
     ...Array.from(html.matchAll(/data-icon="([a-z0-9-]+)"/g), (match) => match[1]),

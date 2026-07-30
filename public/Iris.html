@@ -10,6 +10,22 @@
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <link href="https://fonts.cdnfonts.com/css/cmu-serif" rel="stylesheet">
 <link rel="stylesheet" href="iris.css">
+<script type="importmap">
+{
+  "imports": {
+    "@codemirror/state": "/vendor/codemirror/state.js",
+    "@codemirror/view": "/vendor/codemirror/view.js",
+    "@codemirror/language": "/vendor/codemirror/language.js",
+    "@codemirror/commands": "/vendor/codemirror/commands.js",
+    "@lezer/common": "/vendor/codemirror/lezer-common.js",
+    "@lezer/highlight": "/vendor/codemirror/lezer-highlight.js",
+    "style-mod": "/vendor/codemirror/style-mod.js",
+    "w3c-keyname": "/vendor/codemirror/w3c-keyname.js",
+    "crelt": "/vendor/codemirror/crelt.js",
+    "@marijn/find-cluster-break": "/vendor/codemirror/find-cluster-break.js"
+  }
+}
+</script>
 </head>
 <body>
 <div class="app">
@@ -1141,6 +1157,8 @@
 <script src="iris-motion.js"></script>
 <script src="iris-latex.js"></script>
 <script src="iris-lilypond.js"></script>
+<script src="iris-editor-legacy.js"></script>
+<script src="iris-editor.js"></script>
 <script src="iris-app.js"></script>
 <script src="iris-projects.js"></script>
 <script src="iris-builds.js"></script>

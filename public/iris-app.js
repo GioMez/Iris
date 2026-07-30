@@ -12,7 +12,6 @@
     event.preventDefault();
     action();
   });
-  const LINE_H = 21;
   const PDF_CSS_UNITS = 96 / 72;
   const pdfjsReady = import("/vendor/pdfjs/pdf.min.mjs").then((pdfjs) => {
     pdfjs.GlobalWorkerOptions.workerSrc = "/vendor/pdfjs/pdf.worker.min.mjs";
@@ -143,12 +142,8 @@
     updateTexPathControl();
   }
 
-  /* ---------------- elements ---------------- */
-  const area = $("codeArea"), layer = $("codeLayer"), gutter = $("gutter"), codeWrap = $("codeWrap");
-  const lineMeasure = $("lineMeasure");
-  const editor = codeWrap.closest(".editor");
-
-  /* ---------------- editor ---------------- */
+  /* ---------------- editor (see iris-editor.js for the adapter) ---------------- */
+  const ed = () => window.IrisEditor;
   function fileIcon(kind) {
     const icons = {
       tex: ["file-code-2", "tex"],
@@ -161,101 +156,21 @@
     return `<span class="fi ${tone}">${ti(name)}</span>`;
   }
 
-  function paint() {
-    const v = area.value;
-    const active = findFile(state.activeId);
-    const syntax = active && active.kind === "ly" ? IrisLilyPond : IrisLatex;
-    layer.innerHTML = syntax.highlight(v) + "\n";
-    updateEditorViewportInsets();
-    renderGutter(v);
-    syncScroll();
-    updateCursor();
-  }
-  function wrappedLineHeights(lines) {
-    if (!state.wordWrap) {
-      lineMeasure.replaceChildren();
-      return null;
-    }
-    const style = getComputedStyle(area);
-    const contentWidth = Math.max(1, area.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight));
-    lineMeasure.style.width = `${contentWidth}px`;
-    const fragment = document.createDocumentFragment();
-    lines.forEach((line) => {
-      const row = document.createElement("span");
-      row.className = "measure-line";
-      row.textContent = line || "\u200b";
-      fragment.appendChild(row);
-    });
-    lineMeasure.replaceChildren(fragment);
-    return Array.from(lineMeasure.children, (row) => Math.max(LINE_H, row.offsetHeight));
-  }
-  function renderGutter(value = area.value) {
-    const lines = value.split("\n");
-    const heights = wrappedLineHeights(lines);
-    const cur = curLine();
-    let g = "";
-    for (let i = 1; i <= lines.length; i++) {
-      const height = heights ? heights[i - 1] : LINE_H;
-      g += `<div class="gl${i === cur ? " cur" : ""}" style="height:${height}px">${i}</div>`;
-    }
-    gutter.innerHTML = g;
-  }
-  function sourcePositionTop(index) {
-    const before = area.value.slice(0, Math.max(0, index));
-    const lineNumber = before.split("\n").length;
-    const gutterLine = gutter.children[lineNumber - 1];
-    let top = gutterLine ? gutterLine.offsetTop : (lineNumber - 1) * LINE_H;
-    if (!state.wordWrap) return top;
-    const prefix = before.slice(before.lastIndexOf("\n") + 1);
-    const probe = document.createElement("span");
-    probe.className = "measure-line";
-    probe.textContent = prefix || "\u200b";
-    lineMeasure.appendChild(probe);
-    top += Math.max(0, probe.offsetHeight - LINE_H);
-    probe.remove();
-    return top;
-  }
-  function curLine() {
-    return area.value.slice(0, cursorPosition()).split("\n").length;
-  }
-  function cursorPosition() {
-    return area.selectionDirection === "backward" ? area.selectionStart : area.selectionEnd;
-  }
-  function updateCursor() {
-    const pos = cursorPosition();
-    const before = area.value.slice(0, pos);
-    const ln = before.split("\n").length;
-    const col = pos - before.lastIndexOf("\n");
-    $("stCursor").textContent = t("status.cursor", { line: ln, column: col });
-    // re-mark current gutter line
-    const cur = before.split("\n").length;
-    gutter.querySelectorAll(".gl").forEach((el, i) => el.classList.toggle("cur", i + 1 === cur));
-  }
-  function syncScroll() {
-    layer.scrollTop = area.scrollTop;
-    layer.scrollLeft = area.scrollLeft;
-    gutter.scrollTop = area.scrollTop;
-  }
-
-  function updateEditorViewportInsets() {
-    const horizontalScrollbar = Math.max(0, area.offsetHeight - area.clientHeight);
-    const verticalScrollbar = Math.max(0, area.offsetWidth - area.clientWidth);
-    editor.style.setProperty("--editor-hscroll", `${horizontalScrollbar}px`);
-    editor.style.setProperty("--editor-vscroll", `${verticalScrollbar}px`);
+  // Caret position for the status bar, fed by the editor adapter's cursor
+  // events and re-rendered on language switches.
+  let lastCursor = { line: 1, column: 1 };
+  function renderCursorStatus() {
+    $("stCursor").textContent = t("status.cursor", { line: lastCursor.line, column: lastCursor.column });
   }
 
   function setWordWrap(enabled, save = false) {
     state.wordWrap = !!enabled;
-    editor.classList.toggle("wrap-on", state.wordWrap);
-    area.setAttribute("wrap", state.wordWrap ? "soft" : "off");
+    ed().setWordWrap(state.wordWrap);
     $("btnWrap").classList.toggle("on", state.wordWrap);
     $("btnWrap").setAttribute("aria-checked", state.wordWrap ? "true" : "false");
     const wrapLabel = t(state.wordWrap ? "status.wrapDisable" : "status.wrapEnable");
     $("btnWrap").setAttribute("aria-label", wrapLabel);
     $("btnWrap").title = wrapLabel;
-    if (state.wordWrap) area.scrollLeft = 0;
-    paint();
-    scheduleScrollSync();
     if (save) saveLayout();
   }
 
@@ -279,102 +194,32 @@
   }
 
   // Reflects the current project role in the workspace: CSS (via iris-readonly)
-  // hides write controls and node tools, and the editor textarea is locked so a
-  // viewer cannot start editing and only discover the block on save.
+  // hides write controls and node tools, and the editor is locked so a viewer
+  // cannot start editing and only discover the block on save.
   function applyRoleGate() {
     const ro = isReadOnly();
     document.documentElement.classList.toggle("iris-readonly", ro);
-    if (area) area.readOnly = ro;
+    ed().setReadOnly(ro);
     if (ro) { state.autoSave = false; clearTimeout(persistT); }
     updateAutoSaveControls();
   }
 
-  let editorSyncFrame = 0;
-  let editorSyncFramesRemaining = 0;
-  let selectionDragActive = false;
-  function runScrollSync() {
-    syncScroll();
-    if (!selectionDragActive && editorSyncFramesRemaining > 0) editorSyncFramesRemaining -= 1;
-    if (selectionDragActive || editorSyncFramesRemaining > 0) {
-      editorSyncFrame = requestAnimationFrame(runScrollSync);
-    } else {
-      editorSyncFrame = 0;
-    }
-  }
-  function scheduleScrollSync() {
-    // Native caret/selection auto-scroll can be committed after the current frame.
-    editorSyncFramesRemaining = Math.max(editorSyncFramesRemaining, 2);
-    if (!editorSyncFrame) editorSyncFrame = requestAnimationFrame(runScrollSync);
-  }
-  function startSelectionDrag(e) {
-    if (e.button !== 0) return;
-    selectionDragActive = true;
-    scheduleScrollSync();
-  }
-  function stopSelectionDrag() {
-    if (!selectionDragActive) return;
-    selectionDragActive = false;
-    scheduleScrollSync();
-  }
-
-  area.addEventListener("input", () => {
-    const f = findFile(state.activeId);
-    if (f) {
-      f.content = area.value;
-      markFileDirty(f.id);
-    }
-    paint();
-    renderOutline();
-    schedulePersist();
-  });
-  area.addEventListener("scroll", () => { syncScroll(); scheduleScrollSync(); });
-  area.addEventListener("select", () => { updateCursor(); scheduleScrollSync(); });
-  area.addEventListener("pointerdown", startSelectionDrag);
-  document.addEventListener("pointerup", stopSelectionDrag, true);
-  document.addEventListener("pointercancel", stopSelectionDrag, true);
-  window.addEventListener("blur", stopSelectionDrag);
-  area.addEventListener("keyup", () => { updateCursor(); scheduleScrollSync(); });
-  area.addEventListener("click", () => { updateCursor(); scheduleScrollSync(); });
-  area.addEventListener("keydown", (e) => {
-    if (e.key === "Tab") {
-      e.preventDefault();
-      insertAtCursor("  ");
-    } else if (e.key === "Enter" && state.autoIndent) {
-      e.preventDefault();
+  // Every edit — typing, Tab/Enter inserts, find & replace, formatter — flows
+  // through the adapter's change event; the app only owns the model side.
+  function wireEditorEvents() {
+    ed().onChange(() => {
       const f = findFile(state.activeId);
-      const syntax = f && f.kind === "ly" ? IrisLilyPond : IrisLatex;
-      insertAtCursor(syntax.indentOnEnter(area.value, area.selectionStart));
-    }
-    scheduleScrollSync();
-  });
-  document.addEventListener("selectionchange", () => {
-    if (document.activeElement === area) { updateCursor(); scheduleScrollSync(); }
-  });
-  if (window.ResizeObserver) {
-    const editorResizeObserver = new ResizeObserver(() => {
-      updateEditorViewportInsets();
-      if (state.wordWrap) renderGutter();
-      scheduleScrollSync();
+      if (f) {
+        f.content = ed().getValue();
+        markFileDirty(f.id);
+      }
+      renderOutline();
+      schedulePersist();
     });
-    editorResizeObserver.observe(area);
-  }
-  if (document.fonts && document.fonts.ready) {
-    document.fonts.ready.then(() => {
-      updateEditorViewportInsets();
-      if (state.wordWrap) renderGutter();
-      scheduleScrollSync();
+    ed().onCursor((pos) => {
+      lastCursor = pos;
+      renderCursorStatus();
     });
-  }
-  function insertAtCursor(text) {
-    const s = area.selectionStart, e = area.selectionEnd;
-    area.value = area.value.slice(0, s) + text + area.value.slice(e);
-    area.selectionStart = area.selectionEnd = s + text.length;
-    const f = findFile(state.activeId);
-    if (f) {
-      f.content = area.value;
-      markFileDirty(f.id);
-    }
-    paint(); schedulePersist();
   }
 
   let persistT;
@@ -563,7 +408,7 @@
     if (state.activeId === id) {
       const next = state.openTabs[Math.max(0, i - 1)] || state.openTabs[0];
       if (next) openFile(next);
-      else { state.activeId = null; area.value = ""; paint(); }
+      else { state.activeId = null; ed().load("", null); }
     }
     renderTabs();
   }
@@ -577,12 +422,11 @@
     setWorkspaceView("editor");
     state.activeId = id;
     if (!state.openTabs.includes(id)) state.openTabs.push(id);
-    area.value = f.content || "";
-    paint();
+    ed().load(f.content || "", f.kind);
     renderTabs();
     renderOutline();
     markTree(id);
-    area.focus();
+    ed().focus();
   }
 
   /* ---------------- file tree ---------------- */
@@ -690,8 +534,7 @@
   function clearEditorSelection() {
     state.activeId = null;
     state.openTabs = [];
-    area.value = "";
-    paint();
+    ed().load("", null);
     renderTabs();
     renderOutline();
   }
@@ -1027,8 +870,7 @@
       previewImage(active);
       markTree(active.id);
     } else {
-      area.value = active.content || "";
-      paint();
+      ed().load(active.content || "", active.kind);
       renderOutline();
       markTree(active.id);
     }
@@ -1110,13 +952,12 @@
     });
   }
   function gotoSection(item) {
-    const idx = Number.isInteger(item.offset) ? item.offset : area.value.indexOf("{" + item.title + "}");
+    const value = ed().getValue();
+    const idx = Number.isInteger(item.offset) ? item.offset : value.indexOf("{" + item.title + "}");
     if (idx < 0) return;
-    const start = Number.isInteger(item.offset) ? idx : area.value.lastIndexOf("\\", idx);
-    area.focus();
-    area.selectionStart = area.selectionEnd = start;
-    area.scrollTop = Math.max(0, sourcePositionTop(start) - 2 * LINE_H);
-    syncScroll(); updateCursor();
+    const start = Number.isInteger(item.offset) ? idx : value.lastIndexOf("\\", idx);
+    ed().focus();
+    ed().select(start, start, { align: "top", margin: 2 });
   }
 
   /* ---------------- PDF preview ---------------- */
@@ -1259,7 +1100,7 @@
   /* ---------------- compile ---------------- */
   function projectSnapshot() {
     const f = findFile(state.activeId);
-    if (f && (f.kind === "tex" || f.kind === "ly" || f.kind === "bib")) f.content = area.value;
+    if (f && (f.kind === "tex" || f.kind === "ly" || f.kind === "bib")) f.content = ed().getValue();
     return {
       project: { name: project.name, nodes: project.nodes },
       projectType: state.projectType,
@@ -1915,12 +1756,10 @@
     $("btnFormat").addEventListener("click", () => {
       const f = findFile(state.activeId);
       if (!f || (f.kind !== "tex" && f.kind !== "ly")) return;
-      const pos = area.selectionStart;
-      area.value = (f.kind === "ly" ? IrisLilyPond : IrisLatex).format(area.value);
-      f.content = area.value;
-      markFileDirty(f.id);
-      area.selectionStart = area.selectionEnd = Math.min(pos, area.value.length);
-      paint(); schedulePersist();
+      if (isReadOnly()) { toast(t("projects.readOnlyNotice")); return; }
+      // Applied as a granular change by the adapter, so the caret survives and
+      // the formatter stops counting as a whole-document edit.
+      ed().applyText((f.kind === "ly" ? IrisLilyPond : IrisLatex).format(ed().getValue()));
       toast(t("editor.formatted"));
     });
     $("btnSave").addEventListener("click", saveProject);
@@ -1977,6 +1816,7 @@
     // auto-indent (in Impostazioni → Editor)
     $("autoIndent").addEventListener("click", function () {
       state.autoIndent = !state.autoIndent;
+      ed().setAutoIndent(state.autoIndent);
       this.classList.toggle("on", state.autoIndent);
       this.setAttribute("aria-checked", state.autoIndent ? "true" : "false");
       saveLayout();
@@ -2205,7 +2045,7 @@
       if (!document.documentElement.classList.contains("iris-inproject")) return;
       if (document.querySelector(".scrim.on")) return;
       if (document.querySelector(".menu.on")) return;
-      if (e.target && e.target.closest("input,textarea,select,[contenteditable='true']") && e.target !== area) return;
+      if (e.target && e.target.closest("input,textarea,select,[contenteditable='true']") && !ed().ownsTarget(e.target)) return;
       const mod = e.ctrlKey || e.metaKey;
       const key = e.key.toLowerCase();
       if (!mod || e.altKey || e.repeat) return;
@@ -2274,6 +2114,7 @@
     if (L.sideCollapsed) body.classList.add("side-collapsed");
     syncResponsiveLayout();
     if (typeof L.autoIndent === "boolean") state.autoIndent = L.autoIndent;
+    ed().setAutoIndent(state.autoIndent);
     $("autoIndent").classList.toggle("on", state.autoIndent);
     $("autoIndent").setAttribute("aria-checked", state.autoIndent ? "true" : "false");
     setWordWrap(typeof L.wordWrap === "boolean" ? L.wordWrap : false);
@@ -2364,29 +2205,38 @@
   const fState = { matches: [], idx: 0, caseSensitive: false };
   function findOpen(focusReplace) {
     $("findBar").classList.add("on");
-    const sel = area.value.slice(area.selectionStart, area.selectionEnd);
+    const sel = ed().selection().text;
     if (sel && !sel.includes("\n")) $("findInput").value = sel;
     fState.idx = 0;
     findCompute();
-    if (fState.matches.length) findSelect(false);
+    if (fState.matches.length) findSelect();
     const inp = focusReplace ? $("replaceInput") : $("findInput");
     inp.focus(); inp.select();
   }
   function findClose() {
     $("findBar").classList.remove("on");
-    area.focus();
+    ed().highlightMatches([], -1);
+    ed().focus();
+  }
+  // Paints every occurrence in the editor, with the current one emphasised;
+  // stays visible while the focus is in the find bar.
+  function findHighlight() {
+    const q = $("findInput").value;
+    ed().highlightMatches(fState.matches.map((m) => ({ from: m, to: m + q.length })), fState.idx);
   }
   function findCompute() {
     const q = $("findInput").value;
     fState.matches = [];
     if (q) {
-      const hay = fState.caseSensitive ? area.value : area.value.toLowerCase();
+      const value = ed().getValue();
+      const hay = fState.caseSensitive ? value : value.toLowerCase();
       const needle = fState.caseSensitive ? q : q.toLowerCase();
       let i = 0;
       while ((i = hay.indexOf(needle, i)) !== -1) { fState.matches.push(i); i += q.length || 1; }
     }
     if (fState.idx >= fState.matches.length) fState.idx = 0;
     updateFindCount();
+    findHighlight();
   }
   function updateFindCount() {
     const q = $("findInput").value, n = fState.matches.length;
@@ -2396,31 +2246,20 @@
   function findSelect() {
     const n = fState.matches.length; if (!n) return;
     const q = $("findInput").value, start = fState.matches[fState.idx];
-    area.setSelectionRange(start, start + q.length);
-    const target = sourcePositionTop(start), view = area.clientHeight;
-    if (target < area.scrollTop + 30 || target > area.scrollTop + view - 50)
-      area.scrollTop = Math.max(0, target - view / 2);
-    syncScroll();
+    ed().select(start, start + q.length);
     updateFindCount();
+    findHighlight();
   }
   function findStep(dir) {
     const n = fState.matches.length; if (!n) return;
     fState.idx = (fState.idx + dir + n) % n;
     findSelect();
   }
-  function commitEditor() {
-    const f = findFile(state.activeId);
-    if (f) {
-      f.content = area.value;
-      markFileDirty(f.id);
-    }
-    paint(); renderOutline(); schedulePersist();
-  }
   function findReplaceOne() {
+    if (isReadOnly()) return;
     const n = fState.matches.length; if (!n) return;
     const q = $("findInput").value, rep = $("replaceInput").value, start = fState.matches[fState.idx];
-    area.value = area.value.slice(0, start) + rep + area.value.slice(start + q.length);
-    commitEditor();
+    ed().replaceRange(start, start + q.length, rep);
     findCompute();
     if (fState.matches.length) {
       let ni = fState.matches.findIndex((m) => m >= start + rep.length);
@@ -2429,12 +2268,12 @@
     } else updateFindCount();
   }
   function findReplaceAll() {
+    if (isReadOnly()) return;
     const q = $("findInput").value; if (!q) return;
     const n = fState.matches.length; if (!n) return;
     const rep = $("replaceInput").value;
     const re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), fState.caseSensitive ? "g" : "gi");
-    area.value = area.value.replace(re, () => rep);
-    commitEditor();
+    ed().applyText(ed().getValue().replace(re, () => rep));
     fState.idx = 0; findCompute();
     toast(t("find.replaced", { count: n }));
   }
@@ -2466,7 +2305,7 @@
   function currentVersionFileContent() {
     const node = verState.node;
     if (!node) return "";
-    if (node.id === state.activeId) return area.value;
+    if (node.id === state.activeId) return ed().getValue();
     return node.content || "";
   }
 
@@ -2661,7 +2500,7 @@
       if (node) {
         node.content = out.content;
         state.dirtyFiles.delete(node.id);
-        if (node.id === state.activeId) { area.value = out.content; paint(); renderOutline(); }
+        if (node.id === state.activeId) { ed().load(out.content, node.kind); renderOutline(); }
       }
       renderTabs();
       verState.confirm = null;
@@ -2825,7 +2664,7 @@
       setView("preview");
 
       if (active) openFile(active);
-      else { area.value = ""; paint(); renderOutline(); }
+      else { ed().load("", null); renderOutline(); }
       updateZoomLabel();
       return true;
     },
@@ -2852,7 +2691,7 @@
   /* ---------------- boot ---------------- */
   function refreshLocalizedUi() {
     updateProjectTypeUi();
-    updateCursor();
+    renderCursorStatus();
     setWordWrap(state.wordWrap);
     renderCompileProfile();
     updateTexPathControl();
@@ -2910,7 +2749,8 @@
   }
 
   document.addEventListener("iris:languagechange", refreshLocalizedUi);
-  window.IrisI18n.ready.then(() => {
+  Promise.all([window.IrisI18n.ready, window.IrisEditor.ready]).then(() => {
+    wireEditorEvents();
     loadLayout();
     loadRuntimeConfig();
     renderFontList();

@@ -51,6 +51,60 @@
     return out;
   }
 
+  /* ---- CodeMirror stream tokenizer: same rules as highlight() ---- */
+  // Token names map onto the t-* CSS classes used by highlight(): cmd → t-cmd,
+  // env → t-env (strings), brace → t-brace, comment → t-comment, null → text.
+  const stream = {
+    startState() { return { block: false, str: false }; },
+    copyState(s) { return { block: s.block, str: s.str }; },
+    token(stream, state) {
+      if (state.block) {
+        while (!stream.eol()) {
+          if (stream.match("%}")) { state.block = false; return "comment"; }
+          stream.next();
+        }
+        return "comment";
+      }
+      if (state.str) {
+        while (!stream.eol()) {
+          if (stream.peek() === "\\") { stream.next(); if (!stream.eol()) stream.next(); continue; }
+          if (stream.next() === '"') { state.str = false; break; }
+        }
+        return "env";
+      }
+      const c = stream.next();
+      if (c === "%") {
+        if (stream.eat("{")) {
+          state.block = true;
+          while (!stream.eol()) {
+            if (stream.match("%}")) { state.block = false; break; }
+            stream.next();
+          }
+          return "comment";
+        }
+        stream.skipToEnd();
+        return "comment";
+      }
+      if (c === '"') {
+        state.str = true;
+        while (!stream.eol()) {
+          if (stream.peek() === "\\") { stream.next(); if (!stream.eol()) stream.next(); continue; }
+          if (stream.next() === '"') { state.str = false; break; }
+        }
+        return "env";
+      }
+      if (c === "\\") {
+        if (!stream.eatWhile(/[A-Za-z-]/)) stream.next();
+        return "cmd";
+      }
+      if (c === "{" || c === "}") return "brace";
+      if (c === "<" && stream.eat("<")) return "brace";
+      if (c === ">" && stream.eat(">")) return "brace";
+      stream.eatWhile(/[^%"\\{}<>]/);
+      return null;
+    },
+  };
+
   function structuralLine(line) {
     return line.replace(/"(?:\\.|[^"\\])*"/g, "").replace(/%.*$/, "");
   }
@@ -286,5 +340,5 @@
       });
   }
 
-  window.IrisLilyPond = { highlight, format, indentOnEnter, outline };
+  window.IrisLilyPond = { highlight, format, indentOnEnter, outline, stream };
 })();

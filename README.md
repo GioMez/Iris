@@ -50,8 +50,9 @@ the Node.js service handles authentication, persistence, and compilation.
 - Portable project export and import through ZIP archives.
 - A refreshable file tree with folders, multiple open tabs, uploads, per-file
   downloads, renaming, and deletion.
-- Syntax highlighting, document outline, search and replace, formatting,
-  optional word wrapping, and configurable autosave.
+- A CodeMirror 6 source editor with syntax highlighting, document outline,
+  search and replace, formatting, optional word wrapping, and configurable
+  autosave.
 - Server-side LaTeX compilation with `pdflatex`, `xelatex`, or `lualatex`.
 - Built-in LaTeX pipelines for quick builds, BibTeX, Biber, and indexes, plus
   constrained custom pipelines.
