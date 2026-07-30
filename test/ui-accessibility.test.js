@@ -97,6 +97,7 @@ test("all build files download from history instead of appearing in the source t
 });
 
 test("versioned builds are discoverable, previewable, and restored on project open", () => {
+  const renderList = builds.slice(builds.indexOf("function renderList()"), builds.indexOf("function toggleBuildSelection"));
   assert.match(html, /id="btnBuilds"[^>]*data-i18n-title="toolbar\.buildsTitle"/);
   assert.match(html, /id="buildsRefresh"[^>]*data-i18n-aria-label="builds\.refresh"/);
   assert.match(html, /id="buildsModal"[\s\S]*role="dialog"[\s\S]*id="buildsList"[^>]*role="list"/);
@@ -112,6 +113,9 @@ test("versioned builds are discoverable, previewable, and restored on project op
   assert.match(builds, /reloadSelected: true/);
   assert.match(builds, /seq !== buildState\.previewSeq/);
   assert.match(builds, /clearBuildOutput\(latestCompleted\.id\)/);
+  assert.doesNotMatch(renderList, /class="build-status"/);
+  assert.doesNotMatch(renderList, /class="build-latest"/);
+  assert.match(renderList, /class="build-when"[\s\S]*class="build-status-dot" role="img"/);
   assert.match(app, /async function showBuildOutput\(payload, options = \{\}\)/);
   assert.match(app, /suppliedBytes instanceof Uint8Array/);
   assert.match(css, /\.build-grid\{[^}]*grid-template-columns:292px minmax\(0,1fr\)/);

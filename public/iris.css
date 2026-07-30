@@ -1032,19 +1032,18 @@ html.iris-inadmin[data-role="admin"] .admin-screen{display:block}
 .build-select-wrap{display:grid;place-items:center;width:40px;min-height:44px;cursor:pointer}
 .build-select{width:15px;height:15px;margin:0;accent-color:var(--category-music);cursor:pointer}
 .build-select:disabled{cursor:wait}
-.build-item-open{display:grid;grid-template-columns:10px minmax(0,1fr);gap:10px;width:100%;padding:10px;border:0;border-radius:9px;background:transparent;color:var(--txt);font:inherit;text-align:left;cursor:pointer}
+.build-item-open{display:block;width:100%;padding:10px;border:0;border-radius:9px;background:transparent;color:var(--txt);font:inherit;text-align:left;cursor:pointer}
 .build-item.selectable .build-item-open{padding-left:0}
 .build-item:hover{background:#ffffff08}
 .build-item.checked:not(.on){background:rgba(187,154,247,.045)}
 .build-item.on{border-color:rgba(187,154,247,.28);background:rgba(187,154,247,.1)}
 .build-item-open:focus-visible{outline:2px solid rgba(187,154,247,.55);outline-offset:-2px}
-.build-status-dot{width:8px;height:8px;margin-top:5px;border-radius:50%;background:var(--txt-mut);box-shadow:0 0 0 3px rgba(169,177,214,.08)}
+.build-status-dot{display:inline-block;width:8px;height:8px;flex:0 0 auto;border-radius:50%;background:var(--txt-mut);box-shadow:0 0 0 3px rgba(169,177,214,.08)}
 .build-item.status-succeeded .build-status-dot{background:var(--semantic-success);box-shadow:0 0 0 3px rgba(158,206,106,.12)}
 .build-item.status-failed .build-status-dot{background:var(--semantic-danger);box-shadow:0 0 0 3px rgba(247,118,142,.12)}
 .build-item.status-running .build-status-dot{background:var(--semantic-warning);box-shadow:0 0 0 3px rgba(224,175,104,.12)}
 .build-item-body{display:flex;min-width:0;flex-direction:column;gap:4px}
-.build-item-top{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
-.build-status{font-size:11px;font-weight:600;color:var(--txt-dim)}
+.build-item-top{display:flex;align-items:center;gap:9px}
 .build-latest{display:inline-flex;padding:2px 7px;border:1px solid rgba(187,154,247,.24);border-radius:999px;background:rgba(187,154,247,.11);color:var(--category-music);font-size:9.5px;font-weight:600;letter-spacing:.03em;text-transform:uppercase}
 .build-when{font-size:12.5px;color:var(--txt)}
 .build-who{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--txt-mut);font:11px var(--font-code)}

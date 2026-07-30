@@ -181,7 +181,6 @@
     buildState.builds.forEach((build, index) => {
       const selected = build.id === buildState.selectedId;
       const checked = buildState.selectedIds.has(build.id);
-      const latest = build.id === (buildState.builds[0] && buildState.builds[0].id);
       const item = document.createElement("div");
       item.className = `build-item status-${build.status}${selectable ? " selectable" : ""}${selected ? " on" : ""}${checked ? " checked" : ""}`;
       item.setAttribute("role", "listitem");
@@ -191,11 +190,11 @@
           ? `<label class="build-select-wrap"><input class="build-select" type="checkbox" data-build-select="${esc(build.id)}" aria-label="${esc(t("builds.selectAria", { date: formatTime(build.completedAt || build.createdAt) }))}"${checked ? " checked" : ""}${buildState.busy ? " disabled" : ""}></label>`
           : "") +
         `<button class="build-item-open" type="button" data-build-open="${esc(build.id)}"${selected ? ' aria-current="true"' : ""}>` +
-          `<span class="build-status-dot" aria-hidden="true"></span>` +
           `<span class="build-item-body">` +
-            `<span class="build-item-top"><span class="build-status">${esc(statusLabel(build.status))}</span>` +
-            (latest ? `<span class="build-latest">${esc(t("builds.latest"))}</span>` : "") + `</span>` +
-            `<span class="build-when">${esc(formatTime(build.completedAt || build.createdAt))}</span>` +
+            `<span class="build-item-top">` +
+              `<span class="build-when">${esc(formatTime(build.completedAt || build.createdAt))}</span>` +
+              `<span class="build-status-dot" role="img" aria-label="${esc(statusLabel(build.status))}"></span>` +
+            `</span>` +
             `<span class="build-who">${esc(build.author)} · ${esc(build.compiler)} · ${esc(String(build.format || "").toUpperCase())}</span>` +
           `</span>` +
         `</button>`;
