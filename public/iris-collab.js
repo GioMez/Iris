@@ -18,10 +18,21 @@
   const RECONNECT_MAX_MS = 15000;
   // Server-side revocation and shutdown; reconnecting on these is pointless.
   const CLOSE_REVOKED = 4403;
+  // Pacing, overridden by /api/config. Typing stays instant locally whatever
+  // these are: they only decide how often this browser talks to the server.
+  // Batching keystrokes keeps the round trip well inside the second that reads
+  // as immediate while cutting the message rate during fast typing.
+  const pacing = { push: 300, presence: 200 };
 
   const listeners = [];
+  const peerListeners = [];
+  const buildListeners = [];
   const state = {
     socket: null,
+    // The project this tab has open. Watched independently of any document, so
+    // build notifications still arrive while looking at the preview with no file
+    // in a room.
+    project: null,
     // The room the app wants open, kept across reconnections so the session is
     // restored automatically.
     desired: null,       // { fileId, kind }
@@ -30,8 +41,10 @@
     role: null,
     attempt: 0,
     reconnectTimer: 0,
+    pushTimer: 0,
+    presenceTimer: 0,
     pushing: false,
-    pullQueued: false,
+    peers: [],
   };
 
   const ed = () => window.IrisEditor;
@@ -40,6 +53,16 @@
     listeners.forEach((fn) => {
       try { fn(snapshot); } catch (err) { console.error("IrisCollab listener failed", err); }
     });
+  }
+  function emitPeers() {
+    peerListeners.forEach((fn) => {
+      try { fn(state.peers); } catch (err) { console.error("IrisCollab peer listener failed", err); }
+    });
+  }
+  function setPeers(peers) {
+    state.peers = Array.isArray(peers) ? peers : [];
+    ed().setPeers(state.peers);
+    emitPeers();
   }
   function setStatus(status) {
     if (state.status === status) return;
@@ -60,7 +83,7 @@
   }
 
   function connect() {
-    if (state.socket || !state.desired) return;
+    if (state.socket || (!state.desired && !state.project)) return;
     setStatus("connecting");
     let socket;
     try {
@@ -71,8 +94,9 @@
     state.socket = socket;
     socket.addEventListener("open", () => {
       state.attempt = 0;
-      // Re-open the room the app asked for; after a reconnection this is what
-      // restores the session.
+      // Restore what this tab was watching. After a reconnection this is what
+      // brings the session back without the app having to notice.
+      if (state.project) send({ t: "project", projectId: state.project });
       if (state.desired) send({ t: "open", fileId: state.desired.fileId });
     });
     socket.addEventListener("message", (event) => {
@@ -88,19 +112,25 @@
       state.socket = null;
       state.joined = null;
       state.pushing = false;
+      clearTimeout(state.pushTimer);
+      state.pushTimer = 0;
+      clearTimeout(state.presenceTimer);
+      state.presenceTimer = 0;
+      // Nobody is visible over a dead link; the list is rebuilt on reconnection.
+      setPeers([]);
       if (event.code === CLOSE_REVOKED) {
         setStatus("revoked");
         return;
       }
-      if (!state.desired) return void setStatus("off");
-      setStatus("offline");
+      if (!state.desired && !state.project) return void setStatus("off");
+      if (state.desired) setStatus("offline");
       scheduleReconnect();
     });
     socket.addEventListener("error", () => {});
   }
 
   function scheduleReconnect() {
-    if (state.reconnectTimer || !state.desired) return;
+    if (state.reconnectTimer || (!state.desired && !state.project)) return;
     // Exponential backoff with jitter, so a server restart does not get a
     // synchronised stampede from every open tab.
     const delay = Math.min(RECONNECT_MAX_MS, RECONNECT_BASE_MS * 2 ** state.attempt);
@@ -117,6 +147,12 @@
   }
 
   function handle(message) {
+    if (message.t === "ready") {
+      state.sessionId = message.sessionId;
+      state.color = message.color;
+      return;
+    }
+
     if (message.t === "opened") {
       if (!isCurrent(message.fileId)) {
         // The app moved on while the server was answering.
@@ -129,6 +165,21 @@
       setStatus(message.role === "viewer" ? "readonly" : "live");
       // Anything typed before the room opened is now sendable.
       pushPending();
+      sendPresence();
+      return;
+    }
+
+    if (message.t === "peers") {
+      if (!isCurrent(message.fileId)) return;
+      setPeers(message.peers);
+      return;
+    }
+
+    if (message.t === "build") {
+      if (message.projectId !== state.project) return;
+      buildListeners.forEach((fn) => {
+        try { fn(message); } catch (err) { console.error("IrisCollab build listener failed", err); }
+      });
       return;
     }
 
@@ -147,18 +198,16 @@
       // why only the server may ask for this.
       ed().loadCollab(message.doc, state.desired.kind, { version: message.version });
       setStatus(state.role === "viewer" ? "readonly" : "live");
+      sendPresence();
       return;
     }
 
     if (message.t === "pushed") {
       state.pushing = false;
       if (!isCurrent(message.fileId)) return;
-      if (message.accepted) {
-        // Confirming our own updates advances the local synced version.
-        pullNow();
-        return;
-      }
-      // Someone else got there first: pull, rebase, retry.
+      // Accepted or refused, the next step is the same: pull. On acceptance that
+      // confirms our own updates and advances the synced version; on refusal it
+      // brings in what got there first so the pending work can be rebased.
       pullNow();
       return;
     }
@@ -207,13 +256,58 @@
   // Pushes whatever the editor has pending. One push is in flight at a time: the
   // server only accepts updates based on the version it last confirmed.
   function pushPending() {
+    clearTimeout(state.pushTimer);
+    state.pushTimer = 0;
     if (state.pushing || !state.joined || state.role === "viewer") return;
     const pending = ed().collabPending();
     if (!pending || !pending.updates.length) return;
     state.pushing = send({ t: "push", fileId: state.joined, version: pending.version, updates: pending.updates });
   }
 
+  // Coalesces a burst of keystrokes into one message. @codemirror/collab keeps
+  // accumulating unconfirmed updates meanwhile, so nothing is lost by waiting.
+  function schedulePush() {
+    if (state.pushTimer || state.pushing || !state.joined || state.role === "viewer") return;
+    state.pushTimer = setTimeout(pushPending, pacing.push);
+  }
+
+  function sendPresence() {
+    clearTimeout(state.presenceTimer);
+    state.presenceTimer = 0;
+    if (!state.joined) return;
+    const selection = ed().selection();
+    send({
+      t: "presence",
+      fileId: state.joined,
+      anchor: selection.from,
+      head: selection.to,
+      version: ed().collabVersion(),
+    });
+  }
+
+  // Cursor moves are ephemeral, so they are paced on their own budget: losing an
+  // intermediate position costs nothing, the next one supersedes it.
+  function schedulePresence() {
+    if (state.presenceTimer || !state.joined) return;
+    state.presenceTimer = setTimeout(sendPresence, pacing.presence);
+  }
+
+  // The operator can retune the cadence without a code change.
+  function applyPacing(config) {
+    if (!config) return;
+    if (Number.isFinite(config.pushDebounceMs)) pacing.push = Math.max(0, config.pushDebounceMs);
+    if (Number.isFinite(config.presenceDebounceMs)) pacing.presence = Math.max(0, config.presenceDebounceMs);
+  }
+
   window.IrisCollab = {
+    // Follows a project for as long as it is open, which is what makes build
+    // notifications arrive even with no document in a room.
+    watchProject(projectId) {
+      if (!projectId || state.project === projectId) return;
+      state.project = projectId;
+      if (state.socket && state.socket.readyState === WebSocket.OPEN) send({ t: "project", projectId });
+      else connect();
+    },
     // Opens a realtime session for a file. Only files with a canonical id can be
     // shared, so a document created this session joins after its first save.
     join(fileId, kind) {
@@ -238,26 +332,42 @@
       state.pushing = false;
       clearTimeout(state.reconnectTimer);
       state.reconnectTimer = 0;
+      clearTimeout(state.pushTimer);
+      state.pushTimer = 0;
+      clearTimeout(state.presenceTimer);
+      state.presenceTimer = 0;
+      setPeers([]);
       setStatus("off");
     },
     // Closes the transport entirely (leaving the project, signing out).
     disconnect() {
       this.leave();
+      state.project = null;
       const socket = state.socket;
       state.socket = null;
       if (socket) {
         try { socket.close(1000, "client left"); } catch (err) {}
       }
     },
-    // Called by the app whenever the editor produced local changes.
+    // Sends everything still pending straight away, skipping the debounce.
     flush: pushPending,
+    configure: applyPacing,
+    pacing() { return { ...pacing }; },
     active() { return !!state.joined; },
     status() { return state.status; },
     role() { return state.role; },
     fileId() { return state.joined; },
+    peers() { return state.peers; },
+    watching() { return state.project; },
     onStatus(fn) { listeners.push(fn); },
+    onPeers(fn) { peerListeners.push(fn); },
+    // Fires when any member finishes a compilation of the watched project.
+    onBuild(fn) { buildListeners.push(fn); },
   };
 
-  // The editor tells us when it has local updates to send.
-  ed().onSync(pushPending);
+  // The editor tells us when it has local updates to send, and where the caret
+  // is. Both are paced: the document through the OT stream, the cursor as
+  // ephemeral presence.
+  ed().onSync(schedulePush);
+  ed().onCursor(schedulePresence);
 })();

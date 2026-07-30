@@ -228,8 +228,13 @@
     ed().onCursor((pos) => {
       lastCursor = pos;
       renderCursorStatus();
+      // Moving onto or away from a line someone else is editing changes the
+      // overlap warning without the participants themselves having changed.
+      if (lastPeers.length) renderPresence(lastPeers);
     });
+    ed().onPeers(renderPresence);
     window.IrisCollab.onStatus(renderSyncStatus);
+    window.IrisCollab.onBuild(onRemoteBuild);
     // Losing write access mid-session drops the workspace to read-only in place,
     // exactly like the projects layer does when a write is refused.
     document.addEventListener("iris:collabrole", (event) => {
@@ -301,6 +306,122 @@
     chip.dataset.sync = status;
     label.textContent = t(key);
     chip.title = t("collab.title");
+  }
+
+  /* ---------------- presence: who else is in this file ---------------- */
+  // How close another participant has to be for the overlap warning. Editing the
+  // same line, or one either side of it, is near enough that two people are
+  // plausibly working on the same thing.
+  const OVERLAP_LINES = 1;
+  let lastPeers = [];
+
+  // The same person in two tabs is two carets in the document but one entry in
+  // the footer, listed by the line they are nearest to.
+  function peopleFromPeers(peers) {
+    const people = new Map();
+    peers.forEach((peer) => {
+      const key = peer.userId || peer.id;
+      const existing = people.get(key);
+      if (existing) {
+        if (peer.line != null && (existing.line == null || peer.line < existing.line)) existing.line = peer.line;
+        existing.carets += 1;
+        return;
+      }
+      people.set(key, {
+        name: peer.name || peer.username || t("collab.someone"),
+        color: peer.color,
+        role: peer.role,
+        line: peer.line,
+        carets: 1,
+      });
+    });
+    return Array.from(people.values());
+  }
+
+  function overlappingPeers(peers) {
+    return peers.filter((peer) => peer.line != null && Math.abs(peer.line - lastCursor.line) <= OVERLAP_LINES);
+  }
+
+  function renderPresence(peers) {
+    lastPeers = Array.isArray(peers) ? peers : [];
+    const chip = $("stPeers");
+    if (!chip) return;
+    const people = peopleFromPeers(lastPeers);
+    chip.hidden = !people.length;
+    if (!people.length) {
+      chip.innerHTML = "";
+      return;
+    }
+    const overlapping = overlappingPeers(lastPeers);
+    const names = people.map((person) => person.name).join(", ");
+    chip.classList.toggle("overlap", overlapping.length > 0);
+    // The warning is deliberately non-blocking: it names the risk and leaves the
+    // decision to the people involved, as agreed for semantic conflicts.
+    chip.title = overlapping.length
+      ? t("collab.overlapWarning", { names: overlappingPeers(lastPeers).map((peer) => peer.name || peer.username).join(", ") })
+      : t("collab.peersTitle", { names });
+    chip.setAttribute("aria-label", chip.title);
+    chip.innerHTML =
+      `<span class="peer-dots" aria-hidden="true">${people.slice(0, 4).map((person) =>
+        `<span class="peer-dot" style="--peer-color:${esc(person.color)}" title="${esc(person.name)}">${esc(initialsOf(person.name))}</span>`).join("")}</span>` +
+      `<span class="peer-count">${esc(people.length > 4 ? t("collab.peersMore", { count: people.length }) : names)}</span>` +
+      (overlapping.length ? `<span class="peer-warn" aria-hidden="true">${ti("alert-triangle")}</span>` : "");
+  }
+
+  function initialsOf(name) {
+    const parts = String(name || "").trim().split(/\s+/).filter(Boolean);
+    if (!parts.length) return "?";
+    return (parts[0][0] + (parts.length > 1 ? parts[parts.length - 1][0] : "")).toUpperCase();
+  }
+
+  /* ---------------- a newer compilation exists ---------------- */
+  // The notice is driven by "there is a build newer than the one on screen",
+  // not by "somebody compiled": that also covers arriving at a project whose
+  // preview is already behind, and it stays silent for your own compilation.
+  let newerBuild = null;
+  function onRemoteBuild(build) {
+    if (!build || !build.buildId) return;
+    // Our own compilation is about to replace the preview by itself.
+    if (state.compiling || build.buildId === state.previewBuildId) return;
+    newerBuild = build;
+    renderNewerBuild();
+  }
+  function clearNewerBuild() {
+    if (!newerBuild) return;
+    newerBuild = null;
+    renderNewerBuild();
+  }
+  function renderNewerBuild() {
+    const banner = $("pvNewer");
+    const label = $("pvNewerText");
+    if (!banner || !label) return;
+    banner.hidden = !newerBuild;
+    if (!newerBuild) return;
+    const failed = newerBuild.status && newerBuild.status !== "succeeded";
+    banner.classList.toggle("failed", !!failed);
+    label.textContent = newerBuild.by
+      ? t(failed ? "preview.newerFailedBy" : "preview.newerBy", { name: newerBuild.by })
+      : t(failed ? "preview.newerFailed" : "preview.newer");
+  }
+  // Loads whatever the most recent finished build is, which is not necessarily
+  // the one announced: several may have completed while the notice was up.
+  async function loadNewerBuild() {
+    const button = $("pvNewerLoad");
+    const projectId = window.IrisProjects && window.IrisProjects.currentProjectId
+      ? window.IrisProjects.currentProjectId()
+      : null;
+    if (!projectId || !window.IrisBuilds) return;
+    button.disabled = true;
+    button.classList.add("loading");
+    try {
+      await window.IrisBuilds.loadLatest(projectId);
+      clearNewerBuild();
+    } catch (err) {
+      toast(window.IrisI18n.error(err, "preview.refreshFailed"), "err");
+    } finally {
+      button.disabled = false;
+      button.classList.remove("loading");
+    }
   }
 
   let persistT;
@@ -443,6 +564,9 @@
       const res = await fetch("/api/config", { credentials: "same-origin" });
       if (!res.ok) return;
       const cfg = await res.json();
+      // Lets the operator retune how often this browser talks to the realtime
+      // server without a code change.
+      window.IrisCollab.configure(cfg.collab);
       const compile = cfg.compile || {};
       state.texPathLocked = !!compile.texPathLocked;
       if (state.texPathLocked) state.texPath = compile.texPath || "";
@@ -1275,6 +1399,7 @@
       if (generation !== state.compileGeneration) return;
       const outputGeneration = ++state.outputGeneration;
       state.previewBuildId = res.buildId || null;
+      clearNewerBuild();
       const ms = ((res.durationMs || (performance.now() - t0)) / 1000).toFixed(1);
       buildLog(f, res, ms);
       updateCompileStatus(res, ms);
@@ -1330,6 +1455,7 @@
   function cancelPendingProjectLoad() {
     state.projectLoadGeneration += 1;
     window.IrisCollab.disconnect();
+    clearNewerBuild();
     renderSyncStatus();
   }
   function buildLog(f, res, ms, remember = true) {
@@ -1803,6 +1929,9 @@
     };
     const outputGeneration = ++state.outputGeneration;
     state.previewBuildId = build.id;
+    // Whatever brought this build on screen — our own compilation, the notice's
+    // refresh, or the history dialog — the preview is no longer behind.
+    clearNewerBuild();
     state.lastCompile = { f: source, res, ms: seconds, compiledAt };
     buildLog(source, res, seconds, false);
     updateCompileStatus(res, seconds, compiledAt);
@@ -2027,6 +2156,8 @@
     $("pgPrev").addEventListener("click", () => gotoPage(state.curPage - 1));
     $("pgNext").addEventListener("click", () => gotoPage(state.curPage + 1));
     $("pvStage").addEventListener("scroll", onStageScroll);
+    $("pvNewerLoad").addEventListener("click", () => { void loadNewerBuild(); });
+    $("pvNewerDismiss").addEventListener("click", clearNewerBuild);
     $("stErr").addEventListener("click", () => { setWorkspaceView("preview"); setView("log"); });
     $("stWarn").addEventListener("click", () => { setWorkspaceView("preview"); setView("log"); });
 
@@ -2755,6 +2886,9 @@
       state.editRevision = 0;
       state.role = data.role || "owner";
       applyRoleGate();
+      // Follow the project for build notifications, whatever file ends up open.
+      clearNewerBuild();
+      if (data.id) window.IrisCollab.watchProject(data.id);
       if (isReadOnly()) toast(t("projects.readOnlyNotice"));
       state.zoom = 1; state.effectiveZoom = 1; state.fit = true; state.view = "preview"; state.previewKind = "empty";
       setWorkspaceView("editor");
@@ -2850,6 +2984,8 @@
     }
 
     refreshVersionsUi();
+    renderNewerBuild();
+    renderPresence(lastPeers);
 
     if (state.lastCompile) {
       const { f, res, ms, compiledAt } = state.lastCompile;

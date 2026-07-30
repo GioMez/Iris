@@ -317,6 +317,21 @@ button{font-family:inherit;color:inherit}
   .pchip.zoom .val{min-width:30px}
 }
 
+/* Only present while someone else's output is newer than the one on screen. */
+.pv-newer{display:flex;align-items:center;gap:9px;padding:7px 10px;
+  background:rgba(224,175,104,.12);border-bottom:1px solid rgba(224,175,104,.3);
+  color:var(--semantic-warning);font-size:11.5px}
+.pv-newer[hidden]{display:none}
+.pv-newer .ic{display:inline-flex;flex:0 0 auto}
+.pv-newer .ic .ti{width:14px;height:14px}
+.pv-newer-text{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--txt-dim)}
+.pv-newer .btn{flex:0 0 auto}
+.pv-newer-x{flex:0 0 auto;width:24px;height:24px;padding:0;border:0;background:transparent;border-radius:6px;
+  color:var(--txt-mut);display:grid;place-items:center;cursor:pointer}
+.pv-newer-x:hover{background:#ffffff12;color:var(--txt)}
+.pv-newer-x .ti{width:13px;height:13px}
+.pv-newer.failed{background:rgba(247,118,142,.12);border-bottom-color:rgba(247,118,142,.3);color:var(--semantic-danger)}
+
 .pv-stage{flex:1;min-height:0;overflow:auto;padding:26px;position:relative;
   background:radial-gradient(circle at 1px 1px,#ffffff08 1px,transparent 0);background-size:22px 22px;background-color:#101019}
 .pv-pages{display:flex;flex-direction:column;align-items:center;gap:22px}
@@ -370,6 +385,24 @@ button.st{border:0;background:transparent;font:inherit}
 .sb-sync[data-sync="revoked"],.sb-sync[data-sync="error"]{color:var(--semantic-danger)}
 .sb-sync[data-sync="revoked"] .sync-dot,.sb-sync[data-sync="error"] .sync-dot{background:var(--semantic-danger)}
 @keyframes sync-pulse{0%,100%{opacity:1}50%{opacity:.35}}
+
+/* who else is editing the open file */
+.sb-peers{gap:8px;padding-left:0}
+.sb-peers .peer-dots{display:inline-flex;align-items:center}
+.sb-peers .peer-dot{width:18px;height:18px;border-radius:50%;display:inline-grid;place-items:center;
+  font-size:9px;font-weight:600;letter-spacing:.02em;font-family:var(--font-ui);
+  color:#12131c;background:var(--peer-color);box-shadow:0 0 0 1.5px var(--topbar)}
+.sb-peers .peer-dot+.peer-dot{margin-left:-6px}
+.sb-peers .peer-count{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:22ch}
+.sb-peers .peer-warn{display:inline-flex;color:var(--semantic-warning)}
+.sb-peers .peer-warn .ti{width:13px;height:13px}
+.sb-peers.overlap{color:var(--semantic-warning)}
+
+/* the lines other participants are working on */
+.cm-host .cm-iris-peer-gutter{width:4px;padding:0;background:transparent}
+.cm-host .cm-iris-peer-mark{width:3px;height:100%;min-height:var(--editor-line-height);border-radius:2px}
+.cm-host .cm-iris-peer-line{background:#ffffff09;background:color-mix(in srgb, var(--peer-color) 9%, transparent)}
+
 @media (prefers-reduced-motion:reduce){
   .sb-sync .sync-dot{animation:none}
 }
@@ -1160,7 +1193,10 @@ html.iris-inadmin[data-role="admin"] .admin-screen{display:block}
   .workflow-actions{gap:3px}
   .workflow-compile{padding-inline:11px}
   .workspace-switch button{padding-inline:8px}
-  .sb-info .st:not(:first-child):not(#stTime):not(#stWarn):not(#stErr){display:none}
+  /* Collaboration state stays visible: it is the one thing on the status bar
+     that changes without the user doing anything. */
+  .sb-info .st:not(:first-child):not(#stTime):not(#stWarn):not(#stErr):not(#stSync):not(#stPeers){display:none}
+  .sb-peers .peer-count{max-width:12ch}
   .sb-engine{padding-inline:7px}
 }
 

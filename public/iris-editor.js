@@ -17,7 +17,7 @@
 // Events: onChange(fn) after any edit; onCursor(fn) with { line, column }.
 (function () {
   const LINE_H = 21;
-  const handlers = { change: [], cursor: [], sync: [] };
+  const handlers = { change: [], cursor: [], sync: [], peers: [] };
   let impl = null;
 
   function emit(type, payload) {
@@ -124,6 +124,105 @@
     });
     const matchMark = V.Decoration.mark({ class: "cm-iris-match" });
     const activeMatchMark = V.Decoration.mark({ class: "cm-iris-match cm-iris-match-active" });
+
+    /* ---- presence: where the other participants are working ---- */
+    // Peer positions arrive expressed at the sender's version and are then
+    // carried forward through every local transaction, so they stay attached to
+    // the text they pointed at. Association 1 keeps a peer's caret after the
+    // text that peer is typing, rather than being pushed back by its own insert.
+    // They are shown per line, a granularity that stays right even while an
+    // update is still in flight.
+    const peersEffect = S.StateEffect.define();
+    const peersField = S.StateField.define({
+      create: () => [],
+      update(peers, tr) {
+        for (const effect of tr.effects) if (effect.is(peersEffect)) return effect.value;
+        if (!tr.docChanged || !peers.length) return peers;
+        return peers.map((peer) => ({
+          ...peer,
+          anchor: tr.changes.mapPos(peer.anchor, 1),
+          head: tr.changes.mapPos(peer.head, 1),
+        }));
+      },
+    });
+
+    // Line number (1-based) → the peers whose caret sits on it.
+    function peersByLine(state) {
+      const byLine = new Map();
+      state.field(peersField).forEach((peer) => {
+        if (peer.head == null) return;
+        const pos = Math.max(0, Math.min(state.doc.length, peer.head));
+        const line = state.doc.lineAt(pos);
+        const list = byLine.get(line.number);
+        if (list) list.push(peer);
+        else byLine.set(line.number, [peer]);
+      });
+      return byLine;
+    }
+
+    class PeerMarker extends V.GutterMarker {
+      constructor(peers) {
+        super();
+        this.peers = peers;
+        this.key = peers.map((peer) => `${peer.id}:${peer.color}`).join("|");
+      }
+      eq(other) { return other.key === this.key; }
+      toDOM() {
+        const mark = document.createElement("div");
+        mark.className = "cm-iris-peer-mark";
+        const colors = this.peers.map((peer) => peer.color);
+        // Several people on one line share the bar, split evenly between them.
+        mark.style.background = colors.length === 1 ? colors[0] : `linear-gradient(${colors.map((color, index) =>
+          `${color} ${(index / colors.length) * 100}%, ${color} ${((index + 1) / colors.length) * 100}%`).join(",")})`;
+        mark.title = this.peers.map((peer) => peer.name || peer.username).filter(Boolean).join(", ");
+        return mark;
+      }
+    }
+    const peerSpacer = new PeerMarker([{ id: "spacer", color: "transparent" }]);
+
+    const peerGutter = V.gutter({
+      class: "cm-iris-peer-gutter",
+      markers(view) {
+        const marks = [];
+        const byLine = peersByLine(view.state);
+        Array.from(byLine.keys()).sort((a, b) => a - b).forEach((number) => {
+          marks.push(new PeerMarker(byLine.get(number)).range(view.state.doc.line(number).from));
+        });
+        return S.RangeSet.of(marks, true);
+      },
+      initialSpacer: () => peerSpacer,
+    });
+
+    const peerLines = V.EditorView.decorations.compute([peersField], (state) => {
+      const byLine = peersByLine(state);
+      if (!byLine.size) return V.Decoration.none;
+      const marks = Array.from(byLine.keys()).sort((a, b) => a - b).map((number) => {
+        const line = state.doc.line(number);
+        return V.Decoration.line({
+          class: "cm-iris-peer-line",
+          attributes: { style: `--peer-color:${byLine.get(number)[0].color}` },
+        }).range(line.from);
+      });
+      return V.Decoration.set(marks, true);
+    });
+
+    // What the app needs to draw the footer and warn about overlaps: identity
+    // plus the line each participant is on, in this document's coordinates.
+    function peerSummary(state) {
+      return state.field(peersField).map((peer) => {
+        const pos = peer.head == null ? null : Math.max(0, Math.min(state.doc.length, peer.head));
+        return { ...peer, line: pos == null ? null : state.doc.lineAt(pos).number };
+      });
+    }
+    const peerSignature = (summary) => summary.map((peer) => `${peer.id}@${peer.line}:${peer.role}`).join("|");
+    let lastPeerSignature = "";
+    function emitPeers(state) {
+      const summary = peerSummary(state);
+      const signature = peerSignature(summary);
+      if (signature === lastPeerSignature) return;
+      lastPeerSignature = signature;
+      emit("peers", summary);
+    }
     // Overview ruler: proportional tick marks over the vertical scrollbar
     // showing where the matches sit in a long document. Entries carry their
     // own active flag and are remapped across edits like the decorations.
@@ -140,6 +239,7 @@
         }
         scheduleRulerUpdate();
       }
+      if (update.startState.field(peersField) !== update.state.field(peersField)) emitPeers(update.state);
       if (suppressEvents) return;
       if (update.docChanged) emit("change");
       if (update.docChanged || update.selectionSet) emitCursor(update.view);
@@ -164,6 +264,9 @@
         extensions: [
           V.lineNumbers(),
           V.highlightActiveLineGutter(),
+          peersField,
+          peerGutter,
+          peerLines,
           C.history(),
           V.keymap.of(editorKeymap),
           languageCompartment.of(flags.kind === "ly" ? languages.ly : languages.tex),
@@ -290,6 +393,23 @@
         if (wasFocused) view.focus();
         emitCursor(view);
       },
+      // Replaces the set of participants shown in the document. An empty list
+      // clears them, which is what leaving or losing the connection does.
+      setPeers(peers) {
+        const max = view.state.doc.length;
+        const normalized = (peers || []).map((peer) => ({
+          id: String(peer.id || ""),
+          userId: String(peer.userId || ""),
+          name: peer.name || peer.username || "",
+          username: peer.username || "",
+          color: peer.color || "#7aa2f7",
+          role: peer.role || "viewer",
+          anchor: peer.anchor == null ? null : Math.max(0, Math.min(max, peer.anchor)),
+          head: peer.head == null ? null : Math.max(0, Math.min(max, peer.head)),
+        }));
+        view.dispatch({ effects: peersEffect.of(normalized) });
+      },
+      peers() { return peerSummary(view.state); },
       collaborative() { return collaborative; },
       collabVersion() { return collaborative ? CO.getSyncedVersion(view.state) : 0; },
       // Local updates the server has not confirmed yet, in wire form.
@@ -384,6 +504,8 @@
     onCursor(fn) { handlers.cursor.push(fn); },
     // Fires when local edits are waiting for the realtime transport to push.
     onSync(fn) { handlers.sync.push(fn); },
+    // Fires when the participants, or the lines they are on, change.
+    onPeers(fn) { handlers.peers.push(fn); },
     focusTarget() { return impl ? impl.focusTarget() : null; },
     ownsTarget(node) { return impl ? impl.ownsTarget(node) : false; },
     getValue() { return impl ? impl.getValue() : ""; },
@@ -391,10 +513,11 @@
     collaborative() { return impl ? impl.collaborative() : false; },
     collabVersion() { return impl ? impl.collabVersion() : 0; },
     collabPending() { return impl ? impl.collabPending() : null; },
+    peers() { return impl ? impl.peers() : []; },
   };
   // Every mutating call is a no-op until the modules resolve, and stays one if
   // they never do, so the rest of the app needs no readiness checks.
-  ["focus", "load", "loadCollab", "applyText", "replaceRange", "select", "setWordWrap", "setAutoIndent", "setReadOnly", "highlightMatches", "collabReceive"].forEach((method) => {
+  ["focus", "load", "loadCollab", "applyText", "replaceRange", "select", "setWordWrap", "setAutoIndent", "setReadOnly", "highlightMatches", "collabReceive", "setPeers"].forEach((method) => {
     api[method] = (...args) => { if (impl) impl[method](...args); };
   });
   // Resolves either way: the app still boots (tree, preview, builds, history)

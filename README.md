@@ -55,6 +55,10 @@ the Node.js service handles authentication, persistence, and compilation.
   autosave.
 - Realtime collaborative editing of the same document by several members, with
   the server as the single authority that orders concurrent changes.
+- Presence for the open file: who else is editing it, the lines they are on, and
+  a non-blocking warning when two people work in the same area.
+- A notice in the preview when another member has compiled something newer, with
+  a one-click load of the most recent build.
 - Server-side LaTeX compilation with `pdflatex`, `xelatex`, or `lualatex`.
 - Built-in LaTeX pipelines for quick builds, BibTeX, Biber, and indexes, plus
   constrained custom pipelines.
@@ -408,6 +412,13 @@ already present in the process environment.
 | `COLLAB_REVISION_IDLE_MS` | `120000` | Quiet period after which realtime edits are consolidated into one revision. |
 | `COLLAB_HEARTBEAT_MS` | `30000` | Ping interval used to drop connections whose peer vanished. |
 | `COLLAB_MAX_MESSAGE_BYTES` | `4194304` | Maximum size of a single collaboration message. |
+| `COLLAB_PUSH_DEBOUNCE_MS` | `300` | How long a browser batches keystrokes before sending them. Served to the client through `/api/config`. |
+| `COLLAB_PRESENCE_DEBOUNCE_MS` | `200` | How long a browser batches cursor moves before reporting them. |
+
+Typing is always instant locally: the two debounce values only decide how often a
+browser talks to the server. Raising them lowers the message rate on a busy
+installation at the cost of a slightly later appearance on other screens; keeping
+the total round trip under about a second is what makes editing feel shared.
 
 ### Database
 
@@ -680,8 +691,45 @@ send any. On a dropped connection the client reconnects with exponential backoff
 and resumes from the version it still holds; if the server has already trimmed
 that far back in its update log, it sends the whole document instead.
 
-Presence indicators — remote cursors, who is editing where — are the subject of
-the next phase; this one delivers the correctness underneath them.
+### Presence and overlap
+
+While a document is shared, the status bar names the other members editing it,
+each with a stable colour derived from their account, and the editor marks the
+lines they are working on with that colour — a bar beside the line and a faint
+tint on it. The same person in two tabs is one entry in the list and two marks in
+the document, because that is what is actually true.
+
+When someone else is working on your line or the one either side of it, the
+indicator turns to a warning naming them. It is deliberately advisory and blocks
+nothing: operational transformation already guarantees that no keystroke is lost,
+but it cannot tell whether two people changing the same bar of music or the same
+command agree about the result. That judgement stays with the people involved,
+which is also why the file history exists.
+
+Presence is ephemeral. It is never written to the database, never versioned and
+never replayed: it lives only on the open connections of a document, and it is
+visible only to members who could already read that file. Positions follow the
+text as it changes, and a participant who disconnects simply disappears from the
+list.
+
+Remaining work for a later phase: structural awareness (naming the LaTeX
+environment or LilyPond `score` two people share, rather than the line number).
+
+### Compilation notices
+
+A compilation is a project-wide event, so a tab follows the project it has open
+regardless of which document it is editing. When any member's build finishes, a
+notice appears above the preview of everyone whose preview is older, with a
+button that loads the most recent finished build — the button exists only while
+that notice does. A failed build is announced too: it is still newer than what is
+on screen, and its log is what the author will want to talk about.
+
+The notice is driven by what is on screen rather than by who compiled, so it
+stays silent for your own compilation, and it appears if you open a project whose
+preview is already behind. The message carries only the fact that a build
+finished and who caused it; the output itself is fetched through the same
+authorized route as always, so the socket never becomes a second way to read a
+build. Dismissing the notice leaves the preview alone.
 
 ## Server administration
 

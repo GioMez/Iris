@@ -7,7 +7,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { EditorState, ChangeSet } = require("@codemirror/state");
 const { collab, getSyncedVersion, sendableUpdates, receiveUpdates } = require("@codemirror/collab");
-const { CollabDocument, CollabRooms, CollabError } = require("../src/collab");
+const { CollabDocument, CollabRooms, CollabError, PEER_COLORS, peerColor, normalizePresence } = require("../src/collab");
 
 function makeRoom(content, options = {}) {
   return new CollabDocument({ fileId: "file-1", projectId: "project-1", path: "main.tex", content, ...options });
@@ -289,6 +289,37 @@ test("persistence and revision bookkeeping follow the accepted version", () => {
   room.reset("z");
   assert.equal(room.needsPersist(), true);
   assert.equal(room.needsRevision(), true);
+});
+
+/* ---- presence ---- */
+
+test("a participant's colour is stable and derived only from their identity", () => {
+  const userId = "019fb1db-4bfd-7242-aff6-cdec7aa83d02";
+  assert.equal(peerColor(userId), peerColor(userId), "the same person is always the same colour");
+  assert.ok(PEER_COLORS.includes(peerColor(userId)));
+  // Every colour in the palette is reachable and none repeats.
+  assert.equal(new Set(PEER_COLORS).size, PEER_COLORS.length);
+  const produced = new Set(Array.from({ length: 400 }, (_, i) => peerColor(`user-${i}`)));
+  assert.equal(produced.size, PEER_COLORS.length, "the whole palette is used");
+  // A missing id still yields a usable colour rather than undefined.
+  assert.ok(PEER_COLORS.includes(peerColor(null)));
+});
+
+test("presence reports are clamped to the document and never trusted blindly", () => {
+  assert.deepEqual(normalizePresence({ anchor: 2, head: 5, version: 3 }, 10), { anchor: 2, head: 5, version: 3 });
+  // Positions past the end of the document are clamped, not rejected: the sender
+  // may simply be a moment ahead of us.
+  assert.deepEqual(normalizePresence({ anchor: 99, head: 99, version: 1 }, 10), { anchor: 10, head: 10, version: 1 });
+  assert.deepEqual(normalizePresence({ anchor: -5, head: 3, version: 0 }, 10), { anchor: 0, head: 3, version: 0 });
+  // Fractions are floored rather than smuggled into a position.
+  assert.equal(normalizePresence({ anchor: 2.9, head: 2.9, version: 0 }, 10).anchor, 2);
+  // Anything unusable is dropped: presence is a hint, not a command.
+  assert.equal(normalizePresence({ anchor: "x", head: 1 }, 10), null);
+  assert.equal(normalizePresence({ head: 1 }, 10), null);
+  assert.equal(normalizePresence(null, 10), null);
+  // A malformed version degrades to zero instead of poisoning the report.
+  assert.equal(normalizePresence({ anchor: 1, head: 1, version: -4 }, 10).version, 0);
+  assert.equal(normalizePresence({ anchor: 1, head: 1, version: "soon" }, 10).version, 0);
 });
 
 test("rooms are keyed per file and seeded only on creation", () => {

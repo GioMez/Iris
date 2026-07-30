@@ -103,6 +103,12 @@
     "empty": "Press Compile to generate the output.",
     "compiling": "Compiling…",
     "refreshFailed": "Unable to refresh the PDF preview",
+    "newer": "A newer compilation is available",
+    "newerBy": "{{name}} compiled a newer version",
+    "newerFailed": "A newer compilation finished with errors",
+    "newerFailedBy": "{{name}}'s compilation finished with errors",
+    "newerLoad": "Load",
+    "newerDismiss": "Dismiss this notice",
     "generated_one": "{{count}} {{format}} file generated. Open Compilation history to access every build file.",
     "generated_other": "{{count}} {{format}} files generated. Open Compilation history to access every build file."
   },
@@ -493,7 +499,12 @@
     "readonly": "Realtime · read-only",
     "offline": "Reconnecting…",
     "revoked": "Realtime session ended: your access to this project changed",
-    "error": "Realtime unavailable"
+    "error": "Realtime unavailable",
+    "someone": "Another member",
+    "peersTitle": "Also editing this file: {{names}}",
+    "peersMore_one": "{{count}} person",
+    "peersMore_other": "{{count}} people",
+    "overlapWarning": "You are working in the same area as {{names}}. Changes will not be lost, but you may be undoing each other's intent."
   },
   "templates": {
     "newScore": "New score",

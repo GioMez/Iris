@@ -179,10 +179,51 @@ class CollabRooms {
   }
 }
 
+// Identity colours for presence. Chosen from the editor's own syntax palette so
+// they read on the dark editor background, and far enough apart in hue to stay
+// distinguishable as small markers. Assignment is deterministic on the user id,
+// so the same person is the same colour for everyone and across reconnections.
+const PEER_COLORS = [
+  "#7aa2f7", // blue
+  "#9ece6a", // green
+  "#bb9af7", // purple
+  "#e0af68", // amber
+  "#f7768e", // rose
+  "#2ac3de", // teal
+  "#ff9e64", // orange
+  "#b4f9f8", // ice
+];
+
+function peerColor(userId) {
+  const key = String(userId || "");
+  let hash = 0;
+  for (let i = 0; i < key.length; i++) hash = (hash * 31 + key.charCodeAt(i)) >>> 0;
+  return PEER_COLORS[hash % PEER_COLORS.length];
+}
+
+// Normalizes a presence report from a client. Positions are ephemeral hints, so
+// anything malformed is dropped rather than treated as an error.
+function normalizePresence(message, docLength) {
+  if (!message || typeof message !== "object") return null;
+  const toOffset = (value) => {
+    const offset = Number(value);
+    if (!Number.isFinite(offset)) return null;
+    return Math.max(0, Math.min(docLength, Math.floor(offset)));
+  };
+  const anchor = toOffset(message.anchor);
+  const head = toOffset(message.head);
+  if (anchor === null || head === null) return null;
+  const version = Number(message.version);
+  return { anchor, head, version: Number.isInteger(version) && version >= 0 ? version : 0 };
+}
+
 module.exports = {
   CollabDocument,
   CollabRooms,
   CollabError,
   DEFAULT_HISTORY_LIMIT,
   MAX_UPDATES_PER_PUSH,
+  PEER_COLORS,
+  peerColor,
+  normalizePresence,
 };

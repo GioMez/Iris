@@ -14,7 +14,7 @@ const { lifecycleGate, healthStatus, isMutatingMethod, HEALTH_PATH } = require("
 const { recordAuditEvent } = require("./audit");
 const { collectProjectFiles, reconcileProjectFiles } = require("./project-files");
 const { hashContent, isVersionableText, contentChanged } = require("./versions");
-const { CollabRooms, CollabError } = require("./collab");
+const { CollabRooms, CollabError, peerColor, normalizePresence } = require("./collab");
 const { isSystemRole, isUserStatus, leavesNoActiveAdmin, normalizeSearch, userDeletionBlock } = require("./admin");
 const {
   isProjectRole,
@@ -1762,6 +1762,14 @@ const COLLAB_FLUSH_MAX_MS = positiveIntEnv("COLLAB_FLUSH_MAX_MS", 15000);
 const COLLAB_REVISION_IDLE_MS = positiveIntEnv("COLLAB_REVISION_IDLE_MS", 120000);
 const COLLAB_MAX_MESSAGE_BYTES = positiveIntEnv("COLLAB_MAX_MESSAGE_BYTES", 4 * 1024 * 1024);
 const COLLAB_HEARTBEAT_MS = positiveIntEnv("COLLAB_HEARTBEAT_MS", 30000);
+// Client-side pacing, served through /api/config. Local editing stays instant
+// whatever these are: they only decide how often a browser talks to the server.
+// Keystrokes are batched for COLLAB_PUSH_DEBOUNCE_MS before being sent, which
+// cuts the message rate during fast typing by an order of magnitude while
+// keeping the round trip far below the one second that reads as immediate.
+const COLLAB_PUSH_DEBOUNCE_MS = positiveIntEnv("COLLAB_PUSH_DEBOUNCE_MS", 300);
+// Cursor and selection moves are ephemeral, so they are paced separately.
+const COLLAB_PRESENCE_DEBOUNCE_MS = positiveIntEnv("COLLAB_PRESENCE_DEBOUNCE_MS", 200);
 
 const collabRooms = new CollabRooms();
 const collabSessions = new Set();
@@ -1817,7 +1825,7 @@ function collabLeave(session, fileId) {
   session.rooms.delete(fileId);
   const room = entry.room;
   room.clients.delete(session);
-  if (room.clients.size) return;
+  if (room.clients.size) return void collabBroadcastPeers(room);
   clearTimeout(room.flushTimer);
   clearTimeout(room.revisionTimer);
   // Last one out persists the document and records the consolidated revision
@@ -1900,6 +1908,59 @@ function collabBroadcast(room, message, except = null) {
   });
 }
 
+/* ---- presence: who else is in this document, and where ---- */
+// Presence is ephemeral and deliberately kept out of the durable update stream:
+// it is never persisted, never versioned and never replayed. Each participant is
+// told about the others only, so a client needs no identity of its own to filter
+// itself out. Being in the room already required membership, so presence cannot
+// leak to anyone who could not read the file anyway.
+function collabPeersFor(room, recipient) {
+  const peers = [];
+  room.clients.forEach((client) => {
+    if (client === recipient) return;
+    const entry = client.rooms.get(room.fileId);
+    if (!entry) return;
+    peers.push({
+      id: client.id,
+      userId: client.user.sub,
+      name: client.user.name || client.user.username || "",
+      username: client.user.username || "",
+      color: peerColor(client.user.sub),
+      role: entry.role,
+      anchor: entry.presence ? entry.presence.anchor : null,
+      head: entry.presence ? entry.presence.head : null,
+      version: entry.presence ? entry.presence.version : 0,
+    });
+  });
+  return peers;
+}
+
+function collabBroadcastPeers(room) {
+  room.clients.forEach((client) => {
+    collabSend(client.socket, { t: "peers", fileId: room.fileId, peers: collabPeersFor(room, client) });
+  });
+}
+
+// Tells everyone watching the project that a compilation finished, so a member
+// looking at an older output learns there is a newer one instead of discovering
+// it by chance. The message carries no output, only the fact and who caused it;
+// the client asks for the build itself through the ordinary authorized route.
+// It goes to every watcher, including the author's own other tabs: each client
+// decides whether it is already showing that build.
+function collabNotifyBuild({ projectId, buildId, status, user }) {
+  const message = {
+    t: "build",
+    projectId,
+    buildId,
+    status,
+    by: (user && (user.name || user.username)) || "",
+  };
+  collabSessions.forEach((session) => {
+    if (session.projectId !== projectId) return;
+    collabSend(session.socket, message);
+  });
+}
+
 async function collabHandleMessage(session, raw) {
   let message;
   try {
@@ -1911,16 +1972,44 @@ async function collabHandleMessage(session, raw) {
 
   if (message.t === "open") {
     const entry = await collabJoin(session, fileId);
-    return collabSend(session.socket, {
+    collabSend(session.socket, {
       t: "opened",
       fileId,
       version: entry.room.version,
       doc: entry.room.text(),
       role: entry.role,
     });
+    // Everyone learns about the newcomer, and the newcomer about everyone.
+    return collabBroadcastPeers(entry.room);
+  }
+
+  // A tab watches the project it has open, independently of which file it is
+  // editing: build notifications concern the whole project, and a member may be
+  // looking at the preview with no document in a room at all.
+  if (message.t === "project") {
+    const projectId = String(message.projectId || "");
+    if (!isUuid(projectId)) throw new CollabError("COLLAB_BAD_PROJECT");
+    const project = await collabMembership(projectId, session.user.sub);
+    if (!project) throw new CollabError("COLLAB_PROJECT_NOT_FOUND");
+    session.projectId = projectId;
+    return;
+  }
+
+  if (message.t === "unwatch") {
+    session.projectId = null;
+    return;
   }
 
   if (message.t === "close") return collabLeave(session, fileId);
+
+  if (message.t === "presence") {
+    const entry = session.rooms.get(fileId);
+    if (!entry) throw new CollabError("COLLAB_NOT_JOINED");
+    const presence = normalizePresence(message, entry.room.doc.length);
+    if (!presence) return;
+    entry.presence = presence;
+    return collabBroadcastPeers(entry.room);
+  }
 
   if (message.t === "pull") {
     const entry = session.rooms.get(fileId);
@@ -1963,10 +2052,13 @@ function collabCloseSession(session, code = 1000, reason = "") {
 // sessions already in progress.
 async function collabRecheckProject(projectId) {
   const sessions = Array.from(collabSessions).filter((session) =>
-    Array.from(session.rooms.values()).some((entry) => entry.projectId === projectId));
+    session.projectId === projectId
+    || Array.from(session.rooms.values()).some((entry) => entry.projectId === projectId));
   for (const session of sessions) {
     const project = await collabMembership(projectId, session.user.sub).catch(() => null);
     if (!project) {
+      // Losing membership also stops the build notifications for the project.
+      if (session.projectId === projectId) session.projectId = null;
       Array.from(session.rooms.entries()).forEach(([fileId, entry]) => {
         if (entry.projectId !== projectId) return;
         collabSend(session.socket, { t: "revoked", fileId });
@@ -1979,6 +2071,8 @@ async function collabRecheckProject(projectId) {
       if (entry.projectId !== projectId || entry.role === project.role) return;
       entry.role = project.role;
       collabSend(session.socket, { t: "role", fileId, role: project.role });
+      // The others see the new role on the participant list too.
+      collabBroadcastPeers(entry.room);
     });
   }
 }
@@ -2027,7 +2121,9 @@ async function collabUpgrade(req, socket, head, wss) {
     return finish("401 Unauthorized", "Not authenticated");
   }
   wss.handleUpgrade(req, socket, head, (ws) => {
-    const session = { socket: ws, user, rooms: new Map(), alive: true };
+    // One id per connection, not per user: the same person in two tabs is two
+    // participants with two cursors, which is what the others should see.
+    const session = { id: uuidv7(), socket: ws, user, rooms: new Map(), alive: true };
     collabSessions.add(session);
     ws.on("pong", () => { session.alive = true; });
     ws.on("message", (data) => {
@@ -2042,7 +2138,7 @@ async function collabUpgrade(req, socket, head, wss) {
       collabSessions.delete(session);
     });
     ws.on("error", () => {});
-    collabSend(ws, { t: "ready", clientId: uuidv7() });
+    collabSend(ws, { t: "ready", sessionId: session.id, color: peerColor(user.sub) });
   });
 }
 
@@ -3237,6 +3333,7 @@ async function compileProject(req, res, user, id) {
     const status = success ? "succeeded" : "failed";
     await finalizeBuildOutput({ id: buildId, status, storagePath: publishedPath, artifacts, result });
     finalized = true;
+    collabNotifyBuild({ projectId: id, buildId, status, user });
     await audit({
       ...sessionActor(req, user),
       action: "build.completed",
@@ -3296,6 +3393,7 @@ async function compileProject(req, res, user, id) {
         artifacts: [],
         result: failedResult,
       }).catch(() => {});
+      collabNotifyBuild({ projectId: id, buildId, status: "failed", user });
       await audit({
         ...sessionActor(req, user),
         action: "build.completed",
@@ -3845,6 +3943,10 @@ async function handleApi(req, res, url) {
       auth: {
         ssoEnabled: oauthEnabled(),
         ssoAutoRegister: OAUTH_AUTO_REGISTER,
+      },
+      collab: {
+        pushDebounceMs: COLLAB_PUSH_DEBOUNCE_MS,
+        presenceDebounceMs: COLLAB_PRESENCE_DEBOUNCE_MS,
       },
     });
   }

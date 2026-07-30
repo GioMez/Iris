@@ -149,6 +149,14 @@
         </div>
         <button class="mini fit on" id="fitBtn" title="Fit to width" data-i18n-title="preview.fitTitle" data-i18n="preview.fit">Fit</button>
       </div>
+      <!-- Shown only when someone else has compiled a newer output than the one
+           on screen; the refresh button lives inside it. -->
+      <div class="pv-newer" id="pvNewer" role="status" aria-live="polite" hidden>
+        <span class="ic" data-icon="alert-triangle" aria-hidden="true"></span>
+        <span class="pv-newer-text" id="pvNewerText"></span>
+        <button class="btn sm cta" type="button" id="pvNewerLoad"><span data-icon="refresh"></span><span data-i18n="preview.newerLoad">Load</span></button>
+        <button class="pv-newer-x" type="button" id="pvNewerDismiss" aria-label="Dismiss" data-i18n-aria-label="preview.newerDismiss"><span data-icon="x"></span></button>
+      </div>
       <div class="pv-stage" id="pvStage">
         <div class="pv-empty" id="pvEmpty">
           <div class="big" data-icon="file"></div>
@@ -173,6 +181,7 @@
       <span class="st">UTF-8</span>
       <span class="st" id="stLanguage">LaTeX</span>
       <span class="st sb-sync" id="stSync" role="status" aria-live="polite" hidden><span class="sync-dot" aria-hidden="true"></span><span id="stSyncLabel"></span></span>
+      <span class="st sb-peers" id="stPeers" role="status" aria-live="polite" hidden></span>
       <div class="spring"></div>
       <span class="st" id="stMath"></span>
       <button class="st warn btnlike" id="stWarn" type="button" style="display:none"></button>

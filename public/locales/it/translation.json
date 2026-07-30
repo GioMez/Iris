@@ -103,6 +103,12 @@
     "empty": "Premi Compila per generare l'output.",
     "compiling": "Compilazione in corso…",
     "refreshFailed": "Impossibile aggiornare l'anteprima PDF",
+    "newer": "È disponibile una compilazione più recente",
+    "newerBy": "{{name}} ha compilato una versione più recente",
+    "newerFailed": "Una compilazione più recente è terminata con errori",
+    "newerFailedBy": "La compilazione di {{name}} è terminata con errori",
+    "newerLoad": "Carica",
+    "newerDismiss": "Chiudi questo avviso",
     "generated_one": "{{count}} file {{format}} generato. Apri Cronologia compilazioni per accedere a tutti i file della build.",
     "generated_other": "{{count}} file {{format}} generati. Apri Cronologia compilazioni per accedere a tutti i file della build."
   },
@@ -493,7 +499,12 @@
     "readonly": "Tempo reale · sola lettura",
     "offline": "Riconnessione…",
     "revoked": "Sessione in tempo reale terminata: il tuo accesso al progetto è cambiato",
-    "error": "Tempo reale non disponibile"
+    "error": "Tempo reale non disponibile",
+    "someone": "Un altro membro",
+    "peersTitle": "Stanno modificando questo file anche: {{names}}",
+    "peersMore_one": "{{count}} persona",
+    "peersMore_other": "{{count}} persone",
+    "overlapWarning": "Stai lavorando nella stessa area di {{names}}. Le modifiche non andranno perse, ma potreste annullare a vicenda le rispettive intenzioni."
   },
   "templates": {
     "newScore": "Nuova partitura",
