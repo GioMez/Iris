@@ -8,6 +8,10 @@ services:
         condition: service_healthy
     environment:
       PORT: "3000"
+      # Left unset on purpose: inside a container the server must bind every
+      # interface for the published port to reach it. Restrict exposure through
+      # the ports mapping below, not here.
+      # BIND_ADDRESS: ""
       IRIS_SECRET: "${IRIS_SECRET:?Set IRIS_SECRET to a secure random value}"
       DB_HOST: postgres
       DB_PORT: "5432"

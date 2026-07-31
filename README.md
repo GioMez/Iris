@@ -394,6 +394,7 @@ already present in the process environment.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `PORT` | `3000` | HTTP port. |
+| `BIND_ADDRESS` | every interface | Single interface to bind, such as a private or VPN address. Leave empty in containers, where the published port controls exposure. |
 | `IRIS_SECRET` | none | Required secret used to sign sessions and OAuth state. |
 | `DATA_DIR` | `./data/projects` | Root directory for project files. |
 | `PUBLIC_DIR` | `./public` | Static frontend directory. |

@@ -40,6 +40,13 @@ const {
 loadDotEnv(path.resolve(".env"));
 
 const PORT = Number(process.env.PORT || 3000);
+// Interface the HTTP server binds to. Empty means every interface, which is what
+// a container needs for its published port to reach it. Set it to one address —
+// a private or VPN interface — when Iris runs directly on a host whose other
+// interfaces must not answer. A binding restricts which networks can open a
+// connection; it does not authenticate the peer, so a proxy on another machine
+// still needs a firewall or an encrypted link in front of it.
+const BIND_ADDRESS = process.env.BIND_ADDRESS || "";
 const DB_HOST = process.env.DB_HOST || "127.0.0.1";
 const DB_PORT = Number(process.env.DB_PORT || 5432);
 const DB_USER = process.env.DB_USER || "iris";
@@ -4343,8 +4350,8 @@ if (require.main === module) initDb()
     collabAttach(server);
     process.on("SIGTERM", () => startGracefulShutdown("SIGTERM", server));
     process.on("SIGINT", () => startGracefulShutdown("SIGINT", server));
-    server.listen(PORT, () => {
-      console.log(`Iris listening on http://localhost:${PORT}`);
+    server.listen(...(BIND_ADDRESS ? [PORT, BIND_ADDRESS] : [PORT]), () => {
+      console.log(`Iris listening on http://${BIND_ADDRESS || "localhost"}:${PORT}`);
       console.log(`Static files dir: ${PUBLIC_DIR}`);
       console.log(`Projects data dir: ${DATA_DIR}`);
       if (initialAdminCredentials) {
