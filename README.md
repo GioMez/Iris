@@ -262,6 +262,14 @@ request limit also applies to imported archives.
 A new LaTeX project starts with `main.tex` and a basic document template. The
 selected compiler engine and pipeline are stored with the project.
 
+Project settings name the main source file passed to the compiler. Left on
+**Automatic**, Iris detects it as before: the open file when it carries
+`\documentclass` (a `\score` block for LilyPond), otherwise the first source
+that does. Choosing a file fixes it for every compilation of the project,
+whichever file is open. If that file is later renamed or deleted, settings keep
+showing the stale choice and Iris falls back to detection until another one is
+picked.
+
 The available pipeline presets are:
 
 - **Quick:** one run of the selected engine.

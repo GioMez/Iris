@@ -2198,6 +2198,7 @@ async function createProject(req, res, user) {
   data.projectType = inferProjectType(data);
   data.lilypondArgs = data.projectType === "lilypond" ? sanitizeLilypondArgsForStorage(data.lilypondArgs) : "";
   data.lilypondFormat = data.projectType === "lilypond" ? normalizeLilypondFormat(data.lilypondFormat) : "pdf";
+  data.mainPath = sanitizeMainPathForStorage(data.mainPath);
   data.createdAt = now;
   data.updatedAt = now;
   validateProjectSourceTree(data);
@@ -2246,6 +2247,7 @@ async function updateProject(req, res, user, id) {
   data.projectType = inferProjectType(data);
   data.lilypondArgs = data.projectType === "lilypond" ? sanitizeLilypondArgsForStorage(data.lilypondArgs) : "";
   data.lilypondFormat = data.projectType === "lilypond" ? normalizeLilypondFormat(data.lilypondFormat) : "pdf";
+  data.mainPath = sanitizeMainPathForStorage(body.mainPath ?? data.mainPath);
   if (body.compileProfile && typeof body.compileProfile === "object") {
     data.compileProfile = sanitizeCompileProfileForStorage(body.compileProfile, data.projectType);
   }
@@ -2386,6 +2388,7 @@ function normalizeImportedProject(data, name, now) {
   data.compileProfile = sanitizeCompileProfileForStorage(data.compileProfile, data.projectType);
   data.lilypondArgs = data.projectType === "lilypond" ? sanitizeLilypondArgsForStorage(data.lilypondArgs) : "";
   data.lilypondFormat = data.projectType === "lilypond" ? normalizeLilypondFormat(data.lilypondFormat) : "pdf";
+  data.mainPath = sanitizeMainPathForStorage(data.mainPath);
   data.createdAt = now;
   data.updatedAt = now;
   validateProjectSourceTree(data);
@@ -2678,6 +2681,15 @@ function sanitizeLilypondArgsForStorage(value) {
     throw requestError("LILYPOND_ARGUMENTS_INVALID", 400);
   }
   return input;
+}
+
+// The project's main source file, kept as a project-relative path. Empty means
+// Iris picks the file itself, which is what every project did before the setting
+// existed and stays the default for new ones.
+function sanitizeMainPathForStorage(value) {
+  const input = String(value == null ? "" : value).trim();
+  if (!input) return "";
+  return safeProjectSourcePath(input);
 }
 
 function normalizeLilypondFormat(value) {
@@ -3254,7 +3266,11 @@ async function compileProject(req, res, user, id) {
   const binPath = projectType === "lilypond"
     ? (LILYPOND_PATH_LOCKED ? LILYPOND_BIN_PATH : String(body.lilypondPath || LILYPOND_BIN_PATH || "").trim())
     : (TEX_PATH_LOCKED ? TEX_BIN_PATH : String(body.texPath || TEX_BIN_PATH || "").trim());
-  const main = findCompileFile(data, body.mainPath, projectType);
+  // The stored setting names the project's main file; body.mainPath is a
+  // one-off override for this compilation and deliberately does not become the
+  // setting, so compiling a chapter on its own never redefines the project.
+  const storedMainPath = sanitizeMainPathForStorage(data.mainPath);
+  const main = findCompileFile(data, sanitizeMainPathForStorage(body.mainPath) || storedMainPath, projectType);
   const mainPath = safeProjectSourcePath(main.path);
   const storedLilypondArgs = projectType === "lilypond"
     ? sanitizeLilypondArgsForStorage(body.lilypondArgs ?? data.lilypondArgs)
@@ -3268,6 +3284,7 @@ async function compileProject(req, res, user, id) {
   data.compileProfile = storedCompileProfile;
   data.lilypondArgs = storedLilypondArgs;
   data.lilypondFormat = outputFormat;
+  data.mainPath = storedMainPath;
   data.createdAt = toMillis(row.created_at);
   data.updatedAt = Date.now();
   const { renames } = await syncProjectFiles(id, data);
@@ -4388,6 +4405,7 @@ module.exports = {
   sanitizeCompileProfileForStorage,
   parseCompileArguments,
   sanitizeLilypondArgsForStorage,
+  sanitizeMainPathForStorage,
   normalizeLilypondFormat,
   safeProjectSourcePath,
   validateProjectSourceTree,

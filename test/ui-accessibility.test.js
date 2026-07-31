@@ -310,6 +310,16 @@ test("account and credential controls retain names at every breakpoint", () => {
   assert.match(auth, /event\.stopImmediatePropagation\(\); closeUserMenu\(true\)/);
 });
 
+test("the main-file setting is labelled and never hides a stale choice", () => {
+  assert.match(html, /<label[^>]*for="compileMainPath"/);
+  assert.match(html, /<select[^>]*id="compileMainPath"/);
+  // A selection whose file disappeared stays listed and explained, rather than
+  // silently reverting to detection with the setting still showing a value.
+  assert.match(app, /const stale = !!state\.mainPath && !candidates\.includes\(state\.mainPath\)/);
+  assert.match(app, /settings\.mainFileStaleHint/);
+  assert.match(app, /select\.disabled = isReadOnly\(\)/);
+});
+
 test("admin member mutations retain focus and expose in-modal status", () => {
   assert.match(adminProjects, /row\.dataset\.userId = m\.userId/);
   assert.match(adminProjects, /function focusMemberControl\(userId, selector\)/);

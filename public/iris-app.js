@@ -31,6 +31,7 @@
     projectType: "latex",
     projectLanguage: "en",
     compileProfile: { mode: "quick", steps: [{ tool: "[engine]", args: ["[main]"] }] },
+    mainPath: "",         // project's main source file (empty = detected by Iris)
     texPath: "",          // directory of the LaTeX binaries (empty = system PATH)
     texPathLocked: false,
     lilypondPath: "",     // directory of the LilyPond binary (empty = system PATH)
@@ -537,6 +538,31 @@
     state.compileProfile = normalizeCompileProfile(state.compileProfile);
     void persistWhenDocumentClean();
   }
+  function updateMainPathControl() {
+    const select = $("compileMainPath");
+    const hint = $("compileMainPathHint");
+    if (!select || !hint) return;
+    const candidates = mainPathCandidates();
+    // A stored path whose file was renamed or deleted stays listed instead of
+    // disappearing, so the stale setting is visible and can be corrected.
+    const stale = !!state.mainPath && !candidates.includes(state.mainPath);
+    const options = [`<option value="">${esc(t("settings.mainFileAuto"))}</option>`]
+      .concat(candidates.map((p) => `<option value="${esc(p)}">${esc(p)}</option>`));
+    if (stale) options.push(`<option value="${esc(state.mainPath)}">${esc(t("settings.mainFileMissing", { path: state.mainPath }))}</option>`);
+    select.innerHTML = options.join("");
+    select.value = state.mainPath;
+    select.disabled = isReadOnly();
+    let message;
+    if (stale) message = t("settings.mainFileStaleHint");
+    else if (state.mainPath) message = t("settings.mainFileSetHint");
+    else {
+      const detected = docFileForCompile();
+      message = detected
+        ? t("settings.mainFileAutoHint", { path: detected.path || detected.name })
+        : t("settings.mainFileAutoEmptyHint");
+    }
+    hint.innerHTML = `${ti("info-circle", "hint-ti")}<span>${esc(message)}</span>`;
+  }
   function updateTexPathControl() {
     const input = $("texPath");
     const hint = $("texPathHint");
@@ -557,6 +583,7 @@
       ? t("settings.pathHintLocked")
       : t("settings.pathHintUnlocked", { executable: lilypond ? "lilypond" : "pdflatex" });
     hint.innerHTML = `${ti("info-circle", "hint-ti")}<span>${esc(pathHint)}</span>`;
+    updateMainPathControl();
     updateCompileCommandPreview();
   }
   async function loadRuntimeConfig() {
@@ -1339,6 +1366,7 @@
       assets: state.assets,
       engine: state.engine,
       compileProfile: state.compileProfile,
+      mainPath: state.mainPath,
       lilypondArgs: state.lilypondArgs,
       lilypondFormat: state.lilypondFormat,
       fonts: state.fonts,
@@ -1349,7 +1377,25 @@
       autoSaveDelay: state.autoSaveDelay,
     };
   }
+  // Source files eligible to be the project's main one, in tree order.
+  function mainPathCandidates() {
+    const expected = isLilyPondProject() ? "ly" : "tex";
+    const paths = [];
+    walk(project.nodes, (x) => { if (x.kind === expected && x.path) paths.push(x.path); });
+    return paths;
+  }
+  function configuredMainFile() {
+    if (!state.mainPath) return null;
+    const expected = isLilyPondProject() ? "ly" : "tex";
+    let found = null;
+    walk(project.nodes, (x) => { if (!found && x.path === state.mainPath && x.kind === expected) found = x; });
+    return found;
+  }
   function docFileForCompile() {
+    // The setting wins over detection: the author has named the file that owns
+    // the document, so an open chapter must not take its place.
+    const configured = configuredMainFile();
+    if (configured) return configured;
     const f = findFile(state.activeId);
     if (isLilyPondProject()) {
       if (f && f.kind === "ly" && /\\score\b/.test(f.content || "")) return f;
@@ -2036,6 +2082,11 @@
     $("lilypondFormat").addEventListener("change", function () {
       state.lilypondFormat = this.value;
       updateCompileCommandPreview();
+      void persistWhenDocumentClean();
+    });
+    $("compileMainPath").addEventListener("change", function () {
+      state.mainPath = this.value;
+      updateMainPathControl();
       void persistWhenDocumentClean();
     });
     $("compilePreset").addEventListener("change", function () {
@@ -2882,6 +2933,7 @@
         ? data.lilypondFormat
         : "pdf";
       state.compileProfile = normalizeCompileProfile(data.compileProfile);
+      state.mainPath = String(data.mainPath || "");
       state.fonts = fontSettingsFromTree(data.fonts);
       state.fonts.forEach((font) => registerProjectFont(font).then(() => renderFontList()));
       setPreviewFont(null);

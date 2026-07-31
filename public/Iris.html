@@ -329,6 +329,11 @@
           <code class="binpath" id="projectTypeLabel">LaTeX</code>
         </div>
         <div class="field">
+          <label class="label" for="compileMainPath" data-i18n="settings.mainFile">Main file</label>
+          <select class="select" id="compileMainPath"></select>
+          <div class="hint" id="compileMainPathHint"><span data-icon="info-circle"></span><span data-i18n="settings.mainFileHint">The file passed to the compiler. When automatic, Iris picks it from the sources.</span></div>
+        </div>
+        <div class="field">
           <label class="label" id="compilerPathLabel" for="texPath" data-i18n="settings.latexBinaryPath">LaTeX binaries path</label>
           <input class="input" id="texPath" placeholder="optional, e.g. /opt/homebrew/bin" data-i18n-placeholder="common.optionalExample" spellcheck="false" autocomplete="off">
           <div class="hint" id="texPathHint"><span data-icon="info-circle"></span><span>When empty, the backend PATH is used.</span></div>

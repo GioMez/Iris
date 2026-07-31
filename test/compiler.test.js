@@ -15,6 +15,7 @@ const {
   sanitizeCompileProfileForStorage,
   parseCompileArguments,
   sanitizeLilypondArgsForStorage,
+  sanitizeMainPathForStorage,
   normalizeLilypondFormat,
   reconcileProjectFonts,
   safeProjectSourcePath,
@@ -57,6 +58,41 @@ test("selects a LilyPond score as the main source", () => {
     () => findCompileFile(data, undefined, "latex"),
     (error) => error.errorCode === "COMPILE_NO_SOURCE" && error.params.extension === ".tex"
   );
+});
+
+test("the configured main file outranks source detection", () => {
+  const data = project([
+    { path: "main.tex", content: "\\documentclass{article}\\begin{document}a\\end{document}" },
+    { path: "poster.tex", content: "\\documentclass{article}\\begin{document}b\\end{document}" },
+  ]);
+  // Detection would settle on main.tex; naming poster.tex must win, and a
+  // per-request override must win over both.
+  assert.equal(findCompileFile(data, undefined, "latex").path, "main.tex");
+  assert.equal(findCompileFile(data, "poster.tex", "latex").path, "poster.tex");
+});
+
+test("a main file that no longer exists falls back to detection", () => {
+  const data = project([
+    { path: "main.tex", content: "\\documentclass{article}\\begin{document}a\\end{document}" },
+  ]);
+  assert.equal(findCompileFile(data, "renamed.tex", "latex").path, "main.tex");
+});
+
+test("a stored main file stays inside the project sources", () => {
+  assert.equal(sanitizeMainPathForStorage("chapters/intro.tex"), "chapters/intro.tex");
+  assert.equal(sanitizeMainPathForStorage("  "), "");
+  assert.equal(sanitizeMainPathForStorage(null), "");
+  assert.equal(sanitizeMainPathForStorage("./chapters/../main.tex"), "main.tex");
+  // An absolute path is clamped into the project rather than refused, the same
+  // way every other source path is treated.
+  assert.equal(sanitizeMainPathForStorage("/etc/passwd"), "etc/passwd");
+  for (const escape of ["../secrets.tex", "output/main.tex", ".iris/main.tex"]) {
+    assert.throws(
+      () => sanitizeMainPathForStorage(escape),
+      (error) => error.errorCode === "PROJECT_PATH_INVALID",
+      `expected ${escape} to be refused`
+    );
+  }
 });
 
 test("builds a constrained LilyPond PDF pipeline", () => {
