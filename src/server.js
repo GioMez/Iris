@@ -743,12 +743,22 @@ function validateProjectSourceTree(data) {
   walk(data && data.project && data.project.nodes);
 }
 
+// The header of a data URL is everything before the first comma, and the media
+// type inside it may carry parameters: `data:text/plain; charset=utf-8;base64,`
+// is what a browser produces for a text file. Splitting on the first `;` instead
+// misses the encoding, and the caller then writes the URL itself as the file's
+// bytes, which is how an uploaded .bib turned into one long base64 line.
 function dataUrlToBuffer(value) {
   const textValue = String(value || "");
-  const match = textValue.match(/^data:([^;,]+)?(;base64)?,(.*)$/s);
+  const match = textValue.match(/^data:([^,]*),([\s\S]*)$/);
   if (!match) return Buffer.from(textValue, "utf8");
-  const payload = match[3] || "";
-  return match[2] ? Buffer.from(payload, "base64") : Buffer.from(decodeURIComponent(payload), "utf8");
+  const payload = match[2] || "";
+  if (/;\s*base64\s*$/i.test(match[1])) return Buffer.from(payload, "base64");
+  try {
+    return Buffer.from(decodeURIComponent(payload), "utf8");
+  } catch {
+    return Buffer.from(payload, "utf8");
+  }
 }
 
 function dataUrlMime(value) {
@@ -775,8 +785,15 @@ function mimeForProjectFile(filePath) {
   return "application/octet-stream";
 }
 
+// Whether a node carries its bytes as a data URL rather than as text. The
+// extension decides first: a text source stays text even when the node claims
+// otherwise, so a .bib attached through the upload dialog — which used to flag
+// every file it read as base64 — is stored, edited and versioned as text.
 function fileIsBinaryNode(node) {
-  return node.encoding === "base64" || node.binary === true || node.kind === "img" || node.data || /\.(png|jpe?g|gif|webp|svg|pdf)$/i.test(node.name || node.path || "");
+  const filePath = node.path || node.name || "";
+  if (/\.(png|jpe?g|gif|webp|svg|pdf)$/i.test(filePath)) return true;
+  if (fileIsTextPath(filePath)) return false;
+  return node.encoding === "base64" || node.binary === true || node.kind === "img" || node.data != null;
 }
 
 function fileIsFontPath(filePath) {
@@ -866,10 +883,14 @@ function stripFilePayloads(data) {
     nodes.forEach((node) => {
       if (node.type === "folder") strip(node.children);
       else {
-        if (node.data != null) {
+        // The manifest records how the bytes live on disk, so it is derived from
+        // the file itself: a stale flag on an incoming node cannot keep a text
+        // source in the data URL round-trip it never belonged in.
+        if (fileIsBinaryNode(node)) {
           node.binary = true;
           node.encoding = "base64";
-        } else if (node.content != null) {
+        } else {
+          delete node.binary;
           node.encoding = "utf8";
         }
         delete node.content;
@@ -923,15 +944,17 @@ async function writeProjectNodes(storagePath, data) {
       if (fileIsBinaryNode(node)) {
         const dataUrl = node.data || assets[rel] || assets[node.path];
         if (dataUrl != null) await fs.writeFile(abs, dataUrlToBuffer(dataUrl));
-      } else if (node.content == null) {
+      } else if (node.content != null) {
+        await fs.writeFile(abs, String(node.content), "utf8");
+      } else if (!await fs.stat(abs).then(() => true, () => false)) {
         // A source node without content means the client is not writing this
         // file: it never edited it in this session. The bytes on disk stay, so a
         // save can no longer overwrite a collaborator's newer text with the copy
         // this client happened to load. A file that does not exist yet is still
-        // created, so the tree on disk always matches the manifest.
-        if (!await fs.stat(abs).then(() => true, () => false)) await fs.writeFile(abs, "", "utf8");
-      } else {
-        await fs.writeFile(abs, String(node.content), "utf8");
+        // created, from the upload payload when the client sent one, so a text
+        // file attached as a data URL lands as its decoded text.
+        const dataUrl = node.data || assets[rel] || assets[node.path];
+        await fs.writeFile(abs, dataUrl == null ? "" : dataUrlToBuffer(dataUrl));
       }
     }
   };
@@ -1071,6 +1094,10 @@ async function syncNodesWithFilesystem(storagePath, data) {
           path: hydrated.path,
           content: hydrated.content,
           data: hydrated.data,
+          // The flags describe how the bytes on disk were just read, so they
+          // come from the file rather than from what the client believed.
+          encoding: hydrated.encoding,
+          binary: hydrated.binary,
         });
       }
     }
@@ -4394,6 +4421,7 @@ module.exports = {
   collabAttach,
   collabRooms,
   writeProjectFile,
+  readProjectFile,
   buildProjectArchive,
   collectProjectArchiveEntries,
   parseProjectArchive,

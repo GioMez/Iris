@@ -630,6 +630,25 @@ content hashes before removing the source. If an interrupted copy leaves data at
 both locations, the command stops and names the project for manual comparison
 rather than guessing which copy to keep.
 
+**Repairing sources stored as a data URL.** A text file attached through the
+upload dialog used to be carried as a data URL, and a media type with parameters
+(`data:text/plain; charset=utf-8;base64,…`) was not decoded on the way back to
+disk, so the file ended up holding the URL instead of its own text. BibTeX reads
+such a `.bib` without complaining and produces an empty bibliography, so the
+symptom is a document that compiles with warnings and no references. Iris no
+longer writes these files, and the command below restores the ones already
+stored:
+
+```sh
+npm run repair:sources             # reports what it would change
+npm run repair:sources -- --apply  # rewrites those files
+```
+
+Only a file that consists of nothing but a single data URL is rewritten, and only
+when the decoded bytes are valid UTF-8. Generated output and project manifests
+are left alone: the next compilation rebuilds the first, and the next save
+rewrites the second.
+
 ## Project sharing
 
 A project is shared through memberships, each carrying a **project role**

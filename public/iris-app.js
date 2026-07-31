@@ -1780,6 +1780,28 @@
     if (/\.(tex|txt)$/i.test(name)) return "tex";
     return "file";
   }
+  // Mirrors the file types the backend stores as text. The picked file is read as
+  // a data URL because the dialog can preview it and the name can still change,
+  // so the decision is made here, on the name the file is uploaded under.
+  function isTextUploadName(name) {
+    return /\.(tex|ly|ily|bib|txt|sty|cls|md|csv|dat|scm|lua|json|ya?ml|log|aux|bbl|blg|idx|ilg|ind|out|toc|xml|bcf|fls|fdb_latexmk)$/i.test(String(name || ""));
+  }
+  // Bytes that are not valid UTF-8 keep the binary path: the editor could not
+  // represent them and decoding would replace them with U+FFFD for good.
+  function decodeTextUpload(dataUrl) {
+    const value = String(dataUrl || "");
+    const comma = value.indexOf(",");
+    if (comma < 0) return null;
+    const payload = value.slice(comma + 1);
+    if (!/;\s*base64\s*$/i.test(value.slice(0, comma))) {
+      try { return decodeURIComponent(payload); } catch { return null; }
+    }
+    try {
+      const binary = atob(payload);
+      const bytes = Uint8Array.from(binary, (ch) => ch.charCodeAt(0));
+      return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch { return null; }
+  }
   function uploadNameWithExtension(name, originalName) {
     const cleaned = (name || originalName || "").trim();
     const ext = (originalName || "").match(/(\.[A-Za-z0-9]{1,12})$/);
@@ -1792,13 +1814,25 @@
     const dest = $("attachDest").value;
     const name = uploadNameWithExtension($("attachRename").value, af.name);
     const path = dest + name;
-    state.assets[path] = af.data;
     // add to tree
-    let folder = folderChildrenByPath(dest);
+    const folder = folderChildrenByPath(dest);
     const kind = attachKind(name, af.isImg);
-    folder.push({ type: "file", id: "file_" + Date.now(), name, kind, path, data: af.data });
-    renderTree();
-    void persistWhenDocumentClean();
+    const id = "file_" + Date.now();
+    const text = af.isImg || !isTextUploadName(name) ? null : decodeTextUpload(af.data);
+    if (text != null) {
+      // A text source is attached as text and never as a data URL: it stays
+      // editable, joins the version history, and every later save writes its
+      // content instead of replaying the copy captured at upload time.
+      folder.push({ type: "file", id, name, kind, path, encoding: "utf8", content: text });
+      renderTree();
+      markFileDirty(id);
+      void persist();
+    } else {
+      state.assets[path] = af.data;
+      folder.push({ type: "file", id, name, kind, path, data: af.data });
+      renderTree();
+      void persistWhenDocumentClean();
+    }
     void closeDialog("attachModal");
     toast(t("attach.uploaded", { name, destination: dest || "/" }));
   }

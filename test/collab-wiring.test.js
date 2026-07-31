@@ -92,9 +92,11 @@ test("the save path defers to live rooms and to the bytes on disk", () => {
     assert.ok(before.lastIndexOf("syncProjectFiles(id, data)") > before.lastIndexOf("readBody"),
       "collab authority must be applied after the canonical ids are stamped");
   });
-  // A source node without content leaves the file on disk untouched.
-  assert.match(server, /\} else if \(node\.content == null\) \{/);
-  assert.match(server, /if \(!await fs\.stat\(abs\)\.then\(\(\) => true, \(\) => false\)\) await fs\.writeFile\(abs, "", "utf8"\)/);
+  // A source node without content leaves the file on disk untouched: only a file
+  // that is not there yet is created, from its upload payload when it has one.
+  assert.match(server, /\} else if \(node\.content != null\) \{/);
+  assert.match(server, /\} else if \(!await fs\.stat\(abs\)\.then\(\(\) => true, \(\) => false\)\) \{/);
+  assert.match(server, /await fs\.writeFile\(abs, dataUrl == null \? "" : dataUrlToBuffer\(dataUrl\)\)/);
   // A rollback moves realtime participants onto the restored text.
   assert.match(server, /collabResetFile\(fileId, target\.content\)/);
 });
