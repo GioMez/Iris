@@ -7,7 +7,7 @@ const path = require("node:path");
 process.env.IRIS_SECRET = "test-only-secret-with-sufficient-entropy";
 process.env.DB_PASSWORD = "test-only-database-password";
 
-const { writeProjectFile, readProjectFile } = require("../src/server");
+const { writeProjectFile, readProjectFile, hydrateProjectPayloads } = require("../src/server");
 
 const BIB = "@article{knuth1984,\n  author = {Donald E. Knuth},\n  title = {Literate Programming},\n}\n";
 const PNG = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex");
@@ -101,6 +101,60 @@ test("binary files still round-trip through their data URL", async (t) => {
   // never opened, must leave the bytes untouched.
   await writeProjectFile(dir, data);
   assert.deepEqual(await fs.readFile(path.join(dir, "plot.png")), PNG);
+});
+
+test("a build compiles the sources the client did not send, not empty files", async (t) => {
+  const dir = await projectDir(t);
+  const style = "%% bibliography style\n";
+  await writeProjectFile(dir, projectData([
+    textNode("main.tex", "\\documentclass{article}\\bibliography{refs}"),
+    { type: "file", id: "b", name: "refs.bib", kind: "bib", path: "refs.bib", content: BIB },
+    { type: "file", id: "s", name: "num.bst", kind: "file", path: "num.bst", content: style },
+    { type: "file", id: "i", name: "plot.png", kind: "img", path: "plot.png", data: `data:image/png;base64,${PNG.toString("base64")}` },
+  ]));
+
+  // What the browser sends on compile: content only for the file being edited.
+  const snapshot = projectData([
+    textNode("main.tex", "\\documentclass{article}\\bibliography{refs}"),
+    { type: "file", id: "b", name: "refs.bib", kind: "bib", path: "refs.bib" },
+    { type: "file", id: "s", name: "num.bst", kind: "file", path: "num.bst", binary: true, encoding: "base64" },
+    { type: "file", id: "i", name: "plot.png", kind: "img", path: "plot.png" },
+  ]);
+  await writeProjectFile(dir, snapshot);
+  await hydrateProjectPayloads(dir, snapshot);
+
+  // The staging tree of a build starts empty, so what the snapshot omits is lost.
+  const staging = await projectDir(t);
+  await writeProjectFile(staging, snapshot);
+  assert.equal(await fs.readFile(path.join(staging, "refs.bib"), "utf8"), BIB);
+  assert.equal(await fs.readFile(path.join(staging, "num.bst"), "utf8"), style);
+  assert.deepEqual(await fs.readFile(path.join(staging, "plot.png")), PNG);
+});
+
+test("completing a build snapshot never replaces what the client did send", async (t) => {
+  const dir = await projectDir(t);
+  await writeProjectFile(dir, projectData([
+    textNode("main.tex", "on disk"),
+    { type: "file", id: "b", name: "refs.bib", kind: "bib", path: "refs.bib", content: BIB },
+  ]));
+  const snapshot = projectData([
+    textNode("main.tex", "just typed"),
+    { type: "file", id: "b", name: "refs.bib", kind: "bib", path: "refs.bib", content: "" },
+  ]);
+  await hydrateProjectPayloads(dir, snapshot);
+  assert.equal(snapshot.project.nodes[0].content, "just typed");
+  // An empty string is an edit that cleared the file, not an omission.
+  assert.equal(snapshot.project.nodes[1].content, "");
+});
+
+test("the build materializes the snapshot only once it is complete", () => {
+  const server = require("node:fs").readFileSync(path.join(__dirname, "..", "src", "server.js"), "utf8");
+  const compile = server.slice(server.indexOf("async function compileProject"), server.indexOf("function validAdminUsername"));
+  const hydrate = compile.indexOf("hydrateProjectPayloads(row.storageDir, data)");
+  const staging = compile.indexOf("writeProjectFile(stagingDir, data)");
+  assert.ok(hydrate > 0 && staging > hydrate, "the snapshot is completed from disk before the build tree is written");
+  assert.ok(compile.indexOf("writeProjectFile(row.storageDir, data, renames)") < hydrate,
+    "and only after the project directory holds this build's sources");
 });
 
 test("the upload dialog attaches a text file as text, not as a data URL", () => {

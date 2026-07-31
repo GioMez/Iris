@@ -768,7 +768,7 @@ function dataUrlMime(value) {
 
 function mimeForProjectFile(filePath) {
   const ext = path.extname(filePath).toLowerCase();
-  if ([".tex", ".ly", ".ily", ".bib", ".txt", ".sty", ".cls", ".md", ".log", ".aux", ".bbl", ".blg", ".idx", ".ilg", ".ind", ".out", ".toc", ".bcf", ".fls", ".fdb_latexmk"].includes(ext)) return "text/plain; charset=utf-8";
+  if ([".tex", ".ly", ".ily", ".bib", ".bst", ".bbx", ".cbx", ".lbx", ".txt", ".sty", ".cls", ".md", ".log", ".aux", ".bbl", ".blg", ".idx", ".ilg", ".ind", ".out", ".toc", ".bcf", ".fls", ".fdb_latexmk"].includes(ext)) return "text/plain; charset=utf-8";
   if (ext === ".xml") return "application/xml; charset=utf-8";
   if (ext === ".png") return "image/png";
   if (ext === ".jpg" || ext === ".jpeg") return "image/jpeg";
@@ -853,8 +853,11 @@ function fileKindForPath(filePath) {
   return "file";
 }
 
+// Bibliography styles (bst for BibTeX, bbx/cbx/lbx for biblatex) are plain text
+// like any other source: a project that carries its own style keeps it editable
+// and versioned instead of stored as an opaque payload.
 function fileIsTextPath(filePath) {
-  return /\.(tex|ly|ily|bib|txt|sty|cls|md|csv|dat|scm|lua|json|ya?ml|log|aux|bbl|blg|idx|ilg|ind|out|toc|xml|bcf|fls|fdb_latexmk)$/i.test(filePath || "");
+  return /\.(tex|ly|ily|bib|bst|bbx|cbx|lbx|txt|sty|cls|md|csv|dat|scm|lua|json|ya?ml|log|aux|bbl|blg|idx|ilg|ind|out|toc|xml|bcf|fls|fdb_latexmk)$/i.test(filePath || "");
 }
 
 function generatedIdFor(relPath) {
@@ -960,6 +963,43 @@ async function writeProjectNodes(storagePath, data) {
   };
   if (data.project) await walk(data.project.nodes);
   return expectedFiles;
+}
+
+// Fills in the payloads the client left out. A save omits the content of every
+// file it did not edit so it cannot overwrite a collaborator's newer text, and
+// the project directory answers for those files. Materializing that same
+// snapshot into an empty directory — which is what a build staging tree is —
+// would instead create them empty, so the bytes on disk are read back in first.
+async function hydrateProjectPayloads(storagePath, data) {
+  const assets = data.assets || {};
+  const walk = async (nodes, parentPath = "") => {
+    if (!Array.isArray(nodes)) return;
+    for (const node of nodes) {
+      if (!node || node.generated) continue;
+      if (node.type === "folder") {
+        await walk(node.children, safeProjectSourcePath(path.posix.join(parentPath, node.name || "")));
+        continue;
+      }
+      const rel = nodeRelPath(node, node.name, parentPath);
+      if (fileIsBinaryNode(node)) {
+        if (node.data != null || assets[rel] != null || assets[node.path] != null) continue;
+        const buffer = await fs.readFile(path.join(storagePath, rel)).catch(() => null);
+        if (buffer) node.data = `data:${mimeForProjectFile(rel)};base64,${buffer.toString("base64")}`;
+      } else if (node.content == null) {
+        const content = await fs.readFile(path.join(storagePath, rel), "utf8").catch(() => null);
+        if (content != null) node.content = content;
+      }
+    }
+  };
+  if (data.project) await walk(data.project.nodes);
+  for (const font of Array.isArray(data.fonts) ? data.fonts : []) {
+    if (!font || !font.path || font.data != null) continue;
+    let rel;
+    try { rel = safeRelPath(font.path); } catch { continue; }
+    const buffer = await fs.readFile(path.join(storagePath, rel)).catch(() => null);
+    if (buffer) font.data = `data:${mimeForProjectFile(rel)};base64,${buffer.toString("base64")}`;
+  }
+  return data;
 }
 
 async function writeProjectFonts(storagePath, data, expectedFiles) {
@@ -3321,6 +3361,12 @@ async function compileProject(req, res, user, id) {
     kind: entry.kind,
   }));
   await writeProjectFile(row.storageDir, data, renames);
+  // The project directory now holds this build's sources: what the request sent,
+  // and the bytes already on disk for every file it did not send. The snapshot is
+  // completed from there before the build tree is materialized from it, so a
+  // bibliography, a chapter or a style the author did not edit in this session is
+  // compiled from its contents instead of from an empty file.
+  await hydrateProjectPayloads(row.storageDir, data);
   await db.query("UPDATE projects SET name = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2", [name, id]);
   const jobname = path.basename(mainPath).replace(/\.[^.]+$/, "");
   const outputName = `${jobname}.${outputFormat}`;
@@ -4422,6 +4468,7 @@ module.exports = {
   collabRooms,
   writeProjectFile,
   readProjectFile,
+  hydrateProjectPayloads,
   buildProjectArchive,
   collectProjectArchiveEntries,
   parseProjectArchive,

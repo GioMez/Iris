@@ -1784,7 +1784,7 @@
   // a data URL because the dialog can preview it and the name can still change,
   // so the decision is made here, on the name the file is uploaded under.
   function isTextUploadName(name) {
-    return /\.(tex|ly|ily|bib|txt|sty|cls|md|csv|dat|scm|lua|json|ya?ml|log|aux|bbl|blg|idx|ilg|ind|out|toc|xml|bcf|fls|fdb_latexmk)$/i.test(String(name || ""));
+    return /\.(tex|ly|ily|bib|bst|bbx|cbx|lbx|txt|sty|cls|md|csv|dat|scm|lua|json|ya?ml|log|aux|bbl|blg|idx|ilg|ind|out|toc|xml|bcf|fls|fdb_latexmk)$/i.test(String(name || ""));
   }
   // Bytes that are not valid UTF-8 keep the binary path: the editor could not
   // represent them and decoding would replace them with U+FFFD for good.
