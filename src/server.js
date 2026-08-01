@@ -15,10 +15,12 @@ const { recordAuditEvent } = require("./audit");
 const { collectProjectFiles, reconcileProjectFiles } = require("./project-files");
 const { hashContent, isVersionableText, contentChanged } = require("./versions");
 const { CollabRooms, CollabError, peerColor, normalizePresence } = require("./collab");
-const { isSystemRole, isUserStatus, leavesNoActiveAdmin, normalizeSearch, userDeletionBlock } = require("./admin");
+const { isSystemRole, isUserStatus, isAccountStatus, leavesNoActiveAdmin, normalizeSearch, userDeletionBlock } = require("./admin");
 const {
   isProjectRole,
   roleHasCapability,
+  canCreateProjects,
+  canHoldProjectRole,
   leavesNoOwner,
   normalizeMemberSearch,
   escapeLikePattern,
@@ -93,6 +95,14 @@ const OAUTH_REDIRECT_URI = process.env.OAUTH_REDIRECT_URI || "";
 const OAUTH_SCOPE = process.env.OAUTH_SCOPE || "openid email profile";
 const OAUTH_CLIENT_AUTH_METHOD = process.env.OAUTH_CLIENT_AUTH_METHOD || "client_secret_basic";
 const OAUTH_AUTO_REGISTER = String(process.env.OAUTH_AUTO_REGISTER || "false") === "true";
+// What an unknown SSO identity becomes when auto-registration is on. Both
+// settings exist for an instance that is reachable from outside: the role decides
+// how much an approved newcomer may do, and the approval requirement decides
+// whether signing in successfully is enough to get in at all. Approval defaults to
+// on, so an account provisioned by the identity provider waits for an
+// administrator instead of walking straight into the workspace.
+const OAUTH_DEFAULT_ROLE = autoRegisteredRole("OAUTH_DEFAULT_ROLE", process.env.OAUTH_DEFAULT_ROLE);
+const OAUTH_APPROVAL_REQUIRED = String(process.env.OAUTH_APPROVAL_REQUIRED || "true") === "true";
 const LATEX_ENGINES = new Set(["pdflatex", "xelatex", "lualatex", "xetex"]);
 const LATEX_COMPILE_TOOLS = new Set(["pdflatex", "xelatex", "lualatex", "xetex", "bibtex", "biber", "makeindex"]);
 const LILYPOND_COMPILE_TOOLS = new Set(["lilypond"]);
@@ -155,6 +165,18 @@ function requiredSecret(name, value, insecureValues = []) {
     throw new Error(`${name} must be set to a secure, non-default value`);
   }
   return secret;
+}
+
+// The server role auto-provisioning is allowed to assign. Admin is deliberately
+// absent — an identity provider must never be able to mint one — and an
+// unrecognised value stops the server instead of falling back: a typo would
+// otherwise grant more access than the operator asked for, silently.
+function autoRegisteredRole(name, value) {
+  const role = String(value || "regular").trim().toLowerCase();
+  if (role !== "regular" && role !== "external") {
+    throw new Error(`${name} must be either "regular" or "external"`);
+  }
+  return role;
 }
 
 function json(res, status, data, headers = {}) {
@@ -447,6 +469,27 @@ function disabledAccountError() {
   return err;
 }
 
+// An account that was provisioned by the identity provider and is still waiting
+// for an administrator. Told apart from a disabled one because they mean opposite
+// things to the person reading the message: one has never had access, the other
+// had it taken away.
+function pendingAccountError() {
+  const err = new Error("Account pending approval");
+  err.status = 403;
+  err.errorCode = "AUTH_ACCOUNT_PENDING";
+  // The SSO callback can only carry a short code back to the login screen, and
+  // this is the one refusal where the generic "sign-in failed" would send the
+  // person to support instead of to whoever has to approve them.
+  err.authError = "account_pending";
+  return err;
+}
+
+// Every access check admits 'active' and refuses the rest; this only decides which
+// refusal the account deserves.
+function inactiveAccountError(status) {
+  return status === "pending" ? pendingAccountError() : disabledAccountError();
+}
+
 // An SSO login whose durable identity is unknown but whose email matches an
 // existing account: refused until an admin opens the one-time linking window.
 function ssoLinkRequiredError() {
@@ -471,7 +514,7 @@ async function userFromOAuthProfile(profile, ip = null) {
   const existing = byOidc.rows[0] || null;
 
   if (existing) {
-    if (existing.status !== "active") throw disabledAccountError();
+    if (existing.status !== "active") throw inactiveAccountError(existing.status);
     const nextName = profile.name || existing.display_name;
     if (nextName && nextName !== existing.display_name) {
       await db.query("UPDATE users SET display_name = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2", [nextName, existing.id]);
@@ -489,7 +532,7 @@ async function userFromOAuthProfile(profile, ip = null) {
   );
   const emailMatch = byEmail.rows[0] || null;
   if (emailMatch) {
-    if (emailMatch.status !== "active") throw disabledAccountError();
+    if (emailMatch.status !== "active") throw inactiveAccountError(emailMatch.status);
     // Email already bound to a different SSO identity → refuse (email reuse).
     if (emailMatch.oidc_issuer && emailMatch.oidc_subject) {
       throw new Error("This email is already linked to a different SSO identity");
@@ -526,23 +569,19 @@ async function userFromOAuthProfile(profile, ip = null) {
 
   const username = await availableUsername(profile.preferredUsername || profile.email);
   const displayName = profile.name || profile.email;
+  // An identity the provider vouches for is still not an account this server has
+  // accepted. Unless approval is switched off the row is created pending, and the
+  // very sign-in that created it is refused like any other inactive account: the
+  // account exists so an administrator can decide on it, not so it can be used.
+  const status = OAUTH_APPROVAL_REQUIRED ? "pending" : "active";
+  let id;
   try {
     const result = await db.query(
-      `INSERT INTO users (id, username, email, display_name, system_role, password_hash, auth_source, oidc_issuer, oidc_subject)
-       VALUES ($1, $2, $3, $4, 'regular', NULL, 'oidc', $5, $6) RETURNING id`,
-      [uuidv7(), username, profile.email, displayName, issuer, subject]
+      `INSERT INTO users (id, username, email, display_name, system_role, status, password_hash, auth_source, oidc_issuer, oidc_subject)
+       VALUES ($1, $2, $3, $4, $5, $6, NULL, 'oidc', $7, $8) RETURNING id`,
+      [uuidv7(), username, profile.email, displayName, OAUTH_DEFAULT_ROLE, status, issuer, subject]
     );
-    const id = String(result.rows[0].id);
-    await audit({
-      action: "user.created",
-      actorId: id,
-      actorLabel: username,
-      ip,
-      targetType: "user",
-      targetId: id,
-      metadata: { authSource: "oidc", autoRegistered: true, email: profile.email },
-    });
-    return { id, username, email: profile.email, display_name: displayName, system_role: "regular", status: "active", auth_source: "oidc", password_hash: null };
+    id = String(result.rows[0].id);
   } catch (err) {
     if (err.code !== "23505") throw err;
     const retry = await db.query(
@@ -550,11 +589,22 @@ async function userFromOAuthProfile(profile, ip = null) {
       [profile.email]
     );
     if (retry.rows[0]) {
-      if (retry.rows[0].status !== "active") throw disabledAccountError();
+      if (retry.rows[0].status !== "active") throw inactiveAccountError(retry.rows[0].status);
       return retry.rows[0];
     }
     throw err;
   }
+  await audit({
+    action: "user.created",
+    actorId: id,
+    actorLabel: username,
+    ip,
+    targetType: "user",
+    targetId: id,
+    metadata: { authSource: "oidc", autoRegistered: true, email: profile.email, role: OAUTH_DEFAULT_ROLE, status },
+  });
+  if (status !== "active") throw pendingAccountError();
+  return { id, username, email: profile.email, display_name: displayName, system_role: OAUTH_DEFAULT_ROLE, status, auth_source: "oidc", password_hash: null };
 }
 
 async function initDb() {
@@ -1391,11 +1441,19 @@ async function resolveMemberUser(identifier, userId = null, activeOnly = false) 
     ? `id = $1${activeOnly ? " AND status = 'active'" : ""}`
     : `(LOWER(username) = LOWER($1) OR LOWER(email) = LOWER($1))${activeOnly ? " AND status = 'active'" : ""}`;
   const { rows } = await db.query(
-    `SELECT id, username, email, display_name FROM users WHERE ${where} LIMIT 1`,
+    `SELECT id, username, email, display_name, system_role FROM users WHERE ${where} LIMIT 1`,
     [userId || value]
   );
   if (!rows.length) throw requestError("MEMBER_USER_NOT_FOUND", 404);
   return rows[0];
+}
+
+// Ownership answers for a project's existence, so it stays with the organisation:
+// an external account may be given any project role but that one. Enforced on
+// every path that grants a role — the sharing console and the admin console
+// alike, because a rule an administrator can step around is not an invariant.
+function requireGrantableRole(systemRole, projectRole) {
+  if (!canHoldProjectRole(systemRole, projectRole)) throw requestError("MEMBER_EXTERNAL_NOT_OWNER", 409);
 }
 
 async function searchProjectMembers(req, res, user, projectId, url) {
@@ -1404,7 +1462,7 @@ async function searchProjectMembers(req, res, user, projectId, url) {
   if (!query) return json(res, 200, { users: [] });
   const pattern = `%${escapeLikePattern(query.toLowerCase())}%`;
   const { rows } = await db.query(
-    `SELECT u.id AS user_id, u.username, u.email, u.display_name
+    `SELECT u.id AS user_id, u.username, u.email, u.display_name, u.system_role
      FROM users u
      WHERE u.status = 'active'
        AND (LOWER(u.username) LIKE $2 ESCAPE '\\' OR LOWER(u.email) LIKE $2 ESCAPE '\\')
@@ -1421,10 +1479,14 @@ async function searchProjectMembers(req, res, user, projectId, url) {
       username: row.username,
       name: row.display_name,
       email: row.email,
+      external: row.system_role === "external",
     })),
   });
 }
 
+// `external` travels with every member so the console can label them and leave
+// owner out of their role menu. It is a hint for the interface — the server
+// refuses the promotion regardless of what the client offers.
 function memberView(row) {
   return {
     userId: row.user_id,
@@ -1432,6 +1494,7 @@ function memberView(row) {
     name: row.display_name,
     email: row.email,
     role: row.role,
+    external: row.system_role === "external",
     invitedBy: row.invited_by || null,
     createdAt: toMillis(row.created_at),
   };
@@ -1440,7 +1503,7 @@ function memberView(row) {
 async function listProjectMembers(req, res, user, projectId) {
   await authorizeProject(projectId, user, "share");
   const { rows } = await db.query(
-    `SELECT m.user_id, m.role, m.invited_by, m.created_at, u.username, u.email, u.display_name
+    `SELECT m.user_id, m.role, m.invited_by, m.created_at, u.username, u.email, u.display_name, u.system_role
      FROM project_members m JOIN users u ON u.id = m.user_id
      WHERE m.project_id = $1 ORDER BY (m.role <> 'owner'), u.username`,
     [projectId]
@@ -1454,6 +1517,7 @@ async function addProjectMember(req, res, user, projectId) {
   const role = String((body && body.role) || "");
   if (!isProjectRole(role)) throw requestError("MEMBER_ROLE_INVALID", 400);
   const target = await resolveMemberUser(body && body.identifier, body && body.userId, true);
+  requireGrantableRole(target.system_role, role);
   try {
     await db.query(
       "INSERT INTO project_members (project_id, user_id, role, invited_by) VALUES ($1, $2, $3, $4)",
@@ -1472,7 +1536,7 @@ async function addProjectMember(req, res, user, projectId) {
   });
   await collabRecheckProject(projectId);
   json(res, 201, {
-    member: memberView({ user_id: target.id, username: target.username, email: target.email, display_name: target.display_name, role, invited_by: user.sub, created_at: new Date() }),
+    member: memberView({ user_id: target.id, username: target.username, email: target.email, display_name: target.display_name, system_role: target.system_role, role, invited_by: user.sub, created_at: new Date() }),
   });
 }
 
@@ -1486,11 +1550,16 @@ async function updateProjectMember(req, res, user, projectId, memberId) {
   try {
     await client.query("BEGIN");
     await client.query("SELECT pg_advisory_xact_lock($1, hashtext($2))", [PROJECT_OWNER_LOCK, projectId]);
+    // Only the membership row is locked: the join reads the member's server role,
+    // which decides whether the new project role may be granted at all.
     const current = await client.query(
-      "SELECT role FROM project_members WHERE project_id = $1 AND user_id = $2 FOR UPDATE",
+      `SELECT m.role, u.system_role
+       FROM project_members m JOIN users u ON u.id = m.user_id
+       WHERE m.project_id = $1 AND m.user_id = $2 FOR UPDATE OF m`,
       [projectId, memberId]
     );
     if (!current.rows.length) throw requestError("MEMBER_NOT_FOUND", 404);
+    requireGrantableRole(current.rows[0].system_role, nextRole);
     previousRole = current.rows[0].role;
     const others = await client.query(
       "SELECT COUNT(*) AS n FROM project_members WHERE project_id = $1 AND role = 'owner' AND user_id <> $2",
@@ -2252,7 +2321,16 @@ async function collabShutdown() {
   await Promise.allSettled(Array.from(collabPending));
 }
 
+// The two ways a project comes into existence, and the only two places the
+// no-new-projects rule has to hold. Import counts because downloading an archive
+// is a `read` capability: without this an external member could package a project
+// it was invited to and import it back as one it owns.
+function requireProjectCreation(user) {
+  if (!canCreateProjects(user.role)) throw requestError("PROJECT_CREATE_FORBIDDEN", 403);
+}
+
 async function createProject(req, res, user) {
+  requireProjectCreation(user);
   const body = await readBody(req);
   const name = cleanName(body.name);
   const id = uuidv7();
@@ -2463,6 +2541,7 @@ function normalizeImportedProject(data, name, now) {
 }
 
 async function importProjectArchive(req, res, user, url) {
+  requireProjectCreation(user);
   const body = await readRequestBuffer(req);
   let { archive, data } = parseProjectArchive(body);
 
@@ -3585,7 +3664,7 @@ async function adminListUsers(req, res, url) {
     clauses.push(`(LOWER(username) LIKE $${params.length} OR LOWER(email) LIKE $${params.length} OR LOWER(display_name) LIKE $${params.length})`);
   }
   const statusFilter = url.searchParams.get("status");
-  if (isUserStatus(statusFilter)) {
+  if (isAccountStatus(statusFilter)) {
     params.push(statusFilter);
     clauses.push(`status = $${params.length}`);
   }
@@ -3649,6 +3728,7 @@ async function adminUpdateUser(req, res, actor, targetId) {
   const client = await db.connect();
   let before;
   let after;
+  let demotedProjects = [];
   try {
     await client.query("BEGIN");
     await client.query("SELECT pg_advisory_xact_lock($1)", [ADMIN_INVARIANT_LOCK]);
@@ -3672,6 +3752,35 @@ async function adminUpdateUser(req, res, actor, targetId) {
         Number(others.rows[0].n)
       );
       if (wouldStrand) throw requestError("ADMIN_LAST_ADMIN", 409);
+    }
+
+    // Turning an account external strips whatever it owns, because ownership is
+    // the one project role an external may not hold. Where someone else owns the
+    // project too the membership simply drops to editor — an owner remains, so the
+    // invariant is untouched — but a project this user owns alone would be left
+    // with none, and that is refused here and resolved in the projects console,
+    // exactly like deleting such an account.
+    if (wantsRole && nextRole === "external" && before.system_role !== "external") {
+      const owned = await client.query(
+        "SELECT project_id FROM project_members WHERE user_id = $1 AND role = 'owner' ORDER BY project_id",
+        [targetId]
+      );
+      // Every affected project is locked, in a fixed order, so a concurrent
+      // membership change cannot slip between the count and the demotion and two
+      // of these can never deadlock against each other.
+      for (const row of owned.rows) {
+        await client.query("SELECT pg_advisory_xact_lock($1, hashtext($2))", [PROJECT_OWNER_LOCK, row.project_id]);
+      }
+      const stranded = await soleOwnerProjects(targetId, client);
+      if (stranded.length) {
+        throw requestError("ADMIN_EXTERNAL_SOLE_OWNER", 409, { projects: stranded.map((p) => p.name).join(", ") });
+      }
+      const stripped = await client.query(
+        `UPDATE project_members SET role = 'editor', updated_at = CURRENT_TIMESTAMP
+         WHERE user_id = $1 AND role = 'owner' RETURNING project_id`,
+        [targetId]
+      );
+      demotedProjects = stripped.rows.map((row) => String(row.project_id));
     }
 
     const sets = ["updated_at = CURRENT_TIMESTAMP"];
@@ -3720,7 +3829,30 @@ async function adminUpdateUser(req, res, actor, targetId) {
     await audit({ ...sessionActor(req, actor), action: "user.role_changed", targetType: "user", targetId, metadata: { from: before.system_role, to: nextRole } });
   }
   if (wantsStatus && nextStatus !== before.status) {
-    await audit({ ...sessionActor(req, actor), action: "user.status_changed", targetType: "user", targetId, metadata: { from: before.status, to: nextStatus } });
+    // Approving an account the identity provider provisioned is not the same event
+    // as lifting a suspension, and the audit trail should not have to guess which
+    // one an active/disabled pair meant.
+    const approved = before.status === "pending" && nextStatus === "active";
+    await audit({
+      ...sessionActor(req, actor),
+      action: approved ? "user.approved" : "user.status_changed",
+      targetType: "user",
+      targetId,
+      metadata: { from: before.status, to: nextStatus },
+    });
+  }
+  // Ownership the role change stripped. Reported per project so the trail reads
+  // the same as any other role change, and pushed to open sessions so a workspace
+  // already open loses its owner tools at once.
+  for (const projectId of demotedProjects) {
+    await audit({
+      ...sessionActor(req, actor),
+      action: "project.member_role_changed",
+      targetType: "membership",
+      targetId: projectId,
+      metadata: { userId: targetId, from: "owner", to: "editor", reason: "external" },
+    });
+    await collabRecheckProject(projectId);
   }
   json(res, 200, { user: adminUserView(after) });
 }
@@ -3793,7 +3925,7 @@ async function adminListProjects(req, res, url) {
   const membersByProject = new Map();
   if (ids.length) {
     const { rows: members } = await db.query(
-      `SELECT m.project_id, m.user_id, m.role, u.username, u.email, u.display_name, u.status
+      `SELECT m.project_id, m.user_id, m.role, u.username, u.email, u.display_name, u.status, u.system_role
        FROM project_members m JOIN users u ON u.id = m.user_id
        WHERE m.project_id = ANY($1) ORDER BY (m.role <> 'owner'), u.username`,
       [ids]
@@ -3802,6 +3934,7 @@ async function adminListProjects(req, res, url) {
       if (!membersByProject.has(m.project_id)) membersByProject.set(m.project_id, []);
       membersByProject.get(m.project_id).push({
         userId: m.user_id, username: m.username, name: m.display_name, email: m.email, role: m.role, status: m.status,
+        external: m.system_role === "external",
       });
     }
   }
@@ -3825,6 +3958,7 @@ async function adminAddProjectMember(req, res, actor, projectId) {
   const role = String(body.role || "");
   if (!isProjectRole(role)) throw requestError("MEMBER_ROLE_INVALID", 400);
   const target = await resolveMemberUser(body.identifier);
+  requireGrantableRole(target.system_role, role);
   try {
     await db.query(
       "INSERT INTO project_members (project_id, user_id, role, invited_by) VALUES ($1, $2, $3, $4)",
@@ -3843,7 +3977,7 @@ async function adminAddProjectMember(req, res, actor, projectId) {
   });
   await collabRecheckProject(projectId);
   json(res, 201, {
-    member: memberView({ user_id: target.id, username: target.username, email: target.email, display_name: target.display_name, role, invited_by: actor.sub, created_at: new Date() }),
+    member: memberView({ user_id: target.id, username: target.username, email: target.email, display_name: target.display_name, system_role: target.system_role, role, invited_by: actor.sub, created_at: new Date() }),
   });
 }
 
@@ -3858,10 +3992,13 @@ async function adminUpdateProjectMember(req, res, actor, projectId, memberId) {
     await client.query("BEGIN");
     await client.query("SELECT pg_advisory_xact_lock($1, hashtext($2))", [PROJECT_OWNER_LOCK, projectId]);
     const current = await client.query(
-      "SELECT role FROM project_members WHERE project_id = $1 AND user_id = $2 FOR UPDATE",
+      `SELECT m.role, u.system_role
+       FROM project_members m JOIN users u ON u.id = m.user_id
+       WHERE m.project_id = $1 AND m.user_id = $2 FOR UPDATE OF m`,
       [projectId, memberId]
     );
     if (!current.rows.length) throw requestError("MEMBER_NOT_FOUND", 404);
+    requireGrantableRole(current.rows[0].system_role, nextRole);
     previousRole = current.rows[0].role;
     const others = await client.query(
       "SELECT COUNT(*) AS n FROM project_members WHERE project_id = $1 AND role = 'owner' AND user_id <> $2",
@@ -3948,10 +4085,12 @@ async function adminDeleteProject(req, res, actor, projectId) {
 }
 
 // The projects for which the user is the *only* owner. Deleting the user would
-// strand these (membership cascades away), so they must be resolved in the
-// project console first. Other memberships and co-owned projects are unaffected.
-async function soleOwnerProjects(userId) {
-  const { rows } = await db.query(
+// strand these (membership cascades away), and so would turning them external
+// (ownership is stripped), so both resolve them in the project console first.
+// Other memberships and co-owned projects are unaffected. Takes a client so the
+// external check can run inside the transaction that holds the project locks.
+async function soleOwnerProjects(userId, client = null) {
+  const { rows } = await (client || db).query(
     `SELECT p.id, p.name
      FROM projects p
      JOIN project_members m ON m.project_id = p.id AND m.user_id = $1 AND m.role = 'owner'
@@ -4040,6 +4179,7 @@ async function handleApi(req, res, url) {
       auth: {
         ssoEnabled: oauthEnabled(),
         ssoAutoRegister: OAUTH_AUTO_REGISTER,
+        ssoApprovalRequired: OAUTH_AUTO_REGISTER && OAUTH_APPROVAL_REQUIRED,
       },
       collab: {
         pushDebounceMs: COLLAB_PUSH_DEBOUNCE_MS,
@@ -4142,10 +4282,12 @@ async function handleApi(req, res, url) {
       return errorJson(res, 401, "AUTH_INVALID_CREDENTIALS");
     }
     // A disabled account is refused only after the password is verified, so the
-    // response does not reveal which accounts exist.
+    // response does not reveal which accounts exist. An account still waiting for
+    // approval is told so instead: it has never had access to lose.
     if (user.status !== "active") {
-      await failedLogin("account_disabled");
-      return errorJson(res, 403, "AUTH_ACCOUNT_DISABLED");
+      const pending = user.status === "pending";
+      await failedLogin(pending ? "account_pending" : "account_disabled");
+      return errorJson(res, 403, pending ? "AUTH_ACCOUNT_PENDING" : "AUTH_ACCOUNT_DISABLED");
     }
     if (passwordCheck.needsRehash) {
       const passwordHash = await hashPassword(password);

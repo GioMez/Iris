@@ -21,6 +21,11 @@
   const ROLE_KEY = { owner: "roleOwner", editor: "roleEditor", viewer: "roleViewer" };
   const PROJECT_ROLES = ["owner", "editor", "viewer"];
   const roleLabel = (role) => t(`projects.${ROLE_KEY[role] || "roleOwner"}`);
+  // Mirrors the server rule: ownership answers for the project and stays with the
+  // organisation, so an external member is never offered it. The refusal is the
+  // server's; this only keeps the menu from proposing something that would fail.
+  const isExternalUser = () => document.documentElement.dataset.role === "external";
+  const rolesForMember = (external) => (external ? PROJECT_ROLES.filter((role) => role !== "owner") : PROJECT_ROLES);
 
   const api = (path, options) => window.IrisNet.request(path, options);
   const errorFromResponse = (res) => window.IrisNet.errorFromResponse(res);
@@ -603,6 +608,7 @@
   let projMode = "new", projTargetId = null, delTargetId = null;
 
   function askNew() {
+    if (isExternalUser()) return;
     projMode = "new"; projTargetId = null;
     $("projModalTitle").textContent = t("projects.newTitle");
     $("projModalOk").textContent = t("projects.create");
@@ -730,12 +736,15 @@
       const lastOwner = member.role === "owner" && ownerCount === 1;
       const row = document.createElement("div");
       row.className = "project-share-member";
-      const options = PROJECT_ROLES.map((role) =>
+      const options = rolesForMember(member.external).map((role) =>
         `<option value="${role}"${role === member.role ? " selected" : ""}>${esc(roleLabel(role))}</option>`
       ).join("");
       const lockedTitle = lastOwner ? ` title="${esc(t("api.PROJECT_LAST_OWNER"))}"` : "";
+      const externalTag = member.external
+        ? ` <span class="project-share-external" title="${esc(t("sharing.externalTitle"))}">${esc(t("sharing.external"))}</span>`
+        : "";
       row.innerHTML =
-        `<span class="project-share-member-id"><b>${esc(member.name || member.username)}${isSelf ? ` <span class="project-share-you">${esc(t("sharing.you"))}</span>` : ""}</b>` +
+        `<span class="project-share-member-id"><b>${esc(member.name || member.username)}${isSelf ? ` <span class="project-share-you">${esc(t("sharing.you"))}</span>` : ""}${externalTag}</b>` +
         `<span class="project-share-member-sub">@${esc(member.username)} · ${esc(member.email)}</span></span>` +
         `<select class="input project-share-role" aria-label="${esc(t("sharing.roleAria", { name: member.name || member.username }))}" aria-describedby="projectShareOwnerHint"${lastOwner || shareBusy ? " disabled" : ""}${lockedTitle}>${options}</select>` +
         `<button class="node-act danger project-share-remove" type="button" aria-label="${esc(t("sharing.removeAria", { name: member.username }))}" aria-describedby="projectShareOwnerHint" title="${esc(lastOwner ? t("api.PROJECT_LAST_OWNER") : t("sharing.removeAria", { name: member.username }))}"${lastOwner || shareBusy ? " disabled" : ""}>${ti("trash")}</button>`;
@@ -755,16 +764,33 @@
       button.type = "button";
       button.className = `project-share-result${shareSelectedUser && shareSelectedUser.userId === user.userId ? " selected" : ""}`;
       button.setAttribute("aria-pressed", shareSelectedUser && shareSelectedUser.userId === user.userId ? "true" : "false");
-      button.innerHTML = `<b>${esc(user.name || user.username)}</b><span>@${esc(user.username)} · ${esc(user.email)}</span>`;
+      const externalTag = user.external
+        ? `<span class="project-share-external" title="${esc(t("sharing.externalTitle"))}">${esc(t("sharing.external"))}</span>`
+        : "";
+      button.innerHTML = `<b>${esc(user.name || user.username)}${externalTag ? ` ${externalTag}` : ""}</b><span>@${esc(user.username)} · ${esc(user.email)}</span>`;
       button.addEventListener("click", () => {
         shareSelectedUser = user;
         $("projectShareSearchStatus").textContent = "";
         renderShareSearchResults();
+        syncShareRoleOptions();
         $("projectShareAdd").disabled = shareBusy;
       });
       host.appendChild(button);
     });
     $("projectShareAdd").disabled = shareBusy || !shareSelectedUser;
+  }
+
+  // Owner disappears from the invite menu while an external account is selected,
+  // and a role already set to owner falls back to editor so the form never submits
+  // a combination the server will refuse.
+  function syncShareRoleOptions() {
+    const select = $("projectShareRole");
+    const ownerOption = select.querySelector('option[value="owner"]');
+    if (!ownerOption) return;
+    const external = !!(shareSelectedUser && shareSelectedUser.external);
+    ownerOption.hidden = external;
+    ownerOption.disabled = external;
+    if (external && select.value === "owner") select.value = "editor";
   }
 
   function clearShareSearch() {
@@ -775,6 +801,7 @@
     $("projectShareSearch").value = "";
     $("projectShareSearchStatus").textContent = "";
     renderShareSearchResults();
+    syncShareRoleOptions();
   }
 
   async function searchShareUsers() {
@@ -808,6 +835,7 @@
   function scheduleShareSearch() {
     clearTimeout(shareSearchTimer);
     shareSelectedUser = null;
+    syncShareRoleOptions();
     $("projectShareAdd").disabled = true;
     shareSearchTimer = setTimeout(() => { void searchShareUsers(); }, 250);
   }
@@ -1008,6 +1036,7 @@
     $("projectImportInput").addEventListener("change", function () {
       const file = this.files && this.files[0];
       this.value = "";
+      if (isExternalUser()) return;
       void handleProjectImport(file);
     });
 

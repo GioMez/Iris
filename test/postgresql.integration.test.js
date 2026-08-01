@@ -25,6 +25,7 @@ const ALL_MIGRATIONS = [
   "011_oidc_linked_at.sql",
   "012_versioned_build_outputs.sql",
   "013_realtime_revisions.sql",
+  "014_external_users.sql",
 ];
 const silentLogger = { log() {}, warn() {}, error() {} };
 
@@ -305,6 +306,21 @@ test("server administration schema enforces roles, status and OIDC identity", { 
       (error) => error.code === "23514"
     );
   }
+
+  // The vocabularies migration 014 widened: an external account and one waiting
+  // for approval are both storable, while the rejected values above still are not.
+  await pool.query(
+    "INSERT INTO users (id, username, email, display_name, system_role, status, auth_source, oidc_issuer, oidc_subject) VALUES ($1, 'ext', 'ext@e.org', 'ext', 'external', 'pending', 'oidc', 'https://idp', 'sub-ext')",
+    [uuidv7()]
+  );
+  const provisioned = await pool.query("SELECT system_role, status, disabled_at FROM users WHERE username = 'ext'");
+  assert.deepEqual(
+    { role: provisioned.rows[0].system_role, status: provisioned.rows[0].status },
+    { role: "external", status: "pending" }
+  );
+  // A pending account was never disabled, so the date that describes it is
+  // created_at and disabled_at stays null.
+  assert.equal(provisioned.rows[0].disabled_at, null);
 
   // Defaults: a plain insert is an active, regular, local account.
   const id = uuidv7();

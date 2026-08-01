@@ -1,4 +1,10 @@
-const SYSTEM_ROLES = new Set(["admin", "regular"]);
+const SYSTEM_ROLES = new Set(["admin", "regular", "external"]);
+// Two vocabularies, deliberately different. ACCOUNT_STATUSES is what the schema
+// stores and what the console may filter by; USER_STATUSES is what an
+// administrator may *set*. 'pending' is missing from the second one because it is
+// a state an account is provisioned into and only ever leaves: approving it makes
+// it active, refusing it makes it disabled, and nothing puts an account back.
+const ACCOUNT_STATUSES = new Set(["active", "disabled", "pending"]);
 const USER_STATUSES = new Set(["active", "disabled"]);
 
 function isSystemRole(value) {
@@ -7,6 +13,10 @@ function isSystemRole(value) {
 
 function isUserStatus(value) {
   return USER_STATUSES.has(value);
+}
+
+function isAccountStatus(value) {
+  return ACCOUNT_STATUSES.has(value);
 }
 
 function countsAsActiveAdmin(user) {
@@ -37,20 +47,27 @@ function normalizeSearch(value) {
 // reversible disable. It is refused when it would be a mistake or strand data,
 // and the reasons are ordered by severity so the first blocker is reported.
 // Pure so the guard is tested without a database; the sole-owner project count is
-// computed by the endpoint. Deleting only a disabled account also means the
-// last-active-admin rule is already satisfied (disabling it was blocked earlier).
+// computed by the endpoint. Only a non-active account can be deleted, which also
+// means the last-active-admin rule is already satisfied (disabling it was blocked
+// earlier). A pending account qualifies without first being disabled: turning
+// away a stranger the IdP provisioned should not require pretending they once had
+// access. Note that deleting one is not a durable refusal — the same SSO identity
+// signing in again is provisioned afresh — so refusing for good means leaving the
+// account pending or disabling it, where the identity match finds it and stops.
 function userDeletionBlock({ isSelf, status, soleOwnerProjectCount }) {
   if (isSelf) return "self";
-  if (status !== "disabled") return "not_disabled";
+  if (status !== "disabled" && status !== "pending") return "not_disabled";
   if (Number(soleOwnerProjectCount) > 0) return "sole_owner";
   return null;
 }
 
 module.exports = {
   SYSTEM_ROLES,
+  ACCOUNT_STATUSES,
   USER_STATUSES,
   isSystemRole,
   isUserStatus,
+  isAccountStatus,
   countsAsActiveAdmin,
   leavesNoActiveAdmin,
   normalizeSearch,

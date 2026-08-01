@@ -689,8 +689,8 @@
         <p class="picker-sub"><span data-i18n="projects.description">Each project is self-contained, with its own files and bibliographies.</span> <span id="pkCount" class="pk-count"></span></p>
       </div>
       <div class="picker-actions">
-        <button class="btn" id="pkImport"><span class="ic" data-icon="upload"></span><span data-i18n="projects.importButton">Import project</span></button>
-        <button class="btn cta" id="pkNew"><span class="ic" data-icon="plus"></span><span data-i18n="projects.newButton">New project</span></button>
+        <button class="btn internal-only" id="pkImport"><span class="ic" data-icon="upload"></span><span data-i18n="projects.importButton">Import project</span></button>
+        <button class="btn cta internal-only" id="pkNew"><span class="ic" data-icon="plus"></span><span data-i18n="projects.newButton">New project</span></button>
       </div>
     </div>
 
@@ -701,8 +701,9 @@
     <div class="picker-empty" id="pkEmpty" role="status" aria-live="polite" style="display:none">
       <div class="pe-mark" data-icon="files"></div>
       <div class="pe-title" data-i18n="projects.empty">No projects</div>
-      <div class="pe-sub" data-i18n="projects.emptyDescription">Create your first project to start writing in LaTeX or LilyPond.</div>
-      <button class="btn cta" id="pkNewEmpty"><span class="ic" data-icon="plus"></span><span data-i18n="projects.newButton">New project</span></button>
+      <div class="pe-sub internal-only" data-i18n="projects.emptyDescription">Create your first project to start writing in LaTeX or LilyPond.</div>
+      <div class="pe-sub external-only" data-i18n="projects.emptyExternal">Projects you are invited to will appear here.</div>
+      <button class="btn cta internal-only" id="pkNewEmpty"><span class="ic" data-icon="plus"></span><span data-i18n="projects.newButton">New project</span></button>
     </div>
   </div>
 </div>
@@ -751,9 +752,11 @@
         <option value="" data-i18n="admin.allRoles">All roles</option>
         <option value="admin" data-i18n="admin.roleAdmin">Admin</option>
         <option value="regular" data-i18n="admin.roleRegular">Regular</option>
+        <option value="external" data-i18n="admin.roleExternal">External</option>
       </select>
       <select class="input" id="adminStatusFilter" aria-label="Filter by status" data-i18n-aria-label="admin.filterStatus">
         <option value="" data-i18n="admin.allStatuses">All statuses</option>
+        <option value="pending" data-i18n="admin.statusPending">Pending approval</option>
         <option value="active" data-i18n="admin.statusActive">Active</option>
         <option value="disabled" data-i18n="admin.statusDisabled">Disabled</option>
       </select>
@@ -859,8 +862,10 @@
         <label class="label" for="adminCreateRole" data-i18n="admin.role">Role</label>
         <select class="input" id="adminCreateRole" aria-describedby="adminCreateError">
           <option value="regular" data-i18n="admin.roleRegular">Regular</option>
+          <option value="external" data-i18n="admin.roleExternal">External</option>
           <option value="admin" data-i18n="admin.roleAdmin">Admin</option>
         </select>
+        <span class="hint" data-i18n="admin.roleExternalHint">An external account works only on projects it is invited to: it cannot create projects or own one.</span>
       </div>
     </div>
     <div class="m-foot">
@@ -897,15 +902,21 @@
         <label class="label" for="adminEditRole" data-i18n="admin.role">Role</label>
         <select class="input" id="adminEditRole" aria-describedby="adminEditError">
           <option value="regular" data-i18n="admin.roleRegular">Regular</option>
+          <option value="external" data-i18n="admin.roleExternal">External</option>
           <option value="admin" data-i18n="admin.roleAdmin">Admin</option>
         </select>
+        <span class="hint" data-i18n="admin.roleExternalHint">An external account works only on projects it is invited to: it cannot create projects or own one.</span>
       </div>
       <div class="field">
         <label class="label" for="adminEditStatus" data-i18n="admin.status">Status</label>
         <select class="input" id="adminEditStatus" aria-describedby="adminEditError">
+          <!-- Displayed while an account waits for approval and disabled so it can
+               never be assigned: pending is a state an account leaves, not enters. -->
+          <option value="pending" id="adminEditStatusPending" disabled hidden data-i18n="admin.statusPending">Pending approval</option>
           <option value="active" data-i18n="admin.statusActive">Active</option>
           <option value="disabled" data-i18n="admin.statusDisabled">Disabled</option>
         </select>
+        <span class="hint" id="adminEditPendingHint" style="display:none" data-i18n="admin.statusPendingHint">This account was provisioned by the identity provider and has never had access. Set it to Active to approve it, or Disabled to turn it away.</span>
       </div>
       <div class="field" id="adminLinkRow">
         <label class="admin-check"><input type="checkbox" id="adminEditLinkPending"><span data-i18n="admin.linkPending">Allow SSO linking (one time)</span></label>

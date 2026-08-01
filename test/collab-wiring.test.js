@@ -55,9 +55,10 @@ test("only a member with write capability may push updates", () => {
 
 test("every membership and project mutation re-checks open realtime sessions", () => {
   // One recheck per mutation site: share, role change and removal, each in the
-  // owner console and the admin console, plus both project deletions.
+  // owner console and the admin console, plus both project deletions, plus the
+  // ownership an account loses when it is turned external.
   const calls = server.match(/await collabRecheckProject\(/g) || [];
-  assert.equal(calls.length, 8, `expected a recheck at every mutation site, found ${calls.length}`);
+  assert.equal(calls.length, 9, `expected a recheck at every mutation site, found ${calls.length}`);
   const recheck = server.slice(server.indexOf("async function collabRecheckProject"), server.indexOf("// Stamps the authoritative text"));
   // Losing membership closes the session; losing write only downgrades it.
   assert.match(recheck, /collabSend\(session\.socket, \{ t: "revoked", fileId \}\)/);

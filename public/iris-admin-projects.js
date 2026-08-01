@@ -16,6 +16,10 @@
 
   const ROLES = ["owner", "editor", "viewer"];
   const roleLabel = (role) => t(`adminProjects.role${role.charAt(0).toUpperCase()}${role.slice(1)}`);
+  // Owner is unavailable for an external member here too. The console does not get
+  // a way around the rule: an invariant an administrator can step around is not
+  // one, and the server refuses the promotion whatever this menu offers.
+  const rolesFor = (member) => (member.external ? ROLES.filter((role) => role !== "owner") : ROLES);
 
   let projects = [];
   let activeId = null;
@@ -162,9 +166,12 @@
       const row = document.createElement("div");
       row.className = "adminproj-member";
       row.dataset.userId = m.userId;
-      const options = ROLES.map((r) => `<option value="${r}"${r === m.role ? " selected" : ""}>${esc(roleLabel(r))}</option>`).join("");
+      const options = rolesFor(m).map((r) => `<option value="${r}"${r === m.role ? " selected" : ""}>${esc(roleLabel(r))}</option>`).join("");
+      const sub = [esc(m.username)];
+      if (m.external) sub.push(esc(t("admin.roleExternal")));
+      if (m.status !== "active") sub.push(esc(m.status === "pending" ? t("admin.statusPending") : t("admin.statusDisabled")));
       row.innerHTML =
-        `<span class="adminproj-member-id"><b>${esc(m.name || m.username)}</b><span class="adminproj-member-sub">${esc(m.username)}${m.status === "disabled" ? " · " + esc(t("admin.statusDisabled")) : ""}</span></span>` +
+        `<span class="adminproj-member-id"><b>${esc(m.name || m.username)}</b><span class="adminproj-member-sub">${sub.join(" · ")}</span></span>` +
         `<select class="input adminproj-role"${lockOwner || busy ? " disabled" : ""}${lockOwner ? " title=\"" + esc(t("api.PROJECT_LAST_OWNER")) + "\"" : ""} aria-label="${esc(t("adminProjects.roleAria", { name: m.name || m.username }))}" aria-describedby="adminProjectOwnerHint">${options}</select>` +
         `<button class="node-act danger adminproj-remove" type="button"${lockOwner || busy ? " disabled" : ""} title="${esc(lockOwner ? t("api.PROJECT_LAST_OWNER") : t("adminProjects.removeAria", { name: m.username }))}" aria-label="${esc(t("adminProjects.removeAria", { name: m.username }))}" aria-describedby="adminProjectOwnerHint">${ti("trash")}</button>`;
       const select = row.querySelector(".adminproj-role");

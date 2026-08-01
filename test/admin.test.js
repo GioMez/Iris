@@ -1,13 +1,31 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { isSystemRole, isUserStatus, countsAsActiveAdmin, leavesNoActiveAdmin, normalizeSearch, userDeletionBlock } = require("../src/admin");
+const { isSystemRole, isUserStatus, isAccountStatus, countsAsActiveAdmin, leavesNoActiveAdmin, normalizeSearch, userDeletionBlock } = require("../src/admin");
 
 test("role and status vocabularies match the schema", () => {
-  assert.ok(isSystemRole("admin") && isSystemRole("regular"));
+  assert.ok(isSystemRole("admin") && isSystemRole("regular") && isSystemRole("external"));
   assert.ok(!isSystemRole("user") && !isSystemRole("owner") && !isSystemRole(""));
+  assert.ok(isAccountStatus("active") && isAccountStatus("disabled") && isAccountStatus("pending"));
+  assert.ok(!isAccountStatus("deleted") && !isAccountStatus(""));
+});
+
+test("pending is a state an account leaves, never one an administrator assigns", () => {
+  // The schema stores it and the console filters by it, but the edit form cannot
+  // set it: approving makes an account active, refusing makes it disabled.
+  assert.ok(isAccountStatus("pending"));
+  assert.ok(!isUserStatus("pending"));
   assert.ok(isUserStatus("active") && isUserStatus("disabled"));
-  assert.ok(!isUserStatus("deleted") && !isUserStatus(""));
+});
+
+test("an external account never counts toward the admin invariant", () => {
+  assert.equal(countsAsActiveAdmin({ system_role: "external", status: "active" }), false);
+  const external = { system_role: "external", status: "active" };
+  assert.equal(leavesNoActiveAdmin(external, { status: "disabled" }, 0), false);
+  // Demoting the last admin to external is refused like any other demotion.
+  const admin = { system_role: "admin", status: "active" };
+  assert.equal(leavesNoActiveAdmin(admin, { system_role: "external" }, 0), true);
+  assert.equal(leavesNoActiveAdmin(admin, { system_role: "external" }, 1), false);
 });
 
 test("only an active admin counts toward the invariant", () => {
@@ -59,4 +77,11 @@ test("user deletion is blocked in order: self, then not-disabled, then sole owne
   assert.equal(userDeletionBlock({ isSelf: false, status: "disabled", soleOwnerProjectCount: 2 }), "sole_owner");
   // Disabled, not self, owns no orphan-making project: deletion may proceed.
   assert.equal(userDeletionBlock({ isSelf: false, status: "disabled", soleOwnerProjectCount: 0 }), null);
+});
+
+test("an account that was never approved is deletable without first being disabled", () => {
+  // Turning away a stranger the identity provider provisioned should not require
+  // pretending they once had access; the other guards still apply.
+  assert.equal(userDeletionBlock({ isSelf: false, status: "pending", soleOwnerProjectCount: 0 }), null);
+  assert.equal(userDeletionBlock({ isSelf: true, status: "pending", soleOwnerProjectCount: 0 }), "self");
 });

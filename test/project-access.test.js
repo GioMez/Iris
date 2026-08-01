@@ -4,6 +4,8 @@ const assert = require("node:assert/strict");
 const {
   isProjectRole,
   roleHasCapability,
+  canCreateProjects,
+  canHoldProjectRole,
   leavesNoOwner,
   normalizeMemberSearch,
   escapeLikePattern,
@@ -52,6 +54,33 @@ test("acting on a non-owner never triggers the invariant", () => {
   assert.equal(leavesNoOwner("viewer", "editor", 0), false);
   // Promoting someone to owner is always safe.
   assert.equal(leavesNoOwner("editor", "owner", 0), false);
+});
+
+test("only an external account is barred from starting a project", () => {
+  assert.equal(canCreateProjects("regular"), true);
+  assert.equal(canCreateProjects("admin"), true);
+  assert.equal(canCreateProjects("external"), false);
+});
+
+test("an external account may hold any project role except owner", () => {
+  assert.equal(canHoldProjectRole("external", "editor"), true);
+  assert.equal(canHoldProjectRole("external", "viewer"), true);
+  assert.equal(canHoldProjectRole("external", "owner"), false);
+  // Everyone else is unconstrained by the server role.
+  for (const role of ["owner", "editor", "viewer"]) {
+    assert.equal(canHoldProjectRole("regular", role), true);
+    assert.equal(canHoldProjectRole("admin", role), true);
+  }
+  // A role outside the vocabulary is never grantable, whoever asks.
+  assert.equal(canHoldProjectRole("regular", "intruder"), false);
+  assert.equal(canHoldProjectRole("external", ""), false);
+});
+
+test("the last-owner invariant still holds because every owner is internal", () => {
+  // Nothing can make an external an owner, so leavesNoOwner never has to ask
+  // which kind of owner it is counting.
+  assert.equal(canHoldProjectRole("external", "owner"), false);
+  assert.equal(leavesNoOwner("owner", "editor", 0), true);
 });
 
 test("member search requires two characters and has a bounded query", () => {

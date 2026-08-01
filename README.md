@@ -374,8 +374,22 @@ directly.
 
 OIDC identities are matched to local users by normalized email address. With
 `OAUTH_AUTO_REGISTER=false`, the matching local user must already exist. With
-auto-registration enabled, Iris creates a `user` account without a local
-password. Existing users retain their current role.
+auto-registration enabled, Iris creates an account without a local password.
+Existing users retain their current role.
+
+An auto-registered account is created *pending* unless
+`OAUTH_APPROVAL_REQUIRED=false`: the row exists so an administrator can decide on
+it, and the sign-in that created it is refused until they do. Approve or turn it
+away from the users console, where pending accounts are their own status. Note
+that deleting one is not a durable refusal — the same identity signing in again is
+provisioned afresh — so refusing for good means leaving the account pending or
+disabling it.
+
+`OAUTH_DEFAULT_ROLE` decides what an approved newcomer may do. It accepts
+`regular` or `external` only, never `admin`, and an unrecognised value stops the
+server rather than falling back. Set it to `external` when the identity provider
+is federated with people outside the organisation: they will be able to work on
+projects they are invited to, but not to create projects or own one.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
@@ -390,6 +404,8 @@ password. Existing users retain their current role.
 | `OAUTH_SCOPE` | `openid email profile` | Requested scopes. |
 | `OAUTH_CLIENT_AUTH_METHOD` | `client_secret_basic` | Token endpoint authentication; `client_secret_post` is also supported. |
 | `OAUTH_AUTO_REGISTER` | `false` | Create missing users from verified OIDC profiles. |
+| `OAUTH_DEFAULT_ROLE` | `regular` | Server role for auto-registered accounts; `regular` or `external` only. |
+| `OAUTH_APPROVAL_REQUIRED` | `true` | Create auto-registered accounts pending an administrator's approval. |
 
 ## Configuration reference
 
@@ -670,8 +686,10 @@ told plainly (`403`). A server admin gets no automatic access to project content
 
 Projects can have several owners, with an invariant mirroring the last-admin rule:
 at least one owner always remains, so the last owner cannot be demoted or leave.
-Promoting someone to owner is an explicit, owner-only action. Sharing changes are
-recorded in the audit trail.
+Promoting someone to owner is an explicit, owner-only action, and it is refused
+for an account whose server role is `external` — the sharing console leaves owner
+out of their menu and labels them, but the refusal is the server's. Sharing
+changes are recorded in the audit trail.
 
 From the in-project sharing console, owners search active accounts by partial
 username or email and can inspect display name, username and email before choosing
@@ -761,10 +779,26 @@ build. Dismissing the notice leaves the preview alone.
 
 ## Server administration
 
-Iris distinguishes two authorization levels. The **server role** (`admin` or
-`regular`) governs account management, while the project role governs project
-contents. A server admin is not automatically granted access to any project's
-contents.
+Iris distinguishes two authorization levels. The **server role** (`admin`,
+`regular` or `external`) governs account management, while the project role
+governs project contents. A server admin is not automatically granted access to
+any project's contents.
+
+An **external** account is a guest of the organisation: it works on the projects
+it is invited to and nothing else. It cannot create a project or import one — the
+two are the same rule, since importing an archive it may legitimately download
+would otherwise recreate the project under its own ownership — and it cannot hold
+the `owner` project role, on any path, the admin console included. Ownership
+carries the authority to manage membership and to destroy a project, and it is
+the anchor of the at-least-one-owner invariant; leaving it with the organisation
+is what keeps a project from ending up in external hands alone. An external
+member can therefore be an editor or a viewer, with everything those roles imply.
+
+Because no external account can be an owner, every owner is internal by
+construction. Turning an account external strips whatever it owns: memberships on
+co-owned projects drop to `editor`, while a project it owns alone blocks the
+change until ownership is reassigned in the projects console — the same guard as
+deleting such an account.
 
 Admins manage the ordinary account lifecycle over `/api/admin/users`, so it no
 longer requires direct database access:
@@ -782,6 +816,15 @@ loses access immediately while its projects, history, attributions and audit are
 preserved, and it can be reactivated. Physical deletion, which requires
 transferring or anonymizing owned content, is deferred.
 
+A third status, **pending**, belongs to accounts auto-provisioned by the identity
+provider and not yet approved (see [OAuth 2.0 / OpenID
+Connect](#oauth-20--openid-connect)). It is kept distinct from
+`disabled` because the two mean opposite things to whoever reads the list — a
+stranger who knocked versus a colleague whose access was revoked — and every
+access check admits `active` and refuses the rest, so a pending account has no
+access anywhere. An administrator can filter for them, then approve one by setting
+it active or turn it away by disabling it; the status cannot be assigned back.
+
 Two invariants are enforced: at least one active admin must always remain (the
 last one cannot be demoted or disabled, including by themselves), and role or
 status changes take effect on live sessions at once. Because sessions are stateless
@@ -798,7 +841,8 @@ name and credentials may remain under the provider.
 ## Audit trail
 
 Administrative and destructive actions are appended to the `audit_events` table:
-sign-ins and failed sign-in attempts, account creation, role and status changes,
+sign-ins and failed sign-in attempts, account creation, approval of an
+auto-provisioned account, role and status changes,
 password changes and resets, project creation, import and deletion, sharing
 changes (add, role change, removal, leaving), and file checkpoints and rollbacks.
 

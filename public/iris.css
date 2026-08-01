@@ -814,6 +814,14 @@ html:not(.iris-inproject) #projChip{display:none}
    hides the entry points from everyone else. */
 .admin-only{display:none}
 html[data-role="admin"] .admin-only{display:inline-flex}
+
+/* The same idea for the external role, in the other direction: an external
+   account works on projects it was invited to and cannot start one, so the
+   entry points that create a project are taken away and the empty state says
+   what to expect instead. The server refuses those requests either way. */
+html[data-role="external"] .internal-only{display:none}
+.external-only{display:none}
+html[data-role="external"] .external-only{display:block}
 .admin-screen{position:fixed;inset:0;z-index:95;display:none;overflow-y:auto;padding:46px 30px 60px;
   background:var(--bg);background-image:radial-gradient(circle at 1px 1px,#ffffff0a 1px,transparent 0);background-size:24px 24px}
 html.iris-inadmin[data-role="admin"] .admin-screen{display:block}
@@ -850,8 +858,11 @@ html.iris-inadmin[data-role="admin"] .admin-screen{display:block}
   font-weight:600;border:1px solid transparent;white-space:nowrap}
 .admin-badge.role-admin{background:rgba(125,207,255,.12);color:var(--accent);border-color:rgba(125,207,255,.22)}
 .admin-badge.role-regular{background:var(--panel-2);color:var(--txt-mut);border-color:var(--border)}
+.admin-badge.role-external{background:var(--panel-2);color:var(--txt-mut);border-color:var(--border);border-style:dashed}
 .admin-badge.status-active{background:rgba(120,200,140,.12);color:var(--semantic-success);border-color:rgba(120,200,140,.22)}
 .admin-badge.status-disabled{background:rgba(230,120,120,.12);color:var(--semantic-danger);border-color:rgba(230,120,120,.22)}
+/* Waiting on a decision, not refused: warning tones, not danger. */
+.admin-badge.status-pending{background:rgba(224,175,104,.14);color:var(--semantic-warning);border-color:rgba(224,175,104,.28)}
 .admin-check{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--txt);cursor:pointer}
 .admin-check input{width:15px;height:15px;accent-color:var(--accent);cursor:pointer}
 .admin-source{color:var(--txt-mut);font-family:var(--font-code);font-size:11.5px}
@@ -915,6 +926,10 @@ html.iris-inadmin[data-role="admin"] .admin-screen{display:block}
 .project-share-member-id b{font-size:13px;color:var(--txt);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .project-share-member-sub{font:11px var(--font-code);color:var(--txt-mut);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .project-share-you{color:var(--accent);font:600 10px var(--font-ui);text-transform:uppercase;letter-spacing:.04em}
+/* Reads as a property of the person, not a warning: an external collaborator is
+   expected here, they simply cannot become the project's owner. */
+.project-share-external{padding:1px 6px;border:1px solid var(--border);border-radius:999px;color:var(--txt-mut);
+  font:600 10px var(--font-ui);text-transform:uppercase;letter-spacing:.04em;white-space:nowrap}
 .project-share-role{height:36px}
 .project-share-remove{width:36px;height:36px}
 .project-share-empty{padding:12px;border:1px dashed var(--border);border-radius:10px;color:var(--txt-mut);font-size:12.5px}
