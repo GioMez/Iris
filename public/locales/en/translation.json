@@ -399,6 +399,12 @@
     "type": "Project type",
     "latex": "LaTeX document",
     "lilypond": "LilyPond score",
+    "latexTemplate": "LaTeX template",
+    "templateArticle": "Article (article)",
+    "templateBeamer": "Presentation (beamer)",
+    "templateBook": "Book (book)",
+    "templateReport": "Report (report)",
+    "templateLetter": "Letter (letter)",
     "create": "Create project",
     "deleteTitle": "Delete project",
     "deleteConfirm": "Do you want to delete “{{name}}”? All its files and bibliographies will be removed. This action cannot be undone.",
@@ -535,7 +541,11 @@
     "newScore": "New score",
     "scoreNumber": "Score {{number}}",
     "newDocument": "New document",
-    "introduction": "Introduction"
+    "introduction": "Introduction",
+    "recipient": "Recipient\\\\Address",
+    "letterOpening": "Dear Sir or Madam,",
+    "letterBody": "Write your letter here.",
+    "letterClosing": "Sincerely,"
   },
   "admin": {
     "open": "Server administration",

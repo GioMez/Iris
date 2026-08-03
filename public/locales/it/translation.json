@@ -399,6 +399,12 @@
     "type": "Tipo di progetto",
     "latex": "Documento LaTeX",
     "lilypond": "Partitura LilyPond",
+    "latexTemplate": "Modello LaTeX",
+    "templateArticle": "Articolo (article)",
+    "templateBeamer": "Presentazione (beamer)",
+    "templateBook": "Libro (book)",
+    "templateReport": "Relazione (report)",
+    "templateLetter": "Lettera (letter)",
     "create": "Crea progetto",
     "deleteTitle": "Elimina progetto",
     "deleteConfirm": "Vuoi eliminare “{{name}}”? Tutti i suoi file e le sue bibliografie verranno rimossi. L'azione non è reversibile.",
@@ -535,7 +541,11 @@
     "newScore": "Nuova partitura",
     "scoreNumber": "Partitura {{number}}",
     "newDocument": "Nuovo documento",
-    "introduction": "Introduzione"
+    "introduction": "Introduzione",
+    "recipient": "Destinatario\\\\Indirizzo",
+    "letterOpening": "Gentile destinatario,",
+    "letterBody": "Scrivi qui il testo della lettera.",
+    "letterClosing": "Cordiali saluti,"
   },
   "admin": {
     "open": "Amministrazione del server",

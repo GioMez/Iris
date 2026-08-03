@@ -51,7 +51,7 @@
   }
 
   /* ---------------- blank content ---------------- */
-  function blankNodes(name, projectType) {
+  function blankNodes(name, projectType, latexTemplate = "article") {
     if (projectType === "lilypond") {
       const title = String(name || t("templates.newScore")).replace(/["\\]/g, "");
       const tpl = `\\version "2.24.0"
@@ -74,21 +74,58 @@
         { type: "file", id: "main", name: "main.ly", kind: "ly", path: "main.ly", content: tpl },
       ];
     }
-    const tpl = `\\documentclass[11pt]{article}
+    const title = name || t("templates.newDocument");
+    let tpl;
+    if (latexTemplate === "beamer") {
+      tpl = `\\documentclass{beamer}
+\\usepackage[utf8]{inputenc}
+
+\\title{${title}}
+\\author{}
+\\date{\\today}
+
+\\begin{document}
+\\frame{\\titlepage}
+
+\\begin{frame}{${t("templates.introduction")}}
+
+\\end{frame}
+\\end{document}`;
+    } else if (latexTemplate === "letter") {
+      tpl = `\\documentclass[11pt]{letter}
+\\usepackage[utf8]{inputenc}
+
+\\signature{}
+\\address{}
+
+\\begin{document}
+\\begin{letter}{${t("templates.recipient")}}
+\\opening{${t("templates.letterOpening")}}
+
+${t("templates.letterBody")}
+
+\\closing{${t("templates.letterClosing")}}
+\\end{letter}
+\\end{document}`;
+    } else {
+      const documentClass = latexTemplate === "book" || latexTemplate === "report" ? latexTemplate : "article";
+      const heading = documentClass === "article" ? "section" : "chapter";
+      tpl = `\\documentclass[11pt]{${documentClass}}
 \\usepackage[utf8]{inputenc}
 \\usepackage{amsmath}
 
-\\title{${name || t("templates.newDocument")}}
+\\title{${title}}
 \\author{}
 \\date{\\today}
 
 \\begin{document}
 \\maketitle
 
-\\section{${t("templates.introduction")}}
+\\${heading}{${t("templates.introduction")}}
 
 
 \\end{document}`;
+    }
     return [
       { type: "file", id: "main", name: "main.tex", kind: "tex", path: "main.tex", content: tpl },
       { type: "folder", name: "figure", open: true, children: [] },
@@ -550,11 +587,11 @@
   }
 
   /* ---------------- create / rename / delete ---------------- */
-  async function createProject(name, projectType) {
+  async function createProject(name, projectType, latexTemplate) {
     const now = Date.now();
     projectType = projectType === "lilypond" ? "lilypond" : "latex";
     const data = {
-      project: { name, nodes: blankNodes(name, projectType) },
+      project: { name, nodes: blankNodes(name, projectType, latexTemplate) },
       projectType,
       language: window.IrisI18n.defaultLanguage,
       engine: projectType === "lilypond" ? "lilypond" : "pdflatex",
@@ -607,6 +644,12 @@
   /* ---------------- modals ---------------- */
   let projMode = "new", projTargetId = null, delTargetId = null;
 
+  function syncProjectTypeFields() {
+    const isLatex = $("projTypeSelect").value === "latex";
+    $("projTemplateField").style.display = isLatex ? "" : "none";
+    $("projModalHint").textContent = t(isLatex ? "projects.newLatexHint" : "projects.newLilypondHint");
+  }
+
   function askNew() {
     if (isExternalUser()) return;
     projMode = "new"; projTargetId = null;
@@ -615,6 +658,8 @@
     $("projModalHint").textContent = t("projects.newLatexHint");
     $("projTypeField").style.display = "";
     $("projTypeSelect").value = "latex";
+    $("projTemplateSelect").value = "article";
+    syncProjectTypeFields();
     $("projNameInput").value = "";
     $("projNameInput").classList.remove("nomatch");
     $("projNameInput").removeAttribute("aria-invalid");
@@ -629,6 +674,7 @@
     $("projModalOk").textContent = t("common.save");
     $("projModalHint").textContent = t("projects.renameHint");
     $("projTypeField").style.display = "none";
+    $("projTemplateField").style.display = "none";
     $("projNameInput").value = m ? m.name : "";
     $("projNameInput").classList.remove("nomatch");
     $("projNameInput").removeAttribute("aria-invalid");
@@ -651,7 +697,7 @@
     ok.classList.add("loading");
     try {
       if (projMode === "new") {
-        const id = await createProject(name, $("projTypeSelect").value);
+        const id = await createProject(name, $("projTypeSelect").value, $("projTemplateSelect").value);
         await closeModal("projModal");
         await renderPicker();
         await openProject(id);
@@ -1052,9 +1098,7 @@
       $("projNameInput").removeAttribute("aria-invalid");
       $("projModalError").style.display = "none";
     });
-    $("projTypeSelect").addEventListener("change", function () {
-      $("projModalHint").textContent = t(this.value === "lilypond" ? "projects.newLilypondHint" : "projects.newLatexHint");
-    });
+    $("projTypeSelect").addEventListener("change", syncProjectTypeFields);
     $("projNameInput").addEventListener("keydown", (e) => {
       if (e.key === "Enter") { e.preventDefault(); confirmProjModal(); }
       else if (e.key === "Escape") { e.preventDefault(); closeModal("projModal"); }
