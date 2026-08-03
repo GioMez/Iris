@@ -55,8 +55,10 @@ the Node.js service handles authentication, persistence, and compilation.
   autosave.
 - Realtime collaborative editing of the same document by several members, with
   the server as the single authority that orders concurrent changes.
-- Presence for the open file: who else is editing it, the lines they are on, and
-  a non-blocking warning when two people work in the same area.
+- Presence for the open file: who else is editing it, where their cursors and
+  selections are, and a non-blocking warning when two people are inside the same
+  LaTeX environment, section or LilyPond block; the file tree and the outline
+  mark where in the project everyone else is working.
 - A notice in the preview when another member has compiled something newer, with
   a one-click load of the most recent build.
 - Server-side LaTeX compilation with `pdflatex`, `xelatex`, or `lualatex`.
@@ -69,9 +71,8 @@ the Node.js service handles authentication, persistence, and compilation.
 - Local password authentication and optional OAuth 2.0/OpenID Connect SSO.
 - Localized interface with English as the default and Italian included.
 
-Iris does not currently provide real-time collaboration, Git integration, or a
-hosted compilation service. It is designed to run on infrastructure you
-control.
+Iris does not currently provide Git integration or a hosted compilation service.
+It is designed to run on infrastructure you control.
 
 ## Localization
 
@@ -739,7 +740,10 @@ What this changes for a document being edited live:
 - Losing write access mid-session takes effect at once: the workspace becomes
   read-only in place. Losing membership closes the session immediately.
 - A rollback moves every participant onto the restored text.
-- The status bar shows the state of the session for the open file.
+- The status bar shows the state of the session for the open file, including
+  whether this tab is still holding edits the server has not ordered yet. Until
+  they come back through the update stream they are unconfirmed, and the status
+  says so rather than claiming the document is settled.
 
 A file can only join a session once it has a canonical id, so a document created
 in the current session becomes collaborative after its first save. Binary assets
@@ -751,26 +755,64 @@ that far back in its update log, it sends the whole document instead.
 ### Presence and overlap
 
 While a document is shared, the status bar names the other members editing it,
-each with a stable colour derived from their account, and the editor marks the
-lines they are working on with that colour — a bar beside the line and a faint
-tint on it. The same person in two tabs is one entry in the list and two marks in
-the document, because that is what is actually true.
+each with a stable colour derived from their account, and the editor marks where
+they are working in that colour: a bar beside their cursor's line with a faint
+tint on it, and — when they have selected something — a shade over the range
+itself, so text somebody is about to replace is visible before they replace it.
+A selection is reported from the end the cursor is actually on, so dragging one
+backwards puts the remote cursor where its owner sees it. The same person in two
+tabs is one entry in the list and two cursors in the document, because that is
+what is actually true.
 
-When someone else is working on your line or the one either side of it, the
-indicator turns to a warning naming them. It is deliberately advisory and blocks
-nothing: operational transformation already guarantees that no keystroke is lost,
-but it cannot tell whether two people changing the same bar of music or the same
-command agree about the result. That judgement stays with the people involved,
-which is also why the file history exists.
+The file tree carries the same information one level up: a file another member
+has open is marked with their colour. It answers only "somebody is in there" and
+deliberately carries no positions, so it changes when people come and go and
+stays silent while they type. Opening a file is therefore no longer the only way
+to find out that someone got there first.
+
+### Structural awareness
+
+Whether two people are working in the same place is decided by the document's
+structure, not by how far apart their lines are. Iris parses the open file into
+regions — `\section` and its subdivisions, every `\begin`/`\end` environment,
+each LilyPond `\score`, variable, context and block — and asks whether one
+person's position is inside the other's region. Distance is only a proxy for
+shared intent, and it is wrong in both directions: two carets a line apart on
+either side of a section boundary have nothing to do with each other, and two
+carets thirty lines apart inside one `align` have everything to do with each
+other. Containment answers it directly, so the first no longer warns and the
+second now does.
+
+When the two of you are inside the same construct, the status bar names it —
+"the same `\begin{align}`", "the same § 2.1" — and the editor draws a spine down
+the extent of what is shared. The outline panel marks which heading each
+participant is working under, the same way the file tree marks which file.
+Members who can only read are left out of all of it: a viewer on your line is
+somebody reading over your shoulder, not a risk. Where a file has no structure
+to compare — a preamble, a document without headings — the older rule still
+applies and proximity is what raises the warning.
+
+The warning is deliberately advisory and blocks nothing: operational
+transformation already guarantees that no keystroke is lost, but it cannot tell
+whether two people changing the same bar of music or the same command agree
+about the result. That judgement stays with the people involved, which is also
+why the file history exists.
+
+The parsing runs entirely in the browser, against the replica each tab already
+holds. The server never parses LaTeX or LilyPond — it compiles them by invoking
+external binaries — and presence stays what it is on the wire: ephemeral
+positions with no structure attached. Each client therefore names regions from
+its own copy, which is one more reason the result is advisory rather than
+authoritative. The index is rebuilt when typing settles and afterwards only
+consulted, so a moving cursor never costs a parse.
 
 Presence is ephemeral. It is never written to the database, never versioned and
-never replayed: it lives only on the open connections of a document, and it is
-visible only to members who could already read that file. Positions follow the
-text as it changes, and a participant who disconnects simply disappears from the
-list.
-
-Remaining work for a later phase: structural awareness (naming the LaTeX
-environment or LilyPond `score` two people share, rather than the line number).
+never replayed: it lives only on the open connections, and it is visible only to
+members who could already read the file. A position is reported at the version
+its sender was on and is carried forward through the updates that sender had not
+seen before it is drawn, so it lands on the text it was pointing at rather than
+on whatever has since moved into place. A participant who disconnects simply
+disappears.
 
 ### Compilation notices
 

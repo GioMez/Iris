@@ -535,10 +535,16 @@
     "offline": "Riconnessione…",
     "revoked": "Sessione in tempo reale terminata: il tuo accesso al progetto è cambiato",
     "error": "Tempo reale non disponibile",
+    "pending": "Sincronizzazione…",
+    "pendingTitle": "Le tue modifiche non sono ancora confermate dal server",
     "someone": "Un altro membro",
+    "filePeers": "Stanno lavorando su questo file: {{names}}",
+    "outlinePeers": "Stanno lavorando qui: {{names}}",
     "peersTitle": "Stanno modificando questo file anche: {{names}}",
     "peersMore_one": "{{count}} persona",
     "peersMore_other": "{{count}} persone",
+    "overlapRegion": "Tu e {{names}} siete dentro lo stesso {{region}}. Le modifiche non andranno perse, ma potreste annullare a vicenda le rispettive intenzioni.",
+    "peerAt": "{{name}} — {{region}}",
     "overlapWarning": "Stai lavorando nella stessa area di {{names}}. Le modifiche non andranno perse, ma potreste annullare a vicenda le rispettive intenzioni."
   },
   "templates": {

@@ -2001,6 +2001,8 @@ function collabLeave(session, fileId) {
   session.rooms.delete(fileId);
   const room = entry.room;
   room.clients.delete(session);
+  // The file loses a participant, so every tree watching the project changes.
+  collabBroadcastFilePresence(entry.projectId);
   if (room.clients.size) return void collabBroadcastPeers(room);
   clearTimeout(room.flushTimer);
   clearTimeout(room.revisionTimer);
@@ -2117,6 +2119,46 @@ function collabBroadcastPeers(room) {
   });
 }
 
+/* ---- presence: which of the project's files somebody else is in ---- */
+// The same information one level up, for the file tree. It answers only "is
+// somebody else in there" and deliberately carries no positions: a caret moving
+// changes nothing here, so this is broadcast on joins and leaves alone and stays
+// silent during typing. It travels on the project channel, so it keeps arriving
+// while the editor sits on a file nobody else has open.
+//
+// Membership is inherited from the project, so a member who may read the tree
+// may already read every file in it: this discloses nothing new.
+function collabFilePresenceFor(projectId, recipient) {
+  const files = [];
+  collabRooms.forProject(projectId).forEach((room) => {
+    // One entry per person, not per connection: the tree asks who is in the
+    // file, and someone's second tab is not a second person.
+    const people = new Map();
+    room.clients.forEach((client) => {
+      if (client === recipient || people.has(client.user.sub)) return;
+      people.set(client.user.sub, {
+        userId: client.user.sub,
+        name: client.user.name || client.user.username || "",
+        color: peerColor(client.user.sub),
+      });
+    });
+    if (people.size) files.push({ fileId: room.fileId, peers: Array.from(people.values()) });
+  });
+  return files;
+}
+
+function collabSendFilePresence(session, projectId) {
+  collabSend(session.socket, { t: "filepeers", projectId, files: collabFilePresenceFor(projectId, session) });
+}
+
+function collabBroadcastFilePresence(projectId) {
+  if (!projectId) return;
+  collabSessions.forEach((session) => {
+    if (session.projectId !== projectId) return;
+    collabSendFilePresence(session, projectId);
+  });
+}
+
 // Tells everyone watching the project that a compilation finished, so a member
 // looking at an older output learns there is a newer one instead of discovering
 // it by chance. The message carries no output, only the fact and who caused it;
@@ -2156,7 +2198,8 @@ async function collabHandleMessage(session, raw) {
       role: entry.role,
     });
     // Everyone learns about the newcomer, and the newcomer about everyone.
-    return collabBroadcastPeers(entry.room);
+    collabBroadcastPeers(entry.room);
+    return collabBroadcastFilePresence(entry.room.projectId);
   }
 
   // A tab watches the project it has open, independently of which file it is
@@ -2168,7 +2211,8 @@ async function collabHandleMessage(session, raw) {
     const project = await collabMembership(projectId, session.user.sub);
     if (!project) throw new CollabError("COLLAB_PROJECT_NOT_FOUND");
     session.projectId = projectId;
-    return;
+    // The tree needs the state as it is now, not only the changes from here on.
+    return collabSendFilePresence(session, projectId);
   }
 
   if (message.t === "unwatch") {

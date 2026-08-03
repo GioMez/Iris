@@ -143,7 +143,7 @@ test("the editor exposes the collab stream and the app shows its state", () => {
   assert.match(editor, /if \(collaborative && update\.docChanged && CO\.sendableUpdates\(update\.state\)\.length\) emit\("sync"\)/);
   // Minimal but present UI: one status chip, announced to assistive technology.
   assert.match(html, /id="stSync"[^>]*role="status"[^>]*aria-live="polite"[^>]*hidden/);
-  assert.match(app, /function renderSyncStatus\(\)/);
+  assert.match(app, /function renderSyncStatus\(snapshot\)/);
   assert.match(css, /\.sb-sync\[data-sync="live"\]/);
   assert.match(css, /prefers-reduced-motion/);
   ["connecting", "live", "readonly", "offline", "revoked", "error"].forEach((key) => {
@@ -190,7 +190,8 @@ test("peer positions follow the text they pointed at", () => {
   // mapped on top of it.
   assert.match(field, /for \(const effect of tr\.effects\) if \(effect\.is\(peersEffect\)\) return effect\.value/);
   // Incoming positions are clamped to this document before being drawn.
-  assert.match(editor, /head: peer\.head == null \? null : Math\.max\(0, Math\.min\(max, peer\.head\)\)/);
+  assert.match(editor, /const rebased = rebasePeerPos\(value, version\);/);
+  assert.match(editor, /return rebased == null \? null : Math\.max\(0, Math\.min\(max, rebased\)\)/);
 });
 
 test("the lines other participants are on are marked in the editor", () => {
@@ -210,9 +211,10 @@ test("the footer names who else is in the file and warns about overlap", () => {
   // One entry per person even when they have several tabs open.
   assert.match(app, /function peopleFromPeers\(peers\)/);
   assert.match(app, /const key = peer\.userId \|\| peer\.id/);
-  // The warning is advisory: it names the risk and blocks nothing.
+  // The warning is advisory: it names the risk and blocks nothing. What counts
+  // as "the same area" is covered on its own further down.
   assert.match(app, /function overlappingPeers\(peers\)/);
-  assert.match(app, /Math\.abs\(peer\.line - lastCursor\.line\) <= OVERLAP_LINES/);
+  assert.match(app, /OVERLAP_LINES/);
   assert.match(app, /collab\.overlapWarning/);
   assert.doesNotMatch(app, /overlap[^\n]*(disabled|readOnly|preventDefault)/i);
   // Moving onto a busy line updates the warning without the participants
@@ -221,6 +223,192 @@ test("the footer names who else is in the file and warns about overlap", () => {
   assert.match(css, /\.sb-peers \.peer-dot\{/);
   assert.match(css, /\.sb-peers\.overlap\{/);
   ["someone", "peersTitle", "overlapWarning"].forEach((key) => {
+    assert.match(read("public/locales/en/translation.json"), new RegExp(`"${key}":`));
+    assert.match(read("public/locales/it/translation.json"), new RegExp(`"${key}":`));
+  });
+});
+
+test("a participant's selection is drawn over the range it covers", () => {
+  const collab = read("public/iris-collab.js");
+  // The caret's own side of the range goes on the wire: reporting the ordered
+  // pair would put every remote cursor at the end of its selection.
+  assert.match(collab, /anchor: selection\.anchor/);
+  assert.match(collab, /head: selection\.head/);
+  assert.match(editor, /anchor: range\.anchor,\s*\n\s*head: range\.head,/);
+  // One decoration per participant however long the selection is.
+  assert.match(editor, /const peerSelections = V\.EditorView\.decorations\.compute/);
+  assert.match(editor, /class: "cm-iris-peer-selection"/);
+  assert.match(editor, /peerSelections,/, "the extension has to be in the editor's configuration");
+  // A bare caret has no range to shade, so it produces no mark.
+  assert.match(editor, /if \(!range \|\| range\.to === range\.from\) return/);
+  // The caret line stays the one the head is on, whichever way it was dragged.
+  assert.match(editor, /function peerRange\(state, peer\)/);
+  assert.match(editor, /return \{ from: Math\.min\(anchor, head\), to: Math\.max\(anchor, head\), head \}/);
+  assert.match(css, /\.cm-host \.cm-iris-peer-selection\{/);
+});
+
+test("a peer's position is carried forward from the version it was reported at", () => {
+  // Attributing a position to a structural region makes a stale offset visible:
+  // a marker two lines out goes unnoticed, a warning naming the wrong construct
+  // does not. The confirmed updates the sender had not seen are replayed, then
+  // this tab's own unconfirmed ones.
+  assert.match(editor, /function rebasePeerPos\(pos, version\)/);
+  assert.match(editor, /collabLog\.push\(\{ version, changes: update\.changes \}\)/);
+  assert.match(editor, /if \(entry\.version < version\) continue/);
+  assert.match(editor, /if \(entry\.version >= synced\) break/);
+  assert.match(editor, /CO\.sendableUpdates\(view\.state\)\.forEach\(\(update\) => \{ mapped = update\.changes\.mapPos\(mapped, 1\); \}\)/);
+  // The log is bounded, and a new document invalidates all of it.
+  assert.match(editor, /collabLog\.splice\(0, collabLog\.length - COLLAB_LOG_LIMIT\)/);
+  const state = editor.slice(editor.indexOf("function makeState"), editor.indexOf("const host = document.createElement"));
+  assert.match(state, /collabLog = \[\]/);
+  // The version has to survive as far as the mapping to be usable at all.
+  assert.match(editor, /const version = Number\(peer\.version\)/);
+  assert.match(editor, /anchor: place\(peer\.anchor, version\)/);
+});
+
+test("the overlap warning is decided by structure, and falls back to lines", () => {
+  const overlap = app.slice(app.indexOf("function overlappingPeers"), app.indexOf("function renderPresence"));
+  // Sharing an ancestor is not sharing work: siblings always share one.
+  assert.match(overlap, /const \{ node, contained \} = window\.IrisStructure\.shared\(mine, theirs\)/);
+  assert.match(overlap, /return contained \? \{ peer, node \} : null/);
+  // Where either position is in no region, the line rule still applies.
+  assert.match(overlap, /if \(!mine\.length \|\| peer\.head == null\) return nearInLines\(peer\) \? \{ peer, node: null \} : null/);
+  assert.match(overlap, /if \(!theirs\.length\) return nearInLines\(peer\) \? \{ peer, node: null \} : null/);
+  assert.match(app, /function nearInLines\(peer\)/);
+  // Structure is resolved against offsets; lines cannot express containment.
+  assert.match(editor, /head: range\.head,/);
+  assert.match(app, /const mine = pathAtOffset\(lastCursor\.head\)/);
+});
+
+test("the index is rebuilt when the text settles, never when a caret moves", () => {
+  // Parsing on presence would put a parse behind every keystroke of every
+  // participant; the index belongs to the document and is only consulted.
+  assert.match(app, /const STRUCTURE_DEBOUNCE = 250/);
+  assert.match(app, /function scheduleStructure\(\)/);
+  assert.match(app, /structureTimer = setTimeout\(rebuildStructure, STRUCTURE_DEBOUNCE\)/);
+  const cursor = app.slice(app.indexOf("ed().onCursor("), app.indexOf("ed().onPeers("));
+  assert.doesNotMatch(cursor, /rebuildStructure|scheduleStructure/);
+  // Opening a different document has no typing to wait for.
+  const open = app.slice(app.indexOf("function openFile(id)"), app.indexOf("/* ---------------- file tree"));
+  assert.match(open, /rebuildStructure\(\)/);
+  // The parsing itself never reaches the server: it stays language-agnostic.
+  assert.doesNotMatch(server, /IrisStructure|\\\\begin\{/);
+  assert.match(html, /<script src="iris-structure\.js"><\/script>/);
+});
+
+test("the shared construct is named and marked", () => {
+  const render = app.slice(app.indexOf("function renderPresence"), app.indexOf("// The same marks on the outline"));
+  assert.match(render, /const contested = overlapping\.find\(\(hit\) => hit\.node\) \|\| null/);
+  assert.match(render, /ed\(\)\.setSharedRegion\(contested/);
+  // Nobody present means nothing contested.
+  assert.match(render, /ed\(\)\.setSharedRegion\(null\)/);
+  assert.match(render, /t\("collab\.overlapRegion", \{ names: atRisk, region: regionLabel\(contested\.node\) \}\)/);
+  // Region names come from the document, so they are trimmed to fit.
+  assert.match(app, /function regionLabel\(node\)/);
+  assert.match(app, /label\.length > 40 \? `\$\{label\.slice\(0, 39\)\}…` : label/);
+  // A band over a construct longer than the screen is noise, not information.
+  assert.match(editor, /const REGION_LINE_CAP = 300/);
+  assert.match(editor, /if \(last - first > REGION_LINE_CAP\) return V\.Decoration\.none/);
+  // Its own custom property: it can share a line with the caret tint.
+  assert.match(editor, /--region-color:/);
+  assert.match(css, /\.cm-host \.cm-iris-peer-region\{/);
+  ["overlapRegion", "peerAt"].forEach((key) => {
+    assert.match(read("public/locales/en/translation.json"), new RegExp(`"${key}":`));
+    assert.match(read("public/locales/it/translation.json"), new RegExp(`"${key}":`));
+  });
+});
+
+test("the outline shows who is working under each heading", () => {
+  assert.match(app, /function renderOutlinePresence\(\)/);
+  assert.match(app, /box\.querySelectorAll\("\.ol-item\[data-offset\]"\)/);
+  // The panel is a linear list, so the heading somebody is under is the last
+  // one at or before them.
+  assert.match(app, /if \(Number\.isFinite\(offsets\[i\]\) && offsets\[i\] <= peer\.head\) index = i/);
+  // One dot per person, as in the tree and the footer.
+  assert.match(app, /if \(!list\.some\(\(other\) => other\.userId === peer\.userId\)\) list\.push\(peer\)/);
+  // The tree and the outline draw the same marks through the same helper.
+  assert.match(app, /function fillPeerPins\(slot, peers, key\)/);
+  // Same marks, but a heading is not a file and must not say it is.
+  assert.match(app, /fillPeerPins\(slot, byRow\.get\(index\) \|\| \[\], "collab\.outlinePeers"\)/);
+  assert.match(app, /fillPeerPins\(slot, \(fileId && byFile\.get\(fileId\)\) \|\| \[\], "collab\.filePeers"\)/);
+  ["outlinePeers"].forEach((key) => {
+    assert.match(read("public/locales/en/translation.json"), new RegExp(`"${key}":`));
+    assert.match(read("public/locales/it/translation.json"), new RegExp(`"${key}":`));
+  });
+  assert.match(css, /\.ol-item \.node-peers\{/);
+});
+
+test("the overlap warning compares areas and spares whoever cannot write", () => {
+  // A selection is an area on both sides of the comparison, so the local range
+  // travels with the cursor event.
+  assert.match(editor, /fromLine: view\.state\.doc\.lineAt\(range\.from\)\.number/);
+  assert.match(editor, /toLine: view\.state\.doc\.lineAt\(range\.to\)\.number/);
+  assert.match(editor, /fromLine: state\.doc\.lineAt\(range\.from\)\.number/);
+  const overlap = app.slice(app.indexOf("function overlappingPeers"), app.indexOf("function renderPresence"));
+  // A viewer's position carries no risk: it cannot become a change.
+  assert.match(overlap, /if \(peer\.role === "viewer"\) return null/);
+  // Interval overlap, widened by the tolerance on both sides. It is the
+  // fallback now, so the formula lives in nearInLines.
+  const near = app.slice(app.indexOf("function nearInLines"), app.indexOf("function overlappingPeers"));
+  assert.match(near, /peer\.fromLine - OVERLAP_LINES <= lastCursor\.toLine/);
+  assert.match(near, /peer\.toLine \+ OVERLAP_LINES >= lastCursor\.fromLine/);
+  // Still advisory: nothing about it blocks an edit.
+  assert.doesNotMatch(overlap, /(disabled|readOnly|preventDefault)/i);
+});
+
+test("the tree marks the project's files somebody else is in", () => {
+  // Server: the list carries no positions, so a moving caret never triggers it.
+  const presence = server.slice(server.indexOf("function collabFilePresenceFor"), server.indexOf("function collabSendFilePresence"));
+  assert.match(presence, /if \(client === recipient \|\| people\.has\(client\.user\.sub\)\) return/);
+  assert.doesNotMatch(presence, /anchor|head/, "the tree asks who is in a file, not where they are");
+  // It travels on the project channel, and is sent on joins and leaves only.
+  assert.match(server, /function collabBroadcastFilePresence\(projectId\)/);
+  assert.match(server, /if \(session\.projectId !== projectId\) return;\s*\n\s*collabSendFilePresence/);
+  const join = server.slice(server.indexOf('if (message.t === "open")'), server.indexOf('if (message.t === "project")'));
+  assert.match(join, /collabBroadcastFilePresence\(entry\.room\.projectId\)/);
+  const leave = server.slice(server.indexOf("function collabLeave"), server.indexOf("// Tracks in-flight persistence"));
+  assert.match(leave, /collabBroadcastFilePresence\(entry\.projectId\)/);
+  // A tab that starts watching gets the state as it is, not only the changes.
+  const watch = server.slice(server.indexOf('if (message.t === "project")'), server.indexOf('if (message.t === "unwatch")'));
+  assert.match(watch, /collabSendFilePresence\(session, projectId\)/);
+  const membershipIndex = watch.indexOf("collabMembership");
+  assert.ok(membershipIndex !== -1 && membershipIndex < watch.indexOf("collabSendFilePresence"),
+    "the watch is authorized before any presence is disclosed");
+
+  // Client: the badge is filled in place, because rebuilding the tree on every
+  // join would take the focus with it.
+  assert.match(app, /function renderTreePresence\(\)/);
+  assert.match(app, /window\.IrisCollab\.onFilePeers\(renderTreePresence\)/);
+  assert.match(app, /`<span class="node-peers" role="img" hidden><\/span>`/);
+  assert.match(app, /root\.querySelectorAll\("\.node\[data-id\]"\)/);
+  // The names reach assistive technology, not only the pointer.
+  assert.match(app, /slot\.setAttribute\("aria-label", title\)/);
+  assert.match(css, /^\.node-peer-dot\{/m);
+  ["filePeers"].forEach((key) => {
+    assert.match(read("public/locales/en/translation.json"), new RegExp(`"${key}":`));
+    assert.match(read("public/locales/it/translation.json"), new RegExp(`"${key}":`));
+  });
+});
+
+test("edits the server has not ordered yet are shown as unconfirmed", () => {
+  const collab = read("public/iris-collab.js");
+  assert.match(collab, /function hasPendingWork\(\)/);
+  // Held by this tab, not confirmed by the room: a dropped link does not settle
+  // an edit, so the flag follows the room the app wants, not the one it has.
+  assert.match(collab, /if \(!state\.desired \|\| state\.role === "viewer"\) return false/);
+  assert.match(collab, /const snapshot = \{ status: state\.status, role: state\.role, fileId: state\.joined, pending: state\.pending \}/);
+  // Raised when the edit is typed, cleared when the update comes back.
+  const schedule = collab.slice(collab.indexOf("function schedulePush"), collab.indexOf("function sendPresence"));
+  assert.match(schedule, /refreshPending\(\)/);
+  const updates = collab.slice(collab.indexOf('if (message.t === "updates")'), collab.indexOf('if (message.t === "resync")'));
+  assert.match(updates, /refreshPending\(\)/);
+  // "Realtime" on its own would claim the document is settled when it is not.
+  const status = app.slice(app.indexOf("function renderSyncStatus"), app.indexOf("/* ---------------- presence"));
+  assert.match(status, /const unconfirmed = pending && \(status === "live" \|\| status === "offline"\)/);
+  assert.match(status, /t\("collab\.pending"\)/);
+  assert.match(status, /chip\.classList\.toggle\("pending", unconfirmed\)/);
+  assert.match(css, /\.sb-sync\.pending\{/);
+  ["pending", "pendingTitle"].forEach((key) => {
     assert.match(read("public/locales/en/translation.json"), new RegExp(`"${key}":`));
     assert.match(read("public/locales/it/translation.json"), new RegExp(`"${key}":`));
   });

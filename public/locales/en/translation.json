@@ -535,10 +535,16 @@
     "offline": "Reconnecting…",
     "revoked": "Realtime session ended: your access to this project changed",
     "error": "Realtime unavailable",
+    "pending": "Syncing…",
+    "pendingTitle": "Changes you made are not confirmed by the server yet",
     "someone": "Another member",
+    "filePeers": "Currently editing this file: {{names}}",
+    "outlinePeers": "Working here: {{names}}",
     "peersTitle": "Also editing this file: {{names}}",
     "peersMore_one": "{{count}} person",
     "peersMore_other": "{{count}} people",
+    "overlapRegion": "You and {{names}} are inside the same {{region}}. Changes will not be lost, but you may be undoing each other's intent.",
+    "peerAt": "{{name}} — {{region}}",
     "overlapWarning": "You are working in the same area as {{names}}. Changes will not be lost, but you may be undoing each other's intent."
   },
   "templates": {

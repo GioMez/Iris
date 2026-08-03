@@ -162,7 +162,7 @@
 
   // Caret position for the status bar, fed by the editor adapter's cursor
   // events and re-rendered on language switches.
-  let lastCursor = { line: 1, column: 1 };
+  let lastCursor = { line: 1, column: 1, fromLine: 1, toLine: 1, head: 0, from: 0, to: 0 };
   function renderCursorStatus() {
     $("stCursor").textContent = t("status.cursor", { line: lastCursor.line, column: lastCursor.column });
   }
@@ -224,6 +224,9 @@
         if (!realtime) markFileDirty(f.id);
       }
       renderOutline();
+      // The structure changed with the text; the index catches up once typing
+      // settles rather than on every keystroke.
+      scheduleStructure();
       if (!realtime) schedulePersist();
     });
     ed().onCursor((pos) => {
@@ -235,6 +238,7 @@
     });
     ed().onPeers(renderPresence);
     window.IrisCollab.onStatus(renderSyncStatus);
+    window.IrisCollab.onFilePeers(renderTreePresence);
     window.IrisCollab.onBuild(onRemoteBuild);
     // Losing write access mid-session drops the workspace to read-only in place,
     // exactly like the projects layer does when a write is refused.
@@ -296,23 +300,78 @@
     revoked: "collab.revoked",
     error: "collab.error",
   };
-  function renderSyncStatus() {
+  // Called both as a status listener and directly; without a snapshot the
+  // current state is read back from the transport.
+  function renderSyncStatus(snapshot) {
     const chip = $("stSync");
     const label = $("stSyncLabel");
     if (!chip || !label) return;
-    const status = window.IrisCollab.status();
+    const status = snapshot ? snapshot.status : window.IrisCollab.status();
+    const pending = snapshot ? !!snapshot.pending : window.IrisCollab.pending();
     const key = SYNC_LABEL[status];
     chip.hidden = !key;
     if (!key) return;
+    // Work the server has not ordered yet is worth saying out loud: "Realtime"
+    // on its own claims the document is settled when it is not. While the link
+    // is down the more urgent fact is the link, so the label keeps saying so and
+    // only the tooltip mentions what is still waiting.
+    const unconfirmed = pending && (status === "live" || status === "offline");
     chip.dataset.sync = status;
-    label.textContent = t(key);
-    chip.title = t("collab.title");
+    chip.classList.toggle("pending", unconfirmed);
+    label.textContent = unconfirmed && status === "live" ? t("collab.pending") : t(key);
+    chip.title = unconfirmed ? t("collab.pendingTitle") : t("collab.title");
+  }
+
+  /* ---------------- document structure ---------------- */
+  // The tree of sections, environments and blocks for the open file. It belongs
+  // to the document rather than to the presence: it is rebuilt when the text
+  // settles and afterwards only consulted, so a caret moving never costs a
+  // parse. Being at most one debounce stale is harmless — the warning it feeds
+  // is advisory, and the next report corrects it.
+  const STRUCTURE_DEBOUNCE = 250;
+  let structureIndex = null;
+  let structureTimer = 0;
+
+  function rebuildStructure() {
+    clearTimeout(structureTimer);
+    structureTimer = 0;
+    const f = findFile(state.activeId);
+    // The model, not the editor: it is kept current by the change handler and it
+    // is what the outline parses, so the two can never disagree — and it is
+    // there even in the moment before the editor module has resolved.
+    structureIndex = f && (f.kind === "tex" || f.kind === "ly") && window.IrisStructure
+      ? window.IrisStructure.index(f.content || "", f.kind)
+      : null;
+    renderPresence(lastPeers);
+  }
+  function scheduleStructure() {
+    if (structureTimer) return;
+    structureTimer = setTimeout(rebuildStructure, STRUCTURE_DEBOUNCE);
+  }
+
+  // The regions containing a position, innermost last. Empty where the document
+  // has no structure to speak of, which is the signal to fall back to lines.
+  function pathAtOffset(offset) {
+    if (!structureIndex || offset == null || !window.IrisStructure) return [];
+    return window.IrisStructure.pathAt(structureIndex, offset);
+  }
+  // Region names come from the document itself, so they are normalized and cut
+  // to something that fits a status bar.
+  function regionLabel(node) {
+    if (!node) return "";
+    const label = String(node.label || "").replace(/\s+/g, " ").trim();
+    if (!label) return "";
+    const short = label.length > 40 ? `${label.slice(0, 39)}…` : label;
+    return node.kind === "section" ? `§ ${short}` : short;
+  }
+  function regionAt(offset) {
+    const path = pathAtOffset(offset);
+    return path.length ? regionLabel(path[path.length - 1]) : "";
   }
 
   /* ---------------- presence: who else is in this file ---------------- */
-  // How close another participant has to be for the overlap warning. Editing the
-  // same line, or one either side of it, is near enough that two people are
-  // plausibly working on the same thing.
+  // How close another participant has to be for the overlap warning where there
+  // is no structure to compare: the same line, or one either side of it.
   const OVERLAP_LINES = 1;
   let lastPeers = [];
 
@@ -333,40 +392,167 @@
         color: peer.color,
         role: peer.role,
         line: peer.line,
+        // Where they are in the document, not in the file: "§ 2.1 Metodo" tells
+        // a collaborator something a line number never does.
+        region: regionAt(peer.head),
         carets: 1,
       });
     });
     return Array.from(people.values());
   }
 
+  // Whether two line spans touch, widened by the tolerance on both sides. This
+  // is the fallback: it asks "are you near", which is only a proxy for the
+  // question that matters.
+  function nearInLines(peer) {
+    if (peer.fromLine == null || peer.toLine == null) return false;
+    return peer.fromLine - OVERLAP_LINES <= lastCursor.toLine
+      && peer.toLine + OVERLAP_LINES >= lastCursor.fromLine;
+  }
+
+  // Structure asks it directly: are you inside the same construct. Two carets a
+  // line apart on either side of a section boundary share nothing and no longer
+  // raise a warning; two carets thirty lines apart inside one environment share
+  // everything and now do. Where either position sits in no region — a preamble,
+  // a file with no headings — there is nothing to compare and the line rule
+  // stands.
+  //
+  // Returns { peer, node } per participant at risk, `node` being the innermost
+  // region the two of you are both inside, or null when the verdict came from
+  // proximity alone.
   function overlappingPeers(peers) {
-    return peers.filter((peer) => peer.line != null && Math.abs(peer.line - lastCursor.line) <= OVERLAP_LINES);
+    const mine = pathAtOffset(lastCursor.head);
+    return peers.map((peer) => {
+      // A viewer cannot write, so its position is not a risk — it is somebody
+      // reading over your shoulder, which is the point of sharing.
+      if (peer.role === "viewer") return null;
+      if (peer.fromLine == null) return null;
+      if (!mine.length || peer.head == null) return nearInLines(peer) ? { peer, node: null } : null;
+      const theirs = pathAtOffset(peer.head);
+      if (!theirs.length) return nearInLines(peer) ? { peer, node: null } : null;
+      // Sharing an ancestor is not enough: siblings share one and have nothing
+      // to do with each other. One of you has to be inside the other's region.
+      const { node, contained } = window.IrisStructure.shared(mine, theirs);
+      return contained ? { peer, node } : null;
+    }).filter(Boolean);
   }
 
   function renderPresence(peers) {
     lastPeers = Array.isArray(peers) ? peers : [];
     const chip = $("stPeers");
+    renderOutlinePresence();
     if (!chip) return;
     const people = peopleFromPeers(lastPeers);
     chip.hidden = !people.length;
     if (!people.length) {
       chip.innerHTML = "";
+      ed().setSharedRegion(null);
       return;
     }
     const overlapping = overlappingPeers(lastPeers);
     const names = people.map((person) => person.name).join(", ");
     chip.classList.toggle("overlap", overlapping.length > 0);
+    // The construct that is actually being shared, when structure could name
+    // one. It is what the band in the editor marks and what the warning says.
+    const contested = overlapping.find((hit) => hit.node) || null;
+    ed().setSharedRegion(contested
+      ? { from: contested.node.from, to: contested.node.to, color: contested.peer.color }
+      : null);
     // The warning is deliberately non-blocking: it names the risk and leaves the
     // decision to the people involved, as agreed for semantic conflicts.
+    const atRisk = overlapping.map((hit) => hit.peer.name || hit.peer.username).join(", ");
+    const located = people.map((person) => (person.region
+      ? t("collab.peerAt", { name: person.name, region: person.region })
+      : person.name)).join(", ");
     chip.title = overlapping.length
-      ? t("collab.overlapWarning", { names: overlappingPeers(lastPeers).map((peer) => peer.name || peer.username).join(", ") })
-      : t("collab.peersTitle", { names });
+      ? (contested
+        ? t("collab.overlapRegion", { names: atRisk, region: regionLabel(contested.node) })
+        : t("collab.overlapWarning", { names: atRisk }))
+      : t("collab.peersTitle", { names: located });
     chip.setAttribute("aria-label", chip.title);
     chip.innerHTML =
       `<span class="peer-dots" aria-hidden="true">${people.slice(0, 4).map((person) =>
         `<span class="peer-dot" style="--peer-color:${esc(person.color)}" title="${esc(person.name)}">${esc(initialsOf(person.name))}</span>`).join("")}</span>` +
       `<span class="peer-count">${esc(people.length > 4 ? t("collab.peersMore", { count: people.length }) : names)}</span>` +
       (overlapping.length ? `<span class="peer-warn" aria-hidden="true">${ti("alert-triangle")}</span>` : "");
+  }
+
+  /* ---------------- presence: which files the others are in ---------------- */
+  // The footer covers the file on screen; the tree covers the rest of the
+  // project, so opening a file is no longer the only way to discover somebody
+  // is already in it. The badge is filled in place rather than by rebuilding
+  // the tree: presence changes far more often than the file list, and a rebuild
+  // would take the focus with it.
+  function renderTreePresence() {
+    const root = $("tree");
+    if (!root) return;
+    const byFile = new Map();
+    (window.IrisCollab.filePeers() || []).forEach((entry) => {
+      if (entry && entry.fileId) byFile.set(String(entry.fileId), entry.peers || []);
+    });
+    root.querySelectorAll(".node[data-id]").forEach((el) => {
+      const slot = el.querySelector(".node-peers");
+      if (!slot) return;
+      // With nobody in the project there is nothing to resolve and nothing to
+      // clear, which is the state the tree is in almost all of the time.
+      if (!byFile.size && slot.hidden) return;
+      const fileId = canonicalFileId(el.dataset.id);
+      fillPeerPins(slot, (fileId && byFile.get(fileId)) || [], "collab.filePeers");
+    });
+  }
+
+  // The same marks on the outline: the panel is a linear list of landmarks, so
+  // "which heading is somebody under" is the last one at or before them. Point
+  // attribution is enough here — the panel answers "roughly where in the
+  // document", while the warning uses the region tree for containment.
+  function renderOutlinePresence() {
+    const box = $("outline");
+    if (!box) return;
+    const rows = Array.from(box.querySelectorAll(".ol-item[data-offset]"));
+    if (!rows.length) return;
+    const offsets = rows.map((row) => Number(row.dataset.offset));
+    const byRow = new Map();
+    lastPeers.forEach((peer) => {
+      if (peer.head == null) return;
+      let index = -1;
+      for (let i = 0; i < offsets.length; i++) {
+        if (Number.isFinite(offsets[i]) && offsets[i] <= peer.head) index = i;
+      }
+      if (index < 0) return;
+      const list = byRow.get(index) || [];
+      // One dot per person, not per tab, as everywhere else.
+      if (!list.some((other) => other.userId === peer.userId)) list.push(peer);
+      byRow.set(index, list);
+    });
+    rows.forEach((row, index) => {
+      const slot = row.querySelector(".node-peers");
+      if (!slot) return;
+      fillPeerPins(slot, byRow.get(index) || [], "collab.outlinePeers");
+    });
+  }
+
+  // Shared by the file tree and the outline: a row of coloured dots naming who
+  // is there, reachable by assistive technology and not only by the pointer.
+  const PEER_PINS = 3;
+  function fillPeerPins(slot, peers, key) {
+    // The common case is an empty slot staying empty, on every keystroke and for
+    // every row: it must not cost a DOM write.
+    if (!peers.length && slot.hidden) return;
+    slot.hidden = !peers.length;
+    if (!peers.length) {
+      slot.innerHTML = "";
+      slot.removeAttribute("title");
+      slot.removeAttribute("aria-label");
+      return;
+    }
+    const names = peers.map((peer) => peer.name || peer.username || t("collab.someone")).join(", ");
+    const title = t(key, { names });
+    slot.title = title;
+    slot.setAttribute("aria-label", title);
+    const extra = peers.length - PEER_PINS;
+    slot.innerHTML = peers.slice(0, PEER_PINS).map((peer) =>
+      `<span class="node-peer-dot" style="--peer-color:${esc(peer.color || "#7aa2f7")}"></span>`).join("")
+      + (extra > 0 ? `<span class="node-peer-more">+${extra}</span>` : "");
   }
 
   function initialsOf(name) {
@@ -662,6 +848,9 @@
     ed().load(f.content || "", f.kind);
     renderTabs();
     renderOutline();
+    // A different document is a different structure, and there is no typing to
+    // wait for: the index is rebuilt at once rather than on the debounce.
+    rebuildStructure();
     markTree(id);
     // Joining replaces the document just loaded with the authoritative one; the
     // local content stands in until the server answers.
@@ -1054,6 +1243,8 @@
           const canHistory = !n.generated && n.kind !== "img" && n.kind !== "font";
           el.innerHTML = `<span class="tw"></span>${fileIcon(n.kind)}<span class="nm">${esc(n.name)}</span>` +
             (n.generated ? `<span class="tag">gen</span>` : (n.kind === "img" ? `<span class="tag">img</span>` : "")) +
+            // Filled by renderTreePresence when somebody else is in this file.
+            `<span class="node-peers" role="img" hidden></span>` +
             `<span class="node-tools">` +
               (canHistory ? `<button class="node-act" type="button" data-act="history" title="${esc(t("tree.history"))}" aria-label="${esc(t("tree.historyAria", { name: n.name }))}">${ti("history")}</button>` : "") +
               `<button class="node-act" type="button" data-act="download" title="${esc(t("common.download"))}" aria-label="${esc(t("tree.downloadAria", { name: n.name }))}">${ti("download")}</button>` +
@@ -1080,6 +1271,9 @@
       });
     };
     build(project.nodes, 0, "");
+    // The badges belong to nodes that have just been recreated, so they are
+    // filled again from the presence the transport is already holding.
+    renderTreePresence();
   }
 
   function applyRefreshedFileTree(data) {
@@ -1190,11 +1384,18 @@
       label.className = "label";
       label.textContent = it.title;
       label.title = it.title;
-      el.append(num, label);
+      // Filled by renderOutlinePresence with whoever is working under it.
+      const pins = document.createElement("span");
+      pins.className = "node-peers";
+      pins.setAttribute("role", "img");
+      pins.hidden = true;
+      if (Number.isInteger(it.offset)) el.dataset.offset = String(it.offset);
+      el.append(num, label, pins);
       el.addEventListener("click", () => gotoSection(it));
       activateOnKeyboard(el, () => gotoSection(it));
       box.appendChild(el);
     });
+    renderOutlinePresence();
   }
   function gotoSection(item) {
     const value = ed().getValue();

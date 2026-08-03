@@ -340,5 +340,78 @@
       });
   }
 
-  window.IrisLilyPond = { highlight, format, indentOnEnter, outline, stream };
+  /* ---- structural regions: the areas two people can share ---- */
+  // outline() already finds where every block begins; this adds where it ends,
+  // which is what turns a list of landmarks into areas two carets can be inside
+  // of. It reuses outlineSource(), so braces in comments and strings cannot
+  // unbalance the nesting.
+
+  // Every balanced { } and << >> span, keyed by the offset it opens at.
+  function blockSpans(structure) {
+    const spans = new Map();
+    const open = [];
+    for (let i = 0; i < structure.length; i++) {
+      const closeAt = (token, end) => {
+        for (let k = open.length - 1; k >= 0; k--) {
+          if (open[k].token !== token) continue;
+          spans.set(open[k].at, end);
+          open.splice(k);
+          return;
+        }
+      };
+      if (structure.startsWith("<<", i)) { open.push({ token: ">>", at: i }); i += 1; continue; }
+      if (structure.startsWith(">>", i)) { closeAt(">>", i + 2); i += 1; continue; }
+      if (structure[i] === "{") { open.push({ token: "}", at: i }); continue; }
+      if (structure[i] === "}") closeAt("}", i + 1);
+    }
+    // A block left open runs to the end of the file rather than being dropped.
+    open.forEach((entry) => { if (!spans.has(entry.at)) spans.set(entry.at, structure.length); });
+    return spans;
+  }
+
+  // How far a construct's header may run before its block opens: `\score {`,
+  // but also `melody = \relative c' {` and `\new Staff = "up" \with { … } {`.
+  const HEADER_CHAR = /[\s\\A-Za-z0-9_'`,.\-#!()=]/;
+  const HEADER_LIMIT = 240;
+
+  function blockOpenAfter(structure, offset, spans) {
+    let i = offset;
+    const limit = Math.min(structure.length, offset + HEADER_LIMIT);
+    while (i < limit) {
+      if (structure.startsWith("<<", i)) return i;
+      if (structure[i] === "{") {
+        // A \with block configures the context, it is not the context's body.
+        const before = structure.slice(Math.max(0, i - 8), i);
+        if (/\\with\s*$/.test(before)) {
+          const close = spans.get(i);
+          if (close == null) return -1;
+          i = close;
+          continue;
+        }
+        return i;
+      }
+      if (!HEADER_CHAR.test(structure[i])) return -1;
+      i += 1;
+    }
+    return -1;
+  }
+
+  function regions(src) {
+    const { structure } = outlineSource(src);
+    const spans = blockSpans(structure);
+    const found = [];
+    outline(src).forEach((item) => {
+      if (!Number.isInteger(item.offset)) return;
+      const open = blockOpenAfter(structure, item.offset, spans);
+      if (open < 0) return;
+      const close = spans.get(open);
+      // A landmark with no block of its own — \version, \include — is a point,
+      // not an area, and nobody can be inside it.
+      if (close == null || close <= item.offset) return;
+      found.push({ kind: "block", label: item.title, from: item.offset, to: close });
+    });
+    return found.sort((a, b) => a.from - b.from || b.to - a.to);
+  }
+
+  window.IrisLilyPond = { highlight, format, indentOnEnter, outline, regions, stream };
 })();

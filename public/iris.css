@@ -225,6 +225,7 @@ button{font-family:inherit;color:inherit}
 .ol-item.lvl3{padding-left:46px}
 .ol-item.lvl4{padding-left:62px}
 .ol-item.lvl2 .num,.ol-item.lvl3 .num,.ol-item.lvl4 .num{color:var(--txt-mut)}
+.ol-item .node-peers{margin-left:auto;align-self:center}
 .ol-empty{color:var(--txt-mut);font-size:12.5px;padding:12px 10px;text-align:center}
 
 /* ===================== editor ===================== */
@@ -382,6 +383,9 @@ button.st{border:0;background:transparent;font:inherit}
 .sb-sync[data-sync="connecting"] .sync-dot,.sb-sync[data-sync="offline"] .sync-dot{background:var(--semantic-warning);
   animation:sync-pulse 1.1s ease-in-out infinite}
 .sb-sync[data-sync="readonly"]{color:var(--txt-mut)}
+/* edits this tab is still holding: settled green would overstate the case */
+.sb-sync.pending{color:var(--semantic-warning)}
+.sb-sync.pending .sync-dot{background:var(--semantic-warning);animation:sync-pulse 1.1s ease-in-out infinite}
 .sb-sync[data-sync="revoked"],.sb-sync[data-sync="error"]{color:var(--semantic-danger)}
 .sb-sync[data-sync="revoked"] .sync-dot,.sb-sync[data-sync="error"] .sync-dot{background:var(--semantic-danger)}
 @keyframes sync-pulse{0%,100%{opacity:1}50%{opacity:.35}}
@@ -398,10 +402,25 @@ button.st{border:0;background:transparent;font:inherit}
 .sb-peers .peer-warn .ti{width:13px;height:13px}
 .sb-peers.overlap{color:var(--semantic-warning)}
 
-/* the lines other participants are working on */
+/* who else is inside the project's other files, and under which heading */
+.node-peers{display:inline-flex;align-items:center;flex:0 0 auto;gap:0;margin-left:2px}
+.node-peers[hidden]{display:none}
+.node-peer-dot{width:7px;height:7px;border-radius:50%;background:var(--peer-color);
+  box-shadow:0 0 0 1.5px var(--panel)}
+.node-peer-dot+.node-peer-dot{margin-left:-2px}
+.node-peer-more{font-size:9.5px;color:var(--txt-mut);font-family:var(--font-code);margin-left:3px}
+
+/* the lines other participants are working on, and what they have selected */
 .cm-host .cm-iris-peer-gutter{width:4px;padding:0;background:transparent}
 .cm-host .cm-iris-peer-mark{width:3px;height:100%;min-height:var(--editor-line-height);border-radius:2px}
 .cm-host .cm-iris-peer-line{background:#ffffff09;background:color-mix(in srgb, var(--peer-color) 9%, transparent)}
+/* Stronger than the caret line: this is text somebody is about to replace, and
+   it has to stay legible under the shade and distinct from a local selection. */
+.cm-host .cm-iris-peer-selection{background:#ffffff16;background:color-mix(in srgb, var(--peer-color) 22%, transparent);
+  border-radius:2px;box-shadow:inset 0 -1px 0 var(--peer-color)}
+/* The construct two people are jointly inside: a spine down its whole extent,
+   which delimits the contested area without adding colour to the text. */
+.cm-host .cm-iris-peer-region{box-shadow:inset 2px 0 0 var(--region-color, var(--semantic-warning))}
 
 @media (prefers-reduced-motion:reduce){
   .sb-sync .sync-dot{animation:none}

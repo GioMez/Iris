@@ -26,6 +26,7 @@
 
   const listeners = [];
   const peerListeners = [];
+  const filePeerListeners = [];
   const buildListeners = [];
   const state = {
     socket: null,
@@ -45,11 +46,16 @@
     presenceTimer: 0,
     pushing: false,
     peers: [],
+    // Who is in each of the project's other files. Unlike `peers` this carries no
+    // positions: it only answers "is somebody else in there", for the file tree.
+    filePeers: [],
+    // True while this tab holds edits the server has not ordered yet.
+    pending: false,
   };
 
   const ed = () => window.IrisEditor;
   function emit() {
-    const snapshot = { status: state.status, role: state.role, fileId: state.joined };
+    const snapshot = { status: state.status, role: state.role, fileId: state.joined, pending: state.pending };
     listeners.forEach((fn) => {
       try { fn(snapshot); } catch (err) { console.error("IrisCollab listener failed", err); }
     });
@@ -59,14 +65,42 @@
       try { fn(state.peers); } catch (err) { console.error("IrisCollab peer listener failed", err); }
     });
   }
+  function emitFilePeers() {
+    filePeerListeners.forEach((fn) => {
+      try { fn(state.filePeers); } catch (err) { console.error("IrisCollab file peer listener failed", err); }
+    });
+  }
   function setPeers(peers) {
     state.peers = Array.isArray(peers) ? peers : [];
     ed().setPeers(state.peers);
     emitPeers();
   }
+  function setFilePeers(files) {
+    state.filePeers = Array.isArray(files) ? files : [];
+    emitFilePeers();
+  }
   function setStatus(status) {
     if (state.status === status) return;
     state.status = status;
+    emit();
+  }
+
+  // Work this tab has typed that the server has not ordered yet: either a push
+  // is in flight, or the editor is still holding updates nobody has confirmed.
+  // "Realtime" would claim more than is true while that is the case, so the
+  // status the user sees says so.
+  function hasPendingWork() {
+    // `desired`, not `joined`: a dropped link does not settle what this tab is
+    // still holding, and the edits go out again as soon as the room reopens.
+    if (!state.desired || state.role === "viewer") return false;
+    if (state.pushing) return true;
+    const pending = ed().collabPending();
+    return !!(pending && pending.updates.length);
+  }
+  function refreshPending() {
+    const pending = hasPendingWork();
+    if (pending === state.pending) return;
+    state.pending = pending;
     emit();
   }
 
@@ -116,8 +150,12 @@
       state.pushTimer = 0;
       clearTimeout(state.presenceTimer);
       state.presenceTimer = 0;
-      // Nobody is visible over a dead link; the list is rebuilt on reconnection.
+      // Nobody is visible over a dead link; the lists are rebuilt on reconnection.
       setPeers([]);
+      setFilePeers([]);
+      // Unconfirmed work does not stop being unconfirmed because the link died,
+      // so the flag is recomputed rather than cleared.
+      refreshPending();
       if (event.code === CLOSE_REVOKED) {
         setStatus("revoked");
         return;
@@ -165,6 +203,7 @@
       setStatus(message.role === "viewer" ? "readonly" : "live");
       // Anything typed before the room opened is now sendable.
       pushPending();
+      refreshPending();
       sendPresence();
       return;
     }
@@ -172,6 +211,15 @@
     if (message.t === "peers") {
       if (!isCurrent(message.fileId)) return;
       setPeers(message.peers);
+      return;
+    }
+
+    // Presence for the project's other files, which is what marks the tree. It
+    // arrives on the project channel, so it keeps coming while the editor sits
+    // on a file nobody else has open.
+    if (message.t === "filepeers") {
+      if (message.projectId !== state.project) return;
+      setFilePeers(message.files);
       return;
     }
 
@@ -188,6 +236,9 @@
       ed().collabReceive(message.updates);
       setStatus(state.role === "viewer" ? "readonly" : "live");
       pushPending();
+      // Our own updates come back through this stream: receiving them is what
+      // confirms them, and what can leave nothing pending.
+      refreshPending();
       return;
     }
 
@@ -198,12 +249,16 @@
       // why only the server may ask for this.
       ed().loadCollab(message.doc, state.desired.kind, { version: message.version });
       setStatus(state.role === "viewer" ? "readonly" : "live");
+      // The dropped pending edits are gone with the old document: nothing this
+      // tab holds is waiting for the server any more.
+      refreshPending();
       sendPresence();
       return;
     }
 
     if (message.t === "pushed") {
       state.pushing = false;
+      refreshPending();
       if (!isCurrent(message.fileId)) return;
       // Accepted or refused, the next step is the same: pull. On acceptance that
       // confirms our own updates and advances the synced version; on refusal it
@@ -262,11 +317,15 @@
     const pending = ed().collabPending();
     if (!pending || !pending.updates.length) return;
     state.pushing = send({ t: "push", fileId: state.joined, version: pending.version, updates: pending.updates });
+    refreshPending();
   }
 
   // Coalesces a burst of keystrokes into one message. @codemirror/collab keeps
   // accumulating unconfirmed updates meanwhile, so nothing is lost by waiting.
   function schedulePush() {
+    // The edit is unconfirmed from the moment it is typed, not from the moment
+    // the debounce lets it leave, so the flag is raised before the early return.
+    refreshPending();
     if (state.pushTimer || state.pushing || !state.joined || state.role === "viewer") return;
     state.pushTimer = setTimeout(pushPending, pacing.push);
   }
@@ -276,11 +335,13 @@
     state.presenceTimer = 0;
     if (!state.joined) return;
     const selection = ed().selection();
+    // The caret's own side of the range, not the ordered pair: the others draw
+    // the cursor where it actually is, and shade the selection between the two.
     send({
       t: "presence",
       fileId: state.joined,
-      anchor: selection.from,
-      head: selection.to,
+      anchor: selection.anchor,
+      head: selection.head,
       version: ed().collabVersion(),
     });
   }
@@ -305,6 +366,9 @@
     watchProject(projectId) {
       if (!projectId || state.project === projectId) return;
       state.project = projectId;
+      // Another project's tree is not this one's; the server sends the current
+      // state as soon as it has authorized the watch.
+      setFilePeers([]);
       if (state.socket && state.socket.readyState === WebSocket.OPEN) send({ t: "project", projectId });
       else connect();
     },
@@ -337,12 +401,15 @@
       clearTimeout(state.presenceTimer);
       state.presenceTimer = 0;
       setPeers([]);
+      // Out of every room, there is nothing left for the server to confirm.
+      state.pending = false;
       setStatus("off");
     },
     // Closes the transport entirely (leaving the project, signing out).
     disconnect() {
       this.leave();
       state.project = null;
+      setFilePeers([]);
       const socket = state.socket;
       state.socket = null;
       if (socket) {
@@ -358,9 +425,15 @@
     role() { return state.role; },
     fileId() { return state.joined; },
     peers() { return state.peers; },
+    // Edits this tab is holding that the server has not ordered yet.
+    pending() { return state.pending; },
+    // [{ fileId, peers: [{ userId, name, color }] }] for the project's files.
+    filePeers() { return state.filePeers; },
     watching() { return state.project; },
     onStatus(fn) { listeners.push(fn); },
     onPeers(fn) { peerListeners.push(fn); },
+    // Fires when the set of people inside the project's files changes.
+    onFilePeers(fn) { filePeerListeners.push(fn); },
     // Fires when any member finishes a compilation of the watched project.
     onBuild(fn) { buildListeners.push(fn); },
   };

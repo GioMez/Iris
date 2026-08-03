@@ -20,7 +20,8 @@ function harness() {
     peerSets: [],
     version: 0,
     pending: null,
-    cursor: { from: 0, to: 0, text: "" },
+    // Mirrors the adapter: from/to ordered, anchor/head keeping the caret's side.
+    cursor: { from: 0, to: 0, text: "", anchor: 0, head: 0 },
     syncHandlers: [],
     cursorHandlers: [],
     loadCollab(doc, kind, opts) {
@@ -109,10 +110,20 @@ function harness() {
       editor.pending = { version: editor.version, updates };
       editor.syncHandlers.forEach((fn) => fn());
     },
-    // Moving the caret schedules an ephemeral presence report.
-    moveCursor(from, to = from) {
-      editor.cursor = { from, to, text: "" };
-      editor.cursorHandlers.forEach((fn) => fn({ line: 1, column: from + 1 }));
+    // Moving the caret schedules an ephemeral presence report. `opts` drives the
+    // caret to the other end of the range, as dragging a selection backwards
+    // does.
+    moveCursor(from, to = from, opts = {}) {
+      const anchor = opts.anchor == null ? from : opts.anchor;
+      const head = opts.head == null ? to : opts.head;
+      editor.cursor = {
+        from: Math.min(anchor, head),
+        to: Math.max(anchor, head),
+        text: "",
+        anchor,
+        head,
+      };
+      editor.cursorHandlers.forEach((fn) => fn({ line: 1, column: from + 1, fromLine: 1, toLine: 1 }));
     },
   };
 }
@@ -429,6 +440,18 @@ test("a selection is reported as a range, not just a caret", () => {
   assert.equal(sent.head, 19);
 });
 
+test("a selection dragged backwards keeps the caret where the drag ended", () => {
+  const h = harness();
+  const socket = joined(h);
+  h.moveCursor(0, 0, { anchor: 19, head: 4 });
+  h.runTimers();
+  const sent = socket.lastOfType("presence");
+  // Reporting the ordered pair would put everyone's cursor at the end of their
+  // selection, whichever way they actually dragged it.
+  assert.equal(sent.anchor, 19);
+  assert.equal(sent.head, 4);
+});
+
 test("the participant list is handed to the editor", () => {
   const h = harness();
   const socket = joined(h);
@@ -478,6 +501,103 @@ test("a resync re-reports the caret at the new version", () => {
   const sent = socket.lastOfType("presence");
   assert.equal(socket.messagesOfType("presence").length, before + 1);
   assert.equal(sent.version, 30);
+});
+
+/* ---- edits the server has not confirmed yet ---- */
+
+test("an edit counts as unconfirmed until it comes back from the server", () => {
+  const h = harness();
+  const socket = joined(h);
+  const seen = [];
+  h.collab.onStatus((snapshot) => seen.push(snapshot.pending));
+  assert.equal(h.collab.pending(), false);
+
+  h.typeLocally([{ changes: [[1, "a"]], clientID: "me" }]);
+  assert.equal(h.collab.pending(), true, "unconfirmed from the moment it is typed, not when it is sent");
+  assert.deepEqual(seen, [true], "the state is announced, not only polled");
+
+  h.runTimers();
+  assert.equal(h.collab.pending(), true, "still unconfirmed while the push is in flight");
+
+  socket.deliver({ t: "pushed", fileId: "file-1", accepted: true, version: 4 });
+  assert.equal(h.collab.pending(), true, "acceptance is not confirmation until the update returns");
+
+  // Receiving the update is what lets @codemirror/collab retire it.
+  h.editor.pending = null;
+  socket.deliver({ t: "updates", fileId: "file-1", version: 4, updates: [{ changes: [[1, "a"]], clientID: "me" }] });
+  assert.equal(h.collab.pending(), false);
+  assert.deepEqual(seen, [true, false]);
+});
+
+test("unconfirmed work stays unconfirmed when the link drops", () => {
+  const h = harness();
+  const socket = joined(h);
+  h.typeLocally([{ changes: [[1, "a"]], clientID: "me" }]);
+  socket.fire("close", { code: 1006 });
+  // The edit is still sitting in this tab: the dead link does not settle it.
+  assert.equal(h.collab.status(), "offline");
+  assert.equal(h.collab.pending(), true);
+});
+
+test("leaving the room leaves nothing to confirm", () => {
+  const h = harness();
+  joined(h);
+  h.typeLocally([{ changes: [[1, "a"]], clientID: "me" }]);
+  assert.equal(h.collab.pending(), true);
+  h.collab.leave();
+  assert.equal(h.collab.pending(), false);
+});
+
+test("a viewer never has anything pending", () => {
+  const h = harness();
+  joined(h, { role: "viewer" });
+  h.typeLocally([{ changes: [[1, "a"]], clientID: "me" }]);
+  assert.equal(h.collab.pending(), false, "a viewer's editor cannot produce work for the server");
+});
+
+/* ---- presence in the project's other files ---- */
+
+const FILE_PRESENCE = [{ fileId: "file-2", peers: [{ userId: "u2", name: "Bo", color: "#9ece6a" }] }];
+
+function watching(h, projectId = "p-1") {
+  h.collab.watchProject(projectId);
+  h.socket().fire("open");
+  return h.socket();
+}
+
+test("who is in the project's other files arrives on the project channel", () => {
+  const h = harness();
+  const socket = watching(h);
+  const seen = [];
+  h.collab.onFilePeers((files) => seen.push(files));
+  socket.deliver({ t: "filepeers", projectId: "p-1", files: FILE_PRESENCE });
+  assert.deepEqual(h.collab.filePeers(), FILE_PRESENCE);
+  assert.deepEqual(seen, [FILE_PRESENCE]);
+  // It does not depend on having a document open: that is the point of it.
+  assert.equal(h.collab.active(), false);
+});
+
+test("file presence for another project is ignored", () => {
+  const h = harness();
+  const socket = watching(h);
+  socket.deliver({ t: "filepeers", projectId: "p-other", files: FILE_PRESENCE });
+  assert.equal(h.collab.filePeers().length, 0);
+});
+
+test("no file is shown as occupied over a dead connection", () => {
+  const h = harness();
+  const socket = watching(h);
+  socket.deliver({ t: "filepeers", projectId: "p-1", files: FILE_PRESENCE });
+  socket.fire("close", { code: 1006 });
+  assert.equal(h.collab.filePeers().length, 0, "the list is rebuilt on reconnection");
+});
+
+test("switching project drops the previous project's file presence", () => {
+  const h = harness();
+  const socket = watching(h);
+  socket.deliver({ t: "filepeers", projectId: "p-1", files: FILE_PRESENCE });
+  h.collab.watchProject("p-2");
+  assert.equal(h.collab.filePeers().length, 0);
 });
 
 /* ---- build notifications ---- */
