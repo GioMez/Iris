@@ -26,7 +26,16 @@ const {
   escapeLikePattern,
 } = require("./project-access");
 const { projectStorageKey, resolveProjectStorageDir, relocateProjectStorage } = require("./project-storage");
-const { discoverProjectTemplates, readProjectTemplate } = require("./project-templates");
+const {
+  initializeProjectTemplates,
+  discoverProjectTemplates,
+  listAdminProjectTemplates,
+  readProjectTemplate,
+  getAdminProjectTemplate,
+  createProjectTemplate,
+  updateProjectTemplate,
+  deleteProjectTemplate,
+} = require("./project-templates");
 const { createZip, extractZip } = require("./zip");
 const {
   buildStoragePath,
@@ -58,6 +67,7 @@ const DB_NAME = process.env.DB_NAME || "iris";
 const DB_CONNECT_TIMEOUT = Number(process.env.DB_CONNECT_TIMEOUT_MS || 5000);
 const DATA_DIR = path.resolve(process.env.DATA_DIR || "./data");
 const PUBLIC_DIR = path.resolve(process.env.PUBLIC_DIR || "./public");
+const TEMPLATE_DIR = path.resolve(process.env.TEMPLATE_DIR || path.join(DATA_DIR, "templates"));
 const TEX_BIN_PATH = process.env.TEX_BIN_PATH || "";
 const TEX_PATH_LOCKED = String(process.env.TEX_PATH_LOCKED || "false") === "true";
 const LILYPOND_BIN_PATH = process.env.LILYPOND_BIN_PATH || "";
@@ -620,6 +630,7 @@ async function initDb() {
     connectTimeout: DB_CONNECT_TIMEOUT,
   });
   await fs.mkdir(DATA_DIR, { recursive: true });
+  await initializeProjectTemplates(TEMPLATE_DIR, path.join(PUBLIC_DIR, "templates"));
   // Migration 002 rewrote the recorded storage locations: the directories they
   // now name must hold the project data before the first request is served.
   await relocateProjectStorage({ db, dataDir: DATA_DIR });
@@ -1430,7 +1441,7 @@ async function listProjects(req, res, user) {
 }
 
 async function listProjectTemplates(req, res) {
-  json(res, 200, { templates: await discoverProjectTemplates(PUBLIC_DIR) }, { "cache-control": "private, no-store" });
+  json(res, 200, { templates: await discoverProjectTemplates(TEMPLATE_DIR) }, { "cache-control": "private, no-store" });
 }
 
 async function getProjectTemplate(req, res, type, encodedFileName) {
@@ -1440,7 +1451,7 @@ async function getProjectTemplate(req, res, type, encodedFileName) {
   } catch {
     throw requestError("PROJECT_TEMPLATE_NOT_FOUND", 404);
   }
-  const content = await readProjectTemplate(PUBLIC_DIR, type, fileName);
+  const content = await readProjectTemplate(TEMPLATE_DIR, type, fileName);
   text(res, 200, content, {
     "cache-control": "private, no-store",
     "content-security-policy": "default-src 'none'",
@@ -3633,6 +3644,8 @@ const ADMIN_PROJECTS_ROUTE = "/api/admin/projects";
 const ADMIN_PROJECT_ROUTE = new RegExp(`^/api/admin/projects/(${UUID_PATTERN})$`);
 const ADMIN_PROJECT_MEMBERS_ROUTE = new RegExp(`^/api/admin/projects/(${UUID_PATTERN})/members$`);
 const ADMIN_PROJECT_MEMBER_ROUTE = new RegExp(`^/api/admin/projects/(${UUID_PATTERN})/members/(${UUID_PATTERN})$`);
+const ADMIN_TEMPLATES_ROUTE = "/api/admin/templates";
+const ADMIN_TEMPLATE_ROUTE = /^\/api\/admin\/templates\/([^/]+)\/([^/]+)$/;
 const PROJECT_MEMBERS_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/members$`);
 const PROJECT_MEMBER_SEARCH_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/members/search$`);
 const PROJECT_MEMBER_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/members/(${UUID_PATTERN})$`);
@@ -4164,8 +4177,81 @@ async function adminDeleteUser(req, res, actor, userId) {
   json(res, 200, { ok: true });
 }
 
+function decodeAdminTemplateId(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    throw requestError("ADMIN_TEMPLATE_ID_INVALID", 400);
+  }
+}
+
+async function adminListTemplates(req, res) {
+  json(res, 200, { templates: await listAdminProjectTemplates(TEMPLATE_DIR) }, { "cache-control": "private, no-store" });
+}
+
+async function adminCreateTemplate(req, res, actor) {
+  const template = await createProjectTemplate(TEMPLATE_DIR, await readBody(req));
+  await audit({
+    ...sessionActor(req, actor),
+    action: "template.created",
+    targetType: "system",
+    targetId: `${template.type}:${template.id}`,
+    metadata: { type: template.type, id: template.id, title: template.title, size: template.size, default: template.default },
+  });
+  json(res, 201, { template });
+}
+
+async function adminGetTemplate(req, res, type, encodedId) {
+  const template = await getAdminProjectTemplate(TEMPLATE_DIR, type, decodeAdminTemplateId(encodedId));
+  json(res, 200, { template }, { "cache-control": "private, no-store" });
+}
+
+async function adminUpdateTemplate(req, res, actor, type, encodedId) {
+  const previousId = decodeAdminTemplateId(encodedId);
+  const template = await updateProjectTemplate(TEMPLATE_DIR, type, previousId, await readBody(req));
+  await audit({
+    ...sessionActor(req, actor),
+    action: "template.updated",
+    targetType: "system",
+    targetId: `${template.type}:${template.id}`,
+    metadata: {
+      type: template.type,
+      id: template.id,
+      title: template.title,
+      size: template.size,
+      default: template.default,
+      previousType: type,
+      previousId,
+    },
+  });
+  json(res, 200, { template });
+}
+
+async function adminDeleteTemplate(req, res, actor, type, encodedId) {
+  const id = decodeAdminTemplateId(encodedId);
+  await deleteProjectTemplate(TEMPLATE_DIR, type, id);
+  await audit({
+    ...sessionActor(req, actor),
+    action: "template.deleted",
+    targetType: "system",
+    targetId: `${type}:${id}`,
+    metadata: { type, id },
+  });
+  json(res, 200, { ok: true });
+}
+
 async function handleAdminApi(req, res, url, actor) {
   requireAdmin(actor);
+  if (url.pathname === ADMIN_TEMPLATES_ROUTE) {
+    if (req.method === "GET") return adminListTemplates(req, res);
+    if (req.method === "POST") return adminCreateTemplate(req, res, actor);
+  }
+  const adminTemplateMatch = url.pathname.match(ADMIN_TEMPLATE_ROUTE);
+  if (adminTemplateMatch) {
+    if (req.method === "GET") return adminGetTemplate(req, res, adminTemplateMatch[1], adminTemplateMatch[2]);
+    if (req.method === "PUT") return adminUpdateTemplate(req, res, actor, adminTemplateMatch[1], adminTemplateMatch[2]);
+    if (req.method === "DELETE") return adminDeleteTemplate(req, res, actor, adminTemplateMatch[1], adminTemplateMatch[2]);
+  }
   if (url.pathname === ADMIN_PROJECTS_ROUTE && req.method === "GET") return adminListProjects(req, res, url);
   const adminProjectMemberMatch = url.pathname.match(ADMIN_PROJECT_MEMBER_ROUTE);
   if (adminProjectMemberMatch && req.method === "PATCH") return adminUpdateProjectMember(req, res, actor, adminProjectMemberMatch[1], adminProjectMemberMatch[2]);
@@ -4613,6 +4699,7 @@ if (require.main === module) initDb()
       console.log(`Iris listening on http://${BIND_ADDRESS || "localhost"}:${PORT}`);
       console.log(`Static files dir: ${PUBLIC_DIR}`);
       console.log(`Projects data dir: ${DATA_DIR}`);
+      console.log(`Project templates dir: ${TEMPLATE_DIR}`);
       if (initialAdminCredentials) {
         console.log("");
         console.log("================================================================");

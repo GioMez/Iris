@@ -52,16 +52,6 @@
 
   /* ---------------- blank content ---------------- */
   let projectTemplates = { latex: [], lilypond: [] };
-  const BUILTIN_TEMPLATE_KEYS = {
-    latex: {
-      article: "templateArticle",
-      beamer: "templateBeamer",
-      book: "templateBook",
-      report: "templateReport",
-      letter: "templateLetter",
-    },
-    lilypond: { default: "templateLilypondDefault" },
-  };
 
   function normalizeProjectTemplates(value) {
     const templates = value && typeof value === "object" ? value : {};
@@ -629,9 +619,8 @@
   let templateSelectType = null;
   const selectedTemplates = { latex: null, lilypond: null };
 
-  function projectTemplateLabel(projectType, template) {
-    const key = BUILTIN_TEMPLATE_KEYS[projectType] && BUILTIN_TEMPLATE_KEYS[projectType][template.id];
-    return key ? t(`projects.${key}`) : (template.label || template.id);
+  function projectTemplateLabel(template) {
+    return template.label || template.title || template.id;
   }
 
   function renderProjectTemplateOptions(projectType) {
@@ -642,7 +631,7 @@
     templates.forEach((template) => {
       const option = document.createElement("option");
       option.value = template.id;
-      option.textContent = projectTemplateLabel(projectType, template);
+      option.textContent = projectTemplateLabel(template);
       select.appendChild(option);
     });
     const selected = templates.find((template) => template.id === selectedTemplates[projectType])

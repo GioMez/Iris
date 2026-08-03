@@ -259,13 +259,13 @@ request limit also applies to imported archives.
 
 ### Project templates
 
-Iris discovers instance templates from `PUBLIC_DIR/templates/latex/*.tex` and
-`PUBLIC_DIR/templates/lilypond/*.ly` whenever the new-project dialog opens. An
-administrator can add or edit these files without changing application code or
-restarting Iris. `article.tex` and `default.ly` are the preferred defaults;
-otherwise Iris selects the first available template. See
-[`public/templates/README.md`](public/templates/README.md) for placeholders and
-Docker mounts.
+Iris stores the mutable instance catalog below `TEMPLATE_DIR` (by default
+`DATA_DIR/templates`). Administrators create, edit, rename, move and delete
+LaTeX and LilyPond templates from the **Templates** section of the Admin
+dashboard; changes are available the next time the new-project dialog opens.
+The files in `public/templates` seed a new instance once and are not used as its
+mutable catalog afterward. See [`public/templates/README.md`](public/templates/README.md)
+for placeholders, limits and storage details.
 
 ### LaTeX projects
 
@@ -432,6 +432,7 @@ already present in the process environment.
 | `IRIS_SECRET` | none | Required secret used to sign sessions and OAuth state. |
 | `DATA_DIR` | `./data/projects` | Root directory for project files. |
 | `PUBLIC_DIR` | `./public` | Static frontend directory. |
+| `TEMPLATE_DIR` | `DATA_DIR/templates` | Mutable LaTeX and LilyPond project-template catalog. |
 | `MAX_BODY_MB` | `25` | Maximum JSON request body size in MiB. |
 | `COOKIE_SECURE` | `false` | Set `true` when Iris is served over HTTPS. |
 | `TRUST_PROXY` | `false` | Set `true` only behind a reverse proxy that rewrites `X-Forwarded-For`, so audit events record the client address instead of the proxy. |

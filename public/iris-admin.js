@@ -16,10 +16,16 @@
   let adminTab = "users";
   let loadFailed = false;
 
-  // The admin area hosts two sibling dashboards (users, projects) behind one
-  // switch. The projects dashboard is a separate module, activated lazily.
+  const ADMIN_TABS = {
+    users: { title: "admin.title", heading: "adminUsersTitle" },
+    projects: { title: "adminProjects.title", heading: "adminProjectsTitle" },
+    templates: { title: "adminTemplates.title", heading: "adminTemplatesTitle" },
+  };
+
+  // Projects and templates are separate modules, activated only when their
+  // sibling dashboard is selected.
   function setAdminTab(tab, { focusTab = false, focusPanel = false } = {}) {
-    adminTab = tab === "projects" ? "projects" : "users";
+    adminTab = Object.prototype.hasOwnProperty.call(ADMIN_TABS, tab) ? tab : "users";
     document.querySelectorAll("#adminSwitch [data-admin-tab]").forEach((b) => {
       const on = b.dataset.adminTab === adminTab;
       b.classList.toggle("on", on);
@@ -31,8 +37,9 @@
       panel.hidden = panel.dataset.adminPanel !== adminTab;
     });
     if (adminTab === "projects" && window.IrisAdminProjects) window.IrisAdminProjects.activate();
-    document.title = `${t(adminTab === "projects" ? "adminProjects.title" : "admin.title")} · Iris`;
-    if (focusPanel) setTimeout(() => $(adminTab === "projects" ? "adminProjectsTitle" : "adminUsersTitle").focus(), 0);
+    if (adminTab === "templates" && window.IrisAdminTemplates) window.IrisAdminTemplates.activate();
+    document.title = `${t(ADMIN_TABS[adminTab].title)} · Iris`;
+    if (focusPanel) setTimeout(() => $(ADMIN_TABS[adminTab].heading).focus(), 0);
   }
 
   // A 401 here means my own session fell (self-disable, self password reset):
@@ -53,7 +60,7 @@
     el.textContent = message || "";
     button.hidden = !retry;
     button.onclick = retry ? () => {
-        $(adminTab === "projects" ? "adminProjectsTitle" : "adminUsersTitle").focus();
+        $(ADMIN_TABS[adminTab].heading).focus();
         retry();
       } : null;
   }
@@ -515,7 +522,7 @@
     // opens then if the page was loaded directly at #admin.
     document.addEventListener("iris:languagechange", () => {
       if (!document.documentElement.classList.contains("iris-inadmin")) return;
-      document.title = `${t(adminTab === "projects" ? "adminProjects.title" : "admin.title")} · Iris`;
+      document.title = `${t(ADMIN_TABS[adminTab].title)} · Iris`;
       render();
       if ($("adminDeleteUserModal").classList.contains("on")) renderDeleteUser();
     });

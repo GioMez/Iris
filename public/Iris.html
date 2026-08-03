@@ -726,6 +726,7 @@
         <div class="admin-switch" id="adminSwitch" role="tablist" aria-label="Admin sections" data-i18n-aria-label="admin.sectionsAria">
           <button class="on" id="adminTabUsers" type="button" role="tab" aria-selected="true" aria-controls="adminUsersPanel" tabindex="0" data-admin-tab="users" data-i18n="admin.tabUsers">Users</button>
           <button id="adminTabProjects" type="button" role="tab" aria-selected="false" aria-controls="adminProjectsPanel" tabindex="-1" data-admin-tab="projects" data-i18n="admin.tabProjects">Projects</button>
+          <button id="adminTabTemplates" type="button" role="tab" aria-selected="false" aria-controls="adminTemplatesPanel" tabindex="-1" data-admin-tab="templates" data-i18n="admin.tabTemplates">Templates</button>
         </div>
         <button class="tbtn ghost-b" id="adminBack" title="Back to projects" aria-label="Back to projects" data-i18n-title="admin.back" data-i18n-aria-label="admin.back"><span class="ic" data-icon="arrow-left"></span><span class="admin-back-label" data-i18n="toolbar.projects">Projects</span></button>
         <button class="userchip" id="adminAccount" type="button" title="Account" aria-label="Account" data-i18n-title="common.account" data-i18n-aria-label="common.account" aria-haspopup="menu" aria-expanded="false" aria-controls="userMenu">
@@ -836,6 +837,52 @@
         <div class="picker-empty" id="adminProjectEmpty" role="status" aria-live="polite" style="display:none">
           <div class="pe-title" data-i18n="adminProjects.noProjects">No matching projects</div>
           <div class="pe-sub" data-i18n="adminProjects.noProjectsDescription">Try changing the search or filters.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TEMPLATES PANEL -->
+    <div data-admin-panel="templates" id="adminTemplatesPanel" role="tabpanel" aria-labelledby="adminTabTemplates" tabindex="-1" hidden>
+      <div class="picker-head">
+        <div>
+          <h1 class="picker-title" id="adminTemplatesTitle" tabindex="-1" data-i18n="adminTemplates.title">Project template administration</h1>
+          <p class="picker-sub" data-i18n="adminTemplates.subtitle">Create and maintain the LaTeX and LilyPond starting sources available for new projects.</p>
+        </div>
+        <div class="picker-actions">
+          <button class="btn cta" id="adminTemplateNew" type="button"><span class="ic" data-icon="plus"></span><span data-i18n="adminTemplates.newTemplate">New template</span></button>
+        </div>
+      </div>
+
+      <div class="admin-filters admin-template-filters">
+        <label class="visually-hidden" for="adminTemplateTypeFilter" data-i18n="adminTemplates.typeFilter">Filter by template type</label>
+        <select class="input" id="adminTemplateTypeFilter" aria-label="Filter by template type" data-i18n-aria-label="adminTemplates.typeFilter">
+          <option value="" data-i18n="adminTemplates.allTypes">All types</option>
+          <option value="latex" data-i18n="adminTemplates.typeLatex">LaTeX</option>
+          <option value="lilypond" data-i18n="adminTemplates.typeLilypond">LilyPond</option>
+        </select>
+      </div>
+
+      <div class="picker-status-row">
+        <div class="picker-import-status" id="adminTemplateStatusMsg" role="status" aria-live="polite"></div>
+        <button class="status-retry" id="adminTemplateStatusRetry" type="button" hidden data-i18n="common.retry">Try again</button>
+      </div>
+
+      <div class="admin-table-wrap" id="adminTemplateTableWrap">
+        <table class="admin-table admin-template-table">
+          <thead>
+            <tr>
+              <th data-i18n="adminTemplates.colTemplate">Template</th>
+              <th data-i18n="adminTemplates.colType">Type</th>
+              <th data-i18n="adminTemplates.colDefault">Default</th>
+              <th data-i18n="adminTemplates.colSize">Size</th>
+              <th class="admin-col-actions"><span class="visually-hidden" data-i18n="admin.colActions">Actions</span></th>
+            </tr>
+          </thead>
+          <tbody id="adminTemplateRows"></tbody>
+        </table>
+        <div class="picker-empty" id="adminTemplateEmpty" role="status" aria-live="polite" style="display:none">
+          <div class="pe-title" data-i18n="adminTemplates.noTemplates">No matching templates</div>
+          <div class="pe-sub" data-i18n="adminTemplates.noTemplatesDescription">Try changing the type filter or create a template.</div>
         </div>
       </div>
     </div>
@@ -1070,6 +1117,81 @@
   </form>
 </div>
 
+<!-- ===================== ADMIN · TEMPLATE EDITOR ===================== -->
+<div class="scrim" id="adminTemplateModal">
+  <form class="modal wide admin-template-modal" id="adminTemplateForm" role="dialog" aria-modal="true" aria-labelledby="adminTemplateModalTitle">
+    <div class="m-head">
+      <h3 id="adminTemplateModalTitle" data-i18n="adminTemplates.newTitle">New template</h3>
+      <button class="m-x" id="adminTemplateClose" type="button" data-admin-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
+    </div>
+    <div class="m-body">
+      <div class="admin-template-error-row">
+        <div class="login-error inline" id="adminTemplateError" role="alert" style="display:none"></div>
+        <button class="status-retry" id="adminTemplateDetailRetry" type="button" hidden data-i18n="common.retry">Try again</button>
+      </div>
+      <div class="admin-template-modal-status" id="adminTemplateModalStatus" role="status" aria-live="polite"></div>
+      <div class="admin-template-form-grid">
+        <div class="field">
+          <label class="label" for="adminTemplateTitle" data-i18n="adminTemplates.displayTitle">Display title</label>
+          <input class="input" id="adminTemplateTitle" required autocomplete="off" maxlength="120" aria-describedby="adminTemplateError">
+        </div>
+        <div class="field">
+          <label class="label" for="adminTemplateId" data-i18n="adminTemplates.internalId">Internal ID</label>
+          <div class="admin-template-id-control">
+            <input class="input" id="adminTemplateId" required spellcheck="false" autocomplete="off" maxlength="80" aria-describedby="adminTemplateIdHint adminTemplateError">
+            <code id="adminTemplateExtension">.tex</code>
+          </div>
+          <span class="hint" id="adminTemplateIdHint" data-i18n="adminTemplates.idHint">Use a file-safe name without the extension.</span>
+        </div>
+        <div class="field">
+          <label class="label" for="adminTemplateType" data-i18n="adminTemplates.type">Type</label>
+          <select class="input" id="adminTemplateType" aria-describedby="adminTemplateError">
+            <option value="latex" data-i18n="adminTemplates.typeLatex">LaTeX</option>
+            <option value="lilypond" data-i18n="adminTemplates.typeLilypond">LilyPond</option>
+          </select>
+        </div>
+        <div class="field admin-template-description-field">
+          <label class="label" for="adminTemplateDescription" data-i18n="adminTemplates.description">Description</label>
+          <textarea class="input" id="adminTemplateDescription" rows="2" maxlength="500" aria-describedby="adminTemplateError"></textarea>
+        </div>
+      </div>
+      <div class="field admin-template-default-field">
+        <label class="admin-check"><input type="checkbox" id="adminTemplateDefault" aria-describedby="adminTemplateDefaultHint"><span data-i18n="adminTemplates.defaultLabel">Use as the default for this type</span></label>
+        <span class="hint" id="adminTemplateDefaultHint" data-i18n="adminTemplates.defaultHint">New projects of this type select this template first.</span>
+      </div>
+      <div class="admin-template-source-head">
+        <label class="label" for="adminTemplateContent" data-i18n="adminTemplates.source">Source content</label>
+        <span id="adminTemplateCounter" role="status" aria-live="polite"></span>
+      </div>
+      <textarea class="input admin-template-source" id="adminTemplateContent" rows="16" spellcheck="false" aria-describedby="adminTemplateCounter adminTemplateError"></textarea>
+    </div>
+    <div class="m-foot admin-template-foot">
+      <button class="btn danger" id="adminTemplateDelete" type="button" hidden><span class="ic" data-icon="trash"></span><span data-i18n="adminTemplates.deleteTemplate">Delete template</span></button>
+      <span class="spring"></span>
+      <button class="btn" id="adminTemplateCancel" type="button" data-admin-close data-i18n="common.cancel">Cancel</button>
+      <button class="btn cta" id="adminTemplateSave" type="submit" data-i18n="adminTemplates.createButton">Create template</button>
+    </div>
+  </form>
+</div>
+
+<!-- ===================== ADMIN · DELETE TEMPLATE ===================== -->
+<div class="scrim" id="adminTemplateDeleteModal">
+  <form class="modal narrow" id="adminTemplateDeleteForm" role="dialog" aria-modal="true" aria-labelledby="adminTemplateDeleteTitle" aria-describedby="adminTemplateDeleteText adminTemplateDeleteError">
+    <div class="m-head">
+      <h3 id="adminTemplateDeleteTitle" data-i18n="adminTemplates.deleteTitle">Delete template?</h3>
+      <button class="m-x" id="adminTemplateDeleteClose" type="button" aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
+    </div>
+    <div class="m-body">
+      <p class="confirm-txt" id="adminTemplateDeleteText"></p>
+      <div class="login-error inline modal-error-after" id="adminTemplateDeleteError" role="alert" style="display:none"></div>
+    </div>
+    <div class="m-foot">
+      <button class="btn" id="adminTemplateDeleteCancel" type="button" data-i18n="common.cancel">Cancel</button>
+      <button class="btn danger" id="adminTemplateDeleteOk" type="submit" data-i18n="adminTemplates.deleteButton">Delete template</button>
+    </div>
+  </form>
+</div>
+
 <!-- ===================== FILE HISTORY ===================== -->
 <div class="scrim" id="versionsModal">
   <div class="modal wide versions-modal" role="dialog" aria-modal="true" aria-labelledby="versionsTitle">
@@ -1192,6 +1314,7 @@
 <script src="iris-builds.js"></script>
 <script src="iris-admin.js"></script>
 <script src="iris-admin-projects.js"></script>
+<script src="iris-admin-templates.js"></script>
 <script src="iris-auth.js"></script>
 </body>
 </html>

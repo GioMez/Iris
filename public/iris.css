@@ -916,6 +916,38 @@ html.iris-inadmin[data-role="admin"] .admin-screen{display:block}
 .admin-sole-owner-txt{margin:0 0 8px;font-size:12.5px;color:var(--semantic-warning)}
 .admin-sole-owner-list{margin:0 0 10px;padding-left:18px;color:var(--txt);font-size:13px;display:flex;flex-direction:column;gap:2px}
 
+/* ===================== Admin · project templates ===================== */
+.admin-template-filters{justify-content:flex-end}
+.admin-template-name{color:var(--txt);font-size:14px;font-weight:600;overflow-wrap:anywhere}
+.admin-template-file{display:block;margin-top:3px;color:var(--txt-mut);font:11.5px var(--font-code);overflow-wrap:anywhere}
+.admin-template-description{max-width:520px;margin:5px 0 0;color:var(--txt-mut);font-size:12px;line-height:1.4;overflow-wrap:anywhere}
+.admin-template-type.type-latex{background:rgba(125,207,255,.1);border-color:rgba(125,207,255,.22);color:var(--accent)}
+.admin-template-type.type-lilypond{background:rgba(187,154,247,.1);border-color:rgba(187,154,247,.22);color:var(--category-music)}
+.admin-template-default{background:rgba(158,206,106,.1);border-color:rgba(158,206,106,.22);color:var(--semantic-success)}
+.admin-template-size{color:var(--txt-mut);font:12px var(--font-code);white-space:nowrap}
+.admin-template-modal{width:min(920px,calc(100vw - 30px));max-height:min(860px,calc(100dvh - 30px))}
+.admin-template-modal .m-body{min-height:0}
+.admin-template-error-row{display:flex;align-items:flex-start;gap:12px}
+.admin-template-error-row .login-error{flex:1}
+.admin-template-error-row .status-retry{flex:0 0 auto;margin:4px 0 14px}
+.admin-template-modal-status{min-height:18px;margin-bottom:8px;color:var(--txt-mut);font-size:12px}
+.admin-template-modal-status:empty{display:none}
+.admin-template-form-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:0 16px}
+.admin-template-id-control{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center}
+.admin-template-id-control .input{border-radius:9px 0 0 9px}
+.admin-template-id-control code{display:grid;place-items:center;height:38px;padding:0 11px;border:1px solid var(--border);border-left:0;
+  border-radius:0 9px 9px 0;background:var(--bg);color:var(--txt-mut);font:12px var(--font-code)}
+.admin-template-description-field textarea{height:66px;padding-block:9px;line-height:1.45;resize:vertical}
+.admin-template-default-field{padding:11px 12px;border:1px solid var(--border);border-radius:9px;background:var(--panel-2)}
+.admin-template-default-field .hint{margin-left:23px}
+.admin-template-source-head{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-top:18px}
+.admin-template-source-head .label{margin-bottom:7px}
+#adminTemplateCounter{color:var(--txt-mut);font:11.5px var(--font-code);white-space:nowrap}
+#adminTemplateCounter.error{color:var(--semantic-danger)}
+.admin-template-source{display:block;width:100%;height:auto;min-height:280px;padding:12px;resize:vertical;line-height:1.5;
+  tab-size:2;white-space:pre;overflow:auto;background:var(--editor-bg)}
+.admin-template-foot .spring{flex:1}
+
 /* ===================== Project sharing ===================== */
 .project-share-modal{width:min(660px,96vw);max-height:min(760px,92vh)}
 .project-share-modal .m-head>div{min-width:0}
@@ -1142,15 +1174,26 @@ html.iris-inadmin[data-role="admin"] .admin-screen{display:block}
   .admin-mobile-meta{display:block}
   .admin-col-actions{width:auto;text-align:right}
   .admin-row-edit{height:34px;padding:0 11px}
+  #adminTemplatesPanel .admin-template-table tbody tr{grid-template-columns:auto auto minmax(0,1fr) auto}
 }
 @media(max-width:640px){
   .admin-screen{padding:30px 18px 48px}
+  .admin-screen .picker-top .login-brand{display:none}
   .admin-header-actions{gap:5px}
-  .admin-switch button{padding-inline:10px}
+  .admin-switch button{padding-inline:7px}
   .admin-filters{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
   .admin-search{grid-column:1/-1;min-width:0}
   .admin-filters select{width:100%;min-width:0}
   #adminProjectsPanel .admin-filters select{grid-column:1/-1}
+  #adminTemplatesPanel .admin-template-filters select{grid-column:1/-1}
+  #adminTemplateModal{padding:10px}
+  .admin-template-modal{width:100%;max-height:calc(100dvh - 20px)}
+  .admin-template-form-grid{grid-template-columns:1fr}
+  .admin-template-source{min-height:220px;max-height:38dvh}
+  .admin-template-foot{flex-wrap:wrap}
+  .admin-template-foot .spring{display:none}
+  .admin-template-foot .btn{flex:1;justify-content:center}
+  #adminTemplateDelete{flex-basis:100%}
 }
 
 /* Settings become a single-open accordion on narrow viewports. */

@@ -9,7 +9,8 @@ const root = path.resolve(__dirname, "..");
 const html = fs.readFileSync(path.join(root, "public/Iris.html"), "utf8");
 const projects = fs.readFileSync(path.join(root, "public/iris-projects.js"), "utf8");
 const server = fs.readFileSync(path.join(root, "src/server.js"), "utf8");
-const catalogPromise = discoverProjectTemplates(path.join(root, "public"));
+const templateDir = path.join(root, "public/templates");
+const catalogPromise = discoverProjectTemplates(templateDir);
 
 const blankNodesSource = projects.slice(
   projects.indexOf("let projectTemplates"),
@@ -36,7 +37,7 @@ async function createBlankNodes(projectType, templateId) {
       const match = url.match(/^\/api\/project-templates\/(latex|lilypond)\/(.+)$/);
       if (!match) return { ok: false, text: async () => "" };
       try {
-        const content = await readProjectTemplate(path.join(root, "public"), match[1], decodeURIComponent(match[2]));
+        const content = await readProjectTemplate(templateDir, match[1], decodeURIComponent(match[2]));
         return { ok: true, text: async () => content };
       } catch {
         return { ok: false, text: async () => "" };
@@ -57,6 +58,8 @@ test("the new-project dialog populates one template selector for both project ty
   assert.match(projects, /api\("\/api\/project-templates"\)/);
   assert.match(projects, /projectTemplates\[projectType\]/);
   assert.match(projects, /option\.textContent = projectTemplateLabel/);
+  assert.match(projects, /return template\.label \|\| template\.title \|\| template\.id/);
+  assert.doesNotMatch(projects, /BUILTIN_TEMPLATE_KEYS/);
   assert.match(projects, /\$\("projTemplateField"\)\.style\.display = ""/);
   assert.doesNotMatch(projects, /LATEX_TEMPLATES/);
   assert.match(projects, /fetch\(template\.url, \{ credentials: "same-origin", cache: "no-cache" \}\)/);
@@ -89,4 +92,10 @@ test("unknown selections fall back to each type's configured default", async () 
   assert.equal(lilypond.length, 1);
   assert.equal(lilypond[0].path, "main.ly");
   assert.match(lilypond[0].content, /^\\version "2\.24\.0"/);
+});
+
+test("admin template routes stay behind server-role authorization", () => {
+  const adminHandler = server.slice(server.indexOf("async function handleAdminApi"), server.indexOf("async function handleApi"));
+  assert.ok(adminHandler.indexOf("requireAdmin(actor)") < adminHandler.indexOf("ADMIN_TEMPLATES_ROUTE"));
+  assert.doesNotMatch(server.slice(server.indexOf("async function handleApi")), /POST[^\n]*\/api\/project-templates/);
 });

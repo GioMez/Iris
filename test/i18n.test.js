@@ -11,7 +11,10 @@ const html = fs.readFileSync(path.join(publicDir, "Iris.html"), "utf8");
 const runtime = fs.readFileSync(path.join(publicDir, "iris-i18n.js"), "utf8");
 const app = fs.readFileSync(path.join(publicDir, "iris-app.js"), "utf8");
 const server = fs.readFileSync(path.join(root, "src/server.js"), "utf8");
-const uiScripts = ["iris-projects.js", "iris-builds.js", "iris-auth.js", "iris-lilypond.js"]
+const uiScripts = [
+  "iris-projects.js", "iris-builds.js", "iris-admin.js", "iris-admin-projects.js",
+  "iris-admin-templates.js", "iris-auth.js", "iris-lilypond.js",
+]
   .map((file) => fs.readFileSync(path.join(publicDir, file), "utf8"));
 uiScripts.unshift(app);
 
@@ -86,6 +89,22 @@ test("every API error code returned by the server is translated", () => {
     assert.ok(`api.${code}` in italian, `Missing Italian API error ${code}`);
   });
   assert.doesNotMatch(server, /\{\s*error:\s*["'`]/);
+});
+
+test("admin template errors and catalog namespace are translated", () => {
+  [
+    "ADMIN_TEMPLATE_TYPE_INVALID",
+    "ADMIN_TEMPLATE_ID_INVALID",
+    "ADMIN_TEMPLATE_TITLE_REQUIRED",
+    "ADMIN_TEMPLATE_TITLE_TOO_LONG",
+    "ADMIN_TEMPLATE_DESCRIPTION_TOO_LONG",
+    "ADMIN_TEMPLATE_EXISTS",
+  ].forEach((code) => {
+    assert.ok(`api.${code}` in english, `Missing English API error ${code}`);
+    assert.ok(`api.${code}` in italian, `Missing Italian API error ${code}`);
+  });
+  assert.ok(Object.keys(english).some((key) => key.startsWith("adminTemplates.")));
+  assert.match(html, /data-i18n="adminTemplates\.title"/);
 });
 
 test("default and project language preferences remain separate", () => {

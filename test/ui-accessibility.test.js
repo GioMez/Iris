@@ -11,6 +11,7 @@ const projects = fs.readFileSync(path.join(root, "public/iris-projects.js"), "ut
 const builds = fs.readFileSync(path.join(root, "public/iris-builds.js"), "utf8");
 const admin = fs.readFileSync(path.join(root, "public/iris-admin.js"), "utf8");
 const adminProjects = fs.readFileSync(path.join(root, "public/iris-admin-projects.js"), "utf8");
+const adminTemplates = fs.readFileSync(path.join(root, "public/iris-admin-templates.js"), "utf8");
 const auth = fs.readFileSync(path.join(root, "public/iris-auth.js"), "utf8");
 const motion = fs.readFileSync(path.join(root, "public/iris-motion.js"), "utf8");
 const editorAdapter = fs.readFileSync(path.join(root, "public/iris-editor.js"), "utf8");
@@ -283,11 +284,52 @@ test("only the active application surface and top dialog are interactive", () =>
 test("admin tabs, filters and forms expose complete accessible relationships", () => {
   assert.match(html, /id="adminTabUsers"[^>]*aria-controls="adminUsersPanel"[^>]*tabindex="0"/);
   assert.match(html, /id="adminTabProjects"[^>]*aria-controls="adminProjectsPanel"[^>]*tabindex="-1"/);
+  assert.match(html, /id="adminTabTemplates"[^>]*aria-controls="adminTemplatesPanel"[^>]*tabindex="-1"/);
   assert.match(html, /id="adminUsersPanel"[^>]*role="tabpanel"[^>]*aria-labelledby="adminTabUsers"/);
+  assert.match(html, /id="adminTemplatesPanel"[^>]*role="tabpanel"[^>]*aria-labelledby="adminTabTemplates"/);
   assert.match(html, /for="adminSearch"/);
   assert.match(html, /for="adminCreateUsername"/);
   assert.match(admin, /event\.key === "ArrowRight"/);
   assert.match(admin, /b\.tabIndex = on \? 0 : -1/);
+  assert.match(admin, /IrisAdminTemplates\.activate\(\)/);
+  assert.match(admin, /templates: \{ title: "adminTemplates\.title", heading: "adminTemplatesTitle" \}/);
+});
+
+test("admin template CRUD stays on admin APIs and treats source as textarea data", () => {
+  assert.match(adminTemplates, /dataset\.role === "admin"/);
+  assert.match(adminTemplates, /api\("\/api\/admin\/templates"\)/);
+  assert.match(adminTemplates, /method: previous \? "PUT" : "POST"/);
+  assert.match(adminTemplates, /method: "DELETE"/);
+  assert.match(adminTemplates, /encodeURIComponent\(target\.id\)/);
+  assert.doesNotMatch(adminTemplates, /\/api\/project-templates/);
+  assert.doesNotMatch(adminTemplates, /innerHTML/);
+  assert.match(adminTemplates, /adminTemplateContent"\)\.value/);
+  assert.match(adminTemplates, /element\.textContent = text/);
+});
+
+test("admin template forms and deletion expose accessible dialog semantics", () => {
+  assert.match(html, /id="adminTemplateForm"[^>]*role="dialog"[^>]*aria-modal="true"[^>]*aria-labelledby="adminTemplateModalTitle"/);
+  assert.match(html, /id="adminTemplateDeleteForm"[^>]*role="dialog"[^>]*aria-modal="true"[^>]*aria-labelledby="adminTemplateDeleteTitle"/);
+  assert.match(html, /<label[^>]*for="adminTemplateContent"[^>]*data-i18n="adminTemplates\.source"/);
+  assert.match(html, /<textarea[^>]*id="adminTemplateContent"[^>]*spellcheck="false"/);
+  assert.match(html, /id="adminTemplateCounter"[^>]*aria-live="polite"/);
+  assert.match(html, /id="adminTemplateDelete"[^>]*hidden/);
+  assert.match(adminTemplates, /openDialog\("adminTemplateDeleteModal"\)/);
+  assert.match(adminTemplates, /cancelDelete[\s\S]*closeDialog\("adminTemplateDeleteModal"\)/);
+  assert.match(adminTemplates, /MAX_SOURCE_BYTES = 1024 \* 1024/);
+  assert.match(adminTemplates, /adminTemplateClose"\)\.disabled = formLocked/);
+  assert.match(adminTemplates, /adminTemplateDeleteOk"\][\s\S]*\.disabled = deleteBusy/);
+});
+
+test("admin templates are responsive and load between project admin and auth", () => {
+  assert.match(css, /\.admin-template-modal\{[^}]*calc\(100vw - 30px\)[^}]*calc\(100dvh - 30px\)/);
+  assert.match(css, /@media\(max-width:820px\)[\s\S]*#adminTemplatesPanel \.admin-template-table tbody tr\{grid-template-columns/);
+  assert.match(css, /@media\(max-width:640px\)[\s\S]*\.admin-template-form-grid\{grid-template-columns:1fr\}/);
+  assert.match(css, /\.admin-template-source\{[^}]*min-height:280px[^}]*resize:vertical/);
+  const projectAdminIndex = html.indexOf('<script src="iris-admin-projects.js">');
+  const templateAdminIndex = html.indexOf('<script src="iris-admin-templates.js">');
+  const authIndex = html.indexOf('<script src="iris-auth.js">');
+  assert.ok(projectAdminIndex < templateAdminIndex && templateAdminIndex < authIndex);
 });
 
 test("loading, error and empty states preserve layout and meaning", () => {

@@ -20,6 +20,7 @@ services:
       DB_PASSWORD: "${DB_PASSWORD:?Set DB_PASSWORD to a secure random value}"
       DB_NAME: iris
       DATA_DIR: /app/data
+      TEMPLATE_DIR: /app/data/templates
       APP_BASE_URL: http://localhost:3000
       TEX_BIN_PATH: /usr/local/texlive/bin/x86_64-linux
       TEX_PATH_LOCKED: "true"
@@ -54,10 +55,9 @@ services:
       - "127.0.0.1:3000:3000"
     volumes:
       - project-data:/app/data
-      # Optional instance-specific project templates. Copy any bundled templates
-      # that the instance should retain into these host directories first.
-      # - ./templates/latex:/app/public/templates/latex:ro
-      # - ./templates/lilypond:/app/public/templates/lilypond:ro
+      # Optional separate, host-backed mutable template catalog. Omit this to
+      # keep templates in the project-data volume with the rest of /app/data.
+      # - ./templates:/app/data/templates
       # Mount container-compatible LaTeX and LilyPond distributions here.
       # - ./texlive/bin:/usr/local/texlive/bin/x86_64-linux:ro
       # - ./lilypond/bin/lilypond:/usr/bin/lilypond:ro
