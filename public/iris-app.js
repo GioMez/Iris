@@ -719,8 +719,18 @@
       row.querySelectorAll('[data-step-tool] option[value="lilypond"]').forEach((option) => { option.hidden = true; });
       row.querySelector("[data-step-args]").value = (step.args || []).join(" ");
       row.querySelectorAll("select,input,button").forEach((el) => { el.disabled = !custom; });
-      row.querySelector("[data-step-tool]").addEventListener("change", (e) => { step.tool = e.target.value; saveCompileProfile(); });
-      row.querySelector("[data-step-args]").addEventListener("input", (e) => { step.args = e.target.value.trim().split(/\s+/).filter(Boolean); saveCompileProfile(); });
+      row.querySelector("[data-step-tool]").addEventListener("change", (e) => {
+        const currentStep = state.compileProfile.steps[idx];
+        if (!currentStep) return;
+        currentStep.tool = e.target.value;
+        saveCompileProfile();
+      });
+      row.querySelector("[data-step-args]").addEventListener("input", (e) => {
+        const currentStep = state.compileProfile.steps[idx];
+        if (!currentStep) return;
+        currentStep.args = e.target.value.trim().split(/\s+/).filter(Boolean);
+        saveCompileProfile();
+      });
       row.querySelector("[data-step-del]").addEventListener("click", () => {
         state.compileProfile.steps.splice(idx, 1);
         if (!state.compileProfile.steps.length) state.compileProfile.steps.push({ tool: "[engine]", args: ["[main]"] });
