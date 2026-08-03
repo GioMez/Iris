@@ -54,6 +54,10 @@ services:
       - "127.0.0.1:3000:3000"
     volumes:
       - project-data:/app/data
+      # Optional instance-specific project templates. Copy any bundled templates
+      # that the instance should retain into these host directories first.
+      # - ./templates/latex:/app/public/templates/latex:ro
+      # - ./templates/lilypond:/app/public/templates/lilypond:ro
       # Mount container-compatible LaTeX and LilyPond distributions here.
       # - ./texlive/bin:/usr/local/texlive/bin/x86_64-linux:ro
       # - ./lilypond/bin/lilypond:/usr/bin/lilypond:ro

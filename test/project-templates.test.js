@@ -3,17 +3,20 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
+const { discoverProjectTemplates, readProjectTemplate } = require("../src/project-templates");
 
 const root = path.resolve(__dirname, "..");
 const html = fs.readFileSync(path.join(root, "public/Iris.html"), "utf8");
 const projects = fs.readFileSync(path.join(root, "public/iris-projects.js"), "utf8");
+const server = fs.readFileSync(path.join(root, "src/server.js"), "utf8");
+const catalogPromise = discoverProjectTemplates(path.join(root, "public"));
 
 const blankNodesSource = projects.slice(
-  projects.indexOf("function blankNodes("),
+  projects.indexOf("let projectTemplates"),
   projects.indexOf("/* ---------------- helpers", projects.indexOf("function blankNodes("))
 );
 
-function createBlankNodes(projectType, latexTemplate) {
+async function createBlankNodes(projectType, templateId) {
   const messages = {
     "templates.newScore": "New score",
     "templates.newDocument": "New document",
@@ -25,46 +28,64 @@ function createBlankNodes(projectType, latexTemplate) {
   };
   const context = {
     projectType,
-    latexTemplate,
+    templateId,
+    catalog: await catalogPromise,
     result: null,
     t: (key) => messages[key] || key,
+    fetch: async (url) => {
+      const match = url.match(/^\/api\/project-templates\/(latex|lilypond)\/(.+)$/);
+      if (!match) return { ok: false, text: async () => "" };
+      try {
+        const content = await readProjectTemplate(path.join(root, "public"), match[1], decodeURIComponent(match[2]));
+        return { ok: true, text: async () => content };
+      } catch {
+        return { ok: false, text: async () => "" };
+      }
+    },
   };
   vm.runInNewContext(
-    `${blankNodesSource}\nresult = blankNodes("Project title", projectType, latexTemplate);`,
+    `${blankNodesSource}\nprojectTemplates = catalog; result = blankNodes("Project title", projectType, templateId);`,
     context
   );
   return context.result;
 }
 
-test("new LaTeX projects offer article as the default and four additional templates", () => {
+test("the new-project dialog populates one template selector for both project types", () => {
   const field = html.slice(html.indexOf('id="projTemplateField"'), html.indexOf("</select>", html.indexOf('id="projTemplateField"')));
   assert.match(field, /id="projTemplateSelect"/);
-  assert.deepEqual(
-    [...field.matchAll(/<option value="([^"]+)"/g)].map((match) => match[1]),
-    ["article", "beamer", "book", "report", "letter"]
-  );
-  assert.match(projects, /\$\("projTemplateSelect"\)\.value = "article"/);
-  assert.match(projects, /\$\("projTemplateField"\)\.style\.display = isLatex \? "" : "none"/);
+  assert.deepEqual([...field.matchAll(/<option value="([^"]*)"/g)].map((match) => match[1]), [""]);
+  assert.match(projects, /api\("\/api\/project-templates"\)/);
+  assert.match(projects, /projectTemplates\[projectType\]/);
+  assert.match(projects, /option\.textContent = projectTemplateLabel/);
+  assert.match(projects, /\$\("projTemplateField"\)\.style\.display = ""/);
+  assert.doesNotMatch(projects, /LATEX_TEMPLATES/);
+  assert.match(projects, /fetch\(template\.url, \{ credentials: "same-origin", cache: "no-cache" \}\)/);
+  assert.doesNotMatch(projects, /\\documentclass|\\version "2\.24\.0"/);
+  assert.match(server, /"\/api\/project-templates"\) return listProjectTemplates/);
+  assert.match(server, /pathname\.startsWith\("\/templates\/"\)\) return text\(res, 404/);
+  assert.match(server, /"\.tex": "text\/plain; charset=utf-8"/);
+  assert.match(server, /"\.ly": "text\/plain; charset=utf-8"/);
 });
 
-test("each LaTeX choice creates a matching minimal main.tex", () => {
+test("each LaTeX choice loads a matching minimal main.tex file", async () => {
   const expectedClasses = ["article", "beamer", "book", "report", "letter"];
-  expectedClasses.forEach((template) => {
-    const nodes = createBlankNodes("latex", template);
+  for (const template of expectedClasses) {
+    const nodes = await createBlankNodes("latex", template);
     assert.equal(nodes[0].path, "main.tex");
     assert.match(nodes[0].content, new RegExp(`^\\\\documentclass(?:\\[11pt\\])?\\{${template}\\}`));
-  });
+    assert.doesNotMatch(nodes[0].content, /@@[A-Z_]+@@/);
+  }
 
-  assert.match(createBlankNodes("latex", "article")[0].content, /\\section\{Introduction\}/);
-  assert.match(createBlankNodes("latex", "book")[0].content, /\\chapter\{Introduction\}/);
-  assert.match(createBlankNodes("latex", "report")[0].content, /\\chapter\{Introduction\}/);
-  assert.match(createBlankNodes("latex", "beamer")[0].content, /\\begin\{frame\}\{Introduction\}/);
-  assert.match(createBlankNodes("latex", "letter")[0].content, /\\begin\{letter\}\{Recipient\\\\Address\}/);
+  assert.match((await createBlankNodes("latex", "article"))[0].content, /\\section\{Introduction\}/);
+  assert.match((await createBlankNodes("latex", "book"))[0].content, /\\chapter\{Introduction\}/);
+  assert.match((await createBlankNodes("latex", "report"))[0].content, /\\chapter\{Introduction\}/);
+  assert.match((await createBlankNodes("latex", "beamer"))[0].content, /\\begin\{frame\}\{Introduction\}/);
+  assert.match((await createBlankNodes("latex", "letter"))[0].content, /\\begin\{letter\}\{Recipient\\\\Address\}/);
 });
 
-test("unknown LaTeX templates fall back to article and LilyPond remains unchanged", () => {
-  assert.match(createBlankNodes("latex", "unknown")[0].content, /^\\documentclass\[11pt\]\{article\}/);
-  const lilypond = createBlankNodes("lilypond", "book");
+test("unknown selections fall back to each type's configured default", async () => {
+  assert.match((await createBlankNodes("latex", "unknown"))[0].content, /^\\documentclass\[11pt\]\{article\}/);
+  const lilypond = await createBlankNodes("lilypond", "unknown");
   assert.equal(lilypond.length, 1);
   assert.equal(lilypond[0].path, "main.ly");
   assert.match(lilypond[0].content, /^\\version "2\.24\.0"/);

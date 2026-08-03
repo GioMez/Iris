@@ -586,13 +586,9 @@
         </select>
       </div>
       <div class="field" id="projTemplateField">
-        <label class="label" for="projTemplateSelect" data-i18n="projects.latexTemplate">LaTeX template</label>
-        <select class="select" id="projTemplateSelect">
-          <option value="article" data-i18n="projects.templateArticle">Article (article)</option>
-          <option value="beamer" data-i18n="projects.templateBeamer">Presentation (beamer)</option>
-          <option value="book" data-i18n="projects.templateBook">Book (book)</option>
-          <option value="report" data-i18n="projects.templateReport">Report (report)</option>
-          <option value="letter" data-i18n="projects.templateLetter">Letter (letter)</option>
+        <label class="label" for="projTemplateSelect" data-i18n="projects.template">Project template</label>
+        <select class="select" id="projTemplateSelect" disabled>
+          <option value="" data-i18n="projects.templatesLoading">Loading templates…</option>
         </select>
       </div>
     </div>

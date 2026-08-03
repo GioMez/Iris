@@ -51,81 +51,64 @@
   }
 
   /* ---------------- blank content ---------------- */
-  function blankNodes(name, projectType, latexTemplate = "article") {
+  let projectTemplates = { latex: [], lilypond: [] };
+  const BUILTIN_TEMPLATE_KEYS = {
+    latex: {
+      article: "templateArticle",
+      beamer: "templateBeamer",
+      book: "templateBook",
+      report: "templateReport",
+      letter: "templateLetter",
+    },
+    lilypond: { default: "templateLilypondDefault" },
+  };
+
+  function normalizeProjectTemplates(value) {
+    const templates = value && typeof value === "object" ? value : {};
+    const normalize = (type) => (Array.isArray(templates[type]) ? templates[type] : []).filter((template) =>
+      template && typeof template.id === "string" && typeof template.url === "string" && template.url.startsWith("/api/project-templates/"));
+    return { latex: normalize("latex"), lilypond: normalize("lilypond") };
+  }
+
+  async function refreshProjectTemplates() {
+    const out = await api("/api/project-templates");
+    projectTemplates = normalizeProjectTemplates(out && out.templates);
+    return projectTemplates;
+  }
+
+  function renderProjectTemplate(source, values) {
+    return source.replace(/@@([A-Z_]+)@@/g, (placeholder, key) =>
+      Object.prototype.hasOwnProperty.call(values, key) ? values[key] : placeholder);
+  }
+
+  async function loadProjectTemplate(projectType, templateId) {
+    const templates = projectTemplates[projectType] || [];
+    const template = templates.find((item) => item.id === templateId)
+      || templates.find((item) => item.default)
+      || templates[0];
+    if (!template) throw new Error(`No ${projectType} project template is available`);
+    const response = await fetch(template.url, { credentials: "same-origin", cache: "no-cache" });
+    if (!response.ok) throw new Error(`Unable to load project template: ${template.url}`);
+    return response.text();
+  }
+
+  async function blankNodes(name, projectType, templateId) {
     if (projectType === "lilypond") {
       const title = String(name || t("templates.newScore")).replace(/["\\]/g, "");
-      const tpl = `\\version "2.24.0"
-
-\\header {
-  title = "${title}"
-  composer = ""
-}
-
-\\score {
-  \\relative c' {
-    \\key c \\major
-    \\time 4/4
-    c4 d e f | g1 \\bar "|."
-  }
-  \\layout { }
-  \\midi { }
-}`;
+      const tpl = renderProjectTemplate(await loadProjectTemplate(projectType, templateId), { TITLE: title });
       return [
         { type: "file", id: "main", name: "main.ly", kind: "ly", path: "main.ly", content: tpl },
       ];
     }
-    const title = name || t("templates.newDocument");
-    let tpl;
-    if (latexTemplate === "beamer") {
-      tpl = `\\documentclass{beamer}
-\\usepackage[utf8]{inputenc}
-
-\\title{${title}}
-\\author{}
-\\date{\\today}
-
-\\begin{document}
-\\frame{\\titlepage}
-
-\\begin{frame}{${t("templates.introduction")}}
-
-\\end{frame}
-\\end{document}`;
-    } else if (latexTemplate === "letter") {
-      tpl = `\\documentclass[11pt]{letter}
-\\usepackage[utf8]{inputenc}
-
-\\signature{}
-\\address{}
-
-\\begin{document}
-\\begin{letter}{${t("templates.recipient")}}
-\\opening{${t("templates.letterOpening")}}
-
-${t("templates.letterBody")}
-
-\\closing{${t("templates.letterClosing")}}
-\\end{letter}
-\\end{document}`;
-    } else {
-      const documentClass = latexTemplate === "book" || latexTemplate === "report" ? latexTemplate : "article";
-      const heading = documentClass === "article" ? "section" : "chapter";
-      tpl = `\\documentclass[11pt]{${documentClass}}
-\\usepackage[utf8]{inputenc}
-\\usepackage{amsmath}
-
-\\title{${title}}
-\\author{}
-\\date{\\today}
-
-\\begin{document}
-\\maketitle
-
-\\${heading}{${t("templates.introduction")}}
-
-
-\\end{document}`;
-    }
+    const source = await loadProjectTemplate(projectType, templateId);
+    const tpl = renderProjectTemplate(source, {
+      TITLE: name || t("templates.newDocument"),
+      INTRODUCTION: t("templates.introduction"),
+      RECIPIENT: t("templates.recipient"),
+      LETTER_OPENING: t("templates.letterOpening"),
+      LETTER_BODY: t("templates.letterBody"),
+      LETTER_CLOSING: t("templates.letterClosing"),
+    });
     return [
       { type: "file", id: "main", name: "main.tex", kind: "tex", path: "main.tex", content: tpl },
       { type: "folder", name: "figure", open: true, children: [] },
@@ -587,11 +570,11 @@ ${t("templates.letterBody")}
   }
 
   /* ---------------- create / rename / delete ---------------- */
-  async function createProject(name, projectType, latexTemplate) {
+  async function createProject(name, projectType, templateId) {
     const now = Date.now();
     projectType = projectType === "lilypond" ? "lilypond" : "latex";
     const data = {
-      project: { name, nodes: blankNodes(name, projectType, latexTemplate) },
+      project: { name, nodes: await blankNodes(name, projectType, templateId) },
       projectType,
       language: window.IrisI18n.defaultLanguage,
       engine: projectType === "lilypond" ? "lilypond" : "pdflatex",
@@ -643,22 +626,62 @@ ${t("templates.letterBody")}
 
   /* ---------------- modals ---------------- */
   let projMode = "new", projTargetId = null, delTargetId = null;
+  let templateSelectType = null;
+  const selectedTemplates = { latex: null, lilypond: null };
 
-  function syncProjectTypeFields() {
-    const isLatex = $("projTypeSelect").value === "latex";
-    $("projTemplateField").style.display = isLatex ? "" : "none";
-    $("projModalHint").textContent = t(isLatex ? "projects.newLatexHint" : "projects.newLilypondHint");
+  function projectTemplateLabel(projectType, template) {
+    const key = BUILTIN_TEMPLATE_KEYS[projectType] && BUILTIN_TEMPLATE_KEYS[projectType][template.id];
+    return key ? t(`projects.${key}`) : (template.label || template.id);
   }
 
-  function askNew() {
+  function renderProjectTemplateOptions(projectType) {
+    const select = $("projTemplateSelect");
+    if (templateSelectType && select.value) selectedTemplates[templateSelectType] = select.value;
+    select.innerHTML = "";
+    const templates = projectTemplates[projectType] || [];
+    templates.forEach((template) => {
+      const option = document.createElement("option");
+      option.value = template.id;
+      option.textContent = projectTemplateLabel(projectType, template);
+      select.appendChild(option);
+    });
+    const selected = templates.find((template) => template.id === selectedTemplates[projectType])
+      || templates.find((template) => template.default)
+      || templates[0];
+    select.value = selected ? selected.id : "";
+    select.disabled = !selected;
+    selectedTemplates[projectType] = select.value || null;
+    templateSelectType = projectType;
+    return !!selected;
+  }
+
+  function syncProjectTypeFields() {
+    const projectType = $("projTypeSelect").value === "lilypond" ? "lilypond" : "latex";
+    const hasTemplates = renderProjectTemplateOptions(projectType);
+    $("projTemplateField").style.display = "";
+    $("projModalHint").textContent = hasTemplates
+      ? t(projectType === "latex" ? "projects.newLatexHint" : "projects.newLilypondHint")
+      : t("projects.noTemplates", { type: projectType === "latex" ? "LaTeX" : "LilyPond" });
+    if (projMode === "new") $("projModalOk").disabled = !hasTemplates;
+  }
+
+  async function askNew() {
     if (isExternalUser()) return;
+    try {
+      await refreshProjectTemplates();
+    } catch (error) {
+      setPickerStatus(t("projects.templatesLoadFailed"), true);
+      return;
+    }
     projMode = "new"; projTargetId = null;
     $("projModalTitle").textContent = t("projects.newTitle");
     $("projModalOk").textContent = t("projects.create");
     $("projModalHint").textContent = t("projects.newLatexHint");
     $("projTypeField").style.display = "";
     $("projTypeSelect").value = "latex";
-    $("projTemplateSelect").value = "article";
+    selectedTemplates.latex = null;
+    selectedTemplates.lilypond = null;
+    templateSelectType = null;
     syncProjectTypeFields();
     $("projNameInput").value = "";
     $("projNameInput").classList.remove("nomatch");
@@ -675,6 +698,7 @@ ${t("templates.letterBody")}
     $("projModalHint").textContent = t("projects.renameHint");
     $("projTypeField").style.display = "none";
     $("projTemplateField").style.display = "none";
+    $("projModalOk").disabled = false;
     $("projNameInput").value = m ? m.name : "";
     $("projNameInput").classList.remove("nomatch");
     $("projNameInput").removeAttribute("aria-invalid");
@@ -692,6 +716,7 @@ ${t("templates.letterBody")}
       error.style.display = "flex";
       return;
     }
+    if (projMode === "new" && !$("projTemplateSelect").value) return;
     const ok = $("projModalOk");
     ok.disabled = true;
     ok.classList.add("loading");
@@ -1076,8 +1101,8 @@ ${t("templates.letterBody")}
 
   /* ---------------- wiring ---------------- */
   function wire() {
-    $("pkNew").addEventListener("click", askNew);
-    const ne = $("pkNewEmpty"); if (ne) ne.addEventListener("click", askNew);
+    $("pkNew").addEventListener("click", () => { void askNew(); });
+    const ne = $("pkNewEmpty"); if (ne) ne.addEventListener("click", () => { void askNew(); });
     $("pkImport").addEventListener("click", () => $("projectImportInput").click());
     $("projectImportInput").addEventListener("change", function () {
       const file = this.files && this.files[0];
@@ -1099,6 +1124,9 @@ ${t("templates.letterBody")}
       $("projModalError").style.display = "none";
     });
     $("projTypeSelect").addEventListener("change", syncProjectTypeFields);
+    $("projTemplateSelect").addEventListener("change", function () {
+      selectedTemplates[$("projTypeSelect").value] = this.value;
+    });
     $("projNameInput").addEventListener("keydown", (e) => {
       if (e.key === "Enter") { e.preventDefault(); confirmProjModal(); }
       else if (e.key === "Escape") { e.preventDefault(); closeModal("projModal"); }
@@ -1130,7 +1158,7 @@ ${t("templates.letterBody")}
       void renderPicker();
     }
     if ($("projModal").classList.contains("on")) {
-      if (projMode === "new") askNew();
+      if (projMode === "new") void askNew();
       else if (projTargetId) askRename(projTargetId);
     }
     if (delTargetId && $("projDelModal").classList.contains("on")) askDelete(delTargetId);

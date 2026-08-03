@@ -26,6 +26,7 @@ const {
   escapeLikePattern,
 } = require("./project-access");
 const { projectStorageKey, resolveProjectStorageDir, relocateProjectStorage } = require("./project-storage");
+const { discoverProjectTemplates, readProjectTemplate } = require("./project-templates");
 const { createZip, extractZip } = require("./zip");
 const {
   buildStoragePath,
@@ -144,6 +145,8 @@ const MIME = {
   ".js": "application/javascript; charset=utf-8",
   ".mjs": "application/javascript; charset=utf-8",
   ".json": "application/json; charset=utf-8",
+  ".tex": "text/plain; charset=utf-8",
+  ".ly": "text/plain; charset=utf-8",
   ".svg": "image/svg+xml",
   ".png": "image/png",
   ".jpg": "image/jpeg",
@@ -1424,6 +1427,25 @@ async function listProjects(req, res, user) {
     };
   }));
   json(res, 200, { projects });
+}
+
+async function listProjectTemplates(req, res) {
+  json(res, 200, { templates: await discoverProjectTemplates(PUBLIC_DIR) }, { "cache-control": "private, no-store" });
+}
+
+async function getProjectTemplate(req, res, type, encodedFileName) {
+  let fileName;
+  try {
+    fileName = decodeURIComponent(encodedFileName);
+  } catch {
+    throw requestError("PROJECT_TEMPLATE_NOT_FOUND", 404);
+  }
+  const content = await readProjectTemplate(PUBLIC_DIR, type, fileName);
+  text(res, 200, content, {
+    "cache-control": "private, no-store",
+    "content-security-policy": "default-src 'none'",
+    "x-content-type-options": "nosniff",
+  });
 }
 
 // Serializes owner-invariant changes per project, so concurrent role changes on
@@ -3587,6 +3609,7 @@ async function compileProject(req, res, user, id) {
 }
 
 const PROJECT_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})$`);
+const PROJECT_TEMPLATE_FILE_ROUTE = /^\/api\/project-templates\/(latex|lilypond)\/([^/]+)$/;
 const PROJECT_COMPILE_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/compile$`);
 const PROJECT_BUILDS_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/builds$`);
 const PROJECT_BUILD_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/builds/(${UUID_PATTERN})$`);
@@ -4397,6 +4420,9 @@ async function handleApi(req, res, url) {
     });
   }
 
+  const projectTemplateMatch = url.pathname.match(PROJECT_TEMPLATE_FILE_ROUTE);
+  if (projectTemplateMatch && req.method === "GET") return getProjectTemplate(req, res, projectTemplateMatch[1], projectTemplateMatch[2]);
+  if (req.method === "GET" && url.pathname === "/api/project-templates") return listProjectTemplates(req, res);
   if (req.method === "GET" && url.pathname === "/api/projects") return listProjects(req, res, user);
   if (req.method === "POST" && url.pathname === "/api/projects/import") return importProjectArchive(req, res, user, url);
   if (req.method === "POST" && url.pathname === "/api/projects") return createProject(req, res, user);
@@ -4482,6 +4508,7 @@ async function handleApi(req, res, url) {
 async function serveStatic(req, res, url) {
   let pathname = decodeURIComponent(url.pathname);
   if (pathname === "/") pathname = "/Iris.html";
+  if (pathname === "/templates" || pathname.startsWith("/templates/")) return text(res, 404, "Not found");
   const codemirrorFile = pathname.match(/^\/vendor\/codemirror\/([a-z0-9.-]+)$/);
   if (codemirrorFile && !CODEMIRROR_MODULES[codemirrorFile[1]]) return text(res, 404, "Not found");
   const pdfjsFile = pathname.match(/^\/vendor\/pdfjs\/(pdf(?:\.worker)?\.min\.mjs)$/);

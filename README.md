@@ -257,10 +257,20 @@ creates a separate project with a new identifier and timestamps while restoring
 the archived name, files, folders, and settings. The normal `MAX_BODY_MB`
 request limit also applies to imported archives.
 
+### Project templates
+
+Iris discovers instance templates from `PUBLIC_DIR/templates/latex/*.tex` and
+`PUBLIC_DIR/templates/lilypond/*.ly` whenever the new-project dialog opens. An
+administrator can add or edit these files without changing application code or
+restarting Iris. `article.tex` and `default.ly` are the preferred defaults;
+otherwise Iris selects the first available template. See
+[`public/templates/README.md`](public/templates/README.md) for placeholders and
+Docker mounts.
+
 ### LaTeX projects
 
-A new LaTeX project starts with `main.tex` and a basic document template. The
-selected compiler engine and pipeline are stored with the project.
+A new LaTeX project starts with `main.tex` generated from the selected instance
+template. The selected compiler engine and pipeline are stored with the project.
 
 Project settings name the main source file passed to the compiler. Left on
 **Automatic**, Iris detects it as before: the open file when it carries
