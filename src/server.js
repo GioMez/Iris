@@ -48,6 +48,15 @@ const {
   collectBuildArchiveEntries,
   resolveBuildFile,
 } = require("./builds");
+const { RateLimiter, ConcurrencyGate, GateRejectedError } = require("./throttle");
+const {
+  retentionCaps,
+  auditRetentionDays,
+  clampRetention,
+  normalizeRetentionInput,
+  retentionView,
+  cutoffDate,
+} = require("./retention");
 
 loadDotEnv(path.resolve(".env"));
 
@@ -95,6 +104,45 @@ const PROJECT_ARCHIVE_MAX_ENTRIES = positiveIntEnv("PROJECT_ARCHIVE_MAX_ENTRIES"
 const ARGON2_MEMORY_COST = positiveIntEnv("ARGON2_MEMORY_COST", 65536);
 const ARGON2_TIME_COST = positiveIntEnv("ARGON2_TIME_COST", 3);
 const ARGON2_PARALLELISM = positiveIntEnv("ARGON2_PARALLELISM", 1);
+// Admission control. Every limit below bounds work the caller can make this
+// process do *before* it knows whether the caller is entitled to it, which is
+// the only category of work an unauthenticated attacker can aim at scale.
+//
+// Password verification is the sharpest edge: Argon2 is configured to spend
+// ARGON2_MEMORY_COST kibibytes per attempt and spends them whether or not the
+// password turns out to be right, so an unthrottled login endpoint converts one
+// HTTP request into 64 MB of resident memory on demand. Hence both a rate limit
+// and a hard ceiling on simultaneous verifications: the rate limit makes the
+// attack slow, the ceiling makes it survivable even when it is distributed
+// widely enough that no single source ever trips the rate limit.
+const AUTH_RATE_LIMIT = positiveIntEnv("AUTH_RATE_LIMIT", 10);
+const AUTH_RATE_WINDOW_MS = positiveIntEnv("AUTH_RATE_WINDOW_MS", 60000);
+// A wrong password costs several times a right one, so a credential-stuffing
+// run exhausts its allowance far sooner than a person who mistyped once.
+const AUTH_FAILURE_PENALTY = positiveIntEnv("AUTH_FAILURE_PENALTY", 4);
+// Per account, independently of where the attempts come from: distributing an
+// attack across a botnet defeats a per-address limit but not this one.
+const AUTH_ACCOUNT_RATE_LIMIT = positiveIntEnv("AUTH_ACCOUNT_RATE_LIMIT", 12);
+const AUTH_ACCOUNT_RATE_WINDOW_MS = positiveIntEnv("AUTH_ACCOUNT_RATE_WINDOW_MS", 900000);
+const PASSWORD_HASH_CONCURRENCY = positiveIntEnv("PASSWORD_HASH_CONCURRENCY", 2);
+const PASSWORD_HASH_QUEUE = positiveIntEnv("PASSWORD_HASH_QUEUE", 24);
+// Compilation spawns real compiler processes. The gate is what stops N members
+// pressing Compile from becoming N simultaneous TeX runs; the queue is short
+// because a compilation the user is waiting on is worth queueing briefly and
+// not worth queueing for a minute.
+const COMPILE_CONCURRENCY = positiveIntEnv("COMPILE_CONCURRENCY", 2);
+const COMPILE_QUEUE = positiveIntEnv("COMPILE_QUEUE", 8);
+const COMPILE_RATE_LIMIT = positiveIntEnv("COMPILE_RATE_LIMIT", 30);
+const COMPILE_RATE_WINDOW_MS = positiveIntEnv("COMPILE_RATE_WINDOW_MS", 300000);
+// A general ceiling on authenticated API traffic per session. Generous enough
+// that the editor never approaches it, low enough that a runaway client or a
+// stolen cookie cannot be used to hammer the database.
+const API_RATE_LIMIT = positiveIntEnv("API_RATE_LIMIT", 600);
+const API_RATE_WINDOW_MS = positiveIntEnv("API_RATE_WINDOW_MS", 60000);
+// How many realtime rooms one connection may hold open. Each room keeps the
+// whole document in memory, so this bounds what a single socket can pin.
+const COLLAB_MAX_ROOMS_PER_SESSION = positiveIntEnv("COLLAB_MAX_ROOMS_PER_SESSION", 50);
+const COLLAB_MAX_SESSIONS_PER_USER = positiveIntEnv("COLLAB_MAX_SESSIONS_PER_USER", 12);
 const APP_BASE_URL = String(process.env.APP_BASE_URL || "").replace(/\/+$/, "");
 const OAUTH_ISSUER_URL = String(process.env.OAUTH_ISSUER_URL || "").replace(/\/+$/, "");
 const OAUTH_AUTHORIZATION_URL = process.env.OAUTH_AUTHORIZATION_URL || "";
@@ -143,6 +191,28 @@ let shuttingDown = false;
 let inFlight = 0;
 let inFlightMutations = 0;
 const activeBuilds = new Set();
+
+// The admission controls declared above, instantiated. They are module state
+// rather than per-request objects because a limiter that forgets between
+// requests is not a limiter.
+const authIpLimiter = new RateLimiter({ limit: AUTH_RATE_LIMIT, windowMs: AUTH_RATE_WINDOW_MS });
+const authAccountLimiter = new RateLimiter({ limit: AUTH_ACCOUNT_RATE_LIMIT, windowMs: AUTH_ACCOUNT_RATE_WINDOW_MS });
+const apiLimiter = new RateLimiter({ limit: API_RATE_LIMIT, windowMs: API_RATE_WINDOW_MS });
+const compileLimiter = new RateLimiter({ limit: COMPILE_RATE_LIMIT, windowMs: COMPILE_RATE_WINDOW_MS });
+const passwordHashGate = new ConcurrencyGate({ limit: PASSWORD_HASH_CONCURRENCY, queueLimit: PASSWORD_HASH_QUEUE });
+const compileGate = new ConcurrencyGate({ limit: COMPILE_CONCURRENCY, queueLimit: COMPILE_QUEUE });
+
+// Retention thresholds an owner may choose between, and the instance ceiling
+// they cannot pass. Read once: changing them is an operator action that takes
+// effect on restart, like every other environment setting here.
+const RETENTION_CAPS = retentionCaps(process.env);
+const AUDIT_RETENTION_DAYS = auditRetentionDays(process.env);
+const RETENTION_ENABLED = String(process.env.RETENTION_ENABLED || "true") === "true";
+const RETENTION_SWEEP_MS = positiveIntEnv("RETENTION_SWEEP_MS", 3600000);
+// How long a directory abandoned by a crashed process is left alone before the
+// sweep removes it. Long enough that it can never race a compilation that is
+// merely slow, short enough that a crash does not cost a day of disk.
+const RETENTION_ORPHAN_GRACE_MS = positiveIntEnv("RETENTION_ORPHAN_GRACE_MS", 6 * 60 * 60 * 1000);
 
 // Cheap, synchronous check on the mutation path, which is far rarer than reads.
 function maintenanceActive() {
@@ -202,16 +272,34 @@ function json(res, status, data, headers = {}) {
   res.end(body);
 }
 
-function requestError(errorCode, status, params = {}) {
+function requestError(errorCode, status, params = {}, headers = {}) {
   const err = new Error(errorCode);
   err.errorCode = errorCode;
   err.status = status;
   err.params = params;
+  err.headers = headers;
   return err;
 }
 
-function errorJson(res, status, errorCode, params = {}) {
-  return json(res, status, { errorCode, ...(Object.keys(params).length ? { params } : {}) });
+// A refusal that tells the client when to come back. Retry-After is in seconds
+// and is rounded up, never to zero: a client told to wait no time at all would
+// retry immediately and be refused again, which is a busy loop rather than a
+// backoff. The wait is also reported in the params so the interface can say it
+// in words instead of leaving the user to guess.
+function rateLimitError(errorCode, retryAfterMs) {
+  const seconds = Math.max(1, Math.ceil(retryAfterMs / 1000));
+  return requestError(errorCode, 429, { retryAfter: seconds }, { "retry-after": String(seconds) });
+}
+
+// Charges a limiter and refuses the request when the caller cannot afford it.
+function enforceRateLimit(limiter, key, errorCode, now = Date.now()) {
+  const decision = limiter.consume(key, now);
+  if (!decision.allowed) throw rateLimitError(errorCode, decision.retryAfterMs);
+  return decision;
+}
+
+function errorJson(res, status, errorCode, params = {}, headers = {}) {
+  return json(res, status, { errorCode, ...(Object.keys(params).length ? { params } : {}) }, headers);
 }
 
 function text(res, status, body, headers = {}) {
@@ -316,22 +404,47 @@ const ARGON2_OPTIONS = {
   parallelism: ARGON2_PARALLELISM,
 };
 
+// Every Argon2 call in the process funnels through the gate, so the ceiling
+// holds no matter which endpoint reached it — login, password change, admin
+// reset or seeding. ARGON2_MEMORY_COST kibibytes are resident for the duration
+// of each one, so `PASSWORD_HASH_CONCURRENCY × ARGON2_MEMORY_COST` is the true
+// worst-case memory this process will spend on password work, and it is a number
+// the operator can compute in advance.
+async function withPasswordHashSlot(work) {
+  let release;
+  try {
+    release = await passwordHashGate.acquire();
+  } catch (err) {
+    if (err instanceof GateRejectedError) throw requestError("AUTH_BUSY", 503);
+    throw err;
+  }
+  try {
+    return await work();
+  } finally {
+    release();
+  }
+}
+
 async function hashPassword(password) {
-  return argon2.hash(password, ARGON2_OPTIONS);
+  return withPasswordHashSlot(() => argon2.hash(password, ARGON2_OPTIONS));
 }
 
 async function verifyPassword(password, stored) {
   const hash = String(stored || "");
+  // Checked before the slot is taken: a malformed stored hash costs nothing and
+  // must not be able to occupy a verification slot.
   if (!hash.startsWith("$argon2")) return { valid: false, needsRehash: false };
-  try {
-    const valid = await argon2.verify(hash, password);
-    return {
-      valid,
-      needsRehash: valid && argon2.needsRehash(hash, ARGON2_OPTIONS),
-    };
-  } catch {
-    return { valid: false, needsRehash: false };
-  }
+  return withPasswordHashSlot(async () => {
+    try {
+      const valid = await argon2.verify(hash, password);
+      return {
+        valid,
+        needsRehash: valid && argon2.needsRehash(hash, ARGON2_OPTIONS),
+      };
+    } catch {
+      return { valid: false, needsRehash: false };
+    }
+  });
 }
 
 function oauthEnabled() {
@@ -1393,6 +1506,23 @@ function withStorageDir(row) {
   return { ...row, storageDir: resolveProjectStorageDir(DATA_DIR, row.storage_path) };
 }
 
+// The retention columns as the policy module expects them. A null column means
+// "follow the instance default", and clamping happens on every read rather than
+// on write, so lowering the operator's ceiling takes effect immediately on
+// projects that had been allowed a higher value under the previous one.
+function projectRetentionSettings(row) {
+  return {
+    buildKeep: row.build_keep,
+    buildDays: row.build_days,
+    versionKeep: row.version_keep,
+    versionDays: row.version_days,
+  };
+}
+
+function projectRetention(row) {
+  return clampRetention(projectRetentionSettings(row), RETENTION_CAPS);
+}
+
 // The single authorization chokepoint for a project. Membership is the authority:
 // a non-member cannot tell the project apart from one that does not exist (404),
 // while a member who lacks the capability for this action is told plainly (403).
@@ -1401,7 +1531,8 @@ function withStorageDir(row) {
 // every request, exactly like the per-request account check in requireUser.
 async function authorizeProject(id, user, capability) {
   const { rows } = await db.query(
-    `SELECT p.id, p.name, p.storage_path, p.created_at, p.updated_at, m.role
+    `SELECT p.id, p.name, p.storage_path, p.created_at, p.updated_at,
+            p.build_keep, p.build_days, p.version_keep, p.version_days, m.role
      FROM projects p JOIN project_members m ON m.project_id = p.id
      WHERE p.id = $1 AND m.user_id = $2`,
     [id, user.sub]
@@ -1673,7 +1804,16 @@ async function getProject(req, res, user, id) {
   data.project.name = row.name;
   data.createdAt = toMillis(row.created_at);
   data.updatedAt = toMillis(row.updated_at);
-  json(res, 200, { id: row.id, ...data, role: row.role });
+  // Sent to every reader, not only owners: what the project keeps and for how
+  // long is something a member should be able to see before relying on it, even
+  // when changing it is not theirs to do. The bounds travel with the values so
+  // the settings panel never has to hard-code a limit only the server knows.
+  json(res, 200, {
+    id: row.id,
+    ...data,
+    role: row.role,
+    retention: retentionView(projectRetentionSettings(row), RETENTION_CAPS),
+  });
 }
 
 // Reconciles the file-identity ledger against the tree about to be written and
@@ -1747,7 +1887,10 @@ async function insertVersion({ fileId, parentId, user, reason, content }, querya
 }
 
 // Resolves the exact revision for the on-disk content, inserting it when changed.
-// Unversionable content has no revision and is represented by null.
+// Unversionable content has no revision and is represented by null. A file may
+// name its own author, which is what lets one checkpoint cover several files
+// edited by different people without attributing them all to whoever happened to
+// be first in the list.
 async function snapshotFileIfChanged({ storageDir, file, user, reason }, queryable = db) {
   const buffer = await fs.readFile(path.join(storageDir, file.path)).catch(() => null);
   if (!isVersionableText(buffer, file.kind)) return null;
@@ -1757,7 +1900,7 @@ async function snapshotFileIfChanged({ storageDir, file, user, reason }, queryab
     return { id: previous.id, created: false };
   }
   const id = await insertVersion(
-    { fileId: file.id, parentId: previous ? previous.id : null, user, reason, content },
+    { fileId: file.id, parentId: previous ? previous.id : null, user: file.author || user, reason, content },
     queryable
   );
   return { id, created: true };
@@ -1946,10 +2089,58 @@ const COLLAB_HEARTBEAT_MS = positiveIntEnv("COLLAB_HEARTBEAT_MS", 30000);
 const COLLAB_PUSH_DEBOUNCE_MS = positiveIntEnv("COLLAB_PUSH_DEBOUNCE_MS", 300);
 // Cursor and selection moves are ephemeral, so they are paced separately.
 const COLLAB_PRESENCE_DEBOUNCE_MS = positiveIntEnv("COLLAB_PRESENCE_DEBOUNCE_MS", 200);
+// Server-side coalescing, which is what makes a crowded room affordable.
+//
+// Broadcasting the participant list on receipt of each presence report is
+// quadratic: every one of n participants sends a report, and each report is
+// answered with a message to each of the other n-1. At fifteen or twenty people
+// that is thousands of sends per second, and it is the ceiling this process hits
+// first — well before PostgreSQL notices anything. Answering on a tick instead
+// makes it linear per tick, and at this interval no one can perceive the
+// difference: the client already debounces its own reports by a comparable
+// amount before sending them.
+const COLLAB_PEERS_TICK_MS = positiveIntEnv("COLLAB_PEERS_TICK_MS", 200);
+// The file tree only answers "is somebody else in this file", which changes on
+// a join or a leave and never while anyone types. It can be paced far more
+// slowly than a cursor without losing anything a user would notice.
+const COLLAB_FILE_PRESENCE_TICK_MS = positiveIntEnv("COLLAB_FILE_PRESENCE_TICK_MS", 5000);
+// `projects.updated_at` feeds the "last modified" column of the dashboard.
+// Writing it on every flush of every room means many rooms of one project
+// contending for a single row, each in its own transaction, to keep a timestamp
+// nobody reads in realtime accurate to the second. Once per project per interval
+// is the same information at a fraction of the write traffic.
+const COLLAB_TOUCH_MS = positiveIntEnv("COLLAB_TOUCH_MS", 30000);
 
 const collabRooms = new CollabRooms();
 const collabSessions = new Set();
 let collabHeartbeat = null;
+
+// Per-project coalescing timers, keyed by project id. Three kinds of work used
+// to be done once per room per event, which is the wrong unit for all three:
+// the project row is one row however many of its files are open, the file tree
+// is one view however many rooms changed, and a revision checkpoint takes one
+// advisory lock per project regardless of how many files it covers. Keeping the
+// timers here lets the work be done once per project per interval instead.
+const collabProjects = new Map();
+
+function collabProjectState(projectId) {
+  let state = collabProjects.get(projectId);
+  if (!state) {
+    state = { touchTimer: null, revisionTimer: null, presenceTimer: null, touchPending: false };
+    collabProjects.set(projectId, state);
+  }
+  return state;
+}
+
+// Drops the bookkeeping for a project with nothing scheduled and no live room,
+// so the map does not accumulate an entry for every project ever opened.
+function collabReleaseProject(projectId) {
+  const state = collabProjects.get(projectId);
+  if (!state) return;
+  if (state.touchTimer || state.revisionTimer || state.presenceTimer) return;
+  if (collabRooms.forProject(projectId).length) return;
+  collabProjects.delete(projectId);
+}
 
 function collabSend(socket, message) {
   if (socket.readyState !== socket.OPEN) return;
@@ -1972,6 +2163,12 @@ async function collabMembership(projectId, userId) {
 async function collabJoin(session, fileId) {
   if (!isUuid(fileId)) throw new CollabError("COLLAB_BAD_FILE");
   if (session.rooms.has(fileId)) return session.rooms.get(fileId);
+  // A room holds its whole document in memory for as long as anyone is in it,
+  // so the number of rooms one connection may open is the number of documents
+  // one client can pin in the server's heap. The cap is far above what an editor
+  // opens — a tab edits one file and watches one project — and exists so a
+  // scripted client cannot walk a project and hold all of it resident.
+  if (session.rooms.size >= COLLAB_MAX_ROOMS_PER_SESSION) throw new CollabError("COLLAB_TOO_MANY_ROOMS");
   const { rows } = await db.query(
     "SELECT id, project_id, path, kind, deleted_at FROM project_files WHERE id = $1",
     [fileId]
@@ -2002,15 +2199,22 @@ function collabLeave(session, fileId) {
   const room = entry.room;
   room.clients.delete(session);
   // The file loses a participant, so every tree watching the project changes.
-  collabBroadcastFilePresence(entry.projectId);
-  if (room.clients.size) return void collabBroadcastPeers(room);
+  collabScheduleFilePresence(entry.projectId);
+  if (room.clients.size) return void collabSchedulePeers(room, true);
   clearTimeout(room.flushTimer);
-  clearTimeout(room.revisionTimer);
+  clearTimeout(room.peersTimer);
+  room.peersTimer = null;
   // Last one out persists the document and records the consolidated revision
-  // before the room — and with it the authoritative text — is released. The room
-  // is only dropped if nobody rejoined while the write was in flight.
+  // before the room — and with it the authoritative text — is released. This is
+  // the one place a revision is still captured for a single room rather than on
+  // the project timer: the room is about to stop existing, so waiting for the
+  // project's next tick would mean waiting for a checkpoint that can no longer
+  // see it. The room is only dropped if nobody rejoined while the write was in
+  // flight.
   collabTrack(collabPersist(room, { revision: true }).then(() => {
-    if (!room.clients.size) collabRooms.close(room.fileId);
+    if (room.clients.size) return;
+    collabRooms.close(room.fileId);
+    collabReleaseProject(room.projectId);
   }));
 }
 
@@ -2046,36 +2250,93 @@ async function collabPersistNow(room, revision) {
     await fs.writeFile(abs, text, "utf8");
     room.markPersisted(version);
     room.flushDeadline = 0;
-    await db.query("UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = $1", [room.projectId]);
+    // The project row is touched on a coalesced timer rather than here: the
+    // bytes are already safe on disk, and the dashboard timestamp is not worth
+    // a transaction per room per flush.
+    collabScheduleTouch(room.projectId);
   }
-  if (!revision || !room.needsRevision()) return;
-  const version = room.version;
-  // The revision is attributed to whoever made the most recent accepted edit.
-  const author = room.lastAuthor || null;
-  if (!author) return;
+  if (revision) await collabCaptureRevisions(room.projectId, [room]);
+}
+
+// Marks the project modified at most once per COLLAB_TOUCH_MS, however many of
+// its rooms flushed in between.
+function collabScheduleTouch(projectId) {
+  const state = collabProjectState(projectId);
+  state.touchPending = true;
+  if (state.touchTimer) return;
+  state.touchTimer = setTimeout(() => {
+    state.touchTimer = null;
+    collabTrack(collabTouchProject(projectId));
+  }, COLLAB_TOUCH_MS);
+}
+
+async function collabTouchProject(projectId) {
+  const state = collabProjects.get(projectId);
+  if (!state || !state.touchPending) return;
+  state.touchPending = false;
+  await db.query("UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = $1", [projectId]);
+  collabReleaseProject(projectId);
+}
+
+// Consolidates the realtime edits of one project into a single checkpoint.
+//
+// One checkpoint, not one per file: captureProjectCheckpoint takes a per-project
+// advisory lock, so a project with twenty open documents used to queue twenty
+// transactions on the same lock, each inserting one file's contents. Passing
+// every dirty room to one call takes the lock once and writes the same rows.
+// Attribution survives the grouping because each file carries its own author.
+async function collabCaptureRevisions(projectId, rooms) {
+  const dirty = rooms.filter((room) => room.needsRevision() && room.lastAuthor && room.storageDir);
+  if (!dirty.length) return;
+  // The version is read before the write and applied after it, so edits that
+  // arrive while the checkpoint is in flight still mark the room dirty and are
+  // caught by the next one instead of being silently considered recorded.
+  const captured = dirty.map((room) => ({ room, version: room.version }));
+  const storageDir = dirty[0].storageDir;
   await captureProjectCheckpoint({
-    projectId: room.projectId,
-    storageDir: room.storageDir,
-    user: author,
+    projectId,
+    storageDir,
+    user: dirty[0].lastAuthor,
     reason: "realtime",
-    files: [{ id: room.fileId, path: room.path, kind: room.kind || null }],
+    files: dirty.map((room) => ({
+      id: room.fileId,
+      path: room.path,
+      kind: room.kind || null,
+      author: room.lastAuthor,
+    })),
   }).catch((err) => console.error("Realtime revision failed", err));
-  room.markRevisioned(version);
+  for (const entry of captured) entry.room.markRevisioned(entry.version);
 }
 
 // Debounced persistence: writes after a quiet moment, and at least every
-// COLLAB_FLUSH_MAX_MS while editing never stops.
+// COLLAB_FLUSH_MAX_MS while editing never stops. The disk write stays per room,
+// because it is the room's own bytes; the revision checkpoint is scheduled per
+// project, because that is the unit the database serializes it at.
 function collabSchedulePersist(room) {
   const now = Date.now();
   if (!room.flushDeadline) room.flushDeadline = now + COLLAB_FLUSH_MAX_MS;
   clearTimeout(room.flushTimer);
-  clearTimeout(room.revisionTimer);
   const delay = Math.max(0, Math.min(COLLAB_FLUSH_MS, room.flushDeadline - now));
   room.flushTimer = setTimeout(() => {
     if (collabRooms.get(room.fileId) === room) collabTrack(collabPersist(room));
   }, delay);
-  room.revisionTimer = setTimeout(() => {
-    if (collabRooms.get(room.fileId) === room) collabTrack(collabPersist(room, { revision: true }));
+  collabScheduleRevision(room.projectId);
+}
+
+// One revision timer per project, restarted by activity in any of its rooms, so
+// a burst of collaborative editing across many files produces one checkpoint
+// once the burst subsides rather than one per file.
+function collabScheduleRevision(projectId) {
+  const state = collabProjectState(projectId);
+  clearTimeout(state.revisionTimer);
+  state.revisionTimer = setTimeout(() => {
+    state.revisionTimer = null;
+    const rooms = collabRooms.forProject(projectId);
+    // Every room is flushed to disk before the checkpoint reads it back, so the
+    // revision records the text as it stands and not the last write to land.
+    collabTrack(Promise.all(rooms.map((room) => collabPersist(room)))
+      .then(() => collabCaptureRevisions(projectId, rooms))
+      .then(() => collabReleaseProject(projectId)));
   }, COLLAB_REVISION_IDLE_MS);
 }
 
@@ -2092,10 +2353,14 @@ function collabBroadcast(room, message, except = null) {
 // told about the others only, so a client needs no identity of its own to filter
 // itself out. Being in the room already required membership, so presence cannot
 // leak to anyone who could not read the file anyway.
-function collabPeersFor(room, recipient) {
+// The room's participants, built once. Each entry carries the connection id it
+// describes so a recipient can be filtered out of the list without the list
+// having to be rebuilt for them: constructing these objects — and hashing a
+// colour for each — is the expensive part, and it does not depend on who is
+// being told.
+function collabRoomPeers(room) {
   const peers = [];
   room.clients.forEach((client) => {
-    if (client === recipient) return;
     const entry = client.rooms.get(room.fileId);
     if (!entry) return;
     peers.push({
@@ -2114,9 +2379,34 @@ function collabPeersFor(room, recipient) {
 }
 
 function collabBroadcastPeers(room) {
+  const all = collabRoomPeers(room);
   room.clients.forEach((client) => {
-    collabSend(client.socket, { t: "peers", fileId: room.fileId, peers: collabPeersFor(room, client) });
+    collabSend(client.socket, {
+      t: "peers",
+      fileId: room.fileId,
+      peers: all.filter((peer) => peer.id !== client.id),
+    });
   });
+}
+
+// Presence reports arrive continuously and from everyone at once, so answering
+// each one individually is what makes the fan-out quadratic. Coalescing on a
+// tick collapses a burst into a single broadcast carrying the same final state.
+//
+// `immediate` is for the events a user is waiting to see confirmed — somebody
+// joined, somebody left, a role changed — which are rare enough to cost nothing
+// and jarring to delay.
+function collabSchedulePeers(room, immediate = false) {
+  if (immediate) {
+    clearTimeout(room.peersTimer);
+    room.peersTimer = null;
+    return collabBroadcastPeers(room);
+  }
+  if (room.peersTimer) return;
+  room.peersTimer = setTimeout(() => {
+    room.peersTimer = null;
+    if (collabRooms.get(room.fileId) === room) collabBroadcastPeers(room);
+  }, COLLAB_PEERS_TICK_MS);
 }
 
 /* ---- presence: which of the project's files somebody else is in ---- */
@@ -2159,6 +2449,22 @@ function collabBroadcastFilePresence(projectId) {
   });
 }
 
+// Rebuilding this view walks every room of the project and every client in each
+// of them, once per watching session — so a project being opened by a class of
+// students would recompute it for everybody on each arrival. Nothing here is
+// time-critical: it answers "is somebody else in that file", which stays true
+// for as long as they are in it. A slow tick is the whole optimisation.
+function collabScheduleFilePresence(projectId) {
+  if (!projectId) return;
+  const state = collabProjectState(projectId);
+  if (state.presenceTimer) return;
+  state.presenceTimer = setTimeout(() => {
+    state.presenceTimer = null;
+    collabBroadcastFilePresence(projectId);
+    collabReleaseProject(projectId);
+  }, COLLAB_FILE_PRESENCE_TICK_MS);
+}
+
 // Tells everyone watching the project that a compilation finished, so a member
 // looking at an older output learns there is a newer one instead of discovering
 // it by chance. The message carries no output, only the fact and who caused it;
@@ -2198,8 +2504,8 @@ async function collabHandleMessage(session, raw) {
       role: entry.role,
     });
     // Everyone learns about the newcomer, and the newcomer about everyone.
-    collabBroadcastPeers(entry.room);
-    return collabBroadcastFilePresence(entry.room.projectId);
+    collabSchedulePeers(entry.room, true);
+    return collabScheduleFilePresence(entry.room.projectId);
   }
 
   // A tab watches the project it has open, independently of which file it is
@@ -2228,7 +2534,8 @@ async function collabHandleMessage(session, raw) {
     const presence = normalizePresence(message, entry.room.doc.length);
     if (!presence) return;
     entry.presence = presence;
-    return collabBroadcastPeers(entry.room);
+    // Recorded now, broadcast on the next tick with everyone else's.
+    return collabSchedulePeers(entry.room);
   }
 
   if (message.t === "pull") {
@@ -2291,8 +2598,10 @@ async function collabRecheckProject(projectId) {
       if (entry.projectId !== projectId || entry.role === project.role) return;
       entry.role = project.role;
       collabSend(session.socket, { t: "role", fileId, role: project.role });
-      // The others see the new role on the participant list too.
-      collabBroadcastPeers(entry.room);
+      // The others see the new role on the participant list too. Immediate: a
+      // permission change is exactly the kind of thing that must not sit in a
+      // queue behind a tick.
+      collabSchedulePeers(entry.room, true);
     });
   }
 }
@@ -2339,6 +2648,16 @@ async function collabUpgrade(req, socket, head, wss) {
     user = await requireUser(req);
   } catch {
     return finish("401 Unauthorized", "Not authenticated");
+  }
+  // Counted per account rather than per address, so it holds for someone behind
+  // a shared address and cannot be evaded by reconnecting from another network.
+  // A person legitimately has several tabs open; nobody has twelve.
+  let sessionsForUser = 0;
+  collabSessions.forEach((existing) => {
+    if (existing.user && existing.user.sub === user.sub) sessionsForUser += 1;
+  });
+  if (sessionsForUser >= COLLAB_MAX_SESSIONS_PER_USER) {
+    return finish("429 Too Many Requests", "Too many realtime connections");
   }
   wss.handleUpgrade(req, socket, head, (ws) => {
     // One id per connection, not per user: the same person in two tabs is two
@@ -2390,9 +2709,22 @@ function collabAttach(server) {
 async function collabShutdown() {
   clearInterval(collabHeartbeat);
   Array.from(collabSessions).forEach((session) => collabCloseSession(session, 1001, "server shutting down"));
+  // Every coalesced timer is cancelled and its work done now instead: a pending
+  // tick is deferred work, and deferred work at shutdown is lost work. The
+  // project timestamp is the one thing flushed unconditionally, because its
+  // whole purpose is to survive the process.
+  for (const [projectId, state] of collabProjects) {
+    clearTimeout(state.touchTimer);
+    clearTimeout(state.revisionTimer);
+    clearTimeout(state.presenceTimer);
+    state.touchTimer = null;
+    state.revisionTimer = null;
+    state.presenceTimer = null;
+    if (state.touchPending) collabTrack(collabTouchProject(projectId));
+  }
   for (const room of collabRooms.all()) {
     clearTimeout(room.flushTimer);
-    clearTimeout(room.revisionTimer);
+    clearTimeout(room.peersTimer);
     collabTrack(collabPersist(room, { revision: true }));
   }
   await Promise.allSettled(Array.from(collabPending));
@@ -2479,10 +2811,43 @@ async function updateProject(req, res, user, id) {
   const { renames } = await syncProjectFiles(id, data);
   applyCollabAuthority(id, data);
   await writeProjectFile(row.storageDir, data, renames);
-  await db.query("UPDATE projects SET name = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2", [name, id]);
+  // Retention is an owner decision: it governs how much of the project's past
+  // survives, which is the same authority that governs whether the project
+  // survives at all. An editor saving the document must not be able to change
+  // it, so the field is simply ignored for anyone else rather than turning an
+  // ordinary save into a permission error.
+  const retention = row.role === "owner"
+    ? normalizeRetentionInput(body.retention, RETENTION_CAPS)
+    : {};
+  const retentionColumns = {
+    buildKeep: "build_keep",
+    buildDays: "build_days",
+    versionKeep: "version_keep",
+    versionDays: "version_days",
+  };
+  const assignments = ["name = $1", "updated_at = CURRENT_TIMESTAMP"];
+  const values = [name];
+  for (const [field, column] of Object.entries(retentionColumns)) {
+    if (!Object.prototype.hasOwnProperty.call(retention, field)) continue;
+    values.push(retention[field]);
+    assignments.push(`${column} = $${values.length}`);
+    row[column] = retention[field];
+  }
+  values.push(id);
+  await db.query(`UPDATE projects SET ${assignments.join(", ")} WHERE id = $${values.length}`, values);
+  if (Object.keys(retention).length) {
+    await audit({
+      ...sessionActor(req, user),
+      action: "project.retention_changed",
+      targetType: "project",
+      targetId: id,
+      metadata: projectRetention(row),
+    });
+  }
   json(res, 200, {
     project: { id, name, projectType: data.projectType, createdAt: data.createdAt, updatedAt: data.updatedAt, fileCount: countFiles(data) },
     data: { id, ...data },
+    retention: retentionView(projectRetentionSettings(row), RETENTION_CAPS),
   });
 }
 
@@ -3475,6 +3840,10 @@ async function deleteBuildOutput(req, res, user, projectId, buildId) {
 async function compileProject(req, res, user, id) {
   const body = await readBody(req);
   const row = await authorizeProject(id, user, "compile");
+  // Charged after authorization, so an outsider probing the endpoint cannot
+  // consume a member's allowance, and keyed on the pair so one member's loop
+  // does not exhaust the budget of a project they merely have access to.
+  enforceRateLimit(compileLimiter, `compile:${user.sub}:${id}`, "COMPILE_RATE_LIMITED");
   const name = body.name == null ? row.name : cleanName(body.name);
   const data = body.data && typeof body.data === "object" ? body.data : await readProjectFile(row.storageDir);
   data.project = data.project && Array.isArray(data.project.nodes) ? data.project : { nodes: [] };
@@ -3542,6 +3911,17 @@ async function compileProject(req, res, user, id) {
   };
   let publishedPath = null;
   let finalized = false;
+  // The slot is taken before anything durable exists — before the staging tree,
+  // before the build row — so a caller turned away by a full queue leaves
+  // nothing behind to reconcile. It is released in the `finally` below, after
+  // the compiler process has exited and its output has been published.
+  let releaseCompileSlot;
+  try {
+    releaseCompileSlot = await compileGate.acquire();
+  } catch (err) {
+    if (err instanceof GateRejectedError) throw requestError("COMPILE_SERVER_BUSY", 503);
+    throw err;
+  }
   activeBuilds.add(buildId);
   try {
     await fs.mkdir(path.dirname(stagingDir), { recursive: true });
@@ -3659,8 +4039,266 @@ async function compileProject(req, res, user, id) {
     throw err;
   } finally {
     activeBuilds.delete(buildId);
+    releaseCompileSlot();
     await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
   }
+}
+
+/* ---------------- retention and garbage collection ---------------- */
+// Nothing in this section is allowed to be the reason a request fails, so every
+// entry point is driven from a timer and every error is logged rather than
+// thrown. Deleting is also always the *last* step: a row goes first and its
+// bytes follow, because a directory with no row is inert and reclaimable on the
+// next pass, whereas a row with no directory is a build the interface offers and
+// cannot deliver.
+
+// A compilation whose process died leaves a row claiming to be running that
+// nothing will ever complete. The grace period is what makes this safe to run
+// against a live database: a build younger than several compile timeouts might
+// simply be slow, and — more importantly — might belong to another instance
+// sharing this database, which must never have its work declared dead.
+const STALLED_BUILD_GRACE_MS = Math.max(COMPILE_TIMEOUT_MS * 4, 5 * 60 * 1000);
+
+async function reconcileStalledBuilds() {
+  const cutoff = new Date(Date.now() - STALLED_BUILD_GRACE_MS);
+  const { rows } = await db.query(
+    `UPDATE build_outputs SET
+       status = 'failed', completed_at = CURRENT_TIMESTAMP,
+       log = CASE WHEN log = '' THEN $2 ELSE log || E'\\n' || $2 END,
+       errors = errors || $3::jsonb
+     WHERE status = 'running' AND created_at < $1
+     RETURNING id, project_id`,
+    [
+      cutoff,
+      "Iris: this build was interrupted and never completed.",
+      JSON.stringify(["Iris: this build was interrupted and never completed."]),
+    ]
+  );
+  if (rows.length) console.log(`Retention: closed ${rows.length} interrupted build(s)`);
+  return rows.length;
+}
+
+// Both halves of the rule are in the one statement: `position > keep` is the
+// count, `created_at < cutoff` is the age, and a row must satisfy both to be
+// deleted. The newest revision of a file always has position 1 and the keep
+// floor is well above 1, so the current state of a file is unreachable from here
+// by construction rather than by a special case that could be forgotten.
+//
+// Two foreign keys absorb the consequences. document_versions.parent_version_id
+// is ON DELETE SET NULL, so pruning the middle of a chain leaves the survivors
+// linked to null instead of to a row that is gone; and build_outputs
+// .source_revision_id is likewise nulled, with source_content_hash still
+// recording which source the build came from.
+async function pruneProjectVersions(projectId, policy, now) {
+  const { rowCount } = await db.query(
+    `WITH ranked AS (
+       SELECT dv.id, dv.created_at,
+              ROW_NUMBER() OVER (PARTITION BY dv.file_id ORDER BY dv.created_at DESC, dv.id DESC) AS position
+       FROM document_versions dv
+       JOIN project_files pf ON pf.id = dv.file_id
+       WHERE pf.project_id = $1
+     )
+     DELETE FROM document_versions dv
+     USING ranked
+     WHERE dv.id = ranked.id AND ranked.position > $2 AND ranked.created_at < $3`,
+    [projectId, policy.versionKeep, cutoffDate(policy.versionDays, now)]
+  );
+  return rowCount || 0;
+}
+
+// The same double condition for builds, with one addition: the most recent
+// successful build is never pruned whatever its age. It is what the editor
+// restores when the project is reopened, and a project whose last good output
+// aged out would open showing nothing at all — which reads as data loss even
+// though the sources are intact. Builds still running are excluded outright:
+// their directory is being written to.
+async function pruneProjectBuilds(projectId, storageDir, policy, now) {
+  const { rows } = await db.query(
+    `WITH ranked AS (
+       SELECT id, created_at,
+              ROW_NUMBER() OVER (ORDER BY created_at DESC, id DESC) AS position
+       FROM build_outputs
+       WHERE project_id = $1 AND status <> 'running'
+     ),
+     protected_build AS (
+       SELECT id FROM build_outputs
+       WHERE project_id = $1 AND status = 'succeeded'
+       ORDER BY created_at DESC, id DESC LIMIT 1
+     )
+     DELETE FROM build_outputs b
+     USING ranked
+     WHERE b.id = ranked.id
+       AND ranked.position > $2
+       AND ranked.created_at < $3
+       AND b.id NOT IN (SELECT id FROM protected_build)
+     RETURNING b.id, b.storage_path`,
+    [projectId, policy.buildKeep, cutoffDate(policy.buildDays, now)]
+  );
+  for (const build of rows) {
+    // A path that fails to resolve is one the safety checks in resolveBuildDirectory
+    // refused, so it is left alone rather than removed on a guess.
+    const directory = await resolveBuildDirectory(
+      storageDir, build.id, build.storage_path || buildStoragePath(build.id)
+    ).catch(() => null);
+    if (directory) await fs.rm(directory, { recursive: true, force: true }).catch((err) => {
+      console.error(`Retention: could not remove build directory for ${build.id}`, err.message || err);
+    });
+  }
+  return rows.length;
+}
+
+// Directories under output/ whose build row no longer exists. A build row is
+// always created before its directory is published, so a directory without one
+// can only be the residue of a delete that failed halfway — never a build about
+// to be registered. The grace period covers the window between publication and
+// the row's completion.
+async function pruneOrphanedBuildDirectories(projectId, storageDir, now) {
+  const output = path.join(storageDir, "output");
+  const entries = await fs.readdir(output, { withFileTypes: true }).catch(() => null);
+  if (!entries) return 0;
+  const candidates = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const absolute = path.join(output, entry.name);
+    const stat = await fs.lstat(absolute).catch(() => null);
+    if (!stat || stat.isSymbolicLink()) continue;
+    if (now - stat.mtimeMs < RETENTION_ORPHAN_GRACE_MS) continue;
+    // The quarantine directories deleteBuildOutput renames into place before
+    // removing them: if the process died in between, nothing will ever come back
+    // for them, and their name is not a build id to check against the database.
+    if (entry.name.includes(".deleting-")) {
+      await fs.rm(absolute, { recursive: true, force: true }).catch(() => {});
+      continue;
+    }
+    if (isUuid(entry.name)) candidates.push(entry.name);
+  }
+  if (!candidates.length) return 0;
+  const { rows } = await db.query(
+    "SELECT id FROM build_outputs WHERE project_id = $1 AND id = ANY($2::uuid[])",
+    [projectId, candidates]
+  );
+  const known = new Set(rows.map((row) => row.id));
+  let removed = 0;
+  for (const name of candidates) {
+    if (known.has(name)) continue;
+    await fs.rm(path.join(output, name), { recursive: true, force: true }).catch(() => {});
+    removed += 1;
+  }
+  return removed;
+}
+
+// Staging trees belong to a compilation in flight and are removed in its
+// `finally`. One that outlives the grace period belonged to a process that died
+// before reaching it.
+async function pruneAbandonedStaging(now) {
+  const root = path.join(DATA_DIR, ".build-staging");
+  const projects = await fs.readdir(root, { withFileTypes: true }).catch(() => null);
+  if (!projects) return 0;
+  let removed = 0;
+  for (const project of projects) {
+    if (!project.isDirectory()) continue;
+    const projectDir = path.join(root, project.name);
+    const builds = await fs.readdir(projectDir, { withFileTypes: true }).catch(() => []);
+    for (const build of builds) {
+      if (!build.isDirectory() || activeBuilds.has(build.name)) continue;
+      const absolute = path.join(projectDir, build.name);
+      const stat = await fs.lstat(absolute).catch(() => null);
+      if (!stat || now - stat.mtimeMs < RETENTION_ORPHAN_GRACE_MS) continue;
+      await fs.rm(absolute, { recursive: true, force: true }).catch(() => {});
+      removed += 1;
+    }
+    // Removes the per-project level once its last staging tree is gone; fails
+    // harmlessly while any remain, since the directory is not empty.
+    await fs.rmdir(projectDir).catch(() => {});
+  }
+  return removed;
+}
+
+// The audit trail is instance-wide and has no owner, so its retention is the
+// operator's alone. Deleted in batches: this is the highest-volume table in the
+// schema, and one unbounded DELETE on a busy instance would hold locks for far
+// longer than a background sweep has any right to.
+async function pruneAuditEvents(now, batch = 5000) {
+  const cutoff = cutoffDate(AUDIT_RETENTION_DAYS, now);
+  let removed = 0;
+  for (;;) {
+    const { rowCount } = await db.query(
+      `DELETE FROM audit_events WHERE ctid IN (
+         SELECT ctid FROM audit_events WHERE occurred_at < $1 LIMIT $2
+       )`,
+      [cutoff, batch]
+    );
+    removed += rowCount || 0;
+    if (!rowCount || rowCount < batch) return removed;
+  }
+}
+
+let retentionSweepTimer = null;
+let retentionSweepRunning = false;
+
+async function runRetentionSweep() {
+  // One sweep at a time. An instance whose sweep takes longer than the interval
+  // should fall behind rather than run two of them over the same rows.
+  if (retentionSweepRunning || shuttingDown) return null;
+  retentionSweepRunning = true;
+  const now = Date.now();
+  const totals = { builds: 0, versions: 0, directories: 0, audit: 0, stalled: 0 };
+  try {
+    totals.stalled = await reconcileStalledBuilds();
+    const { rows } = await db.query(
+      `SELECT id, storage_path, build_keep, build_days, version_keep, version_days FROM projects`
+    );
+    for (const row of rows) {
+      if (shuttingDown) break;
+      const policy = projectRetention(row);
+      const storageDir = resolveProjectStorageDir(DATA_DIR, row.storage_path);
+      // Per project rather than per statement: one project whose storage has
+      // been moved or removed underneath the database must not stop the sweep
+      // for every other project on the instance.
+      try {
+        totals.builds += await pruneProjectBuilds(row.id, storageDir, policy, now);
+        totals.versions += await pruneProjectVersions(row.id, policy, now);
+        totals.directories += await pruneOrphanedBuildDirectories(row.id, storageDir, now);
+      } catch (err) {
+        console.error(`Retention: sweep failed for project ${row.id}`, err.message || err);
+      }
+    }
+    totals.directories += await pruneAbandonedStaging(now);
+    totals.audit = await pruneAuditEvents(now);
+  } catch (err) {
+    console.error("Retention sweep failed", err.message || err);
+  } finally {
+    retentionSweepRunning = false;
+  }
+  const reclaimed = totals.builds + totals.versions + totals.directories + totals.audit + totals.stalled;
+  if (reclaimed) {
+    console.log(
+      `Retention: ${totals.builds} build(s), ${totals.versions} revision(s), `
+      + `${totals.directories} directory(ies), ${totals.audit} audit event(s), ${totals.stalled} interrupted build(s)`
+    );
+  }
+  return totals;
+}
+
+function startRetentionSweep() {
+  if (!RETENTION_ENABLED) {
+    console.log("Retention sweep disabled (RETENTION_ENABLED=false)");
+    return null;
+  }
+  // The first pass is deferred rather than run at boot: startup is when the
+  // process is busiest and least able to spare I/O, and nothing here is urgent.
+  // Interrupted builds are the one exception, reconciled straight away, because
+  // until they are the interface shows compilations that are still spinning.
+  reconcileStalledBuilds().catch((err) => console.error("Retention: startup reconciliation failed", err.message || err));
+  retentionSweepTimer = setInterval(() => {
+    runRetentionSweep().catch((err) => console.error("Retention sweep failed", err.message || err));
+    // The rate limiters keep an entry per active key; sweeping them here costs
+    // nothing and keeps a long-running process from holding entries for callers
+    // that stopped calling hours ago.
+    for (const limiter of [authIpLimiter, authAccountLimiter, apiLimiter, compileLimiter]) limiter.sweep();
+  }, RETENTION_SWEEP_MS);
+  if (typeof retentionSweepTimer.unref === "function") retentionSweepTimer.unref();
+  return retentionSweepTimer;
 }
 
 const PROJECT_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})$`);
@@ -4403,25 +5041,46 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === "POST" && url.pathname === "/api/auth/login") {
+    // Charged before the body is even read: reading up to MAX_BODY from a
+    // caller that is already over its allowance is work done on behalf of
+    // someone who has been refused. Everything after this point — parsing, the
+    // user lookup, and above all Argon2 — is downstream of it.
+    const ip = clientIp(req) || "unknown";
+    enforceRateLimit(authIpLimiter, `login:${ip}`, "AUTH_RATE_LIMITED");
     const body = await readBody(req);
     const login = String(body.username || "").trim().toLowerCase();
     const password = String(body.password || "");
     if (!login || !password) return errorJson(res, 400, "AUTH_REQUIRED_FIELDS");
+    // The per-account limit needs the submitted identifier, so it comes second.
+    // The address limit stops one source; this one stops many sources
+    // converging on a single account, which is the shape a distributed
+    // credential-stuffing run has. Keying on what was submitted rather than on
+    // a resolved user id is deliberate: an attacker must not be able to tell a
+    // throttled unknown account from a throttled real one, and an unknown
+    // account has no id to key on anyway.
+    enforceRateLimit(authAccountLimiter, `login:${login}`, "AUTH_RATE_LIMITED");
     const { rows } = await db.query(
       "SELECT id, username, email, display_name, system_role, status, auth_source, session_epoch, password_hash, password_change_required, oidc_linked_at FROM users WHERE LOWER(username) = LOWER($1) OR LOWER(email) = LOWER($2) LIMIT 1",
       [login, login]
     );
     const user = rows[0];
-    const failedLogin = async (reason) => audit({
-      action: "auth.login_failed",
-      outcome: "failure",
-      actorId: user ? user.id : null,
-      actorLabel: user ? user.username : login,
-      ip: clientIp(req),
-      targetType: "user",
-      targetId: user ? user.id : null,
-      metadata: { authMethod: "local", reason },
-    });
+    // Every refusal below is also a rate-limit event: an attempt that failed
+    // costs the caller more of its allowance than one that succeeded, so a
+    // guessing run runs out of budget while a person who mistyped does not.
+    const failedLogin = async (reason) => {
+      authIpLimiter.penalize(`login:${ip}`, Date.now(), AUTH_FAILURE_PENALTY - 1);
+      authAccountLimiter.penalize(`login:${login}`, Date.now(), AUTH_FAILURE_PENALTY - 1);
+      return audit({
+        action: "auth.login_failed",
+        outcome: "failure",
+        actorId: user ? user.id : null,
+        actorLabel: user ? user.username : login,
+        ip: clientIp(req),
+        targetType: "user",
+        targetId: user ? user.id : null,
+        metadata: { authMethod: "local", reason },
+      });
+    };
     if (user && !user.password_hash) {
       // An account converted from local to SSO gets a specific message; one that
       // was always SSO gets the generic "use the SSO button" guidance.
@@ -4447,6 +5106,11 @@ async function handleApi(req, res, url) {
       await db.query("UPDATE users SET password_hash = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2", [passwordHash, user.id]);
       user.password_hash = passwordHash;
     }
+    // Proving the password clears the debt: someone who got in is not an
+    // attacker, and leaving them throttled would punish the two typos that
+    // preceded the correct attempt.
+    authIpLimiter.reset(`login:${ip}`);
+    authAccountLimiter.reset(`login:${login}`);
     await db.query("UPDATE users SET last_login_at = CURRENT_TIMESTAMP WHERE id = $1", [user.id]);
     await audit({
       action: "auth.login_succeeded",
@@ -4510,6 +5174,13 @@ async function handleApi(req, res, url) {
   }
 
   const user = await requireUser(req);
+
+  // A ceiling on authenticated traffic, keyed on the account rather than the
+  // address so it follows the caller across networks and cannot be shed by
+  // reconnecting. It sits far above what the editor generates in normal use;
+  // what it catches is a client stuck in a retry loop and a session token being
+  // used as a battering ram against the database.
+  enforceRateLimit(apiLimiter, `api:${user.sub}`, "API_RATE_LIMITED");
 
   // A pending forced password change blocks every other authed endpoint until the
   // temporary password is replaced. The login/password/logout/session routes are
@@ -4703,9 +5374,9 @@ async function handle(req, res) {
     const status = err.status || 500;
     if (status >= 500) console.error(err);
     if (url.pathname.startsWith("/api/")) {
-      return errorJson(res, status, err.errorCode || "SERVER_ERROR", err.params || {});
+      return errorJson(res, status, err.errorCode || "SERVER_ERROR", err.params || {}, err.headers || {});
     }
-    return text(res, status, err.message || "Server error");
+    return text(res, status, err.message || "Server error", err.headers || {});
   }
 }
 
@@ -4713,6 +5384,11 @@ function startGracefulShutdown(signal, server) {
   if (shuttingDown) return;
   shuttingDown = true;
   console.log(`Received ${signal}; refusing new work and draining in-flight requests`);
+  clearInterval(retentionSweepTimer);
+  // Callers queued for a slot they will now never get are told so, rather than
+  // being left holding a request open until the process exits under them.
+  compileGate.drain("COMPILE_SERVER_BUSY");
+  passwordHashGate.drain("AUTH_BUSY");
   server.close(() => {});
   if (typeof server.closeIdleConnections === "function") server.closeIdleConnections();
 
@@ -4737,6 +5413,7 @@ if (require.main === module) initDb()
   .then(() => {
     const server = http.createServer(handle);
     collabAttach(server);
+    startRetentionSweep();
     process.on("SIGTERM", () => startGracefulShutdown("SIGTERM", server));
     process.on("SIGINT", () => startGracefulShutdown("SIGINT", server));
     server.listen(...(BIND_ADDRESS ? [PORT, BIND_ADDRESS] : [PORT]), () => {
@@ -4766,6 +5443,12 @@ module.exports = {
   applyCollabAuthority,
   collabAttach,
   collabRooms,
+  runRetentionSweep,
+  reconcileStalledBuilds,
+  pruneProjectBuilds,
+  pruneProjectVersions,
+  pruneAuditEvents,
+  projectRetention,
   writeProjectFile,
   readProjectFile,
   hydrateProjectPayloads,

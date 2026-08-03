@@ -490,9 +490,22 @@ test("project and build requests ignore stale asynchronous completions", () => {
 test("settings use accessible tabs and a compact accordion", () => {
   const settings = html.slice(html.indexOf('id="settingsModal"'), html.indexOf('<div class="toasts"'));
   assert.match(settings, /role="tablist"[^>]*aria-orientation="vertical"/);
-  assert.equal((settings.match(/role="tab"/g) || []).length, 4);
-  assert.equal((settings.match(/role="tabpanel"/g) || []).length, 4);
-  assert.equal((settings.match(/class="set-accordion-trigger"/g) || []).length, 4);
+  // The wide layout's tabs, the compact layout's accordion triggers and the
+  // panels themselves have to stay in one-to-one correspondence: a pane reachable
+  // in one layout and not the other is the failure this guards against. The count
+  // is derived rather than written down, so adding a section cannot silently
+  // leave one of the three behind.
+  const tabs = (settings.match(/role="tab"/g) || []).length;
+  assert.ok(tabs >= 4, `expected the settings sections to survive, found ${tabs}`);
+  assert.equal((settings.match(/role="tabpanel"/g) || []).length, tabs);
+  assert.equal((settings.match(/class="set-accordion-trigger"/g) || []).length, tabs);
+  // Every section is named identically by its tab, its trigger and its panel.
+  const sections = new Set(Array.from(settings.matchAll(/data-set="([a-z]+)"/g), (match) => match[1]));
+  assert.equal(sections.size, tabs);
+  for (const section of sections) {
+    assert.equal((settings.match(new RegExp(`data-set="${section}"`, "g")) || []).length, 2, `${section} needs a tab and a trigger`);
+    assert.match(settings, new RegExp(`data-setpane="${section}"`), `${section} needs a panel`);
+  }
   assert.equal((settings.match(/data-close/g) || []).length, 1);
   assert.doesNotMatch(settings, /PRESTO|data-set="general"/);
   assert.match(css, /@media\(max-width:700px\)[\s\S]*\.set-nav\{display:none\}/);

@@ -38,6 +38,14 @@
     lilypondPathLocked: false,
     lilypondArgs: "",
     lilypondFormat: "pdf",
+    // Retention as the server describes it: for each axis the stored choice, the
+    // value in force, and the range the owner may move within. Null until a
+    // project is open, because the bounds belong to the server and are never
+    // guessed here.
+    retention: null,
+    // Changes made in the settings panel and not yet saved, sent with the next
+    // save rather than through a request of their own.
+    retentionPending: null,
     autoIndent: true,
     wordWrap: false,
     autoSave: false,
@@ -206,6 +214,9 @@
     ed().setReadOnly(ro);
     if (ro) { state.autoSave = false; clearTimeout(persistT); }
     updateAutoSaveControls();
+    // Retention is an owner control, so losing the role has to close it in place
+    // exactly as it closes the editor.
+    renderRetention();
   }
 
   // Every edit — typing, Tab/Enter inserts, find & replace, formatter — flows
@@ -1902,10 +1913,75 @@
     });
   }
 
+  // Which fields are a count and which are a span of days, so each gets the hint
+  // that reads correctly rather than a generic one.
+  const RETENTION_FIELDS = {
+    buildKeep: { input: "retentionBuildKeep", unit: "count" },
+    buildDays: { input: "retentionBuildDays", unit: "days" },
+    versionKeep: { input: "retentionVersionKeep", unit: "count" },
+    versionDays: { input: "retentionVersionDays", unit: "days" },
+  };
+
+  function renderRetention() {
+    const view = state.retention;
+    const owner = state.role === "owner";
+    const notice = $("retentionOwnerNotice");
+    if (notice) notice.hidden = owner;
+    for (const [field, spec] of Object.entries(RETENTION_FIELDS)) {
+      const input = $(spec.input);
+      if (!input) continue;
+      const bounds = view && view[field];
+      // Without a project there is nothing to describe, so the control is inert
+      // rather than showing numbers it invented.
+      input.disabled = !bounds || !owner;
+      if (!bounds) { input.value = ""; continue; }
+      // The bounds come from the server: the client never hard-codes a limit.
+      input.min = bounds.min;
+      input.max = bounds.max;
+      const pending = state.retentionPending && Object.prototype.hasOwnProperty.call(state.retentionPending, field)
+        ? state.retentionPending[field]
+        : bounds.value;
+      // Empty means "follow the server default", which is what null stores.
+      input.value = pending === null || pending === undefined ? "" : String(pending);
+      const hint = document.querySelector(`[data-retention-hint="${field}"]`);
+      if (hint) {
+        hint.textContent = t(spec.unit === "days" ? "settings.retentionHintDays" : "settings.retentionHintCount", {
+          effective: bounds.effective,
+          default: bounds.default,
+          min: bounds.min,
+          max: bounds.max,
+        });
+      }
+    }
+  }
+
+  // A field left empty goes back to following the server default; anything else
+  // is clamped here so the control cannot show a number the server would refuse.
+  // The server clamps again regardless — this is for the person typing, not for
+  // the invariant.
+  function onRetentionInput(field, raw) {
+    const bounds = state.retention && state.retention[field];
+    if (!bounds || state.role !== "owner") return;
+    const text = String(raw).trim();
+    let value = null;
+    if (text !== "") {
+      const numeric = Number(text);
+      if (!Number.isFinite(numeric)) return;
+      value = Math.min(bounds.max, Math.max(bounds.min, Math.floor(numeric)));
+    }
+    state.retentionPending = state.retentionPending || {};
+    state.retentionPending[field] = value;
+    // Saved now when there is nothing else in flight, and otherwise left pending
+    // for the next ordinary save to carry: schedulePersist would drop it
+    // entirely, since it only runs when autosave is on and a file is dirty.
+    void persistWhenDocumentClean();
+  }
+
   function openSettings() {
     renderFontList();
     updateTexPathControl();
     renderCompileProfile();
+    renderRetention();
     const selected = document.querySelector(".set-nav [role=tab].on")?.dataset.set || "fonts";
     activateSettingsSection(selected);
     openDialog("settingsModal");
@@ -2323,6 +2399,15 @@
       state.mainPath = this.value;
       updateMainPathControl();
       void persistWhenDocumentClean();
+    });
+    // On `change` rather than `input`: these are number fields, and reacting to
+    // every keystroke would clamp "1" to the minimum before the user has typed
+    // the "5" that follows it.
+    document.querySelectorAll("[data-retention]").forEach((input) => {
+      input.addEventListener("change", function () {
+        onRetentionInput(this.dataset.retention, this.value);
+        renderRetention();
+      });
     });
     $("compilePreset").addEventListener("change", function () {
       state.compileProfile = this.value === "custom"
@@ -3169,6 +3254,10 @@
         : "pdf";
       state.compileProfile = normalizeCompileProfile(data.compileProfile);
       state.mainPath = String(data.mainPath || "");
+      // Retention arrives with the project, bounds included. Anything the panel
+      // had pending belonged to the project being closed, so it is dropped.
+      state.retention = data.retention && typeof data.retention === "object" ? data.retention : null;
+      state.retentionPending = null;
       state.fonts = fontSettingsFromTree(data.fonts);
       state.fonts.forEach((font) => registerProjectFont(font).then(() => renderFontList()));
       setPreviewFont(null);
@@ -3234,6 +3323,21 @@
       state.role = ["owner", "editor", "viewer"].includes(role) ? role : "viewer";
       applyRoleGate();
       if (isReadOnly()) toast(t("projects.readOnlyNotice"));
+    },
+    // The retention changes waiting to be saved, and the acknowledgement. They
+    // travel with the ordinary save rather than through an endpoint of their
+    // own: the values are small, changing them is rare, and one round trip
+    // cannot leave the panel disagreeing with the project it belongs to.
+    pendingRetention() {
+      return state.retentionPending && Object.keys(state.retentionPending).length ? state.retentionPending : null;
+    },
+    // Called with what the server actually stored, which may be clamped: the
+    // panel then shows what is in force rather than what was asked for.
+    applyRetention(view) {
+      if (!view || typeof view !== "object") return;
+      state.retention = view;
+      state.retentionPending = null;
+      renderRetention();
     },
     showBuildOutput,
     clearBuildOutput,

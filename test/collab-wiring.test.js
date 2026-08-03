@@ -74,7 +74,9 @@ test("realtime text reaches disk on a debounce, on last leave and on shutdown", 
   // The last participant flushes and records the consolidated revision.
   const leave = server.slice(server.indexOf("function collabLeave"), server.indexOf("// Tracks in-flight persistence"));
   assert.match(leave, /collabPersist\(room, \{ revision: true \}\)/);
-  assert.match(leave, /if \(!room\.clients\.size\) collabRooms\.close\(room\.fileId\)/);
+  // Somebody may have rejoined while that write was in flight, so the room is
+  // only released once it is still empty on the other side of it.
+  assert.match(leave, /if \(room\.clients\.size\) return;\s*\n\s*collabRooms\.close\(room\.fileId\)/);
   // Shutdown drains what the debounce has not written yet.
   assert.match(server, /await collabShutdown\(\)/);
   assert.match(server, /await Promise\.allSettled\(Array\.from\(collabPending\)\)/);
@@ -160,11 +162,13 @@ test("presence is ephemeral and scoped to the room", () => {
   const code = server.split("\n").filter((line) => !line.trim().startsWith("//"));
   const persisted = code.filter((line) => /presence/i.test(line) && /(db\.query|fs\.writeFile|INSERT |UPDATE )/.test(line));
   assert.deepEqual(persisted, [], "presence must never reach the database or the disk");
-  const peersFor = server.slice(server.indexOf("function collabPeersFor"), server.indexOf("function collabBroadcastPeers"));
-  // A participant is told about the others only, so it needs no identity of its
-  // own to filter itself out of the list.
-  assert.match(peersFor, /if \(client === recipient\) return/);
-  assert.match(peersFor, /color: peerColor\(client\.user\.sub\)/);
+  const roomPeers = server.slice(server.indexOf("function collabRoomPeers"), server.indexOf("function collabBroadcastPeers"));
+  assert.match(roomPeers, /color: peerColor\(client\.user\.sub\)/);
+  // A participant is told about the others only. The list is built once per
+  // broadcast and each recipient is removed from their own copy by connection
+  // id, so nobody needs an identity of their own to filter themselves out.
+  const broadcast = server.slice(server.indexOf("function collabBroadcastPeers"), server.indexOf("// Presence reports arrive continuously"));
+  assert.match(broadcast, /peers: all\.filter\(\(peer\) => peer\.id !== client\.id\)/);
   // Joining the room already required membership, so presence cannot reach
   // anyone who could not read the file anyway.
   assert.match(server, /const presence = normalizePresence\(message, entry\.room\.doc\.length\)/);
@@ -172,10 +176,15 @@ test("presence is ephemeral and scoped to the room", () => {
 
 test("the participant list is rebroadcast whenever it can have changed", () => {
   // Joining, leaving, moving the caret and a role change all refresh it.
-  const calls = server.match(/collabBroadcastPeers\(/g) || [];
+  const calls = server.match(/collabSchedulePeers\(/g) || [];
   assert.ok(calls.length >= 5, `expected a broadcast at every change, found ${calls.length}`);
   const leave = server.slice(server.indexOf("function collabLeave"), server.indexOf("// Tracks in-flight persistence"));
-  assert.match(leave, /if \(room\.clients\.size\) return void collabBroadcastPeers\(room\)/);
+  assert.match(leave, /if \(room\.clients\.size\) return void collabSchedulePeers\(room, true\)/);
+  // A caret move is coalesced onto the next tick; a join, a leave and a role
+  // change are not, because a user is waiting to see each of them confirmed.
+  const presenceMessage = server.slice(server.indexOf('if (message.t === "presence")'), server.indexOf('if (message.t === "pull")'));
+  assert.match(presenceMessage, /collabSchedulePeers\(entry\.room\)\s*;/);
+  assert.doesNotMatch(presenceMessage, /collabSchedulePeers\(entry\.room, true\)/);
   // Each connection is its own participant: the same person in two tabs shows
   // two carets, which is what the others should see.
   assert.match(server, /const session = \{ id: uuidv7\(\)/);
@@ -364,10 +373,13 @@ test("the tree marks the project's files somebody else is in", () => {
   // It travels on the project channel, and is sent on joins and leaves only.
   assert.match(server, /function collabBroadcastFilePresence\(projectId\)/);
   assert.match(server, /if \(session\.projectId !== projectId\) return;\s*\n\s*collabSendFilePresence/);
+  // Joins and leaves both refresh it, on the project's coalescing tick: the
+  // answer it carries stays true for as long as somebody is in the file, so a
+  // crowd arriving at once costs one rebuild rather than one per arrival.
   const join = server.slice(server.indexOf('if (message.t === "open")'), server.indexOf('if (message.t === "project")'));
-  assert.match(join, /collabBroadcastFilePresence\(entry\.room\.projectId\)/);
+  assert.match(join, /collabScheduleFilePresence\(entry\.room\.projectId\)/);
   const leave = server.slice(server.indexOf("function collabLeave"), server.indexOf("// Tracks in-flight persistence"));
-  assert.match(leave, /collabBroadcastFilePresence\(entry\.projectId\)/);
+  assert.match(leave, /collabScheduleFilePresence\(entry\.projectId\)/);
   // A tab that starts watching gets the state as it is, not only the changes.
   const watch = server.slice(server.indexOf('if (message.t === "project")'), server.indexOf('if (message.t === "unwatch")'));
   assert.match(watch, /collabSendFilePresence\(session, projectId\)/);

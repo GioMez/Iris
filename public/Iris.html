@@ -273,6 +273,7 @@
         <button class="item on" id="settingsTabFonts" type="button" role="tab" aria-selected="true" aria-controls="settingsPanelFonts" tabindex="0" data-set="fonts"><span data-icon="typography"></span><span data-i18n="settings.fonts">Fonts</span></button>
         <button class="item" id="settingsTabEditor" type="button" role="tab" aria-selected="false" aria-controls="settingsPanelEditor" tabindex="-1" data-set="editor"><span data-icon="code"></span><span data-i18n="settings.editor">Editor</span></button>
         <button class="item" id="settingsTabCompile" type="button" role="tab" aria-selected="false" aria-controls="settingsPanelCompile" tabindex="-1" data-set="compile"><span data-icon="terminal-2"></span><span data-i18n="settings.compile">Compilation</span></button>
+        <button class="item" id="settingsTabStorage" type="button" role="tab" aria-selected="false" aria-controls="settingsPanelStorage" tabindex="-1" data-set="storage"><span data-icon="database"></span><span data-i18n="settings.storage">Storage</span></button>
         <button class="item" id="settingsTabLanguage" type="button" role="tab" aria-selected="false" aria-controls="settingsPanelLanguage" tabindex="-1" data-set="language"><span data-icon="language"></span><span data-i18n="language.title">Language</span></button>
       </nav>
       <div class="set-content">
@@ -373,6 +374,33 @@
           <div id="compileSteps"></div>
           <button class="btn sm" type="button" id="compileAddStep"><span class="ic" data-icon="plus"></span><span data-i18n="settings.step">Step</span></button>
         </div>
+      </section>
+      <button class="set-accordion-trigger" type="button" data-set="storage" aria-expanded="false" aria-controls="settingsPanelStorage"><span data-icon="database"></span><span data-i18n="settings.storage">Storage</span><span class="set-chevron" data-icon="chevron-down"></span></button>
+      <section class="set-pane" id="settingsPanelStorage" role="tabpanel" aria-labelledby="settingsTabStorage" tabindex="0" data-setpane="storage" hidden>
+        <h4 class="set-title"><span data-icon="database"></span><span data-i18n="settings.storage">Storage</span></h4>
+        <p class="desc" data-i18n="settings.retentionDescription">How long this project keeps its compilation outputs and its file history. Something is deleted only when it is both outside the most recent entries and older than the age below: recent work is always kept, whichever value you choose.</p>
+        <p class="desc" id="retentionOwnerNotice" hidden data-i18n="settings.retentionOwnerOnly">Only a project owner can change these values.</p>
+        <div class="field">
+          <label class="label" for="retentionBuildKeep" data-i18n="settings.retentionBuildKeep">Compilations kept</label>
+          <input class="input" id="retentionBuildKeep" type="number" inputmode="numeric" data-retention="buildKeep" aria-describedby="retentionBuildKeepHint">
+          <div class="hint" id="retentionBuildKeepHint"><span data-icon="info-circle"></span><span data-retention-hint="buildKeep"></span></div>
+        </div>
+        <div class="field">
+          <label class="label" for="retentionBuildDays" data-i18n="settings.retentionBuildDays">Delete compilations older than</label>
+          <input class="input" id="retentionBuildDays" type="number" inputmode="numeric" data-retention="buildDays" aria-describedby="retentionBuildDaysHint">
+          <div class="hint" id="retentionBuildDaysHint"><span data-icon="info-circle"></span><span data-retention-hint="buildDays"></span></div>
+        </div>
+        <div class="field">
+          <label class="label" for="retentionVersionKeep" data-i18n="settings.retentionVersionKeep">Revisions kept per file</label>
+          <input class="input" id="retentionVersionKeep" type="number" inputmode="numeric" data-retention="versionKeep" aria-describedby="retentionVersionKeepHint">
+          <div class="hint" id="retentionVersionKeepHint"><span data-icon="info-circle"></span><span data-retention-hint="versionKeep"></span></div>
+        </div>
+        <div class="field">
+          <label class="label" for="retentionVersionDays" data-i18n="settings.retentionVersionDays">Delete revisions older than</label>
+          <input class="input" id="retentionVersionDays" type="number" inputmode="numeric" data-retention="versionDays" aria-describedby="retentionVersionDaysHint">
+          <div class="hint" id="retentionVersionDaysHint"><span data-icon="info-circle"></span><span data-retention-hint="versionDays"></span></div>
+        </div>
+        <div class="hint"><span data-icon="info-circle"></span><span data-i18n="settings.retentionProtectedHint">The most recent successful compilation and the current revision of every file are never deleted, whatever their age.</span></div>
       </section>
       <button class="set-accordion-trigger" type="button" data-set="language" aria-expanded="false" aria-controls="settingsPanelLanguage"><span data-icon="language"></span><span data-i18n="language.title">Language</span><span class="set-chevron" data-icon="chevron-down"></span></button>
       <section class="set-pane" id="settingsPanelLanguage" role="tabpanel" aria-labelledby="settingsTabLanguage" tabindex="0" data-setpane="language" hidden>

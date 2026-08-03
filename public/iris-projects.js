@@ -355,15 +355,24 @@
       m.projectType = data.projectType || m.projectType || "latex";
     }
     const name = m ? m.name : data.project.name;
+    // Read before the request rather than inside it: by the time the queued
+    // operation runs the panel may have moved on, and this save must carry the
+    // values as they were when it was scheduled.
+    const retention = window.IrisApp.pendingRetention ? window.IrisApp.pendingRetention() : null;
     const operation = async () => {
       try {
         const out = await api(`/api/projects/${projectId}`, {
           method: "PUT",
-          body: JSON.stringify({ name, data }),
+          body: JSON.stringify({ name, data, ...(retention ? { retention } : {}) }),
         });
         const staleReopen = currentId === projectId && openGeneration !== sessionGeneration;
         if (!staleReopen && out && out.data) cache.set(projectId, out.data);
         if (!staleReopen && out && out.project && m) Object.assign(m, out.project);
+        // What the server stored, which may have been clamped to the instance
+        // ceiling: the panel shows that rather than what was asked for.
+        if (!staleReopen && out && out.retention && window.IrisApp.applyRetention) {
+          window.IrisApp.applyRetention(out.retention);
+        }
         return currentId === projectId && openGeneration === sessionGeneration;
       } catch (err) {
         console.error("Salvataggio progetto fallito", err);

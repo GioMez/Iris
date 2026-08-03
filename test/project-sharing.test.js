@@ -36,7 +36,8 @@ test("member search is owner-authorized and returns only eligible accounts", () 
 });
 
 test("the database-authoritative project role reaches the workspace", () => {
-  assert.match(server, /json\(res, 200, \{ id: row\.id, \.\.\.data, role: row\.role \}\)/);
+  const getProject = server.slice(server.indexOf("async function getProject"), server.indexOf("// Reconciles the file-identity ledger"));
+  assert.match(getProject, /json\(res, 200, \{\s*\n\s*id: row\.id,\s*\n\s*\.\.\.data,\s*\n\s*role: row\.role,/);
   assert.match(projects, /data\.role = data\.role \|\| \(m && m\.role\)/);
   assert.match(app, /setRole\(role\)[\s\S]*?applyRoleGate\(\)/);
 });
