@@ -936,7 +936,8 @@ html.iris-inadmin[data-role="admin"] .admin-screen{display:block}
 .admin-sole-owner-list{margin:0 0 10px;padding-left:18px;color:var(--txt);font-size:13px;display:flex;flex-direction:column;gap:2px}
 
 /* ===================== Admin · project templates ===================== */
-.admin-template-filters{justify-content:flex-end}
+.admin-template-actions select{width:auto;min-width:160px;height:40px;border-radius:10px;background:var(--panel);font:13px var(--font-ui)}
+.admin-template-actions select:focus{outline:none;border-color:rgba(125,207,255,.5)}
 .admin-template-name{color:var(--txt);font-size:14px;font-weight:600;overflow-wrap:anywhere}
 .admin-template-file{display:block;margin-top:3px;color:var(--txt-mut);font:11.5px var(--font-code);overflow-wrap:anywhere}
 .admin-template-description{max-width:520px;margin:5px 0 0;color:var(--txt-mut);font-size:12px;line-height:1.4;overflow-wrap:anywhere}
@@ -956,9 +957,8 @@ html.iris-inadmin[data-role="admin"] .admin-screen{display:block}
 .admin-template-id-control .input{border-radius:9px 0 0 9px}
 .admin-template-id-control code{display:grid;place-items:center;height:38px;padding:0 11px;border:1px solid var(--border);border-left:0;
   border-radius:0 9px 9px 0;background:var(--bg);color:var(--txt-mut);font:12px var(--font-code)}
-.admin-template-description-field textarea{height:66px;padding-block:9px;line-height:1.45;resize:vertical}
+.admin-template-description-field textarea{height:66px;padding-block:9px;line-height:1.45;resize:none}
 .admin-template-default-field{padding:11px 12px;border:1px solid var(--border);border-radius:9px;background:var(--panel-2)}
-.admin-template-default-field .hint{margin-left:23px}
 .admin-template-source-head{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-top:18px}
 .admin-template-source-head .label{margin-bottom:7px}
 #adminTemplateCounter{color:var(--txt-mut);font:11.5px var(--font-code);white-space:nowrap}
@@ -1204,7 +1204,7 @@ html.iris-inadmin[data-role="admin"] .admin-screen{display:block}
   .admin-search{grid-column:1/-1;min-width:0}
   .admin-filters select{width:100%;min-width:0}
   #adminProjectsPanel .admin-filters select{grid-column:1/-1}
-  #adminTemplatesPanel .admin-template-filters select{grid-column:1/-1}
+  .admin-template-actions select{width:100%;min-width:0}
   #adminTemplateModal{padding:10px}
   .admin-template-modal{width:100%;max-height:calc(100dvh - 20px)}
   .admin-template-form-grid{grid-template-columns:1fr}

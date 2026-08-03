@@ -703,7 +703,6 @@
     "type": "Tipo",
     "description": "Descrizione",
     "defaultLabel": "Usa come predefinito per questo tipo",
-    "defaultHint": "I nuovi progetti di questo tipo selezionano per primo questo modello.",
     "source": "Contenuto sorgente",
     "sourceCounter": "{{size}} / {{limit}}",
     "createButton": "Crea modello",

@@ -848,18 +848,15 @@
           <h1 class="picker-title" id="adminTemplatesTitle" tabindex="-1" data-i18n="adminTemplates.title">Project template administration</h1>
           <p class="picker-sub" data-i18n="adminTemplates.subtitle">Create and maintain the LaTeX and LilyPond starting sources available for new projects.</p>
         </div>
-        <div class="picker-actions">
+        <div class="picker-actions admin-template-actions">
+          <label class="visually-hidden" for="adminTemplateTypeFilter" data-i18n="adminTemplates.typeFilter">Filter by template type</label>
+          <select class="input" id="adminTemplateTypeFilter" aria-label="Filter by template type" data-i18n-aria-label="adminTemplates.typeFilter">
+            <option value="" data-i18n="adminTemplates.allTypes">All types</option>
+            <option value="latex" data-i18n="adminTemplates.typeLatex">LaTeX</option>
+            <option value="lilypond" data-i18n="adminTemplates.typeLilypond">LilyPond</option>
+          </select>
           <button class="btn cta" id="adminTemplateNew" type="button"><span class="ic" data-icon="plus"></span><span data-i18n="adminTemplates.newTemplate">New template</span></button>
         </div>
-      </div>
-
-      <div class="admin-filters admin-template-filters">
-        <label class="visually-hidden" for="adminTemplateTypeFilter" data-i18n="adminTemplates.typeFilter">Filter by template type</label>
-        <select class="input" id="adminTemplateTypeFilter" aria-label="Filter by template type" data-i18n-aria-label="adminTemplates.typeFilter">
-          <option value="" data-i18n="adminTemplates.allTypes">All types</option>
-          <option value="latex" data-i18n="adminTemplates.typeLatex">LaTeX</option>
-          <option value="lilypond" data-i18n="adminTemplates.typeLilypond">LilyPond</option>
-        </select>
       </div>
 
       <div class="picker-status-row">
@@ -1156,8 +1153,7 @@
         </div>
       </div>
       <div class="field admin-template-default-field">
-        <label class="admin-check"><input type="checkbox" id="adminTemplateDefault" aria-describedby="adminTemplateDefaultHint"><span data-i18n="adminTemplates.defaultLabel">Use as the default for this type</span></label>
-        <span class="hint" id="adminTemplateDefaultHint" data-i18n="adminTemplates.defaultHint">New projects of this type select this template first.</span>
+        <label class="admin-check"><input type="checkbox" id="adminTemplateDefault"><span data-i18n="adminTemplates.defaultLabel">Use as the default for this type</span></label>
       </div>
       <div class="admin-template-source-head">
         <label class="label" for="adminTemplateContent" data-i18n="adminTemplates.source">Source content</label>

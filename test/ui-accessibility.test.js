@@ -314,6 +314,7 @@ test("admin template forms and deletion expose accessible dialog semantics", () 
   assert.match(html, /id="adminTemplateDeleteForm"[^>]*role="dialog"[^>]*aria-modal="true"[^>]*aria-labelledby="adminTemplateDeleteTitle"/);
   assert.match(html, /<label[^>]*for="adminTemplateContent"[^>]*data-i18n="adminTemplates\.source"/);
   assert.match(html, /<textarea[^>]*id="adminTemplateContent"[^>]*spellcheck="false"/);
+  assert.doesNotMatch(html, /id="adminTemplateDefaultHint"/);
   assert.match(html, /id="adminTemplateCounter"[^>]*aria-live="polite"/);
   assert.match(html, /id="adminTemplateDelete"[^>]*hidden/);
   assert.match(adminTemplates, /openDialog\("adminTemplateDeleteModal"\)/);
@@ -324,10 +325,12 @@ test("admin template forms and deletion expose accessible dialog semantics", () 
 });
 
 test("admin templates are responsive and load between project admin and auth", () => {
+  assert.match(html, /class="picker-actions admin-template-actions"[\s\S]*id="adminTemplateTypeFilter"[\s\S]*id="adminTemplateNew"/);
   assert.match(css, /\.admin-template-modal\{[^}]*calc\(100vw - 30px\)[^}]*calc\(100dvh - 30px\)/);
   assert.match(css, /@media\(max-width:820px\)[\s\S]*#adminTemplatesPanel \.admin-template-table tbody tr\{grid-template-columns/);
   assert.match(css, /@media\(max-width:640px\)[\s\S]*\.admin-template-form-grid\{grid-template-columns:1fr\}/);
   assert.match(css, /\.admin-template-source\{[^}]*min-height:280px[^}]*resize:vertical/);
+  assert.match(css, /\.admin-template-description-field textarea\{[^}]*resize:none/);
   const projectAdminIndex = html.indexOf('<script src="iris-admin-projects.js">');
   const templateAdminIndex = html.indexOf('<script src="iris-admin-templates.js">');
   const authIndex = html.indexOf('<script src="iris-auth.js">');

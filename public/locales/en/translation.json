@@ -703,7 +703,6 @@
     "type": "Type",
     "description": "Description",
     "defaultLabel": "Use as the default for this type",
-    "defaultHint": "New projects of this type select this template first.",
     "source": "Source content",
     "sourceCounter": "{{size}} / {{limit}}",
     "createButton": "Create template",
