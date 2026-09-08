@@ -225,6 +225,7 @@ button{font-family:inherit;color:inherit}
 .ol-item.lvl3{padding-left:46px}
 .ol-item.lvl4{padding-left:62px}
 .ol-item.lvl2 .num,.ol-item.lvl3 .num,.ol-item.lvl4 .num{color:var(--txt-mut)}
+.ol-item .node-peers{margin-left:auto;align-self:center}
 .ol-empty{color:var(--txt-mut);font-size:12.5px;padding:12px 10px;text-align:center}
 
 /* ===================== editor ===================== */
@@ -382,6 +383,9 @@ button.st{border:0;background:transparent;font:inherit}
 .sb-sync[data-sync="connecting"] .sync-dot,.sb-sync[data-sync="offline"] .sync-dot{background:var(--semantic-warning);
   animation:sync-pulse 1.1s ease-in-out infinite}
 .sb-sync[data-sync="readonly"]{color:var(--txt-mut)}
+/* edits this tab is still holding: settled green would overstate the case */
+.sb-sync.pending{color:var(--semantic-warning)}
+.sb-sync.pending .sync-dot{background:var(--semantic-warning);animation:sync-pulse 1.1s ease-in-out infinite}
 .sb-sync[data-sync="revoked"],.sb-sync[data-sync="error"]{color:var(--semantic-danger)}
 .sb-sync[data-sync="revoked"] .sync-dot,.sb-sync[data-sync="error"] .sync-dot{background:var(--semantic-danger)}
 @keyframes sync-pulse{0%,100%{opacity:1}50%{opacity:.35}}
@@ -398,10 +402,25 @@ button.st{border:0;background:transparent;font:inherit}
 .sb-peers .peer-warn .ti{width:13px;height:13px}
 .sb-peers.overlap{color:var(--semantic-warning)}
 
-/* the lines other participants are working on */
+/* who else is inside the project's other files, and under which heading */
+.node-peers{display:inline-flex;align-items:center;flex:0 0 auto;gap:0;margin-left:2px}
+.node-peers[hidden]{display:none}
+.node-peer-dot{width:7px;height:7px;border-radius:50%;background:var(--peer-color);
+  box-shadow:0 0 0 1.5px var(--panel)}
+.node-peer-dot+.node-peer-dot{margin-left:-2px}
+.node-peer-more{font-size:9.5px;color:var(--txt-mut);font-family:var(--font-code);margin-left:3px}
+
+/* the lines other participants are working on, and what they have selected */
 .cm-host .cm-iris-peer-gutter{width:4px;padding:0;background:transparent}
 .cm-host .cm-iris-peer-mark{width:3px;height:100%;min-height:var(--editor-line-height);border-radius:2px}
 .cm-host .cm-iris-peer-line{background:#ffffff09;background:color-mix(in srgb, var(--peer-color) 9%, transparent)}
+/* Stronger than the caret line: this is text somebody is about to replace, and
+   it has to stay legible under the shade and distinct from a local selection. */
+.cm-host .cm-iris-peer-selection{background:#ffffff16;background:color-mix(in srgb, var(--peer-color) 22%, transparent);
+  border-radius:2px;box-shadow:inset 0 -1px 0 var(--peer-color)}
+/* The construct two people are jointly inside: a spine down its whole extent,
+   which delimits the contested area without adding colour to the text. */
+.cm-host .cm-iris-peer-region{box-shadow:inset 2px 0 0 var(--region-color, var(--semantic-warning))}
 
 @media (prefers-reduced-motion:reduce){
   .sb-sync .sync-dot{animation:none}
@@ -814,6 +833,14 @@ html:not(.iris-inproject) #projChip{display:none}
    hides the entry points from everyone else. */
 .admin-only{display:none}
 html[data-role="admin"] .admin-only{display:inline-flex}
+
+/* The same idea for the external role, in the other direction: an external
+   account works on projects it was invited to and cannot start one, so the
+   entry points that create a project are taken away and the empty state says
+   what to expect instead. The server refuses those requests either way. */
+html[data-role="external"] .internal-only{display:none}
+.external-only{display:none}
+html[data-role="external"] .external-only{display:block}
 .admin-screen{position:fixed;inset:0;z-index:95;display:none;overflow-y:auto;padding:46px 30px 60px;
   background:var(--bg);background-image:radial-gradient(circle at 1px 1px,#ffffff0a 1px,transparent 0);background-size:24px 24px}
 html.iris-inadmin[data-role="admin"] .admin-screen{display:block}
@@ -850,8 +877,11 @@ html.iris-inadmin[data-role="admin"] .admin-screen{display:block}
   font-weight:600;border:1px solid transparent;white-space:nowrap}
 .admin-badge.role-admin{background:rgba(125,207,255,.12);color:var(--accent);border-color:rgba(125,207,255,.22)}
 .admin-badge.role-regular{background:var(--panel-2);color:var(--txt-mut);border-color:var(--border)}
+.admin-badge.role-external{background:var(--panel-2);color:var(--txt-mut);border-color:var(--border);border-style:dashed}
 .admin-badge.status-active{background:rgba(120,200,140,.12);color:var(--semantic-success);border-color:rgba(120,200,140,.22)}
 .admin-badge.status-disabled{background:rgba(230,120,120,.12);color:var(--semantic-danger);border-color:rgba(230,120,120,.22)}
+/* Waiting on a decision, not refused: warning tones, not danger. */
+.admin-badge.status-pending{background:rgba(224,175,104,.14);color:var(--semantic-warning);border-color:rgba(224,175,104,.28)}
 .admin-check{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--txt);cursor:pointer}
 .admin-check input{width:15px;height:15px;accent-color:var(--accent);cursor:pointer}
 .admin-source{color:var(--txt-mut);font-family:var(--font-code);font-size:11.5px}
@@ -905,6 +935,38 @@ html.iris-inadmin[data-role="admin"] .admin-screen{display:block}
 .admin-sole-owner-txt{margin:0 0 8px;font-size:12.5px;color:var(--semantic-warning)}
 .admin-sole-owner-list{margin:0 0 10px;padding-left:18px;color:var(--txt);font-size:13px;display:flex;flex-direction:column;gap:2px}
 
+/* ===================== Admin · project templates ===================== */
+.admin-template-actions select{width:auto;min-width:160px;height:40px;border-radius:10px;background:var(--panel);font:13px var(--font-ui)}
+.admin-template-actions select:focus{outline:none;border-color:rgba(125,207,255,.5)}
+.admin-template-name{color:var(--txt);font-size:14px;font-weight:600;overflow-wrap:anywhere}
+.admin-template-file{display:block;margin-top:3px;color:var(--txt-mut);font:11.5px var(--font-code);overflow-wrap:anywhere}
+.admin-template-description{max-width:520px;margin:5px 0 0;color:var(--txt-mut);font-size:12px;line-height:1.4;overflow-wrap:anywhere}
+.admin-template-type.type-latex{background:rgba(125,207,255,.1);border-color:rgba(125,207,255,.22);color:var(--accent)}
+.admin-template-type.type-lilypond{background:rgba(187,154,247,.1);border-color:rgba(187,154,247,.22);color:var(--category-music)}
+.admin-template-default{background:rgba(158,206,106,.1);border-color:rgba(158,206,106,.22);color:var(--semantic-success)}
+.admin-template-size{color:var(--txt-mut);font:12px var(--font-code);white-space:nowrap}
+.admin-template-modal{width:min(920px,calc(100vw - 30px));max-height:min(860px,calc(100dvh - 30px))}
+.admin-template-modal .m-body{min-height:0}
+.admin-template-error-row{display:flex;align-items:flex-start;gap:12px}
+.admin-template-error-row .login-error{flex:1}
+.admin-template-error-row .status-retry{flex:0 0 auto;margin:4px 0 14px}
+.admin-template-modal-status{min-height:18px;margin-bottom:8px;color:var(--txt-mut);font-size:12px}
+.admin-template-modal-status:empty{display:none}
+.admin-template-form-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:0 16px}
+.admin-template-id-control{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center}
+.admin-template-id-control .input{border-radius:9px 0 0 9px}
+.admin-template-id-control code{display:grid;place-items:center;height:38px;padding:0 11px;border:1px solid var(--border);border-left:0;
+  border-radius:0 9px 9px 0;background:var(--bg);color:var(--txt-mut);font:12px var(--font-code)}
+.admin-template-description-field textarea{height:66px;padding-block:9px;line-height:1.45;resize:none}
+.admin-template-default-field{padding:11px 12px;border:1px solid var(--border);border-radius:9px;background:var(--panel-2)}
+.admin-template-source-head{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-top:18px}
+.admin-template-source-head .label{margin-bottom:7px}
+#adminTemplateCounter{color:var(--txt-mut);font:11.5px var(--font-code);white-space:nowrap}
+#adminTemplateCounter.error{color:var(--semantic-danger)}
+.admin-template-source{display:block;width:100%;height:auto;min-height:280px;padding:12px;resize:vertical;line-height:1.5;
+  tab-size:2;white-space:pre;overflow:auto;background:var(--editor-bg)}
+.admin-template-foot .spring{flex:1}
+
 /* ===================== Project sharing ===================== */
 .project-share-modal{width:min(660px,96vw);max-height:min(760px,92vh)}
 .project-share-modal .m-head>div{min-width:0}
@@ -915,6 +977,10 @@ html.iris-inadmin[data-role="admin"] .admin-screen{display:block}
 .project-share-member-id b{font-size:13px;color:var(--txt);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .project-share-member-sub{font:11px var(--font-code);color:var(--txt-mut);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .project-share-you{color:var(--accent);font:600 10px var(--font-ui);text-transform:uppercase;letter-spacing:.04em}
+/* Reads as a property of the person, not a warning: an external collaborator is
+   expected here, they simply cannot become the project's owner. */
+.project-share-external{padding:1px 6px;border:1px solid var(--border);border-radius:999px;color:var(--txt-mut);
+  font:600 10px var(--font-ui);text-transform:uppercase;letter-spacing:.04em;white-space:nowrap}
 .project-share-role{height:36px}
 .project-share-remove{width:36px;height:36px}
 .project-share-empty{padding:12px;border:1px dashed var(--border);border-radius:10px;color:var(--txt-mut);font-size:12.5px}
@@ -1127,15 +1193,26 @@ html.iris-inadmin[data-role="admin"] .admin-screen{display:block}
   .admin-mobile-meta{display:block}
   .admin-col-actions{width:auto;text-align:right}
   .admin-row-edit{height:34px;padding:0 11px}
+  #adminTemplatesPanel .admin-template-table tbody tr{grid-template-columns:auto auto minmax(0,1fr) auto}
 }
 @media(max-width:640px){
   .admin-screen{padding:30px 18px 48px}
+  .admin-screen .picker-top .login-brand{display:none}
   .admin-header-actions{gap:5px}
-  .admin-switch button{padding-inline:10px}
+  .admin-switch button{padding-inline:7px}
   .admin-filters{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
   .admin-search{grid-column:1/-1;min-width:0}
   .admin-filters select{width:100%;min-width:0}
   #adminProjectsPanel .admin-filters select{grid-column:1/-1}
+  .admin-template-actions select{width:100%;min-width:0}
+  #adminTemplateModal{padding:10px}
+  .admin-template-modal{width:100%;max-height:calc(100dvh - 20px)}
+  .admin-template-form-grid{grid-template-columns:1fr}
+  .admin-template-source{min-height:220px;max-height:38dvh}
+  .admin-template-foot{flex-wrap:wrap}
+  .admin-template-foot .spring{display:none}
+  .admin-template-foot .btn{flex:1;justify-content:center}
+  #adminTemplateDelete{flex-basis:100%}
 }
 
 /* Settings become a single-open accordion on narrow viewports. */

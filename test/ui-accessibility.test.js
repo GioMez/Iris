@@ -11,6 +11,7 @@ const projects = fs.readFileSync(path.join(root, "public/iris-projects.js"), "ut
 const builds = fs.readFileSync(path.join(root, "public/iris-builds.js"), "utf8");
 const admin = fs.readFileSync(path.join(root, "public/iris-admin.js"), "utf8");
 const adminProjects = fs.readFileSync(path.join(root, "public/iris-admin-projects.js"), "utf8");
+const adminTemplates = fs.readFileSync(path.join(root, "public/iris-admin-templates.js"), "utf8");
 const auth = fs.readFileSync(path.join(root, "public/iris-auth.js"), "utf8");
 const motion = fs.readFileSync(path.join(root, "public/iris-motion.js"), "utf8");
 const editorAdapter = fs.readFileSync(path.join(root, "public/iris-editor.js"), "utf8");
@@ -76,7 +77,9 @@ test("save, compile and output form one ordered workflow", () => {
 test("preview controls support PDFs and image artifacts without format-specific branding", () => {
   assert.doesNotMatch(html, /data-icon="file-type-pdf"/);
   assert.doesNotMatch(app, /ti\("file-type-pdf"\)/);
-  assert.match(css, /\.seg\{[^}]*grid-template-columns:90px 58px;[^}]*width:154px;[^}]*height:32px/);
+  // 90 + 58 columns, one 2px gap, 2px padding and a 1px border either side, all
+  // inside the box: the control keeps a fixed width so the bar cannot reflow.
+  assert.match(css, /\.seg\{[^}]*grid-template-columns:90px 58px;[^}]*width:156px;[^}]*height:32px/);
   assert.match(css, /@container \(max-width:540px\)\{[\s\S]*\.pvbar \.seg\{grid-template-columns:30px 30px;width:66px\}/);
   assert.match(app, /function layoutImagePages\(\)/);
   assert.match(app, /function requestPreviewLayout\(\)/);
@@ -280,11 +283,55 @@ test("only the active application surface and top dialog are interactive", () =>
 test("admin tabs, filters and forms expose complete accessible relationships", () => {
   assert.match(html, /id="adminTabUsers"[^>]*aria-controls="adminUsersPanel"[^>]*tabindex="0"/);
   assert.match(html, /id="adminTabProjects"[^>]*aria-controls="adminProjectsPanel"[^>]*tabindex="-1"/);
+  assert.match(html, /id="adminTabTemplates"[^>]*aria-controls="adminTemplatesPanel"[^>]*tabindex="-1"/);
   assert.match(html, /id="adminUsersPanel"[^>]*role="tabpanel"[^>]*aria-labelledby="adminTabUsers"/);
+  assert.match(html, /id="adminTemplatesPanel"[^>]*role="tabpanel"[^>]*aria-labelledby="adminTabTemplates"/);
   assert.match(html, /for="adminSearch"/);
   assert.match(html, /for="adminCreateUsername"/);
   assert.match(admin, /event\.key === "ArrowRight"/);
   assert.match(admin, /b\.tabIndex = on \? 0 : -1/);
+  assert.match(admin, /IrisAdminTemplates\.activate\(\)/);
+  assert.match(admin, /templates: \{ title: "adminTemplates\.title", heading: "adminTemplatesTitle" \}/);
+});
+
+test("admin template CRUD stays on admin APIs and treats source as textarea data", () => {
+  assert.match(adminTemplates, /dataset\.role === "admin"/);
+  assert.match(adminTemplates, /api\("\/api\/admin\/templates"\)/);
+  assert.match(adminTemplates, /method: previous \? "PUT" : "POST"/);
+  assert.match(adminTemplates, /method: "DELETE"/);
+  assert.match(adminTemplates, /encodeURIComponent\(target\.id\)/);
+  assert.doesNotMatch(adminTemplates, /\/api\/project-templates/);
+  assert.doesNotMatch(adminTemplates, /innerHTML/);
+  assert.match(adminTemplates, /adminTemplateContent"\)\.value/);
+  assert.match(adminTemplates, /element\.textContent = text/);
+});
+
+test("admin template forms and deletion expose accessible dialog semantics", () => {
+  assert.match(html, /id="adminTemplateForm"[^>]*role="dialog"[^>]*aria-modal="true"[^>]*aria-labelledby="adminTemplateModalTitle"/);
+  assert.match(html, /id="adminTemplateDeleteForm"[^>]*role="dialog"[^>]*aria-modal="true"[^>]*aria-labelledby="adminTemplateDeleteTitle"/);
+  assert.match(html, /<label[^>]*for="adminTemplateContent"[^>]*data-i18n="adminTemplates\.source"/);
+  assert.match(html, /<textarea[^>]*id="adminTemplateContent"[^>]*spellcheck="false"/);
+  assert.doesNotMatch(html, /id="adminTemplateDefaultHint"/);
+  assert.match(html, /id="adminTemplateCounter"[^>]*aria-live="polite"/);
+  assert.match(html, /id="adminTemplateDelete"[^>]*hidden/);
+  assert.match(adminTemplates, /openDialog\("adminTemplateDeleteModal"\)/);
+  assert.match(adminTemplates, /cancelDelete[\s\S]*closeDialog\("adminTemplateDeleteModal"\)/);
+  assert.match(adminTemplates, /MAX_SOURCE_BYTES = 1024 \* 1024/);
+  assert.match(adminTemplates, /adminTemplateClose"\)\.disabled = formLocked/);
+  assert.match(adminTemplates, /adminTemplateDeleteOk"\][\s\S]*\.disabled = deleteBusy/);
+});
+
+test("admin templates are responsive and load between project admin and auth", () => {
+  assert.match(html, /class="picker-actions admin-template-actions"[\s\S]*id="adminTemplateTypeFilter"[\s\S]*id="adminTemplateNew"/);
+  assert.match(css, /\.admin-template-modal\{[^}]*calc\(100vw - 30px\)[^}]*calc\(100dvh - 30px\)/);
+  assert.match(css, /@media\(max-width:820px\)[\s\S]*#adminTemplatesPanel \.admin-template-table tbody tr\{grid-template-columns/);
+  assert.match(css, /@media\(max-width:640px\)[\s\S]*\.admin-template-form-grid\{grid-template-columns:1fr\}/);
+  assert.match(css, /\.admin-template-source\{[^}]*min-height:280px[^}]*resize:vertical/);
+  assert.match(css, /\.admin-template-description-field textarea\{[^}]*resize:none/);
+  const projectAdminIndex = html.indexOf('<script src="iris-admin-projects.js">');
+  const templateAdminIndex = html.indexOf('<script src="iris-admin-templates.js">');
+  const authIndex = html.indexOf('<script src="iris-auth.js">');
+  assert.ok(projectAdminIndex < templateAdminIndex && templateAdminIndex < authIndex);
 });
 
 test("loading, error and empty states preserve layout and meaning", () => {
@@ -305,6 +352,16 @@ test("account and credential controls retain names at every breakpoint", () => {
   });
   assert.match(auth, /const USER_MENU_TRIGGERS = \["userChip", "pkAccount", "adminAccount"\]/);
   assert.match(auth, /event\.stopImmediatePropagation\(\); closeUserMenu\(true\)/);
+});
+
+test("the main-file setting is labelled and never hides a stale choice", () => {
+  assert.match(html, /<label[^>]*for="compileMainPath"/);
+  assert.match(html, /<select[^>]*id="compileMainPath"/);
+  // A selection whose file disappeared stays listed and explained, rather than
+  // silently reverting to detection with the setting still showing a value.
+  assert.match(app, /const stale = !!state\.mainPath && !candidates\.includes\(state\.mainPath\)/);
+  assert.match(app, /settings\.mainFileStaleHint/);
+  assert.match(app, /select\.disabled = isReadOnly\(\)/);
 });
 
 test("admin member mutations retain focus and expose in-modal status", () => {
@@ -427,9 +484,22 @@ test("project and build requests ignore stale asynchronous completions", () => {
 test("settings use accessible tabs and a compact accordion", () => {
   const settings = html.slice(html.indexOf('id="settingsModal"'), html.indexOf('<div class="toasts"'));
   assert.match(settings, /role="tablist"[^>]*aria-orientation="vertical"/);
-  assert.equal((settings.match(/role="tab"/g) || []).length, 4);
-  assert.equal((settings.match(/role="tabpanel"/g) || []).length, 4);
-  assert.equal((settings.match(/class="set-accordion-trigger"/g) || []).length, 4);
+  // The wide layout's tabs, the compact layout's accordion triggers and the
+  // panels themselves have to stay in one-to-one correspondence: a pane reachable
+  // in one layout and not the other is the failure this guards against. The count
+  // is derived rather than written down, so adding a section cannot silently
+  // leave one of the three behind.
+  const tabs = (settings.match(/role="tab"/g) || []).length;
+  assert.ok(tabs >= 4, `expected the settings sections to survive, found ${tabs}`);
+  assert.equal((settings.match(/role="tabpanel"/g) || []).length, tabs);
+  assert.equal((settings.match(/class="set-accordion-trigger"/g) || []).length, tabs);
+  // Every section is named identically by its tab, its trigger and its panel.
+  const sections = new Set(Array.from(settings.matchAll(/data-set="([a-z]+)"/g), (match) => match[1]));
+  assert.equal(sections.size, tabs);
+  for (const section of sections) {
+    assert.equal((settings.match(new RegExp(`data-set="${section}"`, "g")) || []).length, 2, `${section} needs a tab and a trigger`);
+    assert.match(settings, new RegExp(`data-setpane="${section}"`), `${section} needs a panel`);
+  }
   assert.equal((settings.match(/data-close/g) || []).length, 1);
   assert.doesNotMatch(settings, /PRESTO|data-set="general"/);
   assert.match(css, /@media\(max-width:700px\)[\s\S]*\.set-nav\{display:none\}/);

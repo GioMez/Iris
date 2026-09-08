@@ -20,6 +20,15 @@ function projectData(revision = 4, content = "original") {
   };
 }
 
+function retentionData(buildKeep = 20) {
+  return {
+    buildKeep: { value: buildKeep, effective: buildKeep, min: 3, max: 200, default: 20 },
+    buildDays: { value: 30, effective: 30, min: 1, max: 365, default: 30 },
+    versionKeep: { value: 100, effective: 100, min: 10, max: 1000, default: 100 },
+    versionDays: { value: 180, effective: 180, min: 7, max: 1095, default: 180 },
+  };
+}
+
 function element() {
   const classes = new Set();
   const listeners = new Map();
@@ -44,7 +53,17 @@ function element() {
 function harness(language = "en", realtime = false) {
   const nodes = new Map();
   const get = (id) => { if (!nodes.has(id)) nodes.set(id, element()); return nodes.get(id); };
-  const document = Object.assign(element(), { getElementById: get, createElement: element, documentElement: element(), body: element(), querySelector: get });
+  const document = Object.assign(element(), {
+    getElementById: get, createElement: element, documentElement: element(), body: element(), querySelector: get,
+    querySelectorAll(selector) {
+      if (selector !== "[data-retention]") return [];
+      return ["buildKeep", "buildDays", "versionKeep", "versionDays"].map((field) => {
+        const input = get(`retention${field[0].toUpperCase()}${field.slice(1)}`);
+        input.dataset.retention = field;
+        return input;
+      });
+    },
+  });
   const translations = JSON.parse(read(`locales/${language}/translation.json`));
   const t = (key) => key.split(".").reduce((value, part) => value && value[part], translations) || key;
   const requests = [];
@@ -59,7 +78,7 @@ function harness(language = "en", realtime = false) {
     value: "", ready: new Promise(() => {}),
     load(value) { this.value = value; }, getValue() { return this.value; },
     onChange(fn) { change = fn; }, onCursor() {}, onPeers() {},
-    setReadOnly() {}, setWordWrap() {}, focus() {},
+    setReadOnly() {}, setWordWrap() {}, setSharedRegion() {}, focus() {},
   };
   const sockets = [];
   class Socket {
@@ -104,7 +123,8 @@ function harness(language = "en", realtime = false) {
       },
       IrisCollab: {
         active: () => false, status: () => "offline", leave() {}, join() {}, disconnect() {},
-        watchProject() {}, onStatus() {}, onBuild() {},
+        watchProject() {}, onStatus() {}, onBuild() {}, onFilePeers() {},
+        filePeers: () => [], pending: () => false,
       },
     },
   });
@@ -161,18 +181,23 @@ function harness(language = "en", realtime = false) {
     editor.isReadOnly = () => view.state.readOnly;
     run("iris-collab.js");
   }
-  run("iris-app.js", "window.appTest = { state, findFile, wire, wireEditorEvents, openFile, syncRealtimeSession, canonicalFileId, refreshFileTree, saveProject, openFileHistory, snapshotProject, confirmRestore, verState, openTreeRename, confirmTreeRename, folderNodeByPath };\n");
+  run("iris-app.js", "window.appTest = { state, findFile, wire, wireEditorEvents, openFile, syncRealtimeSession, canonicalFileId, refreshFileTree, saveProject, openFileHistory, snapshotProject, confirmRestore, verState, openTreeRename, confirmTreeRename, folderNodeByPath, docFileForCompile };\n");
   run("iris-projects.js", "window.projectsTest = { renameProject, cache, metaOf, finishDiscardDecision };\n");
   context.window.appTest.wireEditorEvents();
   return {
     window: context.window,
     app: context.window.IrisApp, projects: context.window.IrisProjects,
     a: context.window.appTest, p: context.window.projectsTest,
-    editor, requests, events, get, timers, windowEvents, surface: () => surface, t,
+    editor, requests, events, get, timers, windowEvents, document, surface: () => surface, t,
     socket: () => sockets.at(-1),
     edit(value) {
       if (realtime) editor.applyText(value);
       else { editor.value = value; change(); }
+    },
+    setRetention(field, value) {
+      const input = get(`retention${field[0].toUpperCase()}${field.slice(1)}`);
+      input.value = value;
+      input.dispatchEvent({ type: "change" });
     },
     async open(data = projectData()) {
       if (realtime) { await editor.ready; assert.equal(editor.available, true); }
@@ -222,6 +247,89 @@ test("409 preserves buffers, base, cache and metadata and shows the localized ex
     assert.equal(h.requests.length, 2, "no fresh GET and no retry");
     assert.ok(h.get("toasts").children.some((node) => node.innerHTML.includes(h.t("api.PROJECT_REVISION_CONFLICT"))));
     assert.notEqual(h.t("api.PROJECT_REVISION_CONFLICT"), "api.PROJECT_REVISION_CONFLICT");
+  }
+});
+
+test("retention saves capture queued edits and acknowledge only the submitted settings", options, async () => {
+  const h = harness(); await h.open({ ...projectData(), retention: retentionData() }); h.a.wire();
+  h.edit("submitted text");
+  h.setRetention("buildKeep", "40");
+  const first = h.app.persistChanges(); await tick();
+  const req1 = h.requests.at(-1);
+  assert.equal(req1.body.baseRevision, 4);
+  assert.deepEqual(req1.body.retention, { buildKeep: 40 });
+
+  h.setRetention("buildKeep", "50");
+  const second = h.app.persistChanges();
+  h.setRetention("buildKeep", "60");
+  h.setRetention("versionDays", "");
+  await tick(); assert.equal(h.requests.length, 2, "the second save waits for the first");
+  h.ack(req1, 5, { retention: retentionData(40) }); assert.equal(await first, true); await tick();
+  assert.deepEqual(clone(h.app.pendingRetention()), { buildKeep: 60, versionDays: null });
+  assert.equal(h.a.state.retention.buildKeep.value, 40);
+  assert.equal(h.get("retentionBuildKeep").value, "60", "an older acknowledgement must not overwrite the panel");
+  assert.equal(h.get("retentionVersionDays").value, "");
+  assert.equal(h.a.state.dirtyFiles.size, 0);
+  assert.equal(h.app.hasUnsavedChanges(), true, "settings alone remain unsaved after the text is acknowledged");
+
+  const req2 = h.requests.at(-1);
+  assert.equal(req2.body.baseRevision, 5);
+  assert.deepEqual(req2.body.retention, { buildKeep: 60, versionDays: null }, "capture at queue start, not enqueue time");
+  const stored = retentionData(55);
+  stored.buildKeep.max = 55;
+  stored.versionDays.value = null;
+  h.ack(req2, 6, { retention: stored }); assert.equal(await second, true);
+  assert.equal(h.app.pendingRetention(), null);
+  assert.equal(h.app.hasUnsavedChanges(), false);
+  assert.equal(h.app.serialize().revision, 6);
+  assert.equal(h.get("retentionBuildKeep").value, "55", "show the server's clamped value, not the requested 60");
+  assert.equal(h.get("retentionVersionDays").value, "", "an explicit default remains distinct from its effective value");
+});
+
+test("a retention-only 409 preserves the pending settings, server view and revision", options, async () => {
+  const h = harness(); await h.open({ ...projectData(), retention: retentionData() }); h.a.wire();
+  h.setRetention("buildKeep", "40"); await tick();
+  const request = h.requests.at(-1);
+  assert.equal(request.method, "PUT", "settings save even with autosave disabled");
+  assert.equal(request.body.baseRevision, 4);
+  assert.deepEqual(request.body.retention, { buildKeep: 40 });
+  request.reply({ errorCode: "PROJECT_REVISION_CONFLICT", params: { currentRevision: 8 } }, 409);
+  await h.app.waitForPersistence();
+  assert.deepEqual(clone(h.app.pendingRetention()), { buildKeep: 40 });
+  assert.equal(h.get("retentionBuildKeep").value, "40");
+  assert.equal(h.a.state.retention.buildKeep.value, 20);
+  assert.equal(h.a.state.dirtyFiles.size, 0);
+  assert.equal(h.app.hasUnsavedChanges(), true);
+  assert.equal(h.app.serialize().revision, 4);
+  assert.equal(h.p.cache.get("p1").revision, 4);
+  assert.equal(h.p.cache.get("p1").retention.buildKeep.value, 20);
+  await h.a.refreshFileTree();
+  assert.equal(h.requests.length, 2, "no retry or refresh may discard the pending settings");
+});
+
+test("losing ownership clears unsavable retention edits without discarding document changes", options, async () => {
+  for (const realtime of [false, true]) {
+    const h = harness(); await h.open({ ...projectData(), retention: retentionData() }); h.a.wire();
+    h.setRetention("buildKeep", "40"); await tick();
+    h.requests.at(-1).reply({ errorCode: "PROJECT_RECOVERY_REQUIRED" }, 503);
+    await h.app.waitForPersistence();
+    h.edit("unsaved document");
+
+    if (realtime) h.document.dispatchEvent({ type: "iris:collabrole", detail: { role: "editor" } });
+    else h.app.setRole("editor");
+    assert.equal(h.app.pendingRetention(), null);
+    assert.equal(h.get("retentionBuildKeep").disabled, true);
+    assert.equal(h.get("retentionBuildKeep").value, "20", "show the stored policy after losing ownership");
+    assert.equal(h.editor.value, "unsaved document");
+    assert.equal(h.app.hasUnsavedChanges(), true, "document edits must still need saving");
+
+    const pending = h.app.persistChanges(); await tick();
+    const request = h.requests.at(-1);
+    assert.equal(request.body.retention, undefined);
+    assert.equal(request.body.data.project.nodes[0].content, "unsaved document");
+    h.ack(request, 5, { retention: retentionData() });
+    assert.equal(await pending, true);
+    assert.equal(h.app.hasUnsavedChanges(), false);
   }
 });
 
@@ -291,6 +399,28 @@ test("accepted refresh updates manifest, tree, revision and cache together", opt
   assert.equal(h.app.serialize().revision, 8);
   assert.equal(h.p.cache.get("p1").revision, 8);
   assert.equal(h.app.hasUnsavedChanges(), false);
+});
+
+test("a refreshed mainPath selects the configured file and survives the next save", options, async () => {
+  const h = harness();
+  const data = projectData(4, "\\documentclass{article}");
+  data.mainPath = "main.tex";
+  data.project.nodes.push({ type: "file", id: "book", name: "book.tex", path: "book.tex", kind: "tex", content: "\\documentclass{book}" });
+  await h.open(data);
+  const pending = h.a.refreshFileTree(); await tick();
+  h.requests.at(-1).reply({ ...data, revision: 8, mainPath: "book.tex" }); await pending;
+  assert.equal(h.a.state.activeId, "main", "refresh need not open the configured main file");
+  assert.equal(h.a.docFileForCompile().path, "book.tex");
+  assert.equal(h.get("compileMainPath").value, "book.tex");
+  assert.equal(h.app.serialize().mainPath, "book.tex");
+  assert.equal(h.p.cache.get("p1").mainPath, "book.tex");
+  assert.equal(h.app.hasUnsavedChanges(), false);
+  h.edit("updated chapter");
+  const saving = h.app.persistChanges(); await tick();
+  const request = h.requests.at(-1);
+  assert.equal(request.body.baseRevision, 8);
+  assert.equal(request.body.data.mainPath, "book.tex", "saving must not replay the pre-refresh setting");
+  h.ack(request, 9); assert.equal(await saving, true);
 });
 
 test("clean close does not write a tree", options, async () => {

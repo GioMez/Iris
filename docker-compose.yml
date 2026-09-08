@@ -8,6 +8,10 @@ services:
         condition: service_healthy
     environment:
       PORT: "3000"
+      # Left unset on purpose: inside a container the server must bind every
+      # interface for the published port to reach it. Restrict exposure through
+      # the ports mapping below, not here.
+      # BIND_ADDRESS: ""
       IRIS_SECRET: "${IRIS_SECRET:?Set IRIS_SECRET to a secure random value}"
       DB_HOST: postgres
       DB_PORT: "5432"
@@ -16,6 +20,7 @@ services:
       DB_PASSWORD: "${DB_PASSWORD:?Set DB_PASSWORD to a secure random value}"
       DB_NAME: iris
       DATA_DIR: /app/data
+      TEMPLATE_DIR: /app/data/templates
       APP_BASE_URL: http://localhost:3000
       TEX_BIN_PATH: /usr/local/texlive/bin/x86_64-linux
       TEX_PATH_LOCKED: "true"
@@ -40,6 +45,8 @@ services:
       # OAUTH_SCOPE: openid email profile
       # OAUTH_CLIENT_AUTH_METHOD: client_secret_basic
       # OAUTH_AUTO_REGISTER: "false"
+      # OAUTH_DEFAULT_ROLE: regular
+      # OAUTH_APPROVAL_REQUIRED: "true"
       # Argon2id password hashing. Memory cost is in KiB.
       # ARGON2_MEMORY_COST: 65536
       # ARGON2_TIME_COST: 3
@@ -48,6 +55,9 @@ services:
       - "127.0.0.1:3000:3000"
     volumes:
       - project-data:/app/data
+      # Optional separate, host-backed mutable template catalog. Omit this to
+      # keep templates in the project-data volume with the rest of /app/data.
+      # - ./templates:/app/data/templates
       # Mount container-compatible LaTeX and LilyPond distributions here.
       # - ./texlive/bin:/usr/local/texlive/bin/x86_64-linux:ro
       # - ./lilypond/bin/lilypond:/usr/bin/lilypond:ro

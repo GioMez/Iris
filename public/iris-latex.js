@@ -222,5 +222,117 @@
     return res;
   }
 
-  window.IrisLatex = { highlight, format, indentOnEnter, outline, escAll, stream };
+  /* ---- structural regions: the areas two people can share ---- */
+  // The outline answers "where does this heading start"; this answers "how far
+  // does it reach", which is what tells whether two carets are inside the same
+  // construct rather than merely near each other in the file.
+
+  // Comments carry no structure, and a commented-out \end would unbalance every
+  // environment after it. They are blanked in place, so every offset still
+  // points at the same character of the original source. A backslash escapes
+  // whatever follows it, which is what keeps \% from opening a comment.
+  function withoutComments(src) {
+    let out = "";
+    for (let i = 0; i < src.length; i++) {
+      const char = src[i];
+      if (char === "\\") {
+        out += char + (i + 1 < src.length ? src[i + 1] : "");
+        i += 1;
+        continue;
+      }
+      if (char !== "%") {
+        out += char;
+        continue;
+      }
+      while (i < src.length && src[i] !== "\n") {
+        out += " ";
+        i += 1;
+      }
+      out += i < src.length ? "\n" : "";
+    }
+    return out;
+  }
+
+  // The contents of a {...} starting at `open`, counting nested braces so a
+  // title containing a command is not cut at the first closing brace.
+  function braced(src, open) {
+    let depth = 0;
+    for (let i = open; i < src.length; i++) {
+      if (src[i] === "\\") { i += 1; continue; }
+      if (src[i] === "{") depth += 1;
+      else if (src[i] === "}") {
+        depth -= 1;
+        if (!depth) return { text: src.slice(open + 1, i), end: i + 1 };
+      }
+    }
+    return { text: src.slice(open + 1), end: src.length };
+  }
+
+  // Sectioning commands, outermost first. A heading runs until the next heading
+  // of the same or higher rank.
+  const SECTION_RANKS = {
+    part: 1, chapter: 2, section: 3, subsection: 4, subsubsection: 5, paragraph: 6, subparagraph: 7,
+  };
+
+  function regions(src) {
+    const clean = withoutComments(src);
+    const found = [];
+
+    const envRe = /\\(begin|end)\s*\{([^}]*)\}/g;
+    const open = [];
+    let match;
+    while ((match = envRe.exec(clean))) {
+      const name = match[2].trim();
+      // `document` wraps the whole body: sharing it says no more than sharing
+      // the file, which the tree already shows.
+      if (name === "document") continue;
+      if (match[1] === "begin") {
+        open.push({ name, from: match.index });
+        continue;
+      }
+      for (let i = open.length - 1; i >= 0; i--) {
+        if (open[i].name !== name) continue;
+        found.push({ kind: "environment", label: `\\begin{${name}}`, name, from: open[i].from, to: envRe.lastIndex });
+        // Anything opened inside it and never closed dies with it.
+        open.splice(i);
+        break;
+      }
+    }
+    // An environment left open runs to the end of the file rather than being
+    // dropped: half-written markup is exactly when people collide.
+    open.forEach((entry) => {
+      found.push({ kind: "environment", label: `\\begin{${entry.name}}`, name: entry.name, from: entry.from, to: clean.length });
+    });
+
+    const headRe = /\\(part|chapter|section|subsection|subsubsection|paragraph|subparagraph)\*?\s*(?:\[[^\]]*\])?\s*\{/g;
+    const heads = [];
+    while ((match = headRe.exec(clean))) {
+      heads.push({
+        rank: SECTION_RANKS[match[1]],
+        name: match[1],
+        title: braced(clean, headRe.lastIndex - 1).text.trim(),
+        from: match.index,
+      });
+    }
+    heads.forEach((head, index) => {
+      let to = clean.length;
+      for (let next = index + 1; next < heads.length; next++) {
+        if (heads[next].rank <= head.rank) { to = heads[next].from; break; }
+      }
+      found.push({
+        kind: "section",
+        label: head.title || `\\${head.name}`,
+        name: head.name,
+        level: head.rank,
+        from: head.from,
+        to,
+      });
+    });
+
+    // Outermost first at the same position, so the nesting can be rebuilt by a
+    // single pass (see iris-structure.js).
+    return found.sort((a, b) => a.from - b.from || b.to - a.to);
+  }
+
+  window.IrisLatex = { highlight, format, indentOnEnter, outline, regions, escAll, stream };
 })();

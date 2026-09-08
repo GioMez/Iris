@@ -16,10 +16,16 @@
   let adminTab = "users";
   let loadFailed = false;
 
-  // The admin area hosts two sibling dashboards (users, projects) behind one
-  // switch. The projects dashboard is a separate module, activated lazily.
+  const ADMIN_TABS = {
+    users: { title: "admin.title", heading: "adminUsersTitle" },
+    projects: { title: "adminProjects.title", heading: "adminProjectsTitle" },
+    templates: { title: "adminTemplates.title", heading: "adminTemplatesTitle" },
+  };
+
+  // Projects and templates are separate modules, activated only when their
+  // sibling dashboard is selected.
   function setAdminTab(tab, { focusTab = false, focusPanel = false } = {}) {
-    adminTab = tab === "projects" ? "projects" : "users";
+    adminTab = Object.prototype.hasOwnProperty.call(ADMIN_TABS, tab) ? tab : "users";
     document.querySelectorAll("#adminSwitch [data-admin-tab]").forEach((b) => {
       const on = b.dataset.adminTab === adminTab;
       b.classList.toggle("on", on);
@@ -31,8 +37,9 @@
       panel.hidden = panel.dataset.adminPanel !== adminTab;
     });
     if (adminTab === "projects" && window.IrisAdminProjects) window.IrisAdminProjects.activate();
-    document.title = `${t(adminTab === "projects" ? "adminProjects.title" : "admin.title")} · Iris`;
-    if (focusPanel) setTimeout(() => $(adminTab === "projects" ? "adminProjectsTitle" : "adminUsersTitle").focus(), 0);
+    if (adminTab === "templates" && window.IrisAdminTemplates) window.IrisAdminTemplates.activate();
+    document.title = `${t(ADMIN_TABS[adminTab].title)} · Iris`;
+    if (focusPanel) setTimeout(() => $(ADMIN_TABS[adminTab].heading).focus(), 0);
   }
 
   // A 401 here means my own session fell (self-disable, self password reset):
@@ -53,7 +60,7 @@
     el.textContent = message || "";
     button.hidden = !retry;
     button.onclick = retry ? () => {
-        $(adminTab === "projects" ? "adminProjectsTitle" : "adminUsersTitle").focus();
+        $(ADMIN_TABS[adminTab].heading).focus();
         retry();
       } : null;
   }
@@ -130,6 +137,11 @@
     return `<span class="admin-badge ${kind}-${value}">${esc(label)}</span>`;
   }
 
+  const ROLE_LABEL = { admin: "admin.roleAdmin", external: "admin.roleExternal", regular: "admin.roleRegular" };
+  const STATUS_LABEL = { active: "admin.statusActive", pending: "admin.statusPending", disabled: "admin.statusDisabled" };
+  const roleLabel = (role) => t(ROLE_LABEL[role] || ROLE_LABEL.regular);
+  const statusLabel = (value) => t(STATUS_LABEL[value] || STATUS_LABEL.disabled);
+
   function render() {
     const body = $("adminRows");
     const empty = $("adminEmpty");
@@ -146,8 +158,8 @@
           `<span><span class="admin-user-name">${esc(u.name)}</span>${you}<br>` +
           `<span class="admin-user-sub">${esc(u.username)} · ${esc(u.email)}</span>` +
           `<span class="admin-mobile-meta">${esc(u.authSource === "oidc" ? t("admin.sourceOidc") : t("admin.sourceLocal"))} · ${esc(fmtTime(u.lastLoginAt))}</span></span></div></td>` +
-        `<td>${badge("role", u.role, u.role === "admin" ? t("admin.roleAdmin") : t("admin.roleRegular"))}</td>` +
-        `<td>${badge("status", u.status, u.status === "active" ? t("admin.statusActive") : t("admin.statusDisabled"))}</td>` +
+        `<td>${badge("role", u.role, roleLabel(u.role))}</td>` +
+        `<td>${badge("status", u.status, statusLabel(u.status))}</td>` +
         `<td class="admin-hide-sm"><span class="admin-source">${esc(u.authSource === "oidc" ? t("admin.sourceOidc") : t("admin.sourceLocal"))}</span></td>` +
         `<td class="admin-hide-sm"><span class="admin-time">${esc(fmtTime(u.lastLoginAt))}</span></td>` +
         `<td class="admin-col-actions"><button class="admin-row-edit" type="button" aria-label="${esc(t("admin.manageUserAria", { name: u.name || u.username }))}">${ti("edit")}<span>${esc(t("admin.manage"))}</span></button></td>`;
@@ -208,6 +220,13 @@
     $("adminEditName").value = u.name || "";
     $("adminEditEmail").value = u.email || "";
     $("adminEditRole").value = u.role;
+    // A pending account has no assignable status to show, so the placeholder
+    // option is revealed just for it: the administrator approves by choosing
+    // Active or turns the account away by choosing Disabled, and cannot put it
+    // back. The hint explains which is which.
+    const isPending = u.status === "pending";
+    $("adminEditStatusPending").hidden = !isPending;
+    $("adminEditPendingHint").style.display = isPending ? "" : "none";
     $("adminEditStatus").value = u.status;
     // Local accounts can have their password reset and be offered the one-time
     // SSO linking window; OIDC accounts (native or converted) can instead be
@@ -217,9 +236,9 @@
     $("adminEditLinkPending").checked = !!u.oidcLinkPending;
     $("adminLinkRow").style.display = isLocal ? "" : "none";
     $("adminUnlinkRow").style.display = isLocal ? "none" : "";
-    // Physical deletion is a distinct, protected step: offered only for an
-    // already-disabled account, and never for oneself.
-    $("adminDeleteUserRow").style.display = (u.status === "disabled" && u.id !== myId()) ? "" : "none";
+    // Physical deletion is a distinct, protected step: offered only for an account
+    // that has no access — disabled, or never approved — and never for oneself.
+    $("adminDeleteUserRow").style.display = (u.status !== "active" && u.id !== myId()) ? "" : "none";
     openDialog("adminEditModal");
     setTimeout(() => $("adminEditName").focus(), 50);
   }
@@ -228,6 +247,10 @@
     const btn = $("adminEditSave");
     btn.disabled = true; btn.classList.add("loading");
     try {
+      // The pending placeholder is never sent back: it is a state the console can
+      // display but not assign, so leaving it untouched means "not decided yet"
+      // and the field is simply omitted from the patch.
+      const nextStatus = $("adminEditStatus").value;
       const data = await api(`/api/admin/users/${editingId}`, {
         method: "PATCH",
         body: JSON.stringify({
@@ -235,7 +258,7 @@
           name: $("adminEditName").value.trim(),
           email: $("adminEditEmail").value.trim(),
           role: $("adminEditRole").value,
-          status: $("adminEditStatus").value,
+          status: nextStatus === "pending" ? undefined : nextStatus,
           oidcLinkPending: $("adminEditLinkPending").checked,
         }),
       });
@@ -499,7 +522,7 @@
     // opens then if the page was loaded directly at #admin.
     document.addEventListener("iris:languagechange", () => {
       if (!document.documentElement.classList.contains("iris-inadmin")) return;
-      document.title = `${t(adminTab === "projects" ? "adminProjects.title" : "admin.title")} · Iris`;
+      document.title = `${t(ADMIN_TABS[adminTab].title)} · Iris`;
       render();
       if ($("adminDeleteUserModal").classList.contains("on")) renderDeleteUser();
     });

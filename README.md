@@ -55,8 +55,10 @@ the Node.js service handles authentication, persistence, and compilation.
   autosave.
 - Realtime collaborative editing of the same document by several members, with
   the server as the single authority that orders concurrent changes.
-- Presence for the open file: who else is editing it, the lines they are on, and
-  a non-blocking warning when two people work in the same area.
+- Presence for the open file: who else is editing it, where their cursors and
+  selections are, and a non-blocking warning when two people are inside the same
+  LaTeX environment, section or LilyPond block; the file tree and the outline
+  mark where in the project everyone else is working.
 - A notice in the preview when another member has compiled something newer, with
   a one-click load of the most recent build.
 - Server-side LaTeX compilation with `pdflatex`, `xelatex`, or `lualatex`.
@@ -69,9 +71,8 @@ the Node.js service handles authentication, persistence, and compilation.
 - Local password authentication and optional OAuth 2.0/OpenID Connect SSO.
 - Localized interface with English as the default and Italian included.
 
-Iris does not currently provide real-time collaboration, Git integration, or a
-hosted compilation service. It is designed to run on infrastructure you
-control.
+Iris does not currently provide Git integration or a hosted compilation service.
+It is designed to run on infrastructure you control.
 
 ## Localization
 
@@ -282,10 +283,28 @@ creates a separate project with a new identifier and timestamps while restoring
 the archived name, files, folders, and settings. The normal `MAX_BODY_MB`
 request limit also applies to imported archives.
 
+### Project templates
+
+Iris stores the mutable instance catalog below `TEMPLATE_DIR` (by default
+`DATA_DIR/templates`). Administrators create, edit, rename, move and delete
+LaTeX and LilyPond templates from the **Templates** section of the Admin
+dashboard; changes are available the next time the new-project dialog opens.
+The files in `public/templates` seed a new instance once and are not used as its
+mutable catalog afterward. See [`public/templates/README.md`](public/templates/README.md)
+for placeholders, limits and storage details.
+
 ### LaTeX projects
 
-A new LaTeX project starts with `main.tex` and a basic document template. The
-selected compiler engine and pipeline are stored with the project.
+A new LaTeX project starts with `main.tex` generated from the selected instance
+template. The selected compiler engine and pipeline are stored with the project.
+
+Project settings name the main source file passed to the compiler. Left on
+**Automatic**, Iris detects it as before: the open file when it carries
+`\documentclass` (a `\score` block for LilyPond), otherwise the first source
+that does. Choosing a file fixes it for every compilation of the project,
+whichever file is open. If that file is later renamed or deleted, settings keep
+showing the stale choice and Iris falls back to detection until another one is
+picked.
 
 The available pipeline presets are:
 
@@ -403,8 +422,22 @@ directly.
 
 OIDC identities are matched to local users by normalized email address. With
 `OAUTH_AUTO_REGISTER=false`, the matching local user must already exist. With
-auto-registration enabled, Iris creates a `user` account without a local
-password. Existing users retain their current role.
+auto-registration enabled, Iris creates an account without a local password.
+Existing users retain their current role.
+
+An auto-registered account is created *pending* unless
+`OAUTH_APPROVAL_REQUIRED=false`: the row exists so an administrator can decide on
+it, and the sign-in that created it is refused until they do. Approve or turn it
+away from the users console, where pending accounts are their own status. Note
+that deleting one is not a durable refusal — the same identity signing in again is
+provisioned afresh — so refusing for good means leaving the account pending or
+disabling it.
+
+`OAUTH_DEFAULT_ROLE` decides what an approved newcomer may do. It accepts
+`regular` or `external` only, never `admin`, and an unrecognised value stops the
+server rather than falling back. Set it to `external` when the identity provider
+is federated with people outside the organisation: they will be able to work on
+projects they are invited to, but not to create projects or own one.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
@@ -419,6 +452,8 @@ password. Existing users retain their current role.
 | `OAUTH_SCOPE` | `openid email profile` | Requested scopes. |
 | `OAUTH_CLIENT_AUTH_METHOD` | `client_secret_basic` | Token endpoint authentication; `client_secret_post` is also supported. |
 | `OAUTH_AUTO_REGISTER` | `false` | Create missing users from verified OIDC profiles. |
+| `OAUTH_DEFAULT_ROLE` | `regular` | Server role for auto-registered accounts; `regular` or `external` only. |
+| `OAUTH_APPROVAL_REQUIRED` | `true` | Create auto-registered accounts pending an administrator's approval. |
 
 ## Configuration reference
 
@@ -431,9 +466,11 @@ already present in the process environment.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `PORT` | `3000` | HTTP port. |
+| `BIND_ADDRESS` | every interface | Single interface to bind, such as a private or VPN address. Leave empty in containers, where the published port controls exposure. |
 | `IRIS_SECRET` | none | Required secret used to sign sessions and OAuth state. |
 | `DATA_DIR` | `./data/projects` | Root directory for project files. |
 | `PUBLIC_DIR` | `./public` | Static frontend directory. |
+| `TEMPLATE_DIR` | `DATA_DIR/templates` | Mutable LaTeX and LilyPond project-template catalog. |
 | `MAX_BODY_MB` | `25` | Maximum JSON request body size in MiB. |
 | `PROJECT_DOWNLOAD_TIMEOUT_MS` | `30000` | Hard source-file transfer deadline; a stalled receiver cannot indefinitely block the project's mutations. |
 | `COOKIE_SECURE` | `false` | Set `true` when Iris is served over HTTPS. |
@@ -680,6 +717,25 @@ content hashes before removing the source. If an interrupted copy leaves data at
 both locations, the command stops and names the project for manual comparison
 rather than guessing which copy to keep.
 
+**Repairing sources stored as a data URL.** A text file attached through the
+upload dialog used to be carried as a data URL, and a media type with parameters
+(`data:text/plain; charset=utf-8;base64,…`) was not decoded on the way back to
+disk, so the file ended up holding the URL instead of its own text. BibTeX reads
+such a `.bib` without complaining and produces an empty bibliography, so the
+symptom is a document that compiles with warnings and no references. Iris no
+longer writes these files, and the command below restores the ones already
+stored:
+
+```sh
+npm run repair:sources             # reports what it would change
+npm run repair:sources -- --apply  # rewrites those files
+```
+
+Only a file that consists of nothing but a single data URL is rewritten, and only
+when the decoded bytes are valid UTF-8. Generated output and project manifests
+are left alone: the next compilation rebuilds the first, and the next save
+rewrites the second.
+
 ## Project sharing
 
 A project is shared through memberships, each carrying a **project role**
@@ -701,8 +757,10 @@ told plainly (`403`). A server admin gets no automatic access to project content
 
 Projects can have several owners, with an invariant mirroring the last-admin rule:
 at least one owner always remains, so the last owner cannot be demoted or leave.
-Promoting someone to owner is an explicit, owner-only action. Sharing changes are
-recorded in the audit trail.
+Promoting someone to owner is an explicit, owner-only action, and it is refused
+for an account whose server role is `external` — the sharing console leaves owner
+out of their menu and labels them, but the refusal is the server's. Sharing
+changes are recorded in the audit trail.
 
 From the in-project sharing console, owners search active accounts by partial
 username or email and can inspect display name, username and email before choosing
@@ -747,7 +805,10 @@ What this changes for a document being edited live:
 - Losing write access mid-session takes effect at once: the workspace becomes
   read-only in place. Losing membership closes the session immediately.
 - A rollback moves every participant onto the restored text.
-- The status bar shows the state of the session for the open file.
+- The status bar shows the state of the session for the open file, including
+  whether this tab is still holding edits the server has not ordered yet. Until
+  they come back through the update stream they are unconfirmed, and the status
+  says so rather than claiming the document is settled.
 
 Renaming a live file updates its room's path without resetting the OT stream.
 Deleting it closes only that file's session and cancels pending persistence; other
@@ -767,26 +828,64 @@ that far back in its update log, it sends the whole document instead.
 ### Presence and overlap
 
 While a document is shared, the status bar names the other members editing it,
-each with a stable colour derived from their account, and the editor marks the
-lines they are working on with that colour — a bar beside the line and a faint
-tint on it. The same person in two tabs is one entry in the list and two marks in
-the document, because that is what is actually true.
+each with a stable colour derived from their account, and the editor marks where
+they are working in that colour: a bar beside their cursor's line with a faint
+tint on it, and — when they have selected something — a shade over the range
+itself, so text somebody is about to replace is visible before they replace it.
+A selection is reported from the end the cursor is actually on, so dragging one
+backwards puts the remote cursor where its owner sees it. The same person in two
+tabs is one entry in the list and two cursors in the document, because that is
+what is actually true.
 
-When someone else is working on your line or the one either side of it, the
-indicator turns to a warning naming them. It is deliberately advisory and blocks
-nothing: operational transformation already guarantees that no keystroke is lost,
-but it cannot tell whether two people changing the same bar of music or the same
-command agree about the result. That judgement stays with the people involved,
-which is also why the file history exists.
+The file tree carries the same information one level up: a file another member
+has open is marked with their colour. It answers only "somebody is in there" and
+deliberately carries no positions, so it changes when people come and go and
+stays silent while they type. Opening a file is therefore no longer the only way
+to find out that someone got there first.
+
+### Structural awareness
+
+Whether two people are working in the same place is decided by the document's
+structure, not by how far apart their lines are. Iris parses the open file into
+regions — `\section` and its subdivisions, every `\begin`/`\end` environment,
+each LilyPond `\score`, variable, context and block — and asks whether one
+person's position is inside the other's region. Distance is only a proxy for
+shared intent, and it is wrong in both directions: two carets a line apart on
+either side of a section boundary have nothing to do with each other, and two
+carets thirty lines apart inside one `align` have everything to do with each
+other. Containment answers it directly, so the first no longer warns and the
+second now does.
+
+When the two of you are inside the same construct, the status bar names it —
+"the same `\begin{align}`", "the same § 2.1" — and the editor draws a spine down
+the extent of what is shared. The outline panel marks which heading each
+participant is working under, the same way the file tree marks which file.
+Members who can only read are left out of all of it: a viewer on your line is
+somebody reading over your shoulder, not a risk. Where a file has no structure
+to compare — a preamble, a document without headings — the older rule still
+applies and proximity is what raises the warning.
+
+The warning is deliberately advisory and blocks nothing: operational
+transformation already guarantees that no keystroke is lost, but it cannot tell
+whether two people changing the same bar of music or the same command agree
+about the result. That judgement stays with the people involved, which is also
+why the file history exists.
+
+The parsing runs entirely in the browser, against the replica each tab already
+holds. The server never parses LaTeX or LilyPond — it compiles them by invoking
+external binaries — and presence stays what it is on the wire: ephemeral
+positions with no structure attached. Each client therefore names regions from
+its own copy, which is one more reason the result is advisory rather than
+authoritative. The index is rebuilt when typing settles and afterwards only
+consulted, so a moving cursor never costs a parse.
 
 Presence is ephemeral. It is never written to the database, never versioned and
-never replayed: it lives only on the open connections of a document, and it is
-visible only to members who could already read that file. Positions follow the
-text as it changes, and a participant who disconnects simply disappears from the
-list.
-
-Remaining work for a later phase: structural awareness (naming the LaTeX
-environment or LilyPond `score` two people share, rather than the line number).
+never replayed: it lives only on the open connections, and it is visible only to
+members who could already read the file. A position is reported at the version
+its sender was on and is carried forward through the updates that sender had not
+seen before it is drawn, so it lands on the text it was pointing at rather than
+on whatever has since moved into place. A participant who disconnects simply
+disappears.
 
 ### Compilation notices
 
@@ -806,10 +905,26 @@ build. Dismissing the notice leaves the preview alone.
 
 ## Server administration
 
-Iris distinguishes two authorization levels. The **server role** (`admin` or
-`regular`) governs account management, while the project role governs project
-contents. A server admin is not automatically granted access to any project's
-contents.
+Iris distinguishes two authorization levels. The **server role** (`admin`,
+`regular` or `external`) governs account management, while the project role
+governs project contents. A server admin is not automatically granted access to
+any project's contents.
+
+An **external** account is a guest of the organisation: it works on the projects
+it is invited to and nothing else. It cannot create a project or import one — the
+two are the same rule, since importing an archive it may legitimately download
+would otherwise recreate the project under its own ownership — and it cannot hold
+the `owner` project role, on any path, the admin console included. Ownership
+carries the authority to manage membership and to destroy a project, and it is
+the anchor of the at-least-one-owner invariant; leaving it with the organisation
+is what keeps a project from ending up in external hands alone. An external
+member can therefore be an editor or a viewer, with everything those roles imply.
+
+Because no external account can be an owner, every owner is internal by
+construction. Turning an account external strips whatever it owns: memberships on
+co-owned projects drop to `editor`, while a project it owns alone blocks the
+change until ownership is reassigned in the projects console — the same guard as
+deleting such an account.
 
 Admins manage the ordinary account lifecycle over `/api/admin/users`, so it no
 longer requires direct database access:
@@ -826,6 +941,15 @@ Accounts are **deactivated, not deleted**, in this release: a disabled account
 loses access immediately while its projects, history, attributions and audit are
 preserved, and it can be reactivated. Physical deletion, which requires
 transferring or anonymizing owned content, is deferred.
+
+A third status, **pending**, belongs to accounts auto-provisioned by the identity
+provider and not yet approved (see [OAuth 2.0 / OpenID
+Connect](#oauth-20--openid-connect)). It is kept distinct from
+`disabled` because the two mean opposite things to whoever reads the list — a
+stranger who knocked versus a colleague whose access was revoked — and every
+access check admits `active` and refuses the rest, so a pending account has no
+access anywhere. An administrator can filter for them, then approve one by setting
+it active or turn it away by disabling it; the status cannot be assigned back.
 
 Two invariants are enforced: at least one active admin must always remain (the
 last one cannot be demoted or disabled, including by themselves), and role or
@@ -857,7 +981,8 @@ name and credentials may remain under the provider.
 ## Audit trail
 
 Administrative and destructive actions are appended to the `audit_events` table:
-sign-ins and failed sign-in attempts, account creation, role and status changes,
+sign-ins and failed sign-in attempts, account creation, approval of an
+auto-provisioned account, role and status changes,
 password changes and resets, project creation, import and deletion, sharing
 changes (add, role change, removal, leaving), and file checkpoints and rollbacks.
 

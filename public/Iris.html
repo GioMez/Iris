@@ -273,6 +273,7 @@
         <button class="item on" id="settingsTabFonts" type="button" role="tab" aria-selected="true" aria-controls="settingsPanelFonts" tabindex="0" data-set="fonts"><span data-icon="typography"></span><span data-i18n="settings.fonts">Fonts</span></button>
         <button class="item" id="settingsTabEditor" type="button" role="tab" aria-selected="false" aria-controls="settingsPanelEditor" tabindex="-1" data-set="editor"><span data-icon="code"></span><span data-i18n="settings.editor">Editor</span></button>
         <button class="item" id="settingsTabCompile" type="button" role="tab" aria-selected="false" aria-controls="settingsPanelCompile" tabindex="-1" data-set="compile"><span data-icon="terminal-2"></span><span data-i18n="settings.compile">Compilation</span></button>
+        <button class="item" id="settingsTabStorage" type="button" role="tab" aria-selected="false" aria-controls="settingsPanelStorage" tabindex="-1" data-set="storage"><span data-icon="database"></span><span data-i18n="settings.storage">Storage</span></button>
         <button class="item" id="settingsTabLanguage" type="button" role="tab" aria-selected="false" aria-controls="settingsPanelLanguage" tabindex="-1" data-set="language"><span data-icon="language"></span><span data-i18n="language.title">Language</span></button>
       </nav>
       <div class="set-content">
@@ -329,6 +330,11 @@
           <code class="binpath" id="projectTypeLabel">LaTeX</code>
         </div>
         <div class="field">
+          <label class="label" for="compileMainPath" data-i18n="settings.mainFile">Main file</label>
+          <select class="select" id="compileMainPath"></select>
+          <div class="hint" id="compileMainPathHint"><span data-icon="info-circle"></span><span data-i18n="settings.mainFileHint">The file passed to the compiler. When automatic, Iris picks it from the sources.</span></div>
+        </div>
+        <div class="field">
           <label class="label" id="compilerPathLabel" for="texPath" data-i18n="settings.latexBinaryPath">LaTeX binaries path</label>
           <input class="input" id="texPath" placeholder="optional, e.g. /opt/homebrew/bin" data-i18n-placeholder="common.optionalExample" spellcheck="false" autocomplete="off">
           <div class="hint" id="texPathHint"><span data-icon="info-circle"></span><span>When empty, the backend PATH is used.</span></div>
@@ -368,6 +374,33 @@
           <div id="compileSteps"></div>
           <button class="btn sm" type="button" id="compileAddStep"><span class="ic" data-icon="plus"></span><span data-i18n="settings.step">Step</span></button>
         </div>
+      </section>
+      <button class="set-accordion-trigger" type="button" data-set="storage" aria-expanded="false" aria-controls="settingsPanelStorage"><span data-icon="database"></span><span data-i18n="settings.storage">Storage</span><span class="set-chevron" data-icon="chevron-down"></span></button>
+      <section class="set-pane" id="settingsPanelStorage" role="tabpanel" aria-labelledby="settingsTabStorage" tabindex="0" data-setpane="storage" hidden>
+        <h4 class="set-title"><span data-icon="database"></span><span data-i18n="settings.storage">Storage</span></h4>
+        <p class="desc" data-i18n="settings.retentionDescription">How long this project keeps its compilation outputs and its file history. Something is deleted only when it is both outside the most recent entries and older than the age below: recent work is always kept, whichever value you choose.</p>
+        <p class="desc" id="retentionOwnerNotice" hidden data-i18n="settings.retentionOwnerOnly">Only a project owner can change these values.</p>
+        <div class="field">
+          <label class="label" for="retentionBuildKeep" data-i18n="settings.retentionBuildKeep">Compilations kept</label>
+          <input class="input" id="retentionBuildKeep" type="number" inputmode="numeric" data-retention="buildKeep" aria-describedby="retentionBuildKeepHint">
+          <div class="hint" id="retentionBuildKeepHint"><span data-icon="info-circle"></span><span data-retention-hint="buildKeep"></span></div>
+        </div>
+        <div class="field">
+          <label class="label" for="retentionBuildDays" data-i18n="settings.retentionBuildDays">Delete compilations older than</label>
+          <input class="input" id="retentionBuildDays" type="number" inputmode="numeric" data-retention="buildDays" aria-describedby="retentionBuildDaysHint">
+          <div class="hint" id="retentionBuildDaysHint"><span data-icon="info-circle"></span><span data-retention-hint="buildDays"></span></div>
+        </div>
+        <div class="field">
+          <label class="label" for="retentionVersionKeep" data-i18n="settings.retentionVersionKeep">Revisions kept per file</label>
+          <input class="input" id="retentionVersionKeep" type="number" inputmode="numeric" data-retention="versionKeep" aria-describedby="retentionVersionKeepHint">
+          <div class="hint" id="retentionVersionKeepHint"><span data-icon="info-circle"></span><span data-retention-hint="versionKeep"></span></div>
+        </div>
+        <div class="field">
+          <label class="label" for="retentionVersionDays" data-i18n="settings.retentionVersionDays">Delete revisions older than</label>
+          <input class="input" id="retentionVersionDays" type="number" inputmode="numeric" data-retention="versionDays" aria-describedby="retentionVersionDaysHint">
+          <div class="hint" id="retentionVersionDaysHint"><span data-icon="info-circle"></span><span data-retention-hint="versionDays"></span></div>
+        </div>
+        <div class="hint"><span data-icon="info-circle"></span><span data-i18n="settings.retentionProtectedHint">The most recent successful compilation and the current revision of every file are never deleted, whatever their age.</span></div>
       </section>
       <button class="set-accordion-trigger" type="button" data-set="language" aria-expanded="false" aria-controls="settingsPanelLanguage"><span data-icon="language"></span><span data-i18n="language.title">Language</span><span class="set-chevron" data-icon="chevron-down"></span></button>
       <section class="set-pane" id="settingsPanelLanguage" role="tabpanel" aria-labelledby="settingsTabLanguage" tabindex="0" data-setpane="language" hidden>
@@ -580,6 +613,12 @@
           <option value="lilypond" data-i18n="projects.lilypond">LilyPond score</option>
         </select>
       </div>
+      <div class="field" id="projTemplateField">
+        <label class="label" for="projTemplateSelect" data-i18n="projects.template">Project template</label>
+        <select class="select" id="projTemplateSelect" disabled>
+          <option value="" data-i18n="projects.templatesLoading">Loading templates…</option>
+        </select>
+      </div>
     </div>
     <div class="m-foot">
       <button class="btn" data-close data-i18n="common.cancel">Cancel</button>
@@ -684,8 +723,8 @@
         <p class="picker-sub"><span data-i18n="projects.description">Each project is self-contained, with its own files and bibliographies.</span> <span id="pkCount" class="pk-count"></span></p>
       </div>
       <div class="picker-actions">
-        <button class="btn" id="pkImport"><span class="ic" data-icon="upload"></span><span data-i18n="projects.importButton">Import project</span></button>
-        <button class="btn cta" id="pkNew"><span class="ic" data-icon="plus"></span><span data-i18n="projects.newButton">New project</span></button>
+        <button class="btn internal-only" id="pkImport"><span class="ic" data-icon="upload"></span><span data-i18n="projects.importButton">Import project</span></button>
+        <button class="btn cta internal-only" id="pkNew"><span class="ic" data-icon="plus"></span><span data-i18n="projects.newButton">New project</span></button>
       </div>
     </div>
 
@@ -696,8 +735,9 @@
     <div class="picker-empty" id="pkEmpty" role="status" aria-live="polite" style="display:none">
       <div class="pe-mark" data-icon="files"></div>
       <div class="pe-title" data-i18n="projects.empty">No projects</div>
-      <div class="pe-sub" data-i18n="projects.emptyDescription">Create your first project to start writing in LaTeX or LilyPond.</div>
-      <button class="btn cta" id="pkNewEmpty"><span class="ic" data-icon="plus"></span><span data-i18n="projects.newButton">New project</span></button>
+      <div class="pe-sub internal-only" data-i18n="projects.emptyDescription">Create your first project to start writing in LaTeX or LilyPond.</div>
+      <div class="pe-sub external-only" data-i18n="projects.emptyExternal">Projects you are invited to will appear here.</div>
+      <button class="btn cta internal-only" id="pkNewEmpty"><span class="ic" data-icon="plus"></span><span data-i18n="projects.newButton">New project</span></button>
     </div>
   </div>
 </div>
@@ -714,6 +754,7 @@
         <div class="admin-switch" id="adminSwitch" role="tablist" aria-label="Admin sections" data-i18n-aria-label="admin.sectionsAria">
           <button class="on" id="adminTabUsers" type="button" role="tab" aria-selected="true" aria-controls="adminUsersPanel" tabindex="0" data-admin-tab="users" data-i18n="admin.tabUsers">Users</button>
           <button id="adminTabProjects" type="button" role="tab" aria-selected="false" aria-controls="adminProjectsPanel" tabindex="-1" data-admin-tab="projects" data-i18n="admin.tabProjects">Projects</button>
+          <button id="adminTabTemplates" type="button" role="tab" aria-selected="false" aria-controls="adminTemplatesPanel" tabindex="-1" data-admin-tab="templates" data-i18n="admin.tabTemplates">Templates</button>
         </div>
         <button class="tbtn ghost-b" id="adminBack" title="Back to projects" aria-label="Back to projects" data-i18n-title="admin.back" data-i18n-aria-label="admin.back"><span class="ic" data-icon="arrow-left"></span><span class="admin-back-label" data-i18n="toolbar.projects">Projects</span></button>
         <button class="userchip" id="adminAccount" type="button" title="Account" aria-label="Account" data-i18n-title="common.account" data-i18n-aria-label="common.account" aria-haspopup="menu" aria-expanded="false" aria-controls="userMenu">
@@ -746,9 +787,11 @@
         <option value="" data-i18n="admin.allRoles">All roles</option>
         <option value="admin" data-i18n="admin.roleAdmin">Admin</option>
         <option value="regular" data-i18n="admin.roleRegular">Regular</option>
+        <option value="external" data-i18n="admin.roleExternal">External</option>
       </select>
       <select class="input" id="adminStatusFilter" aria-label="Filter by status" data-i18n-aria-label="admin.filterStatus">
         <option value="" data-i18n="admin.allStatuses">All statuses</option>
+        <option value="pending" data-i18n="admin.statusPending">Pending approval</option>
         <option value="active" data-i18n="admin.statusActive">Active</option>
         <option value="disabled" data-i18n="admin.statusDisabled">Disabled</option>
       </select>
@@ -825,6 +868,49 @@
         </div>
       </div>
     </div>
+
+    <!-- TEMPLATES PANEL -->
+    <div data-admin-panel="templates" id="adminTemplatesPanel" role="tabpanel" aria-labelledby="adminTabTemplates" tabindex="-1" hidden>
+      <div class="picker-head">
+        <div>
+          <h1 class="picker-title" id="adminTemplatesTitle" tabindex="-1" data-i18n="adminTemplates.title">Project template administration</h1>
+          <p class="picker-sub" data-i18n="adminTemplates.subtitle">Create and maintain the LaTeX and LilyPond starting sources available for new projects.</p>
+        </div>
+        <div class="picker-actions admin-template-actions">
+          <label class="visually-hidden" for="adminTemplateTypeFilter" data-i18n="adminTemplates.typeFilter">Filter by template type</label>
+          <select class="input" id="adminTemplateTypeFilter" aria-label="Filter by template type" data-i18n-aria-label="adminTemplates.typeFilter">
+            <option value="" data-i18n="adminTemplates.allTypes">All types</option>
+            <option value="latex" data-i18n="adminTemplates.typeLatex">LaTeX</option>
+            <option value="lilypond" data-i18n="adminTemplates.typeLilypond">LilyPond</option>
+          </select>
+          <button class="btn cta" id="adminTemplateNew" type="button"><span class="ic" data-icon="plus"></span><span data-i18n="adminTemplates.newTemplate">New template</span></button>
+        </div>
+      </div>
+
+      <div class="picker-status-row">
+        <div class="picker-import-status" id="adminTemplateStatusMsg" role="status" aria-live="polite"></div>
+        <button class="status-retry" id="adminTemplateStatusRetry" type="button" hidden data-i18n="common.retry">Try again</button>
+      </div>
+
+      <div class="admin-table-wrap" id="adminTemplateTableWrap">
+        <table class="admin-table admin-template-table">
+          <thead>
+            <tr>
+              <th data-i18n="adminTemplates.colTemplate">Template</th>
+              <th data-i18n="adminTemplates.colType">Type</th>
+              <th data-i18n="adminTemplates.colDefault">Default</th>
+              <th data-i18n="adminTemplates.colSize">Size</th>
+              <th class="admin-col-actions"><span class="visually-hidden" data-i18n="admin.colActions">Actions</span></th>
+            </tr>
+          </thead>
+          <tbody id="adminTemplateRows"></tbody>
+        </table>
+        <div class="picker-empty" id="adminTemplateEmpty" role="status" aria-live="polite" style="display:none">
+          <div class="pe-title" data-i18n="adminTemplates.noTemplates">No matching templates</div>
+          <div class="pe-sub" data-i18n="adminTemplates.noTemplatesDescription">Try changing the type filter or create a template.</div>
+        </div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -854,8 +940,10 @@
         <label class="label" for="adminCreateRole" data-i18n="admin.role">Role</label>
         <select class="input" id="adminCreateRole" aria-describedby="adminCreateError">
           <option value="regular" data-i18n="admin.roleRegular">Regular</option>
+          <option value="external" data-i18n="admin.roleExternal">External</option>
           <option value="admin" data-i18n="admin.roleAdmin">Admin</option>
         </select>
+        <span class="hint" data-i18n="admin.roleExternalHint">An external account works only on projects it is invited to: it cannot create projects or own one.</span>
       </div>
     </div>
     <div class="m-foot">
@@ -892,15 +980,21 @@
         <label class="label" for="adminEditRole" data-i18n="admin.role">Role</label>
         <select class="input" id="adminEditRole" aria-describedby="adminEditError">
           <option value="regular" data-i18n="admin.roleRegular">Regular</option>
+          <option value="external" data-i18n="admin.roleExternal">External</option>
           <option value="admin" data-i18n="admin.roleAdmin">Admin</option>
         </select>
+        <span class="hint" data-i18n="admin.roleExternalHint">An external account works only on projects it is invited to: it cannot create projects or own one.</span>
       </div>
       <div class="field">
         <label class="label" for="adminEditStatus" data-i18n="admin.status">Status</label>
         <select class="input" id="adminEditStatus" aria-describedby="adminEditError">
+          <!-- Displayed while an account waits for approval and disabled so it can
+               never be assigned: pending is a state an account leaves, not enters. -->
+          <option value="pending" id="adminEditStatusPending" disabled hidden data-i18n="admin.statusPending">Pending approval</option>
           <option value="active" data-i18n="admin.statusActive">Active</option>
           <option value="disabled" data-i18n="admin.statusDisabled">Disabled</option>
         </select>
+        <span class="hint" id="adminEditPendingHint" style="display:none" data-i18n="admin.statusPendingHint">This account was provisioned by the identity provider and has never had access. Set it to Active to approve it, or Disabled to turn it away.</span>
       </div>
       <div class="field" id="adminLinkRow">
         <label class="admin-check"><input type="checkbox" id="adminEditLinkPending"><span data-i18n="admin.linkPending">Allow SSO linking (one time)</span></label>
@@ -1048,6 +1142,80 @@
   </form>
 </div>
 
+<!-- ===================== ADMIN · TEMPLATE EDITOR ===================== -->
+<div class="scrim" id="adminTemplateModal">
+  <form class="modal wide admin-template-modal" id="adminTemplateForm" role="dialog" aria-modal="true" aria-labelledby="adminTemplateModalTitle">
+    <div class="m-head">
+      <h3 id="adminTemplateModalTitle" data-i18n="adminTemplates.newTitle">New template</h3>
+      <button class="m-x" id="adminTemplateClose" type="button" data-admin-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
+    </div>
+    <div class="m-body">
+      <div class="admin-template-error-row">
+        <div class="login-error inline" id="adminTemplateError" role="alert" style="display:none"></div>
+        <button class="status-retry" id="adminTemplateDetailRetry" type="button" hidden data-i18n="common.retry">Try again</button>
+      </div>
+      <div class="admin-template-modal-status" id="adminTemplateModalStatus" role="status" aria-live="polite"></div>
+      <div class="admin-template-form-grid">
+        <div class="field">
+          <label class="label" for="adminTemplateTitle" data-i18n="adminTemplates.displayTitle">Display title</label>
+          <input class="input" id="adminTemplateTitle" required autocomplete="off" maxlength="120" aria-describedby="adminTemplateError">
+        </div>
+        <div class="field">
+          <label class="label" for="adminTemplateId" data-i18n="adminTemplates.internalId">Internal ID</label>
+          <div class="admin-template-id-control">
+            <input class="input" id="adminTemplateId" required spellcheck="false" autocomplete="off" maxlength="80" aria-describedby="adminTemplateIdHint adminTemplateError">
+            <code id="adminTemplateExtension">.tex</code>
+          </div>
+          <span class="hint" id="adminTemplateIdHint" data-i18n="adminTemplates.idHint">Use a file-safe name without the extension.</span>
+        </div>
+        <div class="field">
+          <label class="label" for="adminTemplateType" data-i18n="adminTemplates.type">Type</label>
+          <select class="input" id="adminTemplateType" aria-describedby="adminTemplateError">
+            <option value="latex" data-i18n="adminTemplates.typeLatex">LaTeX</option>
+            <option value="lilypond" data-i18n="adminTemplates.typeLilypond">LilyPond</option>
+          </select>
+        </div>
+        <div class="field admin-template-description-field">
+          <label class="label" for="adminTemplateDescription" data-i18n="adminTemplates.description">Description</label>
+          <textarea class="input" id="adminTemplateDescription" rows="2" maxlength="500" aria-describedby="adminTemplateError"></textarea>
+        </div>
+      </div>
+      <div class="field admin-template-default-field">
+        <label class="admin-check"><input type="checkbox" id="adminTemplateDefault"><span data-i18n="adminTemplates.defaultLabel">Use as the default for this type</span></label>
+      </div>
+      <div class="admin-template-source-head">
+        <label class="label" for="adminTemplateContent" data-i18n="adminTemplates.source">Source content</label>
+        <span id="adminTemplateCounter" role="status" aria-live="polite"></span>
+      </div>
+      <textarea class="input admin-template-source" id="adminTemplateContent" rows="16" spellcheck="false" aria-describedby="adminTemplateCounter adminTemplateError"></textarea>
+    </div>
+    <div class="m-foot admin-template-foot">
+      <button class="btn danger" id="adminTemplateDelete" type="button" hidden><span class="ic" data-icon="trash"></span><span data-i18n="adminTemplates.deleteTemplate">Delete template</span></button>
+      <span class="spring"></span>
+      <button class="btn" id="adminTemplateCancel" type="button" data-admin-close data-i18n="common.cancel">Cancel</button>
+      <button class="btn cta" id="adminTemplateSave" type="submit" data-i18n="adminTemplates.createButton">Create template</button>
+    </div>
+  </form>
+</div>
+
+<!-- ===================== ADMIN · DELETE TEMPLATE ===================== -->
+<div class="scrim" id="adminTemplateDeleteModal">
+  <form class="modal narrow" id="adminTemplateDeleteForm" role="dialog" aria-modal="true" aria-labelledby="adminTemplateDeleteTitle" aria-describedby="adminTemplateDeleteText adminTemplateDeleteError">
+    <div class="m-head">
+      <h3 id="adminTemplateDeleteTitle" data-i18n="adminTemplates.deleteTitle">Delete template?</h3>
+      <button class="m-x" id="adminTemplateDeleteClose" type="button" aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
+    </div>
+    <div class="m-body">
+      <p class="confirm-txt" id="adminTemplateDeleteText"></p>
+      <div class="login-error inline modal-error-after" id="adminTemplateDeleteError" role="alert" style="display:none"></div>
+    </div>
+    <div class="m-foot">
+      <button class="btn" id="adminTemplateDeleteCancel" type="button" data-i18n="common.cancel">Cancel</button>
+      <button class="btn danger" id="adminTemplateDeleteOk" type="submit" data-i18n="adminTemplates.deleteButton">Delete template</button>
+    </div>
+  </form>
+</div>
+
 <!-- ===================== FILE HISTORY ===================== -->
 <div class="scrim" id="versionsModal">
   <div class="modal wide versions-modal" role="dialog" aria-modal="true" aria-labelledby="versionsTitle">
@@ -1153,7 +1321,7 @@
 </div>
 
 <!-- hidden inputs -->
-<input type="file" id="attachInput" accept="image/*,application/pdf,.csv,.dat" style="display:none">
+<input type="file" id="attachInput" accept="image/*,application/pdf,.bib,.bst,.tex,.sty,.cls,.txt,.csv,.dat" style="display:none">
 <input type="file" id="fontInput" accept=".ttf,.otf,.woff,.woff2" style="display:none">
 <input type="file" id="projectImportInput" accept=".zip,application/zip" style="display:none">
 
@@ -1163,6 +1331,7 @@
 <script src="iris-motion.js"></script>
 <script src="iris-latex.js"></script>
 <script src="iris-lilypond.js"></script>
+<script src="iris-structure.js"></script>
 <script src="iris-editor.js"></script>
 <script src="iris-collab.js"></script>
 <script src="iris-app.js"></script>
@@ -1170,6 +1339,7 @@
 <script src="iris-builds.js"></script>
 <script src="iris-admin.js"></script>
 <script src="iris-admin-projects.js"></script>
+<script src="iris-admin-templates.js"></script>
 <script src="iris-auth.js"></script>
 </body>
 </html>

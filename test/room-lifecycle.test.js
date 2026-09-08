@@ -130,7 +130,7 @@ for (const [writer, suffix, method] of [["PUT", "", "PUT"], ["checkpoint", "/che
 }
 
 test("file deletion snapshots unflushed authority, rejects queued pushes and flushes, and keeps other files watched", options, async (t) => {
-  const f = await setup(t);
+  const f = await setup(t, { COLLAB_REVISION_IDLE_MS: "100" });
   const client = await connect(t, f);
   const peer = await connect(t, f);
   await client.open(f.otherId);
@@ -160,7 +160,6 @@ test("file deletion snapshots unflushed authority, rejects queued pushes and flu
     assert.equal(f.app.collabRooms.get(f.fileId), null);
     assert.equal(room.clients.size, 0);
     assert.equal(room.flushTimer._destroyed, true);
-    assert.equal(room.revisionTimer._destroyed, true);
     assert.equal(client.session.rooms.has(f.fileId), false);
     assert.equal(peer.session.rooms.has(f.fileId), false);
     assert.equal(client.session.projectId, f.id);
@@ -169,6 +168,14 @@ test("file deletion snapshots unflushed authority, rejects queued pushes and flu
     client.send({ t: "pull", fileId: f.fileId, version: 1 });
     assert.equal((await client.next("error")).code, "COLLAB_NOT_JOINED");
     await accepted(client, f.otherId, 0, "other", " usable");
+    // The shared project timer must still checkpoint surviving rooms without
+    // revisiting the removed file or recreating its bytes.
+    const surviving = f.app.collabRooms.get(f.otherId);
+    await until(() => !surviving.needsRevision());
+    assert.equal(await fs.readFile(path.join(f.dir, "other.tex"), "utf8"), "other usable");
+    const revisions = await f.pool.query("SELECT content, reason FROM document_versions WHERE file_id = $1 ORDER BY created_at, id", [f.otherId]);
+    assert.deepEqual(revisions.rows, [{ content: "other usable", reason: "realtime" }]);
+    assert.deepEqual((await history(f)).map((v) => v.content), ["base accepted"]);
     assert.equal(client.messages.some((m) => m.t === "revoked"), false);
     assert.equal(peer.messages.some((m) => m.t === "revoked"), false);
     await f.app.collabPersistNow(room, true);
@@ -488,4 +495,120 @@ test("uncertain COMMIT leaves rooms unannounced and blocks queued pushes and per
     await assert.rejects(f.app.collabPersistNow(room, false), { errorCode: "PROJECT_RECOVERY_REQUIRED" });
     assert.equal((await f.request(f.url)).status, 503);
   } finally { release.resolve(); await save; }
+});
+
+test("retention and source saves commit atomically at the checked revision and remain owner-only", options, async (t) => {
+  const f = await setup(t);
+  const policy = { buildKeep: 5, versionDays: 30 };
+  const missing = await f.request(f.url, { method: "PUT", body: { retention: policy } });
+  assert.equal(missing.status, 428);
+  assert.equal((await missing.json()).errorCode, "PROJECT_REVISION_REQUIRED");
+
+  const data = structuredClone(f.out.data);
+  data.project.nodes[0].content = "committed text";
+  const save = await f.request(f.url, { method: "PUT", body: { baseRevision: 0, data, retention: policy } });
+  assert.equal(save.status, 200);
+  const saved = await save.json();
+  assert.equal(saved.data.revision, 1);
+  assert.equal(saved.retention.buildKeep.value, 5);
+  assert.equal(saved.retention.versionDays.value, 30);
+  const projectRow = async () => (await f.pool.query(
+    "SELECT name, revision, updated_at, build_keep, version_days FROM projects WHERE id = $1", [f.id]
+  )).rows[0];
+  const before = await projectRow();
+  assert.equal(before.revision, 1);
+  assert.equal(before.build_keep, 5);
+  assert.equal(before.version_days, 30);
+  const manifestPath = path.join(f.dir, ".iris", "project.json");
+  const manifest = await fs.readFile(manifestPath);
+  assert.equal(await fs.readFile(path.join(f.dir, "main.tex"), "utf8"), "committed text");
+
+  const changed = structuredClone(saved.data);
+  changed.project.nodes[0].content = "must roll back";
+  let retentionWritten = false;
+  f.hooks.afterClientQuery = async (sql) => {
+    if (!/^UPDATE projects SET .*build_keep/.test(sql)) return;
+    retentionWritten = true;
+    throw new Error("injected failure after retention update");
+  };
+  try {
+    const failed = await f.request(f.url, {
+      method: "PUT", body: { baseRevision: 1, name: "Must roll back", data: changed, retention: { buildKeep: 9 } },
+    });
+    assert.equal(failed.status, 500);
+    assert.equal(retentionWritten, true, "fail after both the sources and retention have been written");
+  } finally { delete f.hooks.afterClientQuery; }
+  assert.deepEqual(await projectRow(), before);
+  assert.deepEqual(await fs.readFile(manifestPath), manifest);
+  assert.equal(await fs.readFile(path.join(f.dir, "main.tex"), "utf8"), "committed text");
+
+  const stale = await f.request(f.url, { method: "PUT", body: { baseRevision: 0, data: changed, retention: { buildKeep: 9 } } });
+  assert.equal(stale.status, 409);
+  assert.equal((await stale.json()).errorCode, "PROJECT_REVISION_CONFLICT");
+  assert.deepEqual(await projectRow(), before);
+  assert.deepEqual(await fs.readFile(manifestPath), manifest);
+
+  const editor = (await f.pool.query(
+    "INSERT INTO users (id, username, email, display_name) VALUES ($1, 'editor', 'editor@example.test', 'Editor') RETURNING *", [uuidv7()]
+  )).rows[0];
+  await f.pool.query("INSERT INTO project_members (project_id, user_id, role) VALUES ($1, $2, 'editor')", [f.id, editor.id]);
+  const edited = await f.request(f.url, {
+    method: "PUT", cookie: f.cookieFor(editor), body: { baseRevision: 1, name: "Editor save", retention: { buildKeep: 9 } },
+  });
+  assert.equal(edited.status, 200);
+  const out = await edited.json();
+  assert.equal(out.data.revision, 2);
+  assert.equal(out.retention.buildKeep.value, 5);
+  assert.equal((await projectRow()).build_keep, 5);
+  assert.equal((await f.pool.query(
+    "SELECT action FROM audit_events WHERE target_id = $1 AND action = 'project.retention_changed'", [f.id]
+  )).rows.length, 1, "only the committed owner policy change is audited");
+});
+
+test("the project revision timer groups dirty rooms into one transaction with each file's author", options, async (t) => {
+  const idleMs = 61001;
+  const f = await setup(t, { COLLAB_REVISION_IDLE_MS: String(idleMs) });
+  const otherUser = (await f.pool.query(
+    "INSERT INTO users (id, username, email, display_name) VALUES ($1, 'peer', 'peer@example.test', 'Peer') RETURNING *", [uuidv7()]
+  )).rows[0];
+  await f.pool.query("INSERT INTO project_members (project_id, user_id, role) VALUES ($1, $2, 'editor')", [f.id, otherUser.id]);
+  const writer = await connect(t, f);
+  const peer = await connect(t, { ...f, cookie: f.cookieFor(otherUser) });
+  await peer.open(f.otherId);
+  const scheduled = [];
+  const schedule = globalThis.setTimeout;
+  t.mock.method(globalThis, "setTimeout", (callback, ms, ...args) => {
+    const timer = schedule(callback, ms, ...args);
+    if (ms === idleMs) scheduled.push({ callback, timer });
+    return timer;
+  });
+  let checkpointLocks = 0;
+  f.hooks.beforeClientQuery = async (sql) => {
+    if (sql.includes("pg_advisory_xact_lock(4953,")) checkpointLocks++;
+  };
+  await accepted(peer, f.otherId, 0, "other", " peer edit");
+  await accepted(writer, f.fileId, 0, "base", " writer edit");
+  assert.equal(scheduled.length, 2);
+  assert.equal(scheduled[0].timer._destroyed, true, "activity in another room replaces the project's timer");
+  assert.equal(scheduled[1].timer._destroyed, false);
+  assert.equal(checkpointLocks, 0);
+  assert.equal(await fs.readFile(path.join(f.dir, "main.tex"), "utf8"), "base");
+  assert.equal(await fs.readFile(path.join(f.dir, "other.tex"), "utf8"), "other");
+  // Fire the actual scheduled callback without depending on wall-clock timing.
+  clearTimeout(scheduled[1].timer);
+  scheduled[1].callback();
+  await until(() => f.app.collabRooms.forProject(f.id).every((room) => !room.needsRevision()));
+  assert.equal(checkpointLocks, 1);
+  const { rows } = await f.pool.query(
+    `SELECT v.file_id, v.author_id, v.content, v.reason, v.xmin::text AS transaction_id
+     FROM document_versions v JOIN project_files f ON f.id = v.file_id
+     WHERE f.project_id = $1 ORDER BY f.path`, [f.id]
+  );
+  assert.deepEqual(rows.map((row) => [row.file_id, row.author_id, row.content, row.reason]), [
+    [f.fileId, f.user.id, "base writer edit", "realtime"],
+    [f.otherId, otherUser.id, "other peer edit", "realtime"],
+  ]);
+  assert.equal(new Set(rows.map((row) => row.transaction_id)).size, 1);
+  assert.equal(await fs.readFile(path.join(f.dir, "main.tex"), "utf8"), "base writer edit");
+  assert.equal(await fs.readFile(path.join(f.dir, "other.tex"), "utf8"), "other peer edit");
 });

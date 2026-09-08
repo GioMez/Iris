@@ -23,6 +23,11 @@
   const ROLE_KEY = { owner: "roleOwner", editor: "roleEditor", viewer: "roleViewer" };
   const PROJECT_ROLES = ["owner", "editor", "viewer"];
   const roleLabel = (role) => t(`projects.${ROLE_KEY[role] || "roleOwner"}`);
+  // Mirrors the server rule: ownership answers for the project and stays with the
+  // organisation, so an external member is never offered it. The refusal is the
+  // server's; this only keeps the menu from proposing something that would fail.
+  const isExternalUser = () => document.documentElement.dataset.role === "external";
+  const rolesForMember = (external) => (external ? PROJECT_ROLES.filter((role) => role !== "owner") : PROJECT_ROLES);
 
   const api = (path, options) => window.IrisNet.request(path, options);
   const errorFromResponse = (res) => window.IrisNet.errorFromResponse(res);
@@ -48,44 +53,54 @@
   }
 
   /* ---------------- blank content ---------------- */
-  function blankNodes(name, projectType) {
+  let projectTemplates = { latex: [], lilypond: [] };
+
+  function normalizeProjectTemplates(value) {
+    const templates = value && typeof value === "object" ? value : {};
+    const normalize = (type) => (Array.isArray(templates[type]) ? templates[type] : []).filter((template) =>
+      template && typeof template.id === "string" && typeof template.url === "string" && template.url.startsWith("/api/project-templates/"));
+    return { latex: normalize("latex"), lilypond: normalize("lilypond") };
+  }
+
+  async function refreshProjectTemplates() {
+    const out = await api("/api/project-templates");
+    projectTemplates = normalizeProjectTemplates(out && out.templates);
+    return projectTemplates;
+  }
+
+  function renderProjectTemplate(source, values) {
+    return source.replace(/@@([A-Z_]+)@@/g, (placeholder, key) =>
+      Object.prototype.hasOwnProperty.call(values, key) ? values[key] : placeholder);
+  }
+
+  async function loadProjectTemplate(projectType, templateId) {
+    const templates = projectTemplates[projectType] || [];
+    const template = templates.find((item) => item.id === templateId)
+      || templates.find((item) => item.default)
+      || templates[0];
+    if (!template) throw new Error(`No ${projectType} project template is available`);
+    const response = await fetch(template.url, { credentials: "same-origin", cache: "no-cache" });
+    if (!response.ok) throw new Error(`Unable to load project template: ${template.url}`);
+    return response.text();
+  }
+
+  async function blankNodes(name, projectType, templateId) {
     if (projectType === "lilypond") {
       const title = String(name || t("templates.newScore")).replace(/["\\]/g, "");
-      const tpl = `\\version "2.24.0"
-
-\\header {
-  title = "${title}"
-  composer = ""
-}
-
-\\score {
-  \\relative c' {
-    \\key c \\major
-    \\time 4/4
-    c4 d e f | g1 \\bar "|."
-  }
-  \\layout { }
-  \\midi { }
-}`;
+      const tpl = renderProjectTemplate(await loadProjectTemplate(projectType, templateId), { TITLE: title });
       return [
         { type: "file", id: "main", name: "main.ly", kind: "ly", path: "main.ly", content: tpl },
       ];
     }
-    const tpl = `\\documentclass[11pt]{article}
-\\usepackage[utf8]{inputenc}
-\\usepackage{amsmath}
-
-\\title{${name || t("templates.newDocument")}}
-\\author{}
-\\date{\\today}
-
-\\begin{document}
-\\maketitle
-
-\\section{${t("templates.introduction")}}
-
-
-\\end{document}`;
+    const source = await loadProjectTemplate(projectType, templateId);
+    const tpl = renderProjectTemplate(source, {
+      TITLE: name || t("templates.newDocument"),
+      INTRODUCTION: t("templates.introduction"),
+      RECIPIENT: t("templates.recipient"),
+      LETTER_OPENING: t("templates.letterOpening"),
+      LETTER_BODY: t("templates.letterBody"),
+      LETTER_CLOSING: t("templates.letterClosing"),
+    });
     return [
       { type: "file", id: "main", name: "main.tex", kind: "tex", path: "main.tex", content: tpl },
       { type: "folder", name: "figure", open: true, children: [] },
@@ -357,6 +372,8 @@
       // Capture only when this operation owns the queue, paired with its base.
       const snapshot = withData ? window.IrisApp.capturePersistence() : null;
       const body = typeof options === "function" ? options() : (options || {});
+      const retention = snapshot && suffix === "" ? window.IrisApp.pendingRetention() : null;
+      if (retention) body.retention = retention;
       if (snapshot) Object.assign(body, {
         name: snapshot.data.project.name, data: snapshot.data, baseRevision: snapshot.data.revision,
       });
@@ -383,6 +400,7 @@
       }
       if (!isCurrent()) throw staleSession();
       if (snapshot) acknowledge(out.revision ?? out.data?.revision ?? out.project?.revision, out.data, out.project);
+      if (snapshot && out.retention) window.IrisApp.applyRetention(out.retention, retention);
       return out;
     });
   }
@@ -545,11 +563,11 @@
   }
 
   /* ---------------- create / rename / delete ---------------- */
-  async function createProject(name, projectType) {
+  async function createProject(name, projectType, templateId) {
     const now = Date.now();
     projectType = projectType === "lilypond" ? "lilypond" : "latex";
     const data = {
-      project: { name, nodes: blankNodes(name, projectType) },
+      project: { name, nodes: await blankNodes(name, projectType, templateId) },
       projectType,
       language: window.IrisI18n.defaultLanguage,
       engine: projectType === "lilypond" ? "lilypond" : "pdflatex",
@@ -608,14 +626,62 @@
 
   /* ---------------- modals ---------------- */
   let projMode = "new", projTargetId = null, delTargetId = null;
+  let templateSelectType = null;
+  const selectedTemplates = { latex: null, lilypond: null };
 
-  function askNew() {
+  function projectTemplateLabel(template) {
+    return template.label || template.title || template.id;
+  }
+
+  function renderProjectTemplateOptions(projectType) {
+    const select = $("projTemplateSelect");
+    if (templateSelectType && select.value) selectedTemplates[templateSelectType] = select.value;
+    select.innerHTML = "";
+    const templates = projectTemplates[projectType] || [];
+    templates.forEach((template) => {
+      const option = document.createElement("option");
+      option.value = template.id;
+      option.textContent = projectTemplateLabel(template);
+      select.appendChild(option);
+    });
+    const selected = templates.find((template) => template.id === selectedTemplates[projectType])
+      || templates.find((template) => template.default)
+      || templates[0];
+    select.value = selected ? selected.id : "";
+    select.disabled = !selected;
+    selectedTemplates[projectType] = select.value || null;
+    templateSelectType = projectType;
+    return !!selected;
+  }
+
+  function syncProjectTypeFields() {
+    const projectType = $("projTypeSelect").value === "lilypond" ? "lilypond" : "latex";
+    const hasTemplates = renderProjectTemplateOptions(projectType);
+    $("projTemplateField").style.display = "";
+    $("projModalHint").textContent = hasTemplates
+      ? t(projectType === "latex" ? "projects.newLatexHint" : "projects.newLilypondHint")
+      : t("projects.noTemplates", { type: projectType === "latex" ? "LaTeX" : "LilyPond" });
+    if (projMode === "new") $("projModalOk").disabled = !hasTemplates;
+  }
+
+  async function askNew() {
+    if (isExternalUser()) return;
+    try {
+      await refreshProjectTemplates();
+    } catch (error) {
+      setPickerStatus(t("projects.templatesLoadFailed"), true);
+      return;
+    }
     projMode = "new"; projTargetId = null;
     $("projModalTitle").textContent = t("projects.newTitle");
     $("projModalOk").textContent = t("projects.create");
     $("projModalHint").textContent = t("projects.newLatexHint");
     $("projTypeField").style.display = "";
     $("projTypeSelect").value = "latex";
+    selectedTemplates.latex = null;
+    selectedTemplates.lilypond = null;
+    templateSelectType = null;
+    syncProjectTypeFields();
     $("projNameInput").value = "";
     $("projNameInput").classList.remove("nomatch");
     $("projNameInput").removeAttribute("aria-invalid");
@@ -630,6 +696,8 @@
     $("projModalOk").textContent = t("common.save");
     $("projModalHint").textContent = t("projects.renameHint");
     $("projTypeField").style.display = "none";
+    $("projTemplateField").style.display = "none";
+    $("projModalOk").disabled = false;
     $("projNameInput").value = m ? m.name : "";
     $("projNameInput").classList.remove("nomatch");
     $("projNameInput").removeAttribute("aria-invalid");
@@ -647,12 +715,13 @@
       error.style.display = "flex";
       return;
     }
+    if (projMode === "new" && !$("projTemplateSelect").value) return;
     const ok = $("projModalOk");
     ok.disabled = true;
     ok.classList.add("loading");
     try {
       if (projMode === "new") {
-        const id = await createProject(name, $("projTypeSelect").value);
+        const id = await createProject(name, $("projTypeSelect").value, $("projTemplateSelect").value);
         await closeModal("projModal");
         await renderPicker();
         await openProject(id);
@@ -737,12 +806,15 @@
       const lastOwner = member.role === "owner" && ownerCount === 1;
       const row = document.createElement("div");
       row.className = "project-share-member";
-      const options = PROJECT_ROLES.map((role) =>
+      const options = rolesForMember(member.external).map((role) =>
         `<option value="${role}"${role === member.role ? " selected" : ""}>${esc(roleLabel(role))}</option>`
       ).join("");
       const lockedTitle = lastOwner ? ` title="${esc(t("api.PROJECT_LAST_OWNER"))}"` : "";
+      const externalTag = member.external
+        ? ` <span class="project-share-external" title="${esc(t("sharing.externalTitle"))}">${esc(t("sharing.external"))}</span>`
+        : "";
       row.innerHTML =
-        `<span class="project-share-member-id"><b>${esc(member.name || member.username)}${isSelf ? ` <span class="project-share-you">${esc(t("sharing.you"))}</span>` : ""}</b>` +
+        `<span class="project-share-member-id"><b>${esc(member.name || member.username)}${isSelf ? ` <span class="project-share-you">${esc(t("sharing.you"))}</span>` : ""}${externalTag}</b>` +
         `<span class="project-share-member-sub">@${esc(member.username)} · ${esc(member.email)}</span></span>` +
         `<select class="input project-share-role" aria-label="${esc(t("sharing.roleAria", { name: member.name || member.username }))}" aria-describedby="projectShareOwnerHint"${lastOwner || shareBusy ? " disabled" : ""}${lockedTitle}>${options}</select>` +
         `<button class="node-act danger project-share-remove" type="button" aria-label="${esc(t("sharing.removeAria", { name: member.username }))}" aria-describedby="projectShareOwnerHint" title="${esc(lastOwner ? t("api.PROJECT_LAST_OWNER") : t("sharing.removeAria", { name: member.username }))}"${lastOwner || shareBusy ? " disabled" : ""}>${ti("trash")}</button>`;
@@ -762,16 +834,33 @@
       button.type = "button";
       button.className = `project-share-result${shareSelectedUser && shareSelectedUser.userId === user.userId ? " selected" : ""}`;
       button.setAttribute("aria-pressed", shareSelectedUser && shareSelectedUser.userId === user.userId ? "true" : "false");
-      button.innerHTML = `<b>${esc(user.name || user.username)}</b><span>@${esc(user.username)} · ${esc(user.email)}</span>`;
+      const externalTag = user.external
+        ? `<span class="project-share-external" title="${esc(t("sharing.externalTitle"))}">${esc(t("sharing.external"))}</span>`
+        : "";
+      button.innerHTML = `<b>${esc(user.name || user.username)}${externalTag ? ` ${externalTag}` : ""}</b><span>@${esc(user.username)} · ${esc(user.email)}</span>`;
       button.addEventListener("click", () => {
         shareSelectedUser = user;
         $("projectShareSearchStatus").textContent = "";
         renderShareSearchResults();
+        syncShareRoleOptions();
         $("projectShareAdd").disabled = shareBusy;
       });
       host.appendChild(button);
     });
     $("projectShareAdd").disabled = shareBusy || !shareSelectedUser;
+  }
+
+  // Owner disappears from the invite menu while an external account is selected,
+  // and a role already set to owner falls back to editor so the form never submits
+  // a combination the server will refuse.
+  function syncShareRoleOptions() {
+    const select = $("projectShareRole");
+    const ownerOption = select.querySelector('option[value="owner"]');
+    if (!ownerOption) return;
+    const external = !!(shareSelectedUser && shareSelectedUser.external);
+    ownerOption.hidden = external;
+    ownerOption.disabled = external;
+    if (external && select.value === "owner") select.value = "editor";
   }
 
   function clearShareSearch() {
@@ -782,6 +871,7 @@
     $("projectShareSearch").value = "";
     $("projectShareSearchStatus").textContent = "";
     renderShareSearchResults();
+    syncShareRoleOptions();
   }
 
   async function searchShareUsers() {
@@ -815,6 +905,7 @@
   function scheduleShareSearch() {
     clearTimeout(shareSearchTimer);
     shareSelectedUser = null;
+    syncShareRoleOptions();
     $("projectShareAdd").disabled = true;
     shareSearchTimer = setTimeout(() => { void searchShareUsers(); }, 250);
   }
@@ -1008,12 +1099,13 @@
 
   /* ---------------- wiring ---------------- */
   function wire() {
-    $("pkNew").addEventListener("click", askNew);
-    const ne = $("pkNewEmpty"); if (ne) ne.addEventListener("click", askNew);
+    $("pkNew").addEventListener("click", () => { void askNew(); });
+    const ne = $("pkNewEmpty"); if (ne) ne.addEventListener("click", () => { void askNew(); });
     $("pkImport").addEventListener("click", () => $("projectImportInput").click());
     $("projectImportInput").addEventListener("change", function () {
       const file = this.files && this.files[0];
       this.value = "";
+      if (isExternalUser()) return;
       void handleProjectImport(file);
     });
 
@@ -1029,8 +1121,9 @@
       $("projNameInput").removeAttribute("aria-invalid");
       $("projModalError").style.display = "none";
     });
-    $("projTypeSelect").addEventListener("change", function () {
-      $("projModalHint").textContent = t(this.value === "lilypond" ? "projects.newLilypondHint" : "projects.newLatexHint");
+    $("projTypeSelect").addEventListener("change", syncProjectTypeFields);
+    $("projTemplateSelect").addEventListener("change", function () {
+      selectedTemplates[$("projTypeSelect").value] = this.value;
     });
     $("projNameInput").addEventListener("keydown", (e) => {
       if (e.key === "Enter") { e.preventDefault(); confirmProjModal(); }
@@ -1063,7 +1156,7 @@
       void renderPicker();
     }
     if ($("projModal").classList.contains("on")) {
-      if (projMode === "new") askNew();
+      if (projMode === "new") void askNew();
       else if (projTargetId) askRename(projTargetId);
     }
     if (delTargetId && $("projDelModal").classList.contains("on")) askDelete(delTargetId);

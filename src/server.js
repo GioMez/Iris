@@ -16,15 +16,27 @@ const { normalizeProjectPath, collectProjectFiles, reconcileProjectFiles } = req
 const { createProjectMutations } = require("./project-mutations");
 const { hashContent, isVersionableText, contentChanged } = require("./versions");
 const { CollabRooms, CollabError, peerColor, normalizePresence } = require("./collab");
-const { isSystemRole, isUserStatus, leavesNoActiveAdmin, normalizeSearch, userDeletionBlock } = require("./admin");
+const { isSystemRole, isUserStatus, isAccountStatus, leavesNoActiveAdmin, normalizeSearch, userDeletionBlock } = require("./admin");
 const {
   isProjectRole,
   roleHasCapability,
+  canCreateProjects,
+  canHoldProjectRole,
   leavesNoOwner,
   normalizeMemberSearch,
   escapeLikePattern,
 } = require("./project-access");
 const { projectStorageKey, resolveProjectStorageDir, relocateProjectStorage } = require("./project-storage");
+const {
+  initializeProjectTemplates,
+  discoverProjectTemplates,
+  listAdminProjectTemplates,
+  readProjectTemplate,
+  getAdminProjectTemplate,
+  createProjectTemplate,
+  updateProjectTemplate,
+  deleteProjectTemplate,
+} = require("./project-templates");
 const { createZip, extractZip } = require("./zip");
 const {
   buildStoragePath,
@@ -37,10 +49,26 @@ const {
   collectBuildArchiveEntries,
   resolveBuildFile,
 } = require("./builds");
+const { RateLimiter, ConcurrencyGate, GateRejectedError } = require("./throttle");
+const {
+  retentionCaps,
+  auditRetentionDays,
+  clampRetention,
+  normalizeRetentionInput,
+  retentionView,
+  cutoffDate,
+} = require("./retention");
 
 loadDotEnv(path.resolve(".env"));
 
 const PORT = Number(process.env.PORT || 3000);
+// Interface the HTTP server binds to. Empty means every interface, which is what
+// a container needs for its published port to reach it. Set it to one address —
+// a private or VPN interface — when Iris runs directly on a host whose other
+// interfaces must not answer. A binding restricts which networks can open a
+// connection; it does not authenticate the peer, so a proxy on another machine
+// still needs a firewall or an encrypted link in front of it.
+const BIND_ADDRESS = process.env.BIND_ADDRESS || "";
 const DB_HOST = process.env.DB_HOST || "127.0.0.1";
 const DB_PORT = Number(process.env.DB_PORT || 5432);
 const DB_USER = process.env.DB_USER || "iris";
@@ -49,6 +77,7 @@ const DB_NAME = process.env.DB_NAME || "iris";
 const DB_CONNECT_TIMEOUT = Number(process.env.DB_CONNECT_TIMEOUT_MS || 5000);
 const DATA_DIR = path.resolve(process.env.DATA_DIR || "./data");
 const PUBLIC_DIR = path.resolve(process.env.PUBLIC_DIR || "./public");
+const TEMPLATE_DIR = path.resolve(process.env.TEMPLATE_DIR || path.join(DATA_DIR, "templates"));
 const TEX_BIN_PATH = process.env.TEX_BIN_PATH || "";
 const TEX_PATH_LOCKED = String(process.env.TEX_PATH_LOCKED || "false") === "true";
 const LILYPOND_BIN_PATH = process.env.LILYPOND_BIN_PATH || "";
@@ -77,6 +106,45 @@ const PROJECT_DOWNLOAD_TIMEOUT_MS = positiveIntEnv("PROJECT_DOWNLOAD_TIMEOUT_MS"
 const ARGON2_MEMORY_COST = positiveIntEnv("ARGON2_MEMORY_COST", 65536);
 const ARGON2_TIME_COST = positiveIntEnv("ARGON2_TIME_COST", 3);
 const ARGON2_PARALLELISM = positiveIntEnv("ARGON2_PARALLELISM", 1);
+// Admission control. Every limit below bounds work the caller can make this
+// process do *before* it knows whether the caller is entitled to it, which is
+// the only category of work an unauthenticated attacker can aim at scale.
+//
+// Password verification is the sharpest edge: Argon2 is configured to spend
+// ARGON2_MEMORY_COST kibibytes per attempt and spends them whether or not the
+// password turns out to be right, so an unthrottled login endpoint converts one
+// HTTP request into 64 MB of resident memory on demand. Hence both a rate limit
+// and a hard ceiling on simultaneous verifications: the rate limit makes the
+// attack slow, the ceiling makes it survivable even when it is distributed
+// widely enough that no single source ever trips the rate limit.
+const AUTH_RATE_LIMIT = positiveIntEnv("AUTH_RATE_LIMIT", 10);
+const AUTH_RATE_WINDOW_MS = positiveIntEnv("AUTH_RATE_WINDOW_MS", 60000);
+// A wrong password costs several times a right one, so a credential-stuffing
+// run exhausts its allowance far sooner than a person who mistyped once.
+const AUTH_FAILURE_PENALTY = positiveIntEnv("AUTH_FAILURE_PENALTY", 4);
+// Per account, independently of where the attempts come from: distributing an
+// attack across a botnet defeats a per-address limit but not this one.
+const AUTH_ACCOUNT_RATE_LIMIT = positiveIntEnv("AUTH_ACCOUNT_RATE_LIMIT", 12);
+const AUTH_ACCOUNT_RATE_WINDOW_MS = positiveIntEnv("AUTH_ACCOUNT_RATE_WINDOW_MS", 900000);
+const PASSWORD_HASH_CONCURRENCY = positiveIntEnv("PASSWORD_HASH_CONCURRENCY", 2);
+const PASSWORD_HASH_QUEUE = positiveIntEnv("PASSWORD_HASH_QUEUE", 24);
+// Compilation spawns real compiler processes. The gate is what stops N members
+// pressing Compile from becoming N simultaneous TeX runs; the queue is short
+// because a compilation the user is waiting on is worth queueing briefly and
+// not worth queueing for a minute.
+const COMPILE_CONCURRENCY = positiveIntEnv("COMPILE_CONCURRENCY", 2);
+const COMPILE_QUEUE = positiveIntEnv("COMPILE_QUEUE", 8);
+const COMPILE_RATE_LIMIT = positiveIntEnv("COMPILE_RATE_LIMIT", 30);
+const COMPILE_RATE_WINDOW_MS = positiveIntEnv("COMPILE_RATE_WINDOW_MS", 300000);
+// A general ceiling on authenticated API traffic per session. Generous enough
+// that the editor never approaches it, low enough that a runaway client or a
+// stolen cookie cannot be used to hammer the database.
+const API_RATE_LIMIT = positiveIntEnv("API_RATE_LIMIT", 600);
+const API_RATE_WINDOW_MS = positiveIntEnv("API_RATE_WINDOW_MS", 60000);
+// How many realtime rooms one connection may hold open. Each room keeps the
+// whole document in memory, so this bounds what a single socket can pin.
+const COLLAB_MAX_ROOMS_PER_SESSION = positiveIntEnv("COLLAB_MAX_ROOMS_PER_SESSION", 50);
+const COLLAB_MAX_SESSIONS_PER_USER = positiveIntEnv("COLLAB_MAX_SESSIONS_PER_USER", 12);
 const APP_BASE_URL = String(process.env.APP_BASE_URL || "").replace(/\/+$/, "");
 const OAUTH_ISSUER_URL = String(process.env.OAUTH_ISSUER_URL || "").replace(/\/+$/, "");
 const OAUTH_AUTHORIZATION_URL = process.env.OAUTH_AUTHORIZATION_URL || "";
@@ -88,6 +156,14 @@ const OAUTH_REDIRECT_URI = process.env.OAUTH_REDIRECT_URI || "";
 const OAUTH_SCOPE = process.env.OAUTH_SCOPE || "openid email profile";
 const OAUTH_CLIENT_AUTH_METHOD = process.env.OAUTH_CLIENT_AUTH_METHOD || "client_secret_basic";
 const OAUTH_AUTO_REGISTER = String(process.env.OAUTH_AUTO_REGISTER || "false") === "true";
+// What an unknown SSO identity becomes when auto-registration is on. Both
+// settings exist for an instance that is reachable from outside: the role decides
+// how much an approved newcomer may do, and the approval requirement decides
+// whether signing in successfully is enough to get in at all. Approval defaults to
+// on, so an account provisioned by the identity provider waits for an
+// administrator instead of walking straight into the workspace.
+const OAUTH_DEFAULT_ROLE = autoRegisteredRole("OAUTH_DEFAULT_ROLE", process.env.OAUTH_DEFAULT_ROLE);
+const OAUTH_APPROVAL_REQUIRED = String(process.env.OAUTH_APPROVAL_REQUIRED || "true") === "true";
 const LATEX_ENGINES = new Set(["pdflatex", "xelatex", "lualatex", "xetex"]);
 const LATEX_COMPILE_TOOLS = new Set(["pdflatex", "xelatex", "lualatex", "xetex", "bibtex", "biber", "makeindex"]);
 const LILYPOND_COMPILE_TOOLS = new Set(["lilypond"]);
@@ -119,6 +195,28 @@ let inFlight = 0;
 let inFlightMutations = 0;
 const activeBuilds = new Set();
 
+// The admission controls declared above, instantiated. They are module state
+// rather than per-request objects because a limiter that forgets between
+// requests is not a limiter.
+const authIpLimiter = new RateLimiter({ limit: AUTH_RATE_LIMIT, windowMs: AUTH_RATE_WINDOW_MS });
+const authAccountLimiter = new RateLimiter({ limit: AUTH_ACCOUNT_RATE_LIMIT, windowMs: AUTH_ACCOUNT_RATE_WINDOW_MS });
+const apiLimiter = new RateLimiter({ limit: API_RATE_LIMIT, windowMs: API_RATE_WINDOW_MS });
+const compileLimiter = new RateLimiter({ limit: COMPILE_RATE_LIMIT, windowMs: COMPILE_RATE_WINDOW_MS });
+const passwordHashGate = new ConcurrencyGate({ limit: PASSWORD_HASH_CONCURRENCY, queueLimit: PASSWORD_HASH_QUEUE });
+const compileGate = new ConcurrencyGate({ limit: COMPILE_CONCURRENCY, queueLimit: COMPILE_QUEUE });
+
+// Retention thresholds an owner may choose between, and the instance ceiling
+// they cannot pass. Read once: changing them is an operator action that takes
+// effect on restart, like every other environment setting here.
+const RETENTION_CAPS = retentionCaps(process.env);
+const AUDIT_RETENTION_DAYS = auditRetentionDays(process.env);
+const RETENTION_ENABLED = String(process.env.RETENTION_ENABLED || "true") === "true";
+const RETENTION_SWEEP_MS = positiveIntEnv("RETENTION_SWEEP_MS", 3600000);
+// How long a directory abandoned by a crashed process is left alone before the
+// sweep removes it. Long enough that it can never race a compilation that is
+// merely slow, short enough that a crash does not cost a day of disk.
+const RETENTION_ORPHAN_GRACE_MS = positiveIntEnv("RETENTION_ORPHAN_GRACE_MS", 6 * 60 * 60 * 1000);
+
 // Cheap, synchronous check on the mutation path, which is far rarer than reads.
 function maintenanceActive() {
   return fsSync.existsSync(MAINTENANCE_FILE);
@@ -130,6 +228,8 @@ const MIME = {
   ".js": "application/javascript; charset=utf-8",
   ".mjs": "application/javascript; charset=utf-8",
   ".json": "application/json; charset=utf-8",
+  ".tex": "text/plain; charset=utf-8",
+  ".ly": "text/plain; charset=utf-8",
   ".svg": "image/svg+xml",
   ".png": "image/png",
   ".jpg": "image/jpeg",
@@ -153,6 +253,18 @@ function requiredSecret(name, value, insecureValues = []) {
   return secret;
 }
 
+// The server role auto-provisioning is allowed to assign. Admin is deliberately
+// absent — an identity provider must never be able to mint one — and an
+// unrecognised value stops the server instead of falling back: a typo would
+// otherwise grant more access than the operator asked for, silently.
+function autoRegisteredRole(name, value) {
+  const role = String(value || "regular").trim().toLowerCase();
+  if (role !== "regular" && role !== "external") {
+    throw new Error(`${name} must be either "regular" or "external"`);
+  }
+  return role;
+}
+
 function json(res, status, data, headers = {}) {
   const body = JSON.stringify(data);
   res.writeHead(status, {
@@ -163,16 +275,34 @@ function json(res, status, data, headers = {}) {
   res.end(body);
 }
 
-function requestError(errorCode, status, params = {}) {
+function requestError(errorCode, status, params = {}, headers = {}) {
   const err = new Error(errorCode);
   err.errorCode = errorCode;
   err.status = status;
   err.params = params;
+  err.headers = headers;
   return err;
 }
 
-function errorJson(res, status, errorCode, params = {}) {
-  return json(res, status, { errorCode, ...(Object.keys(params).length ? { params } : {}) });
+// A refusal that tells the client when to come back. Retry-After is in seconds
+// and is rounded up, never to zero: a client told to wait no time at all would
+// retry immediately and be refused again, which is a busy loop rather than a
+// backoff. The wait is also reported in the params so the interface can say it
+// in words instead of leaving the user to guess.
+function rateLimitError(errorCode, retryAfterMs) {
+  const seconds = Math.max(1, Math.ceil(retryAfterMs / 1000));
+  return requestError(errorCode, 429, { retryAfter: seconds }, { "retry-after": String(seconds) });
+}
+
+// Charges a limiter and refuses the request when the caller cannot afford it.
+function enforceRateLimit(limiter, key, errorCode, now = Date.now()) {
+  const decision = limiter.consume(key, now);
+  if (!decision.allowed) throw rateLimitError(errorCode, decision.retryAfterMs);
+  return decision;
+}
+
+function errorJson(res, status, errorCode, params = {}, headers = {}) {
+  return json(res, status, { errorCode, ...(Object.keys(params).length ? { params } : {}) }, headers);
 }
 
 function text(res, status, body, headers = {}) {
@@ -279,22 +409,47 @@ const ARGON2_OPTIONS = {
   parallelism: ARGON2_PARALLELISM,
 };
 
+// Every Argon2 call in the process funnels through the gate, so the ceiling
+// holds no matter which endpoint reached it — login, password change, admin
+// reset or seeding. ARGON2_MEMORY_COST kibibytes are resident for the duration
+// of each one, so `PASSWORD_HASH_CONCURRENCY × ARGON2_MEMORY_COST` is the true
+// worst-case memory this process will spend on password work, and it is a number
+// the operator can compute in advance.
+async function withPasswordHashSlot(work) {
+  let release;
+  try {
+    release = await passwordHashGate.acquire();
+  } catch (err) {
+    if (err instanceof GateRejectedError) throw requestError("AUTH_BUSY", 503);
+    throw err;
+  }
+  try {
+    return await work();
+  } finally {
+    release();
+  }
+}
+
 async function hashPassword(password) {
-  return argon2.hash(password, ARGON2_OPTIONS);
+  return withPasswordHashSlot(() => argon2.hash(password, ARGON2_OPTIONS));
 }
 
 async function verifyPassword(password, stored) {
   const hash = String(stored || "");
+  // Checked before the slot is taken: a malformed stored hash costs nothing and
+  // must not be able to occupy a verification slot.
   if (!hash.startsWith("$argon2")) return { valid: false, needsRehash: false };
-  try {
-    const valid = await argon2.verify(hash, password);
-    return {
-      valid,
-      needsRehash: valid && argon2.needsRehash(hash, ARGON2_OPTIONS),
-    };
-  } catch {
-    return { valid: false, needsRehash: false };
-  }
+  return withPasswordHashSlot(async () => {
+    try {
+      const valid = await argon2.verify(hash, password);
+      return {
+        valid,
+        needsRehash: valid && argon2.needsRehash(hash, ARGON2_OPTIONS),
+      };
+    } catch {
+      return { valid: false, needsRehash: false };
+    }
+  });
 }
 
 function oauthEnabled() {
@@ -445,6 +600,27 @@ function disabledAccountError() {
   return err;
 }
 
+// An account that was provisioned by the identity provider and is still waiting
+// for an administrator. Told apart from a disabled one because they mean opposite
+// things to the person reading the message: one has never had access, the other
+// had it taken away.
+function pendingAccountError() {
+  const err = new Error("Account pending approval");
+  err.status = 403;
+  err.errorCode = "AUTH_ACCOUNT_PENDING";
+  // The SSO callback can only carry a short code back to the login screen, and
+  // this is the one refusal where the generic "sign-in failed" would send the
+  // person to support instead of to whoever has to approve them.
+  err.authError = "account_pending";
+  return err;
+}
+
+// Every access check admits 'active' and refuses the rest; this only decides which
+// refusal the account deserves.
+function inactiveAccountError(status) {
+  return status === "pending" ? pendingAccountError() : disabledAccountError();
+}
+
 // An SSO login whose durable identity is unknown but whose email matches an
 // existing account: refused until an admin opens the one-time linking window.
 function ssoLinkRequiredError() {
@@ -469,7 +645,7 @@ async function userFromOAuthProfile(profile, ip = null) {
   const existing = byOidc.rows[0] || null;
 
   if (existing) {
-    if (existing.status !== "active") throw disabledAccountError();
+    if (existing.status !== "active") throw inactiveAccountError(existing.status);
     const nextName = profile.name || existing.display_name;
     if (nextName && nextName !== existing.display_name) {
       await db.query("UPDATE users SET display_name = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2", [nextName, existing.id]);
@@ -487,7 +663,7 @@ async function userFromOAuthProfile(profile, ip = null) {
   );
   const emailMatch = byEmail.rows[0] || null;
   if (emailMatch) {
-    if (emailMatch.status !== "active") throw disabledAccountError();
+    if (emailMatch.status !== "active") throw inactiveAccountError(emailMatch.status);
     // Email already bound to a different SSO identity → refuse (email reuse).
     if (emailMatch.oidc_issuer && emailMatch.oidc_subject) {
       throw new Error("This email is already linked to a different SSO identity");
@@ -523,23 +699,21 @@ async function userFromOAuthProfile(profile, ip = null) {
 
   const username = await availableUsername(profile.preferredUsername || profile.email);
   const displayName = profile.name || profile.email;
+  // An identity the provider vouches for is still not an account this server has
+  // accepted. Unless approval is switched off the row is created pending, and the
+  // very sign-in that created it is refused like any other inactive account: the
+  // account exists so an administrator can decide on it, not so it can be used.
+  const status = OAUTH_APPROVAL_REQUIRED ? "pending" : "active";
+  let id;
+  let created;
   try {
     const result = await db.query(
-      `INSERT INTO users (id, username, email, display_name, system_role, password_hash, auth_source, oidc_issuer, oidc_subject)
-       VALUES ($1, $2, $3, $4, 'regular', NULL, 'oidc', $5, $6) RETURNING ${OAUTH_USER_COLUMNS}`,
-      [uuidv7(), username, profile.email, displayName, issuer, subject]
+      `INSERT INTO users (id, username, email, display_name, system_role, status, password_hash, auth_source, oidc_issuer, oidc_subject)
+       VALUES ($1, $2, $3, $4, $5, $6, NULL, 'oidc', $7, $8) RETURNING ${OAUTH_USER_COLUMNS}`,
+      [uuidv7(), username, profile.email, displayName, OAUTH_DEFAULT_ROLE, status, issuer, subject]
     );
-    const id = String(result.rows[0].id);
-    await audit({
-      action: "user.created",
-      actorId: id,
-      actorLabel: username,
-      ip,
-      targetType: "user",
-      targetId: id,
-      metadata: { authSource: "oidc", autoRegistered: true, email: profile.email },
-    });
-    return result.rows[0];
+    created = result.rows[0];
+    id = String(created.id);
   } catch (err) {
     if (err.code !== "23505") throw err;
     const retry = await db.query(
@@ -547,11 +721,22 @@ async function userFromOAuthProfile(profile, ip = null) {
       [profile.email]
     );
     if (retry.rows[0]) {
-      if (retry.rows[0].status !== "active") throw disabledAccountError();
+      if (retry.rows[0].status !== "active") throw inactiveAccountError(retry.rows[0].status);
       return retry.rows[0];
     }
     throw err;
   }
+  await audit({
+    action: "user.created",
+    actorId: id,
+    actorLabel: username,
+    ip,
+    targetType: "user",
+    targetId: id,
+    metadata: { authSource: "oidc", autoRegistered: true, email: profile.email, role: OAUTH_DEFAULT_ROLE, status },
+  });
+  if (status !== "active") throw pendingAccountError();
+  return created;
 }
 
 async function initDb() {
@@ -564,6 +749,7 @@ async function initDb() {
     connectTimeout: DB_CONNECT_TIMEOUT,
   });
   await fs.mkdir(DATA_DIR, { recursive: true });
+  await initializeProjectTemplates(TEMPLATE_DIR, path.join(PUBLIC_DIR, "templates"));
   // Migration 002 rewrote the recorded storage locations: the directories they
   // now name must hold the project data before the first request is served.
   await relocateProjectStorage({ db, dataDir: DATA_DIR });
@@ -741,12 +927,22 @@ function validateProjectSourceTree(data) {
   walk(data && data.project && data.project.nodes);
 }
 
+// The header of a data URL is everything before the first comma, and the media
+// type inside it may carry parameters: `data:text/plain; charset=utf-8;base64,`
+// is what a browser produces for a text file. Splitting on the first `;` instead
+// misses the encoding, and the caller then writes the URL itself as the file's
+// bytes, which is how an uploaded .bib turned into one long base64 line.
 function dataUrlToBuffer(value) {
   const textValue = String(value || "");
-  const match = textValue.match(/^data:([^;,]+)?(;base64)?,(.*)$/s);
+  const match = textValue.match(/^data:([^,]*),([\s\S]*)$/);
   if (!match) return Buffer.from(textValue, "utf8");
-  const payload = match[3] || "";
-  return match[2] ? Buffer.from(payload, "base64") : Buffer.from(decodeURIComponent(payload), "utf8");
+  const payload = match[2] || "";
+  if (/;\s*base64\s*$/i.test(match[1])) return Buffer.from(payload, "base64");
+  try {
+    return Buffer.from(decodeURIComponent(payload), "utf8");
+  } catch {
+    return Buffer.from(payload, "utf8");
+  }
 }
 
 function dataUrlMime(value) {
@@ -756,7 +952,7 @@ function dataUrlMime(value) {
 
 function mimeForProjectFile(filePath) {
   const ext = path.extname(filePath).toLowerCase();
-  if ([".tex", ".ly", ".ily", ".bib", ".txt", ".sty", ".cls", ".md", ".log", ".aux", ".bbl", ".blg", ".idx", ".ilg", ".ind", ".out", ".toc", ".bcf", ".fls", ".fdb_latexmk"].includes(ext)) return "text/plain; charset=utf-8";
+  if ([".tex", ".ly", ".ily", ".bib", ".bst", ".bbx", ".cbx", ".lbx", ".txt", ".sty", ".cls", ".md", ".log", ".aux", ".bbl", ".blg", ".idx", ".ilg", ".ind", ".out", ".toc", ".bcf", ".fls", ".fdb_latexmk"].includes(ext)) return "text/plain; charset=utf-8";
   if (ext === ".xml") return "application/xml; charset=utf-8";
   if (ext === ".png") return "image/png";
   if (ext === ".jpg" || ext === ".jpeg") return "image/jpeg";
@@ -773,8 +969,15 @@ function mimeForProjectFile(filePath) {
   return "application/octet-stream";
 }
 
+// Whether a node carries its bytes as a data URL rather than as text. The
+// extension decides first: a text source stays text even when the node claims
+// otherwise, so a .bib attached through the upload dialog — which used to flag
+// every file it read as base64 — is stored, edited and versioned as text.
 function fileIsBinaryNode(node) {
-  return node.encoding === "base64" || node.binary === true || node.kind === "img" || node.data || /\.(png|jpe?g|gif|webp|svg|pdf)$/i.test(node.name || node.path || "");
+  const filePath = node.path || node.name || "";
+  if (/\.(png|jpe?g|gif|webp|svg|pdf)$/i.test(filePath)) return true;
+  if (fileIsTextPath(filePath)) return false;
+  return node.encoding === "base64" || node.binary === true || node.kind === "img" || node.data != null;
 }
 
 function fileIsFontPath(filePath) {
@@ -834,8 +1037,11 @@ function fileKindForPath(filePath) {
   return "file";
 }
 
+// Bibliography styles (bst for BibTeX, bbx/cbx/lbx for biblatex) are plain text
+// like any other source: a project that carries its own style keeps it editable
+// and versioned instead of stored as an opaque payload.
 function fileIsTextPath(filePath) {
-  return /\.(tex|ly|ily|bib|txt|sty|cls|md|csv|dat|scm|lua|json|ya?ml|log|aux|bbl|blg|idx|ilg|ind|out|toc|xml|bcf|fls|fdb_latexmk)$/i.test(filePath || "");
+  return /\.(tex|ly|ily|bib|bst|bbx|cbx|lbx|txt|sty|cls|md|csv|dat|scm|lua|json|ya?ml|log|aux|bbl|blg|idx|ilg|ind|out|toc|xml|bcf|fls|fdb_latexmk)$/i.test(filePath || "");
 }
 
 function generatedIdFor(relPath) {
@@ -864,10 +1070,14 @@ function stripFilePayloads(data) {
     nodes.forEach((node) => {
       if (node.type === "folder") strip(node.children);
       else {
-        if (node.data != null) {
+        // The manifest records how the bytes live on disk, so it is derived from
+        // the file itself: a stale flag on an incoming node cannot keep a text
+        // source in the data URL round-trip it never belonged in.
+        if (fileIsBinaryNode(node)) {
           node.binary = true;
           node.encoding = "base64";
-        } else if (node.content != null) {
+        } else {
+          delete node.binary;
           node.encoding = "utf8";
         }
         delete node.content;
@@ -921,21 +1131,61 @@ async function writeProjectNodes(storagePath, data) {
       if (fileIsBinaryNode(node)) {
         const dataUrl = node.data || assets[rel] || assets[node.path];
         if (dataUrl != null) await fs.writeFile(abs, dataUrlToBuffer(dataUrl));
-      } else if (node.content == null) {
+      } else if (node.content != null) {
+        await fs.writeFile(abs, String(node.content), "utf8");
+      } else {
         // A source node without content means the client is not writing this
         // file: it never edited it in this session. The bytes on disk stay, so a
         // save can no longer overwrite a collaborator's newer text with the copy
         // this client happened to load. A file that does not exist yet is still
-        // created, so the tree on disk always matches the manifest.
+        // created from its decoded upload payload when one was supplied.
         const stat = await fs.stat(abs).catch((err) => { if (err.code !== "ENOENT") throw err; return null; });
-        if (!stat) await fs.writeFile(abs, "", "utf8");
-      } else {
-        await fs.writeFile(abs, String(node.content), "utf8");
+        if (!stat) {
+          const dataUrl = node.data || assets[rel] || assets[node.path];
+          await fs.writeFile(abs, dataUrl == null ? "" : dataUrlToBuffer(dataUrl));
+        }
       }
     }
   };
   if (data.project) await walk(data.project.nodes);
   return expectedFiles;
+}
+
+// Fills in the payloads the client left out. A save omits the content of every
+// file it did not edit so it cannot overwrite a collaborator's newer text, and
+// the project directory answers for those files. Materializing that same
+// snapshot into an empty directory — which is what a build staging tree is —
+// would instead create them empty, so the bytes on disk are read back in first.
+async function hydrateProjectPayloads(storagePath, data) {
+  const assets = data.assets || {};
+  const walk = async (nodes, parentPath = "") => {
+    if (!Array.isArray(nodes)) return;
+    for (const node of nodes) {
+      if (!node || node.generated) continue;
+      if (node.type === "folder") {
+        await walk(node.children, safeProjectSourcePath(path.posix.join(parentPath, node.name || "")));
+        continue;
+      }
+      const rel = nodeRelPath(node, node.name, parentPath);
+      if (fileIsBinaryNode(node)) {
+        if (node.data != null || assets[rel] != null || assets[node.path] != null) continue;
+        const buffer = await fs.readFile(path.join(storagePath, rel)).catch(() => null);
+        if (buffer) node.data = `data:${mimeForProjectFile(rel)};base64,${buffer.toString("base64")}`;
+      } else if (node.content == null) {
+        const content = await fs.readFile(path.join(storagePath, rel), "utf8").catch(() => null);
+        if (content != null) node.content = content;
+      }
+    }
+  };
+  if (data.project) await walk(data.project.nodes);
+  for (const font of Array.isArray(data.fonts) ? data.fonts : []) {
+    if (!font || !font.path || font.data != null) continue;
+    let rel;
+    try { rel = safeRelPath(font.path); } catch { continue; }
+    const buffer = await fs.readFile(path.join(storagePath, rel)).catch(() => null);
+    if (buffer) font.data = `data:${mimeForProjectFile(rel)};base64,${buffer.toString("base64")}`;
+  }
+  return data;
 }
 
 async function writeProjectFonts(storagePath, data, expectedFiles) {
@@ -1070,6 +1320,10 @@ async function syncNodesWithFilesystem(storagePath, data, strictRead = false) {
           path: hydrated.path,
           content: hydrated.content,
           data: hydrated.data,
+          // The flags describe how the bytes on disk were just read, so they
+          // come from the file rather than from what the client believed.
+          encoding: hydrated.encoding,
+          binary: hydrated.binary,
         });
       }
     }
@@ -1272,6 +1526,23 @@ function withStorageDir(row) {
   return { ...row, storageDir: resolveProjectStorageDir(DATA_DIR, row.storage_path) };
 }
 
+// The retention columns as the policy module expects them. A null column means
+// "follow the instance default", and clamping happens on every read rather than
+// on write, so lowering the operator's ceiling takes effect immediately on
+// projects that had been allowed a higher value under the previous one.
+function projectRetentionSettings(row) {
+  return {
+    buildKeep: row.build_keep,
+    buildDays: row.build_days,
+    versionKeep: row.version_keep,
+    versionDays: row.version_days,
+  };
+}
+
+function projectRetention(row) {
+  return clampRetention(projectRetentionSettings(row), RETENTION_CAPS);
+}
+
 // The single authorization chokepoint for a project. Membership is the authority:
 // a non-member cannot tell the project apart from one that does not exist (404),
 // while a member who lacks the capability for this action is told plainly (403).
@@ -1280,7 +1551,8 @@ function withStorageDir(row) {
 // every request, exactly like the per-request account check in requireUser.
 async function authorizeProject(id, user, capability, queryable = db) {
   const { rows } = await queryable.query(
-    `SELECT p.id, p.name, p.storage_path, p.created_at, p.updated_at, p.revision, m.role
+    `SELECT p.id, p.name, p.storage_path, p.created_at, p.updated_at, p.revision,
+            p.build_keep, p.build_days, p.version_keep, p.version_days, m.role
      FROM projects p JOIN project_members m ON m.project_id = p.id
      WHERE p.id = $1 AND m.user_id = $2`,
     [id, user.sub]
@@ -1324,6 +1596,25 @@ async function listProjects(req, res, user) {
   json(res, 200, { projects: projects.filter(Boolean) });
 }
 
+async function listProjectTemplates(req, res) {
+  json(res, 200, { templates: await discoverProjectTemplates(TEMPLATE_DIR) }, { "cache-control": "private, no-store" });
+}
+
+async function getProjectTemplate(req, res, type, encodedFileName) {
+  let fileName;
+  try {
+    fileName = decodeURIComponent(encodedFileName);
+  } catch {
+    throw requestError("PROJECT_TEMPLATE_NOT_FOUND", 404);
+  }
+  const content = await readProjectTemplate(TEMPLATE_DIR, type, fileName);
+  text(res, 200, content, {
+    "cache-control": "private, no-store",
+    "content-security-policy": "default-src 'none'",
+    "x-content-type-options": "nosniff",
+  });
+}
+
 // Serializes owner-invariant changes per project, so concurrent role changes on
 // the same project cannot race past the last-owner check.
 const PROJECT_OWNER_LOCK = 4952;
@@ -1339,11 +1630,19 @@ async function resolveMemberUser(identifier, userId = null, activeOnly = false) 
     ? `id = $1${activeOnly ? " AND status = 'active'" : ""}`
     : `(LOWER(username) = LOWER($1) OR LOWER(email) = LOWER($1))${activeOnly ? " AND status = 'active'" : ""}`;
   const { rows } = await db.query(
-    `SELECT id, username, email, display_name FROM users WHERE ${where} LIMIT 1`,
+    `SELECT id, username, email, display_name, system_role FROM users WHERE ${where} LIMIT 1`,
     [userId || value]
   );
   if (!rows.length) throw requestError("MEMBER_USER_NOT_FOUND", 404);
   return rows[0];
+}
+
+// Ownership answers for a project's existence, so it stays with the organisation:
+// an external account may be given any project role but that one. Enforced on
+// every path that grants a role — the sharing console and the admin console
+// alike, because a rule an administrator can step around is not an invariant.
+function requireGrantableRole(systemRole, projectRole) {
+  if (!canHoldProjectRole(systemRole, projectRole)) throw requestError("MEMBER_EXTERNAL_NOT_OWNER", 409);
 }
 
 async function searchProjectMembers(req, res, user, projectId, url) {
@@ -1352,7 +1651,7 @@ async function searchProjectMembers(req, res, user, projectId, url) {
   if (!query) return json(res, 200, { users: [] });
   const pattern = `%${escapeLikePattern(query.toLowerCase())}%`;
   const { rows } = await db.query(
-    `SELECT u.id AS user_id, u.username, u.email, u.display_name
+    `SELECT u.id AS user_id, u.username, u.email, u.display_name, u.system_role
      FROM users u
      WHERE u.status = 'active'
        AND (LOWER(u.username) LIKE $2 ESCAPE '\\' OR LOWER(u.email) LIKE $2 ESCAPE '\\')
@@ -1369,10 +1668,14 @@ async function searchProjectMembers(req, res, user, projectId, url) {
       username: row.username,
       name: row.display_name,
       email: row.email,
+      external: row.system_role === "external",
     })),
   });
 }
 
+// `external` travels with every member so the console can label them and leave
+// owner out of their role menu. It is a hint for the interface — the server
+// refuses the promotion regardless of what the client offers.
 function memberView(row) {
   return {
     userId: row.user_id,
@@ -1380,6 +1683,7 @@ function memberView(row) {
     name: row.display_name,
     email: row.email,
     role: row.role,
+    external: row.system_role === "external",
     invitedBy: row.invited_by || null,
     createdAt: toMillis(row.created_at),
   };
@@ -1388,7 +1692,7 @@ function memberView(row) {
 async function listProjectMembers(req, res, user, projectId) {
   await authorizeProject(projectId, user, "share");
   const { rows } = await db.query(
-    `SELECT m.user_id, m.role, m.invited_by, m.created_at, u.username, u.email, u.display_name
+    `SELECT m.user_id, m.role, m.invited_by, m.created_at, u.username, u.email, u.display_name, u.system_role
      FROM project_members m JOIN users u ON u.id = m.user_id
      WHERE m.project_id = $1 ORDER BY (m.role <> 'owner'), u.username`,
     [projectId]
@@ -1402,6 +1706,7 @@ async function addProjectMember(req, res, user, projectId) {
   const role = String((body && body.role) || "");
   if (!isProjectRole(role)) throw requestError("MEMBER_ROLE_INVALID", 400);
   const target = await resolveMemberUser(body && body.identifier, body && body.userId, true);
+  requireGrantableRole(target.system_role, role);
   try {
     await db.query(
       "INSERT INTO project_members (project_id, user_id, role, invited_by) VALUES ($1, $2, $3, $4)",
@@ -1420,7 +1725,7 @@ async function addProjectMember(req, res, user, projectId) {
   });
   await collabRecheckProject(projectId);
   json(res, 201, {
-    member: memberView({ user_id: target.id, username: target.username, email: target.email, display_name: target.display_name, role, invited_by: user.sub, created_at: new Date() }),
+    member: memberView({ user_id: target.id, username: target.username, email: target.email, display_name: target.display_name, system_role: target.system_role, role, invited_by: user.sub, created_at: new Date() }),
   });
 }
 
@@ -1434,11 +1739,16 @@ async function updateProjectMember(req, res, user, projectId, memberId) {
   try {
     await client.query("BEGIN");
     await client.query("SELECT pg_advisory_xact_lock($1, hashtext($2))", [PROJECT_OWNER_LOCK, projectId]);
+    // Only the membership row is locked: the join reads the member's server role,
+    // which decides whether the new project role may be granted at all.
     const current = await client.query(
-      "SELECT role FROM project_members WHERE project_id = $1 AND user_id = $2 FOR UPDATE",
+      `SELECT m.role, u.system_role
+       FROM project_members m JOIN users u ON u.id = m.user_id
+       WHERE m.project_id = $1 AND m.user_id = $2 FOR UPDATE OF m`,
       [projectId, memberId]
     );
     if (!current.rows.length) throw requestError("MEMBER_NOT_FOUND", 404);
+    requireGrantableRole(current.rows[0].system_role, nextRole);
     previousRole = current.rows[0].role;
     const others = await client.query(
       "SELECT COUNT(*) AS n FROM project_members WHERE project_id = $1 AND role = 'owner' AND user_id <> $2",
@@ -1519,7 +1829,14 @@ async function getProject(req, res, user, id) {
     data.project.name = row.name;
     data.createdAt = toMillis(row.created_at);
     data.updatedAt = toMillis(row.updated_at);
-    json(res, 200, { id: row.id, ...data, revision: row.revision, role: row.role });
+    // Every reader sees the retention policy and the server's setting bounds.
+    json(res, 200, {
+      id: row.id,
+      ...data,
+      revision: row.revision,
+      role: row.role,
+      retention: retentionView(projectRetentionSettings(row), RETENTION_CAPS),
+    });
   });
 }
 
@@ -1593,6 +1910,7 @@ async function saveProjectTree(id, row, body, data, client, protect, { manifestO
   data.projectType = inferProjectType(data);
   data.lilypondArgs = data.projectType === "lilypond" ? sanitizeLilypondArgsForStorage(data.lilypondArgs) : "";
   data.lilypondFormat = data.projectType === "lilypond" ? normalizeLilypondFormat(data.lilypondFormat) : "pdf";
+  data.mainPath = sanitizeMainPathForStorage(data.mainPath);
   if (body.compileProfile && typeof body.compileProfile === "object") data.compileProfile = sanitizeCompileProfileForStorage(body.compileProfile, data.projectType);
   data.createdAt = toMillis(row.created_at);
   data.updatedAt = Date.now();
@@ -1638,7 +1956,8 @@ async function insertVersion({ fileId, parentId, user, reason, content }, querya
 
 // Destructive snapshots run under the project gate: use accepted room text and
 // fail on unreadable disk fallbacks. Ordinary checkpoints can target build staging.
-// Unversionable content has no revision and is represented by null.
+// Unversionable content has no revision and is represented by null. Each file may
+// name its own author so a grouped realtime checkpoint preserves attribution.
 async function snapshotFileIfChanged({ storageDir, file, user, reason, authoritative = false, strictRead = false }, queryable = db) {
   const room = authoritative && collabRooms.get(file.id);
   const buffer = room ? Buffer.from(room.text(), "utf8") : await fs.readFile(path.join(storageDir, file.path)).catch((err) => {
@@ -1654,7 +1973,7 @@ async function snapshotFileIfChanged({ storageDir, file, user, reason, authorita
     return { id: previous.id, created: false };
   }
   const id = await insertVersion(
-    { fileId: file.id, parentId: previous ? previous.id : null, user, reason, content },
+    { fileId: file.id, parentId: previous ? previous.id : null, user: file.author || user, reason, content },
     queryable
   );
   return { id, created: true };
@@ -1848,6 +2167,27 @@ const COLLAB_HEARTBEAT_MS = positiveIntEnv("COLLAB_HEARTBEAT_MS", 30000);
 const COLLAB_PUSH_DEBOUNCE_MS = positiveIntEnv("COLLAB_PUSH_DEBOUNCE_MS", 300);
 // Cursor and selection moves are ephemeral, so they are paced separately.
 const COLLAB_PRESENCE_DEBOUNCE_MS = positiveIntEnv("COLLAB_PRESENCE_DEBOUNCE_MS", 200);
+// Server-side coalescing, which is what makes a crowded room affordable.
+//
+// Broadcasting the participant list on receipt of each presence report is
+// quadratic: every one of n participants sends a report, and each report is
+// answered with a message to each of the other n-1. At fifteen or twenty people
+// that is thousands of sends per second, and it is the ceiling this process hits
+// first — well before PostgreSQL notices anything. Answering on a tick instead
+// makes it linear per tick, and at this interval no one can perceive the
+// difference: the client already debounces its own reports by a comparable
+// amount before sending them.
+const COLLAB_PEERS_TICK_MS = positiveIntEnv("COLLAB_PEERS_TICK_MS", 200);
+// The file tree only answers "is somebody else in this file", which changes on
+// a join or a leave and never while anyone types. It can be paced far more
+// slowly than a cursor without losing anything a user would notice.
+const COLLAB_FILE_PRESENCE_TICK_MS = positiveIntEnv("COLLAB_FILE_PRESENCE_TICK_MS", 5000);
+// `projects.updated_at` feeds the "last modified" column of the dashboard.
+// Writing it on every flush of every room means many rooms of one project
+// contending for a single row, each in its own transaction, to keep a timestamp
+// nobody reads in realtime accurate to the second. Once per project per interval
+// is the same information at a fraction of the write traffic.
+const COLLAB_TOUCH_MS = positiveIntEnv("COLLAB_TOUCH_MS", 30000);
 
 const collabRooms = new CollabRooms();
 const collabSessions = new Set();
@@ -1898,6 +2238,33 @@ function collabRevokeUser(userId) {
   });
 }
 
+// Per-project coalescing timers, keyed by project id. Three kinds of work used
+// to be done once per room per event, which is the wrong unit for all three:
+// the project row is one row however many of its files are open, the file tree
+// is one view however many rooms changed, and a revision checkpoint takes one
+// advisory lock per project regardless of how many files it covers. Keeping the
+// timers here lets the work be done once per project per interval instead.
+const collabProjects = new Map();
+
+function collabProjectState(projectId) {
+  let state = collabProjects.get(projectId);
+  if (!state) {
+    state = { touchTimer: null, revisionTimer: null, presenceTimer: null, touchPending: false };
+    collabProjects.set(projectId, state);
+  }
+  return state;
+}
+
+// Drops the bookkeeping for a project with nothing scheduled and no live room,
+// so the map does not accumulate an entry for every project ever opened.
+function collabReleaseProject(projectId) {
+  const state = collabProjects.get(projectId);
+  if (!state) return;
+  if (state.touchTimer || state.revisionTimer || state.presenceTimer) return;
+  if (collabRooms.forProject(projectId).length) return;
+  collabProjects.delete(projectId);
+}
+
 function collabSend(socket, message) {
   if (socket.readyState !== socket.OPEN) return;
   socket.send(JSON.stringify(message));
@@ -1920,6 +2287,12 @@ async function collabJoin(session, fileId) {
   if (!collabActive(session)) return null;
   if (!isUuid(fileId)) throw new CollabError("COLLAB_BAD_FILE");
   if (session.rooms.has(fileId)) return session.rooms.get(fileId);
+  // A room holds its whole document in memory for as long as anyone is in it,
+  // so the number of rooms one connection may open is the number of documents
+  // one client can pin in the server's heap. The cap is far above what an editor
+  // opens — a tab edits one file and watches one project — and exists so a
+  // scripted client cannot walk a project and hold all of it resident.
+  if (session.rooms.size >= COLLAB_MAX_ROOMS_PER_SESSION) throw new CollabError("COLLAB_TOO_MANY_ROOMS");
   const { rows } = await db.query(
     "SELECT id, project_id, path, kind, deleted_at FROM project_files WHERE id = $1",
     [fileId]
@@ -1982,9 +2355,12 @@ function collabLeave(session, fileId) {
   session.rooms.delete(fileId);
   const room = entry.room;
   room.clients.delete(session);
-  if (room.clients.size) return void collabBroadcastPeers(room);
+  // The file loses a participant, so every tree watching the project changes.
+  collabScheduleFilePresence(entry.projectId);
+  if (room.clients.size) return void collabSchedulePeers(room, true);
   clearTimeout(room.flushTimer);
-  clearTimeout(room.revisionTimer);
+  clearTimeout(room.peersTimer);
+  room.peersTimer = null;
   // Last one out persists the document and records the consolidated revision
   // before the room — and with it the authoritative text — is released. The room
   // is only dropped when empty and clean: a rejoining peer may have edited it
@@ -1992,6 +2368,7 @@ function collabLeave(session, fileId) {
   collabTrack(collabPersist(room, { revision: true }).then(() => projectMutations.gate(room.projectId, () => {
     if (collabRooms.get(room.fileId) === room && !room.clients.size && !room.needsPersist() && !room.needsRevision()) {
       collabRooms.close(room.fileId);
+      collabReleaseProject(room.projectId);
     }
   })));
 }
@@ -2038,37 +2415,94 @@ async function collabPersistNow(room, revision) {
       await fs.writeFile(abs, text, "utf8");
       room.markPersisted(version);
       room.flushDeadline = 0;
-      await db.query("UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = $1", [room.projectId]);
+      // File identity is rechecked above; timestamp writes alone are coalesced.
+      collabScheduleTouch(room.projectId);
     }
-    if (!revision || !room.needsRevision()) return;
-    const version = room.version;
-    // The revision is attributed to whoever made the most recent accepted edit.
-    const author = room.lastAuthor || null;
-    if (!author) return;
-    await captureProjectCheckpoint({
-      projectId: room.projectId,
-      storageDir: room.storageDir,
-      user: author,
-      reason: "realtime",
-      files: [{ id: room.fileId, path: room.path, kind: room.kind || null }],
-    }).catch((err) => console.error("Realtime revision failed", err));
-    room.markRevisioned(version);
+    if (revision) await collabCaptureRevisions(room.projectId, [room]);
   });
 }
 
+// Marks the project modified at most once per COLLAB_TOUCH_MS, however many of
+// its rooms flushed in between.
+function collabScheduleTouch(projectId) {
+  const state = collabProjectState(projectId);
+  state.touchPending = true;
+  if (state.touchTimer) return;
+  state.touchTimer = setTimeout(() => {
+    state.touchTimer = null;
+    collabTrack(collabTouchProject(projectId));
+  }, COLLAB_TOUCH_MS);
+}
+
+async function collabTouchProject(projectId) {
+  const state = collabProjects.get(projectId);
+  if (!state || !state.touchPending) return;
+  state.touchPending = false;
+  await db.query("UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = $1", [projectId]);
+  collabReleaseProject(projectId);
+}
+
+// Consolidates the realtime edits of one project into a single checkpoint.
+//
+// One checkpoint, not one per file: captureProjectCheckpoint takes a per-project
+// advisory lock, so a project with twenty open documents used to queue twenty
+// transactions on the same lock, each inserting one file's contents. Passing
+// every dirty room to one call takes the lock once and writes the same rows.
+// Attribution survives the grouping because each file carries its own author.
+// The caller holds the project gate through capture and marking the versions.
+async function collabCaptureRevisions(projectId, rooms) {
+  const dirty = rooms.filter((room) => collabRooms.get(room.fileId) === room && room.needsRevision() && room.lastAuthor && room.storageDir);
+  if (!dirty.length) return;
+  // The version is read before the write and applied after it, so edits that
+  // arrive while the checkpoint is in flight still mark the room dirty and are
+  // caught by the next one instead of being silently considered recorded.
+  const captured = dirty.map((room) => ({ room, version: room.version }));
+  const storageDir = dirty[0].storageDir;
+  await captureProjectCheckpoint({
+    projectId,
+    storageDir,
+    user: dirty[0].lastAuthor,
+    reason: "realtime",
+    authoritative: true,
+    files: dirty.map((room) => ({
+      id: room.fileId,
+      path: room.path,
+      kind: room.kind || null,
+      author: room.lastAuthor,
+    })),
+  });
+  for (const entry of captured) entry.room.markRevisioned(entry.version);
+}
+
 // Debounced persistence: writes after a quiet moment, and at least every
-// COLLAB_FLUSH_MAX_MS while editing never stops.
+// COLLAB_FLUSH_MAX_MS while editing never stops. The disk write stays per room,
+// because it is the room's own bytes; the revision checkpoint is scheduled per
+// project, because that is the unit the database serializes it at.
 function collabSchedulePersist(room) {
   const now = Date.now();
   if (!room.flushDeadline) room.flushDeadline = now + COLLAB_FLUSH_MAX_MS;
   clearTimeout(room.flushTimer);
-  clearTimeout(room.revisionTimer);
   const delay = Math.max(0, Math.min(COLLAB_FLUSH_MS, room.flushDeadline - now));
   room.flushTimer = setTimeout(() => {
     if (collabRooms.get(room.fileId) === room) collabTrack(collabPersist(room));
   }, delay);
-  room.revisionTimer = setTimeout(() => {
-    if (collabRooms.get(room.fileId) === room) collabTrack(collabPersist(room, { revision: true }));
+  collabScheduleRevision(room.projectId);
+}
+
+// One revision timer per project, restarted by activity in any of its rooms, so
+// a burst of collaborative editing across many files produces one checkpoint
+// once the burst subsides rather than one per file.
+function collabScheduleRevision(projectId) {
+  const state = collabProjectState(projectId);
+  clearTimeout(state.revisionTimer);
+  state.revisionTimer = setTimeout(() => {
+    state.revisionTimer = null;
+    const rooms = collabRooms.forProject(projectId);
+    // Flush first, then capture current authority under the gate: edits or
+    // removals between those steps must not mark an older disk snapshot current.
+    collabTrack(Promise.all(rooms.map((room) => collabPersist(room)))
+      .then(() => projectMutations.gate(projectId, () => collabCaptureRevisions(projectId, rooms)))
+      .then(() => collabReleaseProject(projectId)));
   }, COLLAB_REVISION_IDLE_MS);
 }
 
@@ -2086,10 +2520,15 @@ function collabBroadcast(room, message, except = null) {
 // told about the others only, so a client needs no identity of its own to filter
 // itself out. Being in the room already required membership, so presence cannot
 // leak to anyone who could not read the file anyway.
-function collabPeersFor(room, recipient) {
+// The room's participants, built once. Each entry carries the connection id it
+// describes so a recipient can be filtered out of the list without the list
+// having to be rebuilt for them: constructing these objects — and hashing a
+// colour for each — is the expensive part, and it does not depend on who is
+// being told.
+function collabRoomPeers(room) {
   const peers = [];
   room.clients.forEach((client) => {
-    if (client === recipient) return;
+    if (!collabActive(client)) return;
     const entry = client.rooms.get(room.fileId);
     if (!entry) return;
     peers.push({
@@ -2108,10 +2547,93 @@ function collabPeersFor(room, recipient) {
 }
 
 function collabBroadcastPeers(room) {
+  const all = collabRoomPeers(room);
   room.clients.forEach((client) => {
     if (!collabActive(client)) return;
-    collabSend(client.socket, { t: "peers", fileId: room.fileId, peers: collabPeersFor(room, client) });
+    collabSend(client.socket, {
+      t: "peers",
+      fileId: room.fileId,
+      peers: all.filter((peer) => peer.id !== client.id),
+    });
   });
+}
+
+// Presence reports arrive continuously and from everyone at once, so answering
+// each one individually is what makes the fan-out quadratic. Coalescing on a
+// tick collapses a burst into a single broadcast carrying the same final state.
+//
+// `immediate` is for the events a user is waiting to see confirmed — somebody
+// joined, somebody left, a role changed — which are rare enough to cost nothing
+// and jarring to delay.
+function collabSchedulePeers(room, immediate = false) {
+  if (immediate) {
+    clearTimeout(room.peersTimer);
+    room.peersTimer = null;
+    return collabBroadcastPeers(room);
+  }
+  if (room.peersTimer) return;
+  room.peersTimer = setTimeout(() => {
+    room.peersTimer = null;
+    if (collabRooms.get(room.fileId) === room) collabBroadcastPeers(room);
+  }, COLLAB_PEERS_TICK_MS);
+}
+
+/* ---- presence: which of the project's files somebody else is in ---- */
+// The same information one level up, for the file tree. It answers only "is
+// somebody else in there" and deliberately carries no positions: a caret moving
+// changes nothing here, so this is broadcast on joins and leaves alone and stays
+// silent during typing. It travels on the project channel, so it keeps arriving
+// while the editor sits on a file nobody else has open.
+//
+// Membership is inherited from the project, so a member who may read the tree
+// may already read every file in it: this discloses nothing new.
+function collabFilePresenceFor(projectId, recipient) {
+  const files = [];
+  collabRooms.forProject(projectId).forEach((room) => {
+    // One entry per person, not per connection: the tree asks who is in the
+    // file, and someone's second tab is not a second person.
+    const people = new Map();
+    room.clients.forEach((client) => {
+      if (client === recipient || people.has(client.user.sub)) return;
+      if (!collabActive(client)) return;
+      people.set(client.user.sub, {
+        userId: client.user.sub,
+        name: client.user.name || client.user.username || "",
+        color: peerColor(client.user.sub),
+      });
+    });
+    if (people.size) files.push({ fileId: room.fileId, peers: Array.from(people.values()) });
+  });
+  return files;
+}
+
+function collabSendFilePresence(session, projectId) {
+  if (!collabActive(session)) return;
+  collabSend(session.socket, { t: "filepeers", projectId, files: collabFilePresenceFor(projectId, session) });
+}
+
+function collabBroadcastFilePresence(projectId) {
+  if (!projectId) return;
+  collabSessions.forEach((session) => {
+    if (session.projectId !== projectId) return;
+    collabSendFilePresence(session, projectId);
+  });
+}
+
+// Rebuilding this view walks every room of the project and every client in each
+// of them, once per watching session — so a project being opened by a class of
+// students would recompute it for everybody on each arrival. Nothing here is
+// time-critical: it answers "is somebody else in that file", which stays true
+// for as long as they are in it. A slow tick is the whole optimisation.
+function collabScheduleFilePresence(projectId) {
+  if (!projectId) return;
+  const state = collabProjectState(projectId);
+  if (state.presenceTimer) return;
+  state.presenceTimer = setTimeout(() => {
+    state.presenceTimer = null;
+    collabBroadcastFilePresence(projectId);
+    collabReleaseProject(projectId);
+  }, COLLAB_FILE_PRESENCE_TICK_MS);
 }
 
 // Tells everyone watching the project that a compilation finished, so a member
@@ -2156,7 +2678,8 @@ async function collabHandleMessage(session, raw) {
       role: entry.role,
     });
     // Everyone learns about the newcomer, and the newcomer about everyone.
-    return collabBroadcastPeers(entry.room);
+    collabSchedulePeers(entry.room, true);
+    return collabScheduleFilePresence(entry.room.projectId);
   }
 
   // A tab watches the project it has open, independently of which file it is
@@ -2175,7 +2698,8 @@ async function collabHandleMessage(session, raw) {
     if (!collabActive(session)) return;
     if (!project) throw new CollabError("COLLAB_PROJECT_NOT_FOUND");
     session.projectId = projectId;
-    return;
+    // The tree needs the state as it is now, not only the changes from here on.
+    return collabSendFilePresence(session, projectId);
   }
 
   if (message.t === "unwatch") {
@@ -2191,7 +2715,8 @@ async function collabHandleMessage(session, raw) {
     const presence = normalizePresence(message, entry.room.doc.length);
     if (!presence) return;
     entry.presence = presence;
-    return collabBroadcastPeers(entry.room);
+    // Recorded now, broadcast on the next tick with everyone else's.
+    return collabSchedulePeers(entry.room);
   }
 
   if (message.t === "pull") {
@@ -2274,8 +2799,10 @@ async function collabRecheckProject(projectId) {
       if (entry.projectId !== projectId || entry.role === project.role) return;
       entry.role = project.role;
       collabSend(session.socket, { t: "role", fileId, role: project.role });
-      // The others see the new role on the participant list too.
-      collabBroadcastPeers(entry.room);
+      // The others see the new role on the participant list too. Immediate: a
+      // permission change is exactly the kind of thing that must not sit in a
+      // queue behind a tick.
+      collabSchedulePeers(entry.room, true);
     });
   }
 }
@@ -2306,6 +2833,7 @@ function applyCollabAuthority(projectId, data) {
 function collabReconcileProject(projectId, data = null) {
   const files = new Map((data ? collectProjectFiles(data.project.nodes) : []).map((file) => [file.nodeId, file]));
   const revoked = new Set();
+  let removedRoom = false;
   if (!data) {
     collabAccessGeneration++;
     collabSessions.forEach((session) => {
@@ -2322,7 +2850,7 @@ function collabReconcileProject(projectId, data = null) {
       continue;
     }
     clearTimeout(room.flushTimer);
-    clearTimeout(room.revisionTimer);
+    clearTimeout(room.peersTimer);
     room.clients.forEach((session) => {
       if (session.rooms.get(room.fileId)?.room !== room) return;
       session.rooms.delete(room.fileId);
@@ -2331,10 +2859,22 @@ function collabReconcileProject(projectId, data = null) {
     });
     room.clients.clear();
     collabRooms.close(room.fileId);
+    removedRoom = true;
   }
   revoked.forEach((session) => {
     if (!session.rooms.size) collabCloseSession(session, 4403, "permission revoked");
   });
+  if (!data) {
+    const state = collabProjects.get(projectId);
+    if (state) {
+      clearTimeout(state.touchTimer);
+      clearTimeout(state.revisionTimer);
+      clearTimeout(state.presenceTimer);
+      collabProjects.delete(projectId);
+    }
+  } else if (removedRoom) {
+    collabScheduleFilePresence(projectId);
+  }
 }
 
 // A file replaced outside the update stream (a rollback, or a refresh from disk)
@@ -2368,6 +2908,16 @@ async function collabUpgrade(req, socket, head, wss) {
   if (socket.destroyed) return;
   if (Date.now() >= user.exp * 1000) return finish("401 Unauthorized", "Session expired");
   if (user.passwordChangeRequired) return finish("403 Forbidden", "Password change required");
+  // Counted per account rather than per address, so it holds for someone behind
+  // a shared address and cannot be evaded by reconnecting from another network.
+  // A person legitimately has several tabs open; nobody has twelve.
+  let sessionsForUser = 0;
+  collabSessions.forEach((existing) => {
+    if (existing.user && existing.user.sub === user.sub) sessionsForUser += 1;
+  });
+  if (sessionsForUser >= COLLAB_MAX_SESSIONS_PER_USER) {
+    return finish("429 Too Many Requests", "Too many realtime connections");
+  }
   wss.handleUpgrade(req, socket, head, (ws) => {
     // One id per connection, not per user: the same person in two tabs is two
     // participants with two cursors, which is what the others should see.
@@ -2439,15 +2989,44 @@ function collabAttach(server) {
 async function collabShutdown() {
   clearInterval(collabHeartbeat);
   Array.from(collabSessions).forEach((session) => collabCloseSession(session, 1001, "server shutting down"));
+  // Every coalesced timer is cancelled and its work done now instead: a pending
+  // tick is deferred work, and deferred work at shutdown is lost work. The
+  // project timestamp is the one thing flushed unconditionally, because its
+  // whole purpose is to survive the process.
+  for (const [projectId, state] of collabProjects) {
+    clearTimeout(state.touchTimer);
+    clearTimeout(state.revisionTimer);
+    clearTimeout(state.presenceTimer);
+    state.touchTimer = null;
+    state.revisionTimer = null;
+    state.presenceTimer = null;
+    if (state.touchPending) collabTrack(collabTouchProject(projectId));
+  }
   for (const room of collabRooms.all()) {
     clearTimeout(room.flushTimer);
-    clearTimeout(room.revisionTimer);
+    clearTimeout(room.peersTimer);
     collabTrack(collabPersist(room, { revision: true }));
+  }
+  await Promise.allSettled(Array.from(collabPending));
+  // Final room flushes can schedule a timestamp after the first timer pass.
+  for (const [projectId, state] of collabProjects) {
+    clearTimeout(state.touchTimer);
+    state.touchTimer = null;
+    if (state.touchPending) collabTrack(collabTouchProject(projectId));
   }
   await Promise.allSettled(Array.from(collabPending));
 }
 
+// The two ways a project comes into existence, and the only two places the
+// no-new-projects rule has to hold. Import counts because downloading an archive
+// is a `read` capability: without this an external member could package a project
+// it was invited to and import it back as one it owns.
+function requireProjectCreation(user) {
+  if (!canCreateProjects(user.role)) throw requestError("PROJECT_CREATE_FORBIDDEN", 403);
+}
+
 async function createProject(req, res, user) {
+  requireProjectCreation(user);
   const body = await readBody(req);
   const name = cleanName(body.name);
   const id = uuidv7();
@@ -2460,6 +3039,7 @@ async function createProject(req, res, user) {
   data.projectType = inferProjectType(data);
   data.lilypondArgs = data.projectType === "lilypond" ? sanitizeLilypondArgsForStorage(data.lilypondArgs) : "";
   data.lilypondFormat = data.projectType === "lilypond" ? normalizeLilypondFormat(data.lilypondFormat) : "pdf";
+  data.mainPath = sanitizeMainPathForStorage(data.mainPath);
   data.createdAt = now;
   data.updatedAt = now;
   data.revision = 0;
@@ -2497,20 +3077,58 @@ async function createProject(req, res, user) {
 async function updateProject(req, res, user, id) {
   const body = await readBody(req);
   const manifestOnly = !body.data || typeof body.data !== "object";
-  const data = await authorizedProjectGate(id, user, "write", async (project) => {
+  const { data, row, retentionChanged } = await authorizedProjectGate(id, user, "write", async (project) => {
     const saved = await projectMutations.transaction({ id, storageDir: project.storageDir }, async (client, protect) => {
       const row = await authorizeProject(id, user, "write", client);
       requireProjectRevision(body, row);
+      // Retention is an owner decision. Ignore an editor's settings without
+      // refusing their document save, and commit the policy with that save.
+      const retention = row.role === "owner"
+        ? normalizeRetentionInput(body.retention, RETENTION_CAPS)
+        : {};
       const data = manifestOnly ? await readProjectManifest(row.storageDir) : body.data;
+      data.mainPath = sanitizeMainPathForStorage(body.mainPath ?? data.mainPath);
       await saveProjectTree(id, row, body, data, client, protect, { manifestOnly, user });
-      return manifestOnly ? { ...await readProjectFile(row.storageDir), revision: data.revision } : data;
+      const retentionColumns = {
+        buildKeep: "build_keep",
+        buildDays: "build_days",
+        versionKeep: "version_keep",
+        versionDays: "version_days",
+      };
+      const assignments = [];
+      const values = [];
+      for (const [field, column] of Object.entries(retentionColumns)) {
+        if (!Object.prototype.hasOwnProperty.call(retention, field)) continue;
+        values.push(retention[field]);
+        assignments.push(`${column} = $${values.length}`);
+        row[column] = retention[field];
+      }
+      if (assignments.length) {
+        values.push(id);
+        await client.query(`UPDATE projects SET ${assignments.join(", ")} WHERE id = $${values.length}`, values);
+      }
+      return {
+        data: manifestOnly ? { ...await readProjectFile(row.storageDir), revision: data.revision } : data,
+        row,
+        retentionChanged: assignments.length > 0,
+      };
     });
-    if (!manifestOnly) collabReconcileProject(id, saved);
+    if (!manifestOnly) collabReconcileProject(id, saved.data);
     return saved;
   });
+  if (retentionChanged) {
+    await audit({
+      ...sessionActor(req, user),
+      action: "project.retention_changed",
+      targetType: "project",
+      targetId: id,
+      metadata: projectRetention(row),
+    });
+  }
   json(res, 200, {
     project: { id, name: data.project.name, revision: data.revision, projectType: data.projectType, createdAt: data.createdAt, updatedAt: data.updatedAt, fileCount: countFiles(data) },
     data: { id, ...data },
+    retention: retentionView(projectRetentionSettings(row), RETENTION_CAPS),
   });
 }
 
@@ -2664,6 +3282,7 @@ function normalizeImportedProject(data, name, now) {
   data.compileProfile = sanitizeCompileProfileForStorage(data.compileProfile, data.projectType);
   data.lilypondArgs = data.projectType === "lilypond" ? sanitizeLilypondArgsForStorage(data.lilypondArgs) : "";
   data.lilypondFormat = data.projectType === "lilypond" ? normalizeLilypondFormat(data.lilypondFormat) : "pdf";
+  data.mainPath = sanitizeMainPathForStorage(data.mainPath);
   data.createdAt = now;
   data.updatedAt = now;
   data.revision = 0;
@@ -2672,6 +3291,7 @@ function normalizeImportedProject(data, name, now) {
 }
 
 async function importProjectArchive(req, res, user, url) {
+  requireProjectCreation(user);
   const body = await readRequestBuffer(req);
   let { archive, data } = parseProjectArchive(body);
 
@@ -2954,6 +3574,15 @@ function sanitizeLilypondArgsForStorage(value) {
     throw requestError("LILYPOND_ARGUMENTS_INVALID", 400);
   }
   return input;
+}
+
+// The project's main source file, kept as a project-relative path. Empty means
+// Iris picks the file itself, which is what every project did before the setting
+// existed and stays the default for new ones.
+function sanitizeMainPathForStorage(value) {
+  const input = String(value == null ? "" : value).trim();
+  if (!input) return "";
+  return safeProjectSourcePath(input);
 }
 
 function normalizeLilypondFormat(value) {
@@ -3532,6 +4161,11 @@ async function deleteBuildOutput(req, res, user, projectId, buildId) {
 
 async function compileProject(req, res, user, id) {
   const body = await readBody(req);
+  await authorizeProject(id, user, "compile");
+  // Charged after authorization, so an outsider probing the endpoint cannot
+  // consume a member's allowance, and keyed on the pair so one member's loop
+  // does not exhaust the budget of a project they merely have access to.
+  enforceRateLimit(compileLimiter, `compile:${user.sub}:${id}`, "COMPILE_RATE_LIMITED");
   const buildId = uuidv7();
   const stagingDir = path.join(DATA_DIR, ".build-staging", id, buildId);
   let confirmedSetup = null;
@@ -3549,6 +4183,17 @@ async function compileProject(req, res, user, id) {
   };
   let publishedPath = null;
   let finalized = false;
+  // The slot is taken before anything durable exists — before the staging tree,
+  // before the build row — so a caller turned away by a full queue leaves
+  // nothing behind to reconcile. It is released in the `finally` below, after
+  // the compiler process has exited and its output has been published.
+  let releaseCompileSlot;
+  try {
+    releaseCompileSlot = await compileGate.acquire();
+  } catch (err) {
+    if (err instanceof GateRejectedError) throw requestError("COMPILE_SERVER_BUSY", 503);
+    throw err;
+  }
   activeBuilds.add(buildId);
   try {
     const { row, data, projectType, engine, binPath, main, mainPath, storedLilypondArgs, outputFormat, compileProfile, buildFiles } = await authorizedProjectGate(id, user, "compile", async (project) => {
@@ -3593,7 +4238,9 @@ async function compileProject(req, res, user, id) {
           if (fileKindForPath(file.path) !== (projectType === "lilypond" ? "ly" : "tex")) continue;
           candidates.push({ ...file, content: await fs.readFile(path.join(row.storageDir, file.path), "utf8") });
         }
-        const requestedPath = typeof body.mainPath === "string" ? normalizeProjectPath(body.mainPath) : null;
+        // One-off aliases only select among the effective source candidates;
+        // they never become the stored setting or an unchecked filesystem path.
+        const requestedPath = (typeof body.mainPath === "string" ? normalizeProjectPath(body.mainPath.trim()) : null) || data.mainPath;
         const main = findCompileFile({ project: { nodes: candidates } }, requestedPath, projectType);
         const mainPath = safeProjectSourcePath(main.path);
         const compileProfile = normalizeCompileProfile(storedCompileProfile, engine, mainPath, projectType, additionalArgs, outputFormat);
@@ -3735,11 +4382,279 @@ async function compileProject(req, res, user, id) {
     throw err;
   } finally {
     activeBuilds.delete(buildId);
+    releaseCompileSlot();
     await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
   }
 }
 
+/* ---------------- retention and garbage collection ---------------- */
+// Nothing in this section is allowed to be the reason a request fails, so every
+// entry point is driven from a timer and every error is logged rather than
+// thrown. Deleting is also always the *last* step: a row goes first and its
+// bytes follow, because a directory with no row is inert and reclaimable on the
+// next pass, whereas a row with no directory is a build the interface offers and
+// cannot deliver.
+
+// A compilation whose process died leaves a row claiming to be running that
+// nothing will ever complete. The grace period is what makes this safe to run
+// against a live database: a build younger than several compile timeouts might
+// simply be slow, and — more importantly — might belong to another instance
+// sharing this database, which must never have its work declared dead.
+const STALLED_BUILD_GRACE_MS = Math.max(COMPILE_TIMEOUT_MS * 4, 5 * 60 * 1000);
+
+async function reconcileStalledBuilds() {
+  const cutoff = new Date(Date.now() - STALLED_BUILD_GRACE_MS);
+  const { rows } = await db.query(
+    `UPDATE build_outputs SET
+       status = 'failed', completed_at = CURRENT_TIMESTAMP,
+       log = CASE WHEN log = '' THEN $2 ELSE log || E'\\n' || $2 END,
+       errors = errors || $3::jsonb
+     WHERE status = 'running' AND created_at < $1
+     RETURNING id, project_id`,
+    [
+      cutoff,
+      "Iris: this build was interrupted and never completed.",
+      JSON.stringify(["Iris: this build was interrupted and never completed."]),
+    ]
+  );
+  if (rows.length) console.log(`Retention: closed ${rows.length} interrupted build(s)`);
+  return rows.length;
+}
+
+// Both halves of the rule are in the one statement: `position > keep` is the
+// count, `created_at < cutoff` is the age, and a row must satisfy both to be
+// deleted. The newest revision of a file always has position 1 and the keep
+// floor is well above 1, so the current state of a file is unreachable from here
+// by construction rather than by a special case that could be forgotten.
+//
+// Two foreign keys absorb the consequences. document_versions.parent_version_id
+// is ON DELETE SET NULL, so pruning the middle of a chain leaves the survivors
+// linked to null instead of to a row that is gone; and build_outputs
+// .source_revision_id is likewise nulled, with source_content_hash still
+// recording which source the build came from.
+async function pruneProjectVersions(projectId, policy, now) {
+  const { rowCount } = await db.query(
+    `WITH ranked AS (
+       SELECT dv.id, dv.created_at,
+              ROW_NUMBER() OVER (PARTITION BY dv.file_id ORDER BY dv.created_at DESC, dv.id DESC) AS position
+       FROM document_versions dv
+       JOIN project_files pf ON pf.id = dv.file_id
+       WHERE pf.project_id = $1
+     )
+     DELETE FROM document_versions dv
+     USING ranked
+     WHERE dv.id = ranked.id AND ranked.position > $2 AND ranked.created_at < $3`,
+    [projectId, policy.versionKeep, cutoffDate(policy.versionDays, now)]
+  );
+  return rowCount || 0;
+}
+
+// The same double condition for builds, with one addition: the most recent
+// successful build is never pruned whatever its age. It is what the editor
+// restores when the project is reopened, and a project whose last good output
+// aged out would open showing nothing at all — which reads as data loss even
+// though the sources are intact. Builds still running are excluded outright:
+// their directory is being written to.
+async function pruneProjectBuilds(projectId, storageDir, policy, now) {
+  const { rows } = await db.query(
+    `WITH ranked AS (
+       SELECT id, created_at,
+              ROW_NUMBER() OVER (ORDER BY created_at DESC, id DESC) AS position
+       FROM build_outputs
+       WHERE project_id = $1 AND status <> 'running'
+     ),
+     protected_build AS (
+       SELECT id FROM build_outputs
+       WHERE project_id = $1 AND status = 'succeeded'
+       ORDER BY created_at DESC, id DESC LIMIT 1
+     )
+     DELETE FROM build_outputs b
+     USING ranked
+     WHERE b.id = ranked.id
+       AND ranked.position > $2
+       AND ranked.created_at < $3
+       AND b.id NOT IN (SELECT id FROM protected_build)
+     RETURNING b.id, b.storage_path`,
+    [projectId, policy.buildKeep, cutoffDate(policy.buildDays, now)]
+  );
+  for (const build of rows) {
+    // A path that fails to resolve is one the safety checks in resolveBuildDirectory
+    // refused, so it is left alone rather than removed on a guess.
+    const directory = await resolveBuildDirectory(
+      storageDir, build.id, build.storage_path || buildStoragePath(build.id)
+    ).catch(() => null);
+    if (directory) await fs.rm(directory, { recursive: true, force: true }).catch((err) => {
+      console.error(`Retention: could not remove build directory for ${build.id}`, err.message || err);
+    });
+  }
+  return rows.length;
+}
+
+// Directories under output/ whose build row no longer exists. A build row is
+// always created before its directory is published, so a directory without one
+// can only be the residue of a delete that failed halfway — never a build about
+// to be registered. The grace period covers the window between publication and
+// the row's completion.
+async function pruneOrphanedBuildDirectories(projectId, storageDir, now) {
+  const output = path.join(storageDir, "output");
+  const entries = await fs.readdir(output, { withFileTypes: true }).catch(() => null);
+  if (!entries) return 0;
+  const candidates = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const absolute = path.join(output, entry.name);
+    const stat = await fs.lstat(absolute).catch(() => null);
+    if (!stat || stat.isSymbolicLink()) continue;
+    if (now - stat.mtimeMs < RETENTION_ORPHAN_GRACE_MS) continue;
+    // The quarantine directories deleteBuildOutput renames into place before
+    // removing them: if the process died in between, nothing will ever come back
+    // for them, and their name is not a build id to check against the database.
+    if (entry.name.includes(".deleting-")) {
+      await fs.rm(absolute, { recursive: true, force: true }).catch(() => {});
+      continue;
+    }
+    if (isUuid(entry.name)) candidates.push(entry.name);
+  }
+  if (!candidates.length) return 0;
+  const { rows } = await db.query(
+    "SELECT id FROM build_outputs WHERE project_id = $1 AND id = ANY($2::uuid[])",
+    [projectId, candidates]
+  );
+  const known = new Set(rows.map((row) => row.id));
+  let removed = 0;
+  for (const name of candidates) {
+    if (known.has(name)) continue;
+    await fs.rm(path.join(output, name), { recursive: true, force: true }).catch(() => {});
+    removed += 1;
+  }
+  return removed;
+}
+
+// Staging trees belong to a compilation in flight and are removed in its
+// `finally`. One that outlives the grace period belonged to a process that died
+// before reaching it.
+async function pruneAbandonedStaging(now) {
+  const root = path.join(DATA_DIR, ".build-staging");
+  const projects = await fs.readdir(root, { withFileTypes: true }).catch(() => null);
+  if (!projects) return 0;
+  let removed = 0;
+  for (const project of projects) {
+    if (!project.isDirectory()) continue;
+    const projectDir = path.join(root, project.name);
+    const builds = await fs.readdir(projectDir, { withFileTypes: true }).catch(() => []);
+    for (const build of builds) {
+      if (!build.isDirectory() || activeBuilds.has(build.name)) continue;
+      const absolute = path.join(projectDir, build.name);
+      const stat = await fs.lstat(absolute).catch(() => null);
+      if (!stat || now - stat.mtimeMs < RETENTION_ORPHAN_GRACE_MS) continue;
+      await fs.rm(absolute, { recursive: true, force: true }).catch(() => {});
+      removed += 1;
+    }
+    // Removes the per-project level once its last staging tree is gone; fails
+    // harmlessly while any remain, since the directory is not empty.
+    await fs.rmdir(projectDir).catch(() => {});
+  }
+  return removed;
+}
+
+// The audit trail is instance-wide and has no owner, so its retention is the
+// operator's alone. Deleted in batches: this is the highest-volume table in the
+// schema, and one unbounded DELETE on a busy instance would hold locks for far
+// longer than a background sweep has any right to.
+async function pruneAuditEvents(now, batch = 5000) {
+  const cutoff = cutoffDate(AUDIT_RETENTION_DAYS, now);
+  let removed = 0;
+  for (;;) {
+    const { rowCount } = await db.query(
+      `DELETE FROM audit_events WHERE ctid IN (
+         SELECT ctid FROM audit_events WHERE occurred_at < $1 LIMIT $2
+       )`,
+      [cutoff, batch]
+    );
+    removed += rowCount || 0;
+    if (!rowCount || rowCount < batch) return removed;
+  }
+}
+
+let retentionSweepTimer = null;
+let retentionSweepRunning = false;
+
+async function runRetentionSweep() {
+  // One sweep at a time. An instance whose sweep takes longer than the interval
+  // should fall behind rather than run two of them over the same rows.
+  if (retentionSweepRunning || shuttingDown) return null;
+  retentionSweepRunning = true;
+  const now = Date.now();
+  const totals = { builds: 0, versions: 0, directories: 0, audit: 0, stalled: 0 };
+  try {
+    totals.stalled = await reconcileStalledBuilds();
+    const { rows } = await db.query(
+      `SELECT id, storage_path, build_keep, build_days, version_keep, version_days FROM projects`
+    );
+    for (const row of rows) {
+      if (shuttingDown) break;
+      // Per project rather than per statement: one project whose storage has
+      // been moved or removed underneath the database must not stop the sweep
+      // for every other project on the instance.
+      try {
+        await projectMutations.gate(row.id, async () => {
+          // Retention must not race a restore, publication or compensated delete,
+          // and recovery-blocked projects must retain their history untouched.
+          const current = await db.query(
+            "SELECT storage_path, build_keep, build_days, version_keep, version_days FROM projects WHERE id = $1",
+            [row.id]
+          );
+          if (!current.rows.length || shuttingDown) return;
+          const policy = projectRetention(current.rows[0]);
+          const storageDir = resolveProjectStorageDir(DATA_DIR, current.rows[0].storage_path);
+          totals.builds += await pruneProjectBuilds(row.id, storageDir, policy, now);
+          totals.versions += await pruneProjectVersions(row.id, policy, now);
+          totals.directories += await pruneOrphanedBuildDirectories(row.id, storageDir, now);
+        });
+      } catch (err) {
+        console.error(`Retention: sweep failed for project ${row.id}`, err.message || err);
+      }
+    }
+    totals.directories += await pruneAbandonedStaging(now);
+    totals.audit = await pruneAuditEvents(now);
+  } catch (err) {
+    console.error("Retention sweep failed", err.message || err);
+  } finally {
+    retentionSweepRunning = false;
+  }
+  const reclaimed = totals.builds + totals.versions + totals.directories + totals.audit + totals.stalled;
+  if (reclaimed) {
+    console.log(
+      `Retention: ${totals.builds} build(s), ${totals.versions} revision(s), `
+      + `${totals.directories} directory(ies), ${totals.audit} audit event(s), ${totals.stalled} interrupted build(s)`
+    );
+  }
+  return totals;
+}
+
+function startRetentionSweep() {
+  if (!RETENTION_ENABLED) {
+    console.log("Retention sweep disabled (RETENTION_ENABLED=false)");
+    return null;
+  }
+  // The first pass is deferred rather than run at boot: startup is when the
+  // process is busiest and least able to spare I/O, and nothing here is urgent.
+  // Interrupted builds are the one exception, reconciled straight away, because
+  // until they are the interface shows compilations that are still spinning.
+  reconcileStalledBuilds().catch((err) => console.error("Retention: startup reconciliation failed", err.message || err));
+  retentionSweepTimer = setInterval(() => {
+    runRetentionSweep().catch((err) => console.error("Retention sweep failed", err.message || err));
+    // The rate limiters keep an entry per active key; sweeping them here costs
+    // nothing and keeps a long-running process from holding entries for callers
+    // that stopped calling hours ago.
+    for (const limiter of [authIpLimiter, authAccountLimiter, apiLimiter, compileLimiter]) limiter.sweep();
+  }, RETENTION_SWEEP_MS);
+  if (typeof retentionSweepTimer.unref === "function") retentionSweepTimer.unref();
+  return retentionSweepTimer;
+}
+
 const PROJECT_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})$`);
+const PROJECT_TEMPLATE_FILE_ROUTE = /^\/api\/project-templates\/(latex|lilypond)\/([^/]+)$/;
 const PROJECT_COMPILE_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/compile$`);
 const PROJECT_BUILDS_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/builds$`);
 const PROJECT_BUILD_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/builds/(${UUID_PATTERN})$`);
@@ -3763,6 +4678,8 @@ const ADMIN_PROJECTS_ROUTE = "/api/admin/projects";
 const ADMIN_PROJECT_ROUTE = new RegExp(`^/api/admin/projects/(${UUID_PATTERN})$`);
 const ADMIN_PROJECT_MEMBERS_ROUTE = new RegExp(`^/api/admin/projects/(${UUID_PATTERN})/members$`);
 const ADMIN_PROJECT_MEMBER_ROUTE = new RegExp(`^/api/admin/projects/(${UUID_PATTERN})/members/(${UUID_PATTERN})$`);
+const ADMIN_TEMPLATES_ROUTE = "/api/admin/templates";
+const ADMIN_TEMPLATE_ROUTE = /^\/api\/admin\/templates\/([^/]+)\/([^/]+)$/;
 const PROJECT_MEMBERS_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/members$`);
 const PROJECT_MEMBER_SEARCH_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/members/search$`);
 const PROJECT_MEMBER_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/members/(${UUID_PATTERN})$`);
@@ -3817,7 +4734,7 @@ async function adminListUsers(req, res, url) {
     clauses.push(`(LOWER(username) LIKE $${params.length} OR LOWER(email) LIKE $${params.length} OR LOWER(display_name) LIKE $${params.length})`);
   }
   const statusFilter = url.searchParams.get("status");
-  if (isUserStatus(statusFilter)) {
+  if (isAccountStatus(statusFilter)) {
     params.push(statusFilter);
     clauses.push(`status = $${params.length}`);
   }
@@ -3881,6 +4798,7 @@ async function adminUpdateUser(req, res, actor, targetId) {
   const client = await db.connect();
   let before;
   let after;
+  let demotedProjects = [];
   try {
     await client.query("BEGIN");
     await client.query("SELECT pg_advisory_xact_lock($1)", [ADMIN_INVARIANT_LOCK]);
@@ -3904,6 +4822,35 @@ async function adminUpdateUser(req, res, actor, targetId) {
         Number(others.rows[0].n)
       );
       if (wouldStrand) throw requestError("ADMIN_LAST_ADMIN", 409);
+    }
+
+    // Turning an account external strips whatever it owns, because ownership is
+    // the one project role an external may not hold. Where someone else owns the
+    // project too the membership simply drops to editor — an owner remains, so the
+    // invariant is untouched — but a project this user owns alone would be left
+    // with none, and that is refused here and resolved in the projects console,
+    // exactly like deleting such an account.
+    if (wantsRole && nextRole === "external" && before.system_role !== "external") {
+      const owned = await client.query(
+        "SELECT project_id FROM project_members WHERE user_id = $1 AND role = 'owner' ORDER BY project_id",
+        [targetId]
+      );
+      // Every affected project is locked, in a fixed order, so a concurrent
+      // membership change cannot slip between the count and the demotion and two
+      // of these can never deadlock against each other.
+      for (const row of owned.rows) {
+        await client.query("SELECT pg_advisory_xact_lock($1, hashtext($2))", [PROJECT_OWNER_LOCK, row.project_id]);
+      }
+      const stranded = await soleOwnerProjects(targetId, client);
+      if (stranded.length) {
+        throw requestError("ADMIN_EXTERNAL_SOLE_OWNER", 409, { projects: stranded.map((p) => p.name).join(", ") });
+      }
+      const stripped = await client.query(
+        `UPDATE project_members SET role = 'editor', updated_at = CURRENT_TIMESTAMP
+         WHERE user_id = $1 AND role = 'owner' RETURNING project_id`,
+        [targetId]
+      );
+      demotedProjects = stripped.rows.map((row) => String(row.project_id));
     }
 
     const sets = ["updated_at = CURRENT_TIMESTAMP"];
@@ -3951,7 +4898,30 @@ async function adminUpdateUser(req, res, actor, targetId) {
     await audit({ ...sessionActor(req, actor), action: "user.role_changed", targetType: "user", targetId, metadata: { from: before.system_role, to: nextRole } });
   }
   if (wantsStatus && nextStatus !== before.status) {
-    await audit({ ...sessionActor(req, actor), action: "user.status_changed", targetType: "user", targetId, metadata: { from: before.status, to: nextStatus } });
+    // Approving an account the identity provider provisioned is not the same event
+    // as lifting a suspension, and the audit trail should not have to guess which
+    // one an active/disabled pair meant.
+    const approved = before.status === "pending" && nextStatus === "active";
+    await audit({
+      ...sessionActor(req, actor),
+      action: approved ? "user.approved" : "user.status_changed",
+      targetType: "user",
+      targetId,
+      metadata: { from: before.status, to: nextStatus },
+    });
+  }
+  // Ownership the role change stripped. Reported per project so the trail reads
+  // the same as any other role change, and pushed to open sessions so a workspace
+  // already open loses its owner tools at once.
+  for (const projectId of demotedProjects) {
+    await audit({
+      ...sessionActor(req, actor),
+      action: "project.member_role_changed",
+      targetType: "membership",
+      targetId: projectId,
+      metadata: { userId: targetId, from: "owner", to: "editor", reason: "external" },
+    });
+    await collabRecheckProject(projectId);
   }
   json(res, 200, { user: adminUserView(after) });
 }
@@ -4031,7 +5001,7 @@ async function adminListProjects(req, res, url) {
   const membersByProject = new Map();
   if (ids.length) {
     const { rows: members } = await db.query(
-      `SELECT m.project_id, m.user_id, m.role, u.username, u.email, u.display_name, u.status
+      `SELECT m.project_id, m.user_id, m.role, u.username, u.email, u.display_name, u.status, u.system_role
        FROM project_members m JOIN users u ON u.id = m.user_id
        WHERE m.project_id = ANY($1) ORDER BY (m.role <> 'owner'), u.username`,
       [ids]
@@ -4040,6 +5010,7 @@ async function adminListProjects(req, res, url) {
       if (!membersByProject.has(m.project_id)) membersByProject.set(m.project_id, []);
       membersByProject.get(m.project_id).push({
         userId: m.user_id, username: m.username, name: m.display_name, email: m.email, role: m.role, status: m.status,
+        external: m.system_role === "external",
       });
     }
   }
@@ -4063,6 +5034,7 @@ async function adminAddProjectMember(req, res, actor, projectId) {
   const role = String(body.role || "");
   if (!isProjectRole(role)) throw requestError("MEMBER_ROLE_INVALID", 400);
   const target = await resolveMemberUser(body.identifier);
+  requireGrantableRole(target.system_role, role);
   try {
     await db.query(
       "INSERT INTO project_members (project_id, user_id, role, invited_by) VALUES ($1, $2, $3, $4)",
@@ -4081,7 +5053,7 @@ async function adminAddProjectMember(req, res, actor, projectId) {
   });
   await collabRecheckProject(projectId);
   json(res, 201, {
-    member: memberView({ user_id: target.id, username: target.username, email: target.email, display_name: target.display_name, role, invited_by: actor.sub, created_at: new Date() }),
+    member: memberView({ user_id: target.id, username: target.username, email: target.email, display_name: target.display_name, system_role: target.system_role, role, invited_by: actor.sub, created_at: new Date() }),
   });
 }
 
@@ -4096,10 +5068,13 @@ async function adminUpdateProjectMember(req, res, actor, projectId, memberId) {
     await client.query("BEGIN");
     await client.query("SELECT pg_advisory_xact_lock($1, hashtext($2))", [PROJECT_OWNER_LOCK, projectId]);
     const current = await client.query(
-      "SELECT role FROM project_members WHERE project_id = $1 AND user_id = $2 FOR UPDATE",
+      `SELECT m.role, u.system_role
+       FROM project_members m JOIN users u ON u.id = m.user_id
+       WHERE m.project_id = $1 AND m.user_id = $2 FOR UPDATE OF m`,
       [projectId, memberId]
     );
     if (!current.rows.length) throw requestError("MEMBER_NOT_FOUND", 404);
+    requireGrantableRole(current.rows[0].system_role, nextRole);
     previousRole = current.rows[0].role;
     const others = await client.query(
       "SELECT COUNT(*) AS n FROM project_members WHERE project_id = $1 AND role = 'owner' AND user_id <> $2",
@@ -4191,10 +5166,12 @@ async function adminDeleteProject(req, res, actor, projectId) {
 }
 
 // The projects for which the user is the *only* owner. Deleting the user would
-// strand these (membership cascades away), so they must be resolved in the
-// project console first. Other memberships and co-owned projects are unaffected.
-async function soleOwnerProjects(userId) {
-  const { rows } = await db.query(
+// strand these (membership cascades away), and so would turning them external
+// (ownership is stripped), so both resolve them in the project console first.
+// Other memberships and co-owned projects are unaffected. Takes a client so the
+// external check can run inside the transaction that holds the project locks.
+async function soleOwnerProjects(userId, client = null) {
+  const { rows } = await (client || db).query(
     `SELECT p.id, p.name
      FROM projects p
      JOIN project_members m ON m.project_id = p.id AND m.user_id = $1 AND m.role = 'owner'
@@ -4246,8 +5223,81 @@ async function adminDeleteUser(req, res, actor, userId) {
   json(res, 200, { ok: true });
 }
 
+function decodeAdminTemplateId(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    throw requestError("ADMIN_TEMPLATE_ID_INVALID", 400);
+  }
+}
+
+async function adminListTemplates(req, res) {
+  json(res, 200, { templates: await listAdminProjectTemplates(TEMPLATE_DIR) }, { "cache-control": "private, no-store" });
+}
+
+async function adminCreateTemplate(req, res, actor) {
+  const template = await createProjectTemplate(TEMPLATE_DIR, await readBody(req));
+  await audit({
+    ...sessionActor(req, actor),
+    action: "template.created",
+    targetType: "system",
+    targetId: `${template.type}:${template.id}`,
+    metadata: { type: template.type, id: template.id, title: template.title, size: template.size, default: template.default },
+  });
+  json(res, 201, { template });
+}
+
+async function adminGetTemplate(req, res, type, encodedId) {
+  const template = await getAdminProjectTemplate(TEMPLATE_DIR, type, decodeAdminTemplateId(encodedId));
+  json(res, 200, { template }, { "cache-control": "private, no-store" });
+}
+
+async function adminUpdateTemplate(req, res, actor, type, encodedId) {
+  const previousId = decodeAdminTemplateId(encodedId);
+  const template = await updateProjectTemplate(TEMPLATE_DIR, type, previousId, await readBody(req));
+  await audit({
+    ...sessionActor(req, actor),
+    action: "template.updated",
+    targetType: "system",
+    targetId: `${template.type}:${template.id}`,
+    metadata: {
+      type: template.type,
+      id: template.id,
+      title: template.title,
+      size: template.size,
+      default: template.default,
+      previousType: type,
+      previousId,
+    },
+  });
+  json(res, 200, { template });
+}
+
+async function adminDeleteTemplate(req, res, actor, type, encodedId) {
+  const id = decodeAdminTemplateId(encodedId);
+  await deleteProjectTemplate(TEMPLATE_DIR, type, id);
+  await audit({
+    ...sessionActor(req, actor),
+    action: "template.deleted",
+    targetType: "system",
+    targetId: `${type}:${id}`,
+    metadata: { type, id },
+  });
+  json(res, 200, { ok: true });
+}
+
 async function handleAdminApi(req, res, url, actor) {
   requireAdmin(actor);
+  if (url.pathname === ADMIN_TEMPLATES_ROUTE) {
+    if (req.method === "GET") return adminListTemplates(req, res);
+    if (req.method === "POST") return adminCreateTemplate(req, res, actor);
+  }
+  const adminTemplateMatch = url.pathname.match(ADMIN_TEMPLATE_ROUTE);
+  if (adminTemplateMatch) {
+    if (req.method === "GET") return adminGetTemplate(req, res, adminTemplateMatch[1], adminTemplateMatch[2]);
+    if (req.method === "PUT") return adminUpdateTemplate(req, res, actor, adminTemplateMatch[1], adminTemplateMatch[2]);
+    if (req.method === "DELETE") return adminDeleteTemplate(req, res, actor, adminTemplateMatch[1], adminTemplateMatch[2]);
+  }
   if (url.pathname === ADMIN_PROJECTS_ROUTE && req.method === "GET") return adminListProjects(req, res, url);
   const adminProjectMemberMatch = url.pathname.match(ADMIN_PROJECT_MEMBER_ROUTE);
   if (adminProjectMemberMatch && req.method === "PATCH") return adminUpdateProjectMember(req, res, actor, adminProjectMemberMatch[1], adminProjectMemberMatch[2]);
@@ -4284,6 +5334,7 @@ async function handleApi(req, res, url) {
       auth: {
         ssoEnabled: oauthEnabled(),
         ssoAutoRegister: OAUTH_AUTO_REGISTER,
+        ssoApprovalRequired: OAUTH_AUTO_REGISTER && OAUTH_APPROVAL_REQUIRED,
       },
       collab: {
         pushDebounceMs: COLLAB_PUSH_DEBOUNCE_MS,
@@ -4354,25 +5405,46 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === "POST" && url.pathname === "/api/auth/login") {
+    // Charged before the body is even read: reading up to MAX_BODY from a
+    // caller that is already over its allowance is work done on behalf of
+    // someone who has been refused. Everything after this point — parsing, the
+    // user lookup, and above all Argon2 — is downstream of it.
+    const ip = clientIp(req) || "unknown";
+    enforceRateLimit(authIpLimiter, `login:${ip}`, "AUTH_RATE_LIMITED");
     const body = await readBody(req);
     const login = String(body.username || "").trim().toLowerCase();
     const password = String(body.password || "");
     if (!login || !password) return errorJson(res, 400, "AUTH_REQUIRED_FIELDS");
+    // The per-account limit needs the submitted identifier, so it comes second.
+    // The address limit stops one source; this one stops many sources
+    // converging on a single account, which is the shape a distributed
+    // credential-stuffing run has. Keying on what was submitted rather than on
+    // a resolved user id is deliberate: an attacker must not be able to tell a
+    // throttled unknown account from a throttled real one, and an unknown
+    // account has no id to key on anyway.
+    enforceRateLimit(authAccountLimiter, `login:${login}`, "AUTH_RATE_LIMITED");
     const { rows } = await db.query(
       "SELECT id, username, email, display_name, system_role, status, auth_source, session_version, password_hash, password_change_required, oidc_linked_at FROM users WHERE LOWER(username) = LOWER($1) OR LOWER(email) = LOWER($2) LIMIT 1",
       [login, login]
     );
     const user = rows[0];
-    const failedLogin = async (reason) => audit({
-      action: "auth.login_failed",
-      outcome: "failure",
-      actorId: user ? user.id : null,
-      actorLabel: user ? user.username : login,
-      ip: clientIp(req),
-      targetType: "user",
-      targetId: user ? user.id : null,
-      metadata: { authMethod: "local", reason },
-    });
+    // Every refusal below is also a rate-limit event: an attempt that failed
+    // costs the caller more of its allowance than one that succeeded, so a
+    // guessing run runs out of budget while a person who mistyped does not.
+    const failedLogin = async (reason) => {
+      authIpLimiter.penalize(`login:${ip}`, Date.now(), AUTH_FAILURE_PENALTY - 1);
+      authAccountLimiter.penalize(`login:${login}`, Date.now(), AUTH_FAILURE_PENALTY - 1);
+      return audit({
+        action: "auth.login_failed",
+        outcome: "failure",
+        actorId: user ? user.id : null,
+        actorLabel: user ? user.username : login,
+        ip: clientIp(req),
+        targetType: "user",
+        targetId: user ? user.id : null,
+        metadata: { authMethod: "local", reason },
+      });
+    };
     if (user && !user.password_hash) {
       // An account converted from local to SSO gets a specific message; one that
       // was always SSO gets the generic "use the SSO button" guidance.
@@ -4386,10 +5458,12 @@ async function handleApi(req, res, url) {
       return errorJson(res, 401, "AUTH_INVALID_CREDENTIALS");
     }
     // A disabled account is refused only after the password is verified, so the
-    // response does not reveal which accounts exist.
+    // response does not reveal which accounts exist. An account still waiting for
+    // approval is told so instead: it has never had access to lose.
     if (user.status !== "active") {
-      await failedLogin("account_disabled");
-      return errorJson(res, 403, "AUTH_ACCOUNT_DISABLED");
+      const pending = user.status === "pending";
+      await failedLogin(pending ? "account_pending" : "account_disabled");
+      return errorJson(res, 403, pending ? "AUTH_ACCOUNT_PENDING" : "AUTH_ACCOUNT_DISABLED");
     }
     if (passwordCheck.needsRehash) {
       const passwordHash = await hashPassword(password);
@@ -4400,6 +5474,11 @@ async function handleApi(req, res, url) {
         [passwordHash, user.id, user.session_version, user.password_hash]
       );
     }
+    // Proving the password clears the debt: someone who got in is not an
+    // attacker, and leaving them throttled would punish the two typos that
+    // preceded the correct attempt.
+    authIpLimiter.reset(`login:${ip}`);
+    authAccountLimiter.reset(`login:${login}`);
     await db.query("UPDATE users SET last_login_at = CURRENT_TIMESTAMP WHERE id = $1", [user.id]);
     await audit({
       action: "auth.login_succeeded",
@@ -4471,6 +5550,13 @@ async function handleApi(req, res, url) {
 
   const user = await requireUser(req);
 
+  // A ceiling on authenticated traffic, keyed on the account rather than the
+  // address so it follows the caller across networks and cannot be shed by
+  // reconnecting. It sits far above what the editor generates in normal use;
+  // what it catches is a client stuck in a retry loop and a session token being
+  // used as a battering ram against the database.
+  enforceRateLimit(apiLimiter, `api:${user.sub}`, "API_RATE_LIMITED");
+
   // A pending forced password change blocks every other authed endpoint until the
   // temporary password is replaced. The login/password/logout/session routes are
   // handled above, before this gate, so the account can still complete the change.
@@ -4514,6 +5600,9 @@ async function handleApi(req, res, url) {
     });
   }
 
+  const projectTemplateMatch = url.pathname.match(PROJECT_TEMPLATE_FILE_ROUTE);
+  if (projectTemplateMatch && req.method === "GET") return getProjectTemplate(req, res, projectTemplateMatch[1], projectTemplateMatch[2]);
+  if (req.method === "GET" && url.pathname === "/api/project-templates") return listProjectTemplates(req, res);
   if (req.method === "GET" && url.pathname === "/api/projects") return listProjects(req, res, user);
   if (req.method === "POST" && url.pathname === "/api/projects/import") return importProjectArchive(req, res, user, url);
   if (req.method === "POST" && url.pathname === "/api/projects") return createProject(req, res, user);
@@ -4599,6 +5688,7 @@ async function handleApi(req, res, url) {
 async function serveStatic(req, res, url) {
   let pathname = decodeURIComponent(url.pathname);
   if (pathname === "/") pathname = "/Iris.html";
+  if (pathname === "/templates" || pathname.startsWith("/templates/")) return text(res, 404, "Not found");
   const codemirrorFile = pathname.match(/^\/vendor\/codemirror\/([a-z0-9.-]+)$/);
   if (codemirrorFile && !CODEMIRROR_MODULES[codemirrorFile[1]]) return text(res, 404, "Not found");
   const pdfjsFile = pathname.match(/^\/vendor\/pdfjs\/(pdf(?:\.worker)?\.min\.mjs)$/);
@@ -4674,9 +5764,9 @@ async function handle(req, res) {
     const status = err.status || 500;
     if (status >= 500) console.error(err);
     if (url.pathname.startsWith("/api/")) {
-      return errorJson(res, status, err.errorCode || "SERVER_ERROR", err.params || {});
+      return errorJson(res, status, err.errorCode || "SERVER_ERROR", err.params || {}, err.headers || {});
     }
-    return text(res, status, err.message || "Server error");
+    return text(res, status, err.message || "Server error", err.headers || {});
   }
 }
 
@@ -4684,6 +5774,11 @@ function startGracefulShutdown(signal, server) {
   if (shuttingDown) return;
   shuttingDown = true;
   console.log(`Received ${signal}; refusing new work and draining in-flight requests`);
+  clearInterval(retentionSweepTimer);
+  // Callers queued for a slot they will now never get are told so, rather than
+  // being left holding a request open until the process exits under them.
+  compileGate.drain("COMPILE_SERVER_BUSY");
+  passwordHashGate.drain("AUTH_BUSY");
   server.close(() => {});
   if (typeof server.closeIdleConnections === "function") server.closeIdleConnections();
 
@@ -4708,12 +5803,14 @@ if (require.main === module) initDb()
   .then(() => {
     const server = http.createServer(handle);
     collabAttach(server);
+    startRetentionSweep();
     process.on("SIGTERM", () => startGracefulShutdown("SIGTERM", server));
     process.on("SIGINT", () => startGracefulShutdown("SIGINT", server));
-    server.listen(PORT, () => {
-      console.log(`Iris listening on http://localhost:${PORT}`);
+    server.listen(...(BIND_ADDRESS ? [PORT, BIND_ADDRESS] : [PORT]), () => {
+      console.log(`Iris listening on http://${BIND_ADDRESS || "localhost"}:${PORT}`);
       console.log(`Static files dir: ${PUBLIC_DIR}`);
       console.log(`Projects data dir: ${DATA_DIR}`);
+      console.log(`Project templates dir: ${TEMPLATE_DIR}`);
       if (initialAdminCredentials) {
         console.log("");
         console.log("================================================================");
@@ -4737,7 +5834,15 @@ module.exports = {
   applyCollabAuthority,
   collabAttach,
   collabRooms,
+  runRetentionSweep,
+  reconcileStalledBuilds,
+  pruneProjectBuilds,
+  pruneProjectVersions,
+  pruneAuditEvents,
+  projectRetention,
   writeProjectFile,
+  readProjectFile,
+  hydrateProjectPayloads,
   buildProjectArchive,
   collectProjectArchiveEntries,
   parseProjectArchive,
@@ -4749,6 +5854,7 @@ module.exports = {
   sanitizeCompileProfileForStorage,
   parseCompileArguments,
   sanitizeLilypondArgsForStorage,
+  sanitizeMainPathForStorage,
   normalizeLilypondFormat,
   safeProjectSourcePath,
   validateProjectSourceTree,

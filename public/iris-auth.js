@@ -455,6 +455,7 @@
       showLogin();
       if (authError === "sso") showError(t("auth.ssoFailed"));
       else if (authError === "sso_link_required") showError(t("auth.ssoLinkRequired"));
+      else if (authError === "account_pending") showError(t("auth.accountPending"));
     }
   }
 

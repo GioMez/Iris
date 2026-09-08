@@ -195,7 +195,7 @@ for (const action of ["reset-password", "unlink-sso", "delete"]) {
 }
 
 test("local-to-SSO conversion revokes local sessions and clears forced change; SSO inserts use the DB default version", options, async (t) => {
-  const f = await serverFixture(t, { OAUTH_ISSUER_URL: issuer, OAUTH_AUTO_REGISTER: "true" });
+  const f = await serverFixture(t, { OAUTH_ISSUER_URL: issuer, OAUTH_AUTO_REGISTER: "true", OAUTH_APPROVAL_REQUIRED: "false" });
   const user = await createUser(f);
   const live = await openSession(t, f, user);
   await f.pool.query("UPDATE users SET oidc_link_pending = TRUE, password_change_required = TRUE WHERE id = $1", [user.id]);
@@ -220,6 +220,42 @@ test("local-to-SSO conversion revokes local sessions and clears forced change; S
   const registered = await f.app.userFromOAuthProfile({ email: "bob@example.org", subject: "bob", name: "Bob", preferredUsername: "bob" });
   assert.equal(registered.session_version, 0);
   assert.equal((await session(f, `iris_session=${f.app.makeToken(registered, "sso")}`)).status, 200);
+});
+
+test("SSO registration defaults to pending approval and admits the configured role only after approval", options, async (t) => {
+  const f = await serverFixture(t, { OAUTH_ISSUER_URL: issuer, OAUTH_AUTO_REGISTER: "true", OAUTH_DEFAULT_ROLE: "external" });
+  const admin = await createUser(f, "admin", "admin");
+  const profile = { email: "guest@example.org", subject: "guest", name: "Guest", preferredUsername: "guest" };
+  const pendingError = { status: 403, errorCode: "AUTH_ACCOUNT_PENDING", authError: "account_pending" };
+  await assert.rejects(f.app.userFromOAuthProfile(profile), pendingError);
+  const pending = (await f.pool.query("SELECT * FROM users WHERE email = $1", [profile.email])).rows[0];
+  assert.equal(pending.status, "pending");
+  assert.equal(pending.system_role, "external");
+  assert.equal(pending.auth_source, "oidc");
+  assert.equal(pending.session_version, 0);
+  // Even a correctly signed cookie cannot make an unapproved account active.
+  const pendingCookie = `iris_session=${f.app.makeToken(pending, "sso")}`;
+  assert.equal((await session(f, pendingCookie)).status, 401);
+  assert.equal((await f.request("/api/projects", { cookie: pendingCookie })).status, 401);
+  await assert.rejects(f.app.userFromOAuthProfile(profile), pendingError);
+  assert.equal((await f.pool.query("SELECT id FROM users WHERE email = $1", [profile.email])).rows.length, 1);
+
+  const approved = await f.request(`/api/admin/users/${pending.id}`, {
+    method: "PATCH", cookie: f.cookieFor(admin), body: { status: "active" },
+  });
+  assert.equal(approved.status, 200);
+  const registered = await f.app.userFromOAuthProfile(profile);
+  assert.equal(registered.id, pending.id);
+  assert.equal(registered.system_role, "external");
+  assert.equal(registered.session_version, 0);
+  const cookie = `iris_session=${f.app.makeToken(registered, "sso")}`;
+  const authenticated = await session(f, cookie);
+  assert.equal(authenticated.status, 200);
+  assert.equal((await authenticated.json()).user.role, "external");
+  const create = await f.request("/api/projects", { method: "POST", cookie, body: { name: "Not permitted" } });
+  assert.equal(create.status, 403);
+  assert.equal((await create.json()).errorCode, "PROJECT_CREATE_FORBIDDEN");
+  assert.equal((await f.pool.query("SELECT action FROM audit_events WHERE target_id = $1 AND action = 'user.approved'", [pending.id])).rows.length, 1);
 });
 
 for (const rehash of [false, true]) {

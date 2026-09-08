@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "defaults": {
+    "latex": "article",
+    "lilypond": "default"
+  },
+  "templates": [
+    {
+      "type": "latex",
+      "id": "article",
+      "title": "Article",
+      "description": "Minimal LaTeX article"
+    },
+    {
+      "type": "latex",
+      "id": "beamer",
+      "title": "Presentation",
+      "description": "Minimal Beamer presentation"
+    },
+    {
+      "type": "latex",
+      "id": "book",
+      "title": "Book",
+      "description": "Minimal LaTeX book"
+    },
+    {
+      "type": "latex",
+      "id": "report",
+      "title": "Report",
+      "description": "Minimal LaTeX report"
+    },
+    {
+      "type": "latex",
+      "id": "letter",
+      "title": "Letter",
+      "description": "Minimal LaTeX letter"
+    },
+    {
+      "type": "lilypond",
+      "id": "default",
+      "title": "Default score",
+      "description": "Minimal LilyPond score"
+    }
+  ]
+}

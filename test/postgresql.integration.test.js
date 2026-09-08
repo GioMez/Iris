@@ -26,7 +26,9 @@ const ALL_MIGRATIONS = [
   "012_versioned_build_outputs.sql",
   "013_realtime_revisions.sql",
   "014_account_session_version.sql",
+  "014_external_users.sql",
   "015_project_revision.sql",
+  "015_retention.sql",
 ];
 const silentLogger = { log() {}, warn() {}, error() {} };
 
@@ -308,6 +310,21 @@ test("server administration schema enforces roles, status and OIDC identity", { 
       (error) => error.code === "23514"
     );
   }
+
+  // The vocabularies migration 014 widened: an external account and one waiting
+  // for approval are both storable, while the rejected values above still are not.
+  await pool.query(
+    "INSERT INTO users (id, username, email, display_name, system_role, status, auth_source, oidc_issuer, oidc_subject) VALUES ($1, 'ext', 'ext@e.org', 'ext', 'external', 'pending', 'oidc', 'https://idp', 'sub-ext')",
+    [uuidv7()]
+  );
+  const provisioned = await pool.query("SELECT system_role, status, disabled_at FROM users WHERE username = 'ext'");
+  assert.deepEqual(
+    { role: provisioned.rows[0].system_role, status: provisioned.rows[0].status },
+    { role: "external", status: "pending" }
+  );
+  // A pending account was never disabled, so the date that describes it is
+  // created_at and disabled_at stays null.
+  assert.equal(provisioned.rows[0].disabled_at, null);
 
   // Defaults: a plain insert is an active, regular, local account.
   const id = uuidv7();
@@ -701,4 +718,204 @@ test("migration 004 rewrites every identifier and its references", { skip: !conn
   const summary = await relocateProjectStorage({ db: pool, dataDir, logger: silentLogger });
   assert.equal(summary.moved, 1);
   assert.equal(await fs.readFile(path.join(dataDir, "projects", project.id, "main.ly"), "utf8"), "{ c1 }");
+});
+
+// The retention SQL is the implementation of the K+D rule, so it is verified
+// against a real planner rather than against a reimplementation of itself. Every
+// case below is one the rule has to get right, and each is a way a naive
+// version — count only, or age only — would delete something it must not.
+test("retention prunes only what is both surplus and old", { skip: !connectionString }, async (t) => {
+  const pool = await isolatedSchema(t);
+  await runMigrations(pool);
+  const userId = await insertUser(pool, "gio", "gio@example.org");
+  const projectId = uuidv7();
+  await pool.query(
+    "INSERT INTO projects (id, created_by, name, storage_path) VALUES ($1, $2, $3, $4)",
+    [projectId, userId, "Thesis", projectStorageKey(projectId)]
+  );
+  const fileId = uuidv7();
+  await pool.query(
+    "INSERT INTO project_files (id, project_id, client_ref, path, kind) VALUES ($1, $2, $3, 'main.tex', 'tex')",
+    [fileId, projectId, fileId]
+  );
+
+  // Ten revisions, one per day going back: index 0 is today, index 9 is nine
+  // days old. Age is set explicitly so the test does not depend on wall time.
+  const versions = [];
+  for (let age = 0; age < 10; age++) {
+    const id = uuidv7();
+    await pool.query(
+      `INSERT INTO document_versions (id, file_id, author_id, author_label, reason, content_hash, content, size, created_at)
+       VALUES ($1, $2, $3, 'gio', 'realtime', $4, $5, 4, CURRENT_TIMESTAMP - ($6 || ' days')::interval)`,
+      [id, fileId, userId, crypto.createHash("sha256").update(`v${age}`).digest("hex"), `v${age}`, String(age)]
+    );
+    versions.push({ id, age });
+  }
+
+  const pruneVersions = (keep, days) => pool.query(
+    `WITH ranked AS (
+       SELECT dv.id, dv.created_at,
+              ROW_NUMBER() OVER (PARTITION BY dv.file_id ORDER BY dv.created_at DESC, dv.id DESC) AS position
+       FROM document_versions dv
+       JOIN project_files pf ON pf.id = dv.file_id
+       WHERE pf.project_id = $1
+     )
+     DELETE FROM document_versions dv
+     USING ranked
+     WHERE dv.id = ranked.id AND ranked.position > $2 AND ranked.created_at < $3`,
+    [projectId, keep, new Date(Date.now() - days * 24 * 60 * 60 * 1000)]
+  );
+
+  // Old but not surplus: a generous count protects every one of them.
+  const untouched = await pruneVersions(50, 1);
+  assert.equal(untouched.rowCount, 0, "the count alone must be able to save an old revision");
+
+  // Surplus but not old: a short count does not on its own delete this week's work.
+  const stillUntouched = await pruneVersions(3, 365);
+  assert.equal(stillUntouched.rowCount, 0, "the age alone must be able to save a surplus revision");
+
+  // Both: keep the newest 4, and of the rest delete only those older than 6 days.
+  // That is indexes 6, 7, 8 and 9 — surplus by count and past the age cutoff.
+  const pruned = await pruneVersions(4, 6);
+  assert.equal(pruned.rowCount, 4);
+  const remaining = await pool.query("SELECT id FROM document_versions WHERE file_id = $1", [fileId]);
+  const survivors = new Set(remaining.rows.map((row) => row.id));
+  assert.equal(survivors.size, 6);
+  for (const version of versions.filter((v) => v.age <= 5)) {
+    assert.ok(survivors.has(version.id), `revision aged ${version.age} days must survive`);
+  }
+  // The current content of the file is the one thing that can never go.
+  assert.ok(survivors.has(versions[0].id), "the newest revision is never prunable");
+
+  /* ---- builds ---- */
+  const sourceHash = crypto.createHash("sha256").update("source").digest("hex");
+  const insertBuild = async (age, status) => {
+    const id = uuidv7();
+    const succeeded = status === "succeeded";
+    // The lifecycle CHECK ties status to the shape of the rest of the row, so a
+    // succeeded build has to carry its storage path, hash and artifact count
+    // while the other two must carry none of them.
+    await pool.query(
+      `INSERT INTO build_outputs (
+         id, project_id, source_file_id, source_content_hash, created_by, created_by_label,
+         completed_at, status, project_type, compiler, format, main_path, display_name,
+         storage_path, size, content_hash, artifact_count, created_at
+       ) VALUES ($1, $2, $3, $4, $5, 'gio', $6, $7,
+         'latex', 'pdflatex', 'pdf', 'main.tex', 'main.pdf',
+         $8, $9, $10, $11, CURRENT_TIMESTAMP - ($12 || ' days')::interval)`,
+      [
+        id, projectId, fileId, sourceHash, userId,
+        status === "running" ? null : new Date(),
+        status,
+        succeeded ? `output/${id}` : null,
+        succeeded ? 3 : 0,
+        succeeded ? sourceHash : null,
+        succeeded ? 1 : 0,
+        String(age),
+      ]
+    );
+    return id;
+  };
+
+  // Six failures spread over a year, and one success older than all of them.
+  const oldSuccess = await insertBuild(400, "succeeded");
+  const failures = [];
+  for (const age of [1, 40, 90, 200, 300, 500]) failures.push({ id: await insertBuild(age, "failed"), age });
+  const running = await insertBuild(700, "running");
+
+  const pruneBuilds = (keep, days) => pool.query(
+    `WITH ranked AS (
+       SELECT id, created_at,
+              ROW_NUMBER() OVER (ORDER BY created_at DESC, id DESC) AS position
+       FROM build_outputs
+       WHERE project_id = $1 AND status <> 'running'
+     ),
+     protected_build AS (
+       SELECT id FROM build_outputs
+       WHERE project_id = $1 AND status = 'succeeded'
+       ORDER BY created_at DESC, id DESC LIMIT 1
+     )
+     DELETE FROM build_outputs b
+     USING ranked
+     WHERE b.id = ranked.id
+       AND ranked.position > $2
+       AND ranked.created_at < $3
+       AND b.id NOT IN (SELECT id FROM protected_build)
+     RETURNING b.id`,
+    [projectId, keep, new Date(Date.now() - days * 24 * 60 * 60 * 1000)]
+  );
+
+  // Keep 3, delete the rest once past 30 days. By age the order is 1, 40, 90,
+  // 200, 300, 400 (the success), 500 — so positions 4 upward are 200, 300, 400
+  // and 500 days old. All are past the cutoff, but the success at 400 days is
+  // the project's last good output and survives regardless.
+  const removed = await pruneBuilds(3, 30);
+  const removedIds = new Set(removed.rows.map((row) => row.id));
+  assert.equal(removed.rowCount, 3);
+  assert.ok(!removedIds.has(oldSuccess), "the last successful build survives any age");
+  assert.ok(!removedIds.has(running), "a build still running owns its directory");
+  for (const age of [200, 300, 500]) {
+    const failure = failures.find((f) => f.age === age);
+    assert.ok(removedIds.has(failure.id), `the failure aged ${age} days should have been pruned`);
+  }
+  const left = await pool.query("SELECT id, status FROM build_outputs WHERE project_id = $1", [projectId]);
+  assert.equal(left.rowCount, 5);
+  assert.ok(left.rows.some((row) => row.status === "running"), "the running build is untouched");
+
+  // A revision a build points at can be pruned without taking the build with
+  // it: the reference is nulled and the content hash still records the source.
+  const buildWithRevision = uuidv7();
+  const keptVersion = versions[0].id;
+  await pool.query(
+    `INSERT INTO build_outputs (
+       id, project_id, source_file_id, source_revision_id, source_content_hash, created_by_label,
+       completed_at, status, project_type, compiler, format, main_path, display_name
+     ) VALUES ($1, $2, $3, $4, $5, 'gio', CURRENT_TIMESTAMP, 'failed', 'latex', 'pdflatex', 'pdf', 'main.tex', 'main.pdf')`,
+    [buildWithRevision, projectId, fileId, keptVersion, sourceHash]
+  );
+  await pool.query("DELETE FROM document_versions WHERE id = $1", [keptVersion]);
+  const orphaned = await pool.query(
+    "SELECT source_revision_id, source_content_hash FROM build_outputs WHERE id = $1",
+    [buildWithRevision]
+  );
+  assert.equal(orphaned.rows[0].source_revision_id, null);
+  assert.equal(orphaned.rows[0].source_content_hash, sourceHash, "provenance survives the pruned revision");
+});
+
+// The schema's own floors, which hold even for a value written outside the
+// application. The operator's narrower ceiling lives above this layer so it can
+// change without a migration.
+test("retention columns admit null and refuse a history-shredding value", { skip: !connectionString }, async (t) => {
+  const pool = await isolatedSchema(t);
+  await runMigrations(pool);
+  const userId = await insertUser(pool, "gio", "gio@example.org");
+  const projectId = uuidv7();
+  // Null on every axis: the project follows the instance default.
+  await pool.query(
+    "INSERT INTO projects (id, created_by, name, storage_path) VALUES ($1, $2, $3, $4)",
+    [projectId, userId, "Defaults", projectStorageKey(projectId)]
+  );
+  const defaults = await pool.query(
+    "SELECT build_keep, build_days, version_keep, version_days FROM projects WHERE id = $1",
+    [projectId]
+  );
+  assert.deepEqual(defaults.rows[0], { build_keep: null, build_days: null, version_keep: null, version_days: null });
+
+  for (const [column, value] of [["build_keep", 0], ["version_keep", 1], ["build_days", 0], ["version_days", 0]]) {
+    await assert.rejects(
+      pool.query(`UPDATE projects SET ${column} = $1 WHERE id = $2`, [value, projectId]),
+      (error) => error.code === "23514",
+      `${column} must refuse ${value}`
+    );
+  }
+  for (const [column, value] of [["build_keep", 1000], ["version_keep", 5000], ["build_days", 4000], ["version_days", 4000]]) {
+    await assert.rejects(
+      pool.query(`UPDATE projects SET ${column} = $1 WHERE id = $2`, [value, projectId]),
+      (error) => error.code === "23514",
+      `${column} must refuse ${value}`
+    );
+  }
+  await pool.query("UPDATE projects SET build_keep = 50, version_days = 400 WHERE id = $1", [projectId]);
+  const stored = await pool.query("SELECT build_keep, version_days FROM projects WHERE id = $1", [projectId]);
+  assert.deepEqual(stored.rows[0], { build_keep: 50, version_days: 400 });
 });
