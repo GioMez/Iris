@@ -2145,7 +2145,13 @@ async function collabUpgrade(req, socket, head, wss) {
 function collabAttach(server) {
   const wss = new WebSocketServer({ noServer: true, maxPayload: COLLAB_MAX_MESSAGE_BYTES });
   server.on("upgrade", (req, socket, head) => {
-    const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+    let url;
+    try {
+      url = parseRequestUrl(req);
+    } catch {
+      socket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+      return;
+    }
     if (url.pathname !== COLLAB_PATH) {
       socket.destroy();
       return;
@@ -2715,13 +2721,30 @@ function normalizeCompileProfile(profile, engine, mainPath, projectType = "latex
       const rawArgs = Array.isArray(step.args) ? step.args : [];
       let args = rawArgs.map((arg) => expandCompileArg(arg, vars, engine));
       if (LATEX_ENGINES.has(tool)) {
+        // Validate expanded arguments at the execution boundary, including saved
+        // and imported profiles. TeX accepts aliases and abbreviated switches,
+        // so a denylist cannot reliably keep its execution mode constrained.
+        const options = args.filter((arg) => arg.startsWith("-"));
+        const inputs = args.filter((arg) => !arg.startsWith("-"));
+        const allowedOption = /^--?(?:interaction=nonstopmode|halt-on-error|file-line-error|no-shell-escape|output-directory=output|synctex=-?\d+|recorder|draftmode|8bit)$/;
+        if (args.some((arg) => /[\x00-\x1f\x7f]/.test(arg))
+          || options.some((arg) => !allowedOption.test(arg))
+          || inputs.length !== 1
+          || /^[\s&/]/.test(inputs[0])
+          || inputs[0].includes("^^") // TeX decodes these even inside filenames.
+          || /[\\":|]/.test(inputs[0])) {
+          throw requestError("COMPILE_ARGUMENT_INVALID", 400);
+        }
+        safeProjectSourcePath(inputs[0]);
         args = [
           "-interaction=nonstopmode",
           "-halt-on-error",
           "-file-line-error",
           "-no-shell-escape",
           "-output-directory=output",
-          ...args.filter((arg) => !arg.startsWith("-output-directory")),
+          ...options,
+          // Anything after the source operand is interpreted as TeX input.
+          inputs[0],
         ];
       }
       if (tool === "lilypond") args = lilypondArgs(args, vars, additionalArgs, outputFormat);
@@ -4271,8 +4294,19 @@ function healthPayload() {
   };
 }
 
+function parseRequestUrl(req) {
+  // Validate Host separately so it cannot influence route resolution.
+  if (req.headers.host) new URL(`http://${req.headers.host}`);
+  return new URL(req.url, "http://localhost");
+}
+
 async function handle(req, res) {
-  const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+  let url;
+  try {
+    url = parseRequestUrl(req);
+  } catch {
+    return text(res, 400, "Bad request", { connection: "close" });
+  }
   inFlight += 1;
   // Counted only once the request passes the gate, so refused mutations during a
   // maintenance window do not appear as pending writes the operator waits on.
@@ -4366,6 +4400,7 @@ if (require.main === module) initDb()
   });
 
 module.exports = {
+  handle,
   applyCollabAuthority,
   collabAttach,
   collabRooms,

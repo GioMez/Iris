@@ -268,7 +268,8 @@ The available pipeline presets are:
 - **BibTeX:** engine, BibTeX, then two additional engine runs.
 - **Biber:** engine, Biber, then two additional engine runs.
 - **Index:** engine, MakeIndex, then one additional engine run.
-- **Custom:** up to twelve ordered steps using allowlisted tools and arguments.
+- **Custom:** up to twelve ordered steps using allowlisted tools and constrained
+  TeX-engine arguments.
 
 Custom pipeline arguments can use these placeholders:
 
@@ -281,6 +282,17 @@ Custom pipeline arguments can use these placeholders:
 
 LaTeX processes run with `-no-shell-escape`, nonstop interaction, file-and-line
 errors, and a forced `output/` destination.
+
+Custom TeX-engine steps accept one relative project source filename (normally
+`[main]`) and the options `-synctex=<integer>`, `-recorder`, `-draftmode`, and
+`-8bit`. The backend-managed options may also be repeated with their exact
+values: `-interaction=nonstopmode`, `-halt-on-error`, `-file-line-error`,
+`-no-shell-escape`, and `-output-directory=output`. Both one- and two-dash forms
+are accepted; abbreviations and other options are rejected before compilation,
+including in saved or imported profiles. Inline TeX commands, format selectors,
+and additional source operands are not accepted as pipeline arguments. BibTeX,
+Biber, MakeIndex and LilyPond argument handling is unchanged. These restrictions
+do not replace the process isolation described in the security notes below.
 
 For XeLaTeX and LuaLaTeX, fonts uploaded through project settings are stored in
 `fonts/` and exposed through `OSFONTDIR`. Iris also keeps a project-local TeX

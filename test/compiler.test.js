@@ -227,6 +227,133 @@ test("keeps the existing hardened LaTeX invocation", () => {
   assert.equal(profile.steps[0].args.at(-1), "main.tex");
 });
 
+test("LaTeX custom pipelines reject shell escape switches, aliases and abbreviations", () => {
+  for (const engine of ["pdflatex", "xelatex", "lualatex", "xetex"]) {
+    for (const option of [
+      "-shell-escape", "--shell-escape", "-shell-escape=true",
+      "-shell-restricted", "--shell-restricted", "-enable-write18", "--enable-write18",
+      "-shell-e", "--shell-e", "-shell-r",
+    ]) {
+      for (const args of [[option, "[main]"], ["[main]", option]]) {
+        const stored = sanitizeCompileProfileForStorage({
+          mode: "custom", steps: [{ tool: "[engine]", args }],
+        });
+        assert.throws(
+          () => normalizeCompileProfile(stored, engine, "main.tex"),
+          (error) => error.errorCode === "COMPILE_ARGUMENT_INVALID" && error.status === 400,
+          `${engine}: ${args.join(" ")}`
+        );
+      }
+    }
+  }
+});
+
+test("LaTeX custom pipelines reject configuration and alternate execution modes", () => {
+  for (const tool of ["pdflatex", "xelatex", "lualatex", "xetex"]) {
+    for (const args of [
+      ["--cnf-line=shell_escape=t", "[main]"],
+      ["-cnf-line", "openout_any=a", "[main]"],
+      ["--lua=bootstrap.lua", "[main]"],
+      ["--luaonly", "bootstrap.lua"],
+      ["--luaconly", "bootstrap.lua"],
+      ["--ini", "[main]"],
+      ["--fmt=custom", "[main]"],
+      ["--progname=custom", "[main]"],
+      ["--ipc-start", "[main]"],
+      ["--socket", "[main]"],
+      ["--unknown-option", "[main]"],
+    ]) {
+      assert.throws(
+        () => normalizeCompileProfile({ mode: "custom", steps: [{ tool, args }] }, "pdflatex", "main.tex"),
+        (error) => error.errorCode === "COMPILE_ARGUMENT_INVALID" && error.status === 400,
+        `${tool}: ${args.join(" ")}`
+      );
+    }
+  }
+});
+
+test("LaTeX custom pipelines cannot override managed output and interaction options", () => {
+  for (const args of [
+    ["-output-directory=/tmp/escape", "[main]"],
+    ["--output-directory=/tmp/escape", "[main]"],
+    ["-output-directory", "/tmp/escape", "[main]"],
+    ["--output-dir=/tmp/escape", "[main]"],
+    ["--jobname=/tmp/escape", "[main]"],
+    ["--interaction=errorstopmode", "[main]"],
+    ["--no-file-line-error", "[main]"],
+  ]) {
+    assert.throws(
+      () => normalizeCompileProfile({ mode: "custom", steps: [{ tool: "[engine]", args }] }, "pdflatex", "main.tex"),
+      (error) => error.errorCode === "COMPILE_ARGUMENT_INVALID" && error.status === 400,
+      args.join(" ")
+    );
+  }
+});
+
+test("LaTeX steps accept one project source rather than inline commands or format selectors", () => {
+  for (const args of [
+    [], ["--recorder"], ["[main]", "other.tex"], ["&custom", "[main]"],
+    ["\\input{main.tex}"], ["[main]", "\\end"], [" main.tex"],
+    ["/tmp/main.tex"], ["C:/main.tex"], ["../main.tex"],
+    ["main.tex\n\\end"], ['"main.tex"'], ["|command"],
+    ["main.tex^^5cerrorstopmode"], ["main.tex^^^^005cerrorstopmode"],
+  ]) {
+    assert.throws(
+      () => normalizeCompileProfile({ mode: "custom", steps: [{ tool: "[engine]", args }] }, "pdflatex", "main.tex"),
+      (error) => error.status === 400,
+      JSON.stringify(args)
+    );
+  }
+  assert.throws(
+    () => normalizeCompileProfile({ mode: "quick" }, "pdflatex", "&custom.tex"),
+    (error) => error.status === 400
+  );
+});
+
+test("LaTeX custom pipelines retain safe options before the source operand", () => {
+  const stored = sanitizeCompileProfileForStorage({ mode: "custom", steps: [{
+    tool: "[engine]",
+    args: ["[main]", "--synctex=-1", "-recorder", "-draftmode", "-8bit", "--no-shell-escape"],
+  }] });
+  const profile = normalizeCompileProfile(stored, "pdflatex", "chapters/part one.tex");
+  assert.deepEqual(profile.steps, [{ tool: "pdflatex", args: [
+    "-interaction=nonstopmode", "-halt-on-error", "-file-line-error",
+    "-no-shell-escape", "-output-directory=output",
+    "--synctex=-1", "-recorder", "-draftmode", "-8bit", "--no-shell-escape",
+    "chapters/part one.tex",
+  ] }]);
+});
+
+test("LaTeX source operands preserve valid relative paths", () => {
+  for (const source of ["./main.tex", "chapters/../main.tex"]) {
+    const profile = normalizeCompileProfile({
+      mode: "custom", steps: [{ tool: "[engine]", args: [source] }],
+    }, "pdflatex", "main.tex");
+    assert.equal(profile.steps[0].args.at(-1), source);
+  }
+});
+
+test("LaTeX presets retain their bibliography and index steps", () => {
+  const expected = {
+    quick: [],
+    bibtex: [{ tool: "bibtex", args: ["output/main"] }],
+    biber: [{ tool: "biber", args: ["--input-directory=output", "--output-directory=output", "main"] }],
+    index: [{ tool: "makeindex", args: ["-o", "output/main.ind", "output/main.idx"] }],
+  };
+  for (const engine of ["pdflatex", "xelatex", "lualatex", "xetex"]) {
+    for (const [mode, auxiliarySteps] of Object.entries(expected)) {
+      const profile = normalizeCompileProfile({ mode }, engine, "main.tex");
+      assert.deepEqual(profile.steps.filter((step) => step.tool !== engine), auxiliarySteps);
+      for (const step of profile.steps.filter((step) => step.tool === engine)) {
+        assert.deepEqual(step.args, [
+          "-interaction=nonstopmode", "-halt-on-error", "-file-line-error",
+          "-no-shell-escape", "-output-directory=output", "main.tex",
+        ]);
+      }
+    }
+  }
+});
+
 test("invokes LilyPond with project-local XDG data and reads its PDF", async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "iris-lilypond-test-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
