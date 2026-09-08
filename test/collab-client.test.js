@@ -191,7 +191,7 @@ test("flushing sends everything pending without waiting for the debounce", () =>
   assert.equal(socket.lastOfType("push").version, 4);
 });
 
-test("local edits are pushed once and confirmed by a pull", () => {
+test("an ack arriving before its own confirmation recovers by pull", () => {
   const h = harness();
   const socket = joined(h, { version: 2 });
 
@@ -367,6 +367,30 @@ test("messages for a file that is no longer open are ignored", () => {
   const receivedBefore = h.editor.received.length;
   socket.deliver({ t: "updates", fileId: "file-1", version: 3, updates: [{ changes: [1], clientID: "other" }] });
   assert.equal(h.editor.received.length, receivedBefore, "updates for a closed room must be dropped");
+});
+
+test("a refused obsolete open does not disable the file now opening", () => {
+  const h = harness();
+  h.collab.join("file-1", "tex");
+  const socket = h.socket();
+  socket.fire("open");
+  h.collab.join("file-2", "tex");
+  socket.deliver({ t: "error", code: "COLLAB_NOT_TEXT", request: "open", fileId: "file-1" });
+  assert.equal(h.collab.status(), "connecting");
+  assert.equal(h.events.some((event) => event.type === "iris:collabunavailable"), false);
+  socket.deliver({ t: "opened", fileId: "file-2", version: 0, doc: "two", role: "editor" });
+  assert.equal(h.collab.fileId(), "file-2");
+});
+
+test("a stale opened message cannot consume the current file's awaited open", () => {
+  const h = harness();
+  const socket = joined(h);
+  h.collab.join("file-2", "tex");
+  socket.deliver({ t: "opened", fileId: "file-1", version: 0, doc: "stale", role: "viewer" });
+  assert.equal(h.collab.active(), false);
+  socket.deliver({ t: "opened", fileId: "file-2", version: 0, doc: "two", role: "editor" });
+  assert.equal(h.collab.fileId(), "file-2");
+  assert.equal(h.collab.status(), "live");
 });
 
 test("leaving tells the server and stops tracking the room", () => {

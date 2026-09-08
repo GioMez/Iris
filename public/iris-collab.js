@@ -10,7 +10,7 @@
 //   * the editor reports pending local updates → push them at the synced version;
 //   * a rejected push means the server accepted someone else's updates first, so
 //     pull, let @codemirror/collab rebase, and push again;
-//   * updates from others arrive unsolicited and are applied straight away;
+//   * all accepted updates, including our own, share one version-indexed stream;
 //   * after a reconnection, pull from the version still held. If the server has
 //     dropped that far back in its log it answers with the full document instead.
 (function () {
@@ -37,6 +37,7 @@
     // restored automatically.
     desired: null,       // { fileId, kind }
     joined: null,        // fileId confirmed open by the server
+    opening: [],         // desired rooms awaiting a reply, in socket request order
     status: "off",       // off | connecting | live | offline | readonly | revoked | error
     role: null,
     attempt: 0,
@@ -44,6 +45,8 @@
     pushTimer: 0,
     presenceTimer: 0,
     pushing: false,
+    pulling: null,       // base version of the outstanding catch-up request
+    neededVersion: 0,    // highest authority version seen, even across a gap
     peers: [],
   };
 
@@ -74,6 +77,7 @@
     const socket = state.socket;
     if (!socket || socket.readyState !== WebSocket.OPEN) return false;
     socket.send(JSON.stringify(message));
+    if (message.t === "open") state.opening.push(state.desired);
     return true;
   }
 
@@ -92,7 +96,9 @@
       return scheduleReconnect();
     }
     state.socket = socket;
+    state.opening = [];
     socket.addEventListener("open", () => {
+      if (state.socket !== socket) return;
       state.attempt = 0;
       // Restore what this tab was watching. After a reconnection this is what
       // brings the session back without the app having to notice.
@@ -100,6 +106,7 @@
       if (state.desired) send({ t: "open", fileId: state.desired.fileId });
     });
     socket.addEventListener("message", (event) => {
+      if (state.socket !== socket) return;
       let message;
       try {
         message = JSON.parse(event.data);
@@ -109,9 +116,13 @@
       handle(message);
     });
     socket.addEventListener("close", (event) => {
+      if (state.socket !== socket) return;
       state.socket = null;
+      state.opening = [];
       state.joined = null;
       state.pushing = false;
+      state.pulling = null;
+      state.neededVersion = 0;
       clearTimeout(state.pushTimer);
       state.pushTimer = 0;
       clearTimeout(state.presenceTimer);
@@ -154,13 +165,15 @@
     }
 
     if (message.t === "opened") {
-      if (!isCurrent(message.fileId)) {
-        // The app moved on while the server was answering.
-        send({ t: "close", fileId: message.fileId });
-        return;
-      }
+      if (!state.opening.length || state.opening[0].fileId !== message.fileId) return;
+      const desired = state.opening.shift();
+      // Even A -> B -> A must wait for the last open. Earlier rooms already
+      // have a close queued; adopting their replies could reset newer edits.
+      if (desired !== state.desired) return;
       state.joined = message.fileId;
       state.role = message.role;
+      state.neededVersion = message.version;
+      state.pulling = null;
       ed().loadCollab(message.doc, state.desired.kind, { version: message.version });
       setStatus(message.role === "viewer" ? "readonly" : "live");
       // Anything typed before the room opened is now sendable.
@@ -184,31 +197,51 @@
     }
 
     if (message.t === "updates") {
-      if (!isCurrent(message.fileId)) return;
-      ed().collabReceive(message.updates);
+      if (!isCurrent(message.fileId) || state.joined !== message.fileId) return;
+      if (!Number.isInteger(message.version) || !Array.isArray(message.updates)) return;
+      const start = message.version - message.updates.length;
+      if (start < 0) return;
+      const version = ed().collabVersion();
+      state.neededVersion = Math.max(state.neededVersion, message.version);
+      // A broadcast can satisfy a pull too. Its eventual reply is just another
+      // range in the same stream, not a second set of edits to apply.
+      if (state.pulling !== null && start <= state.pulling && message.version >= state.pulling) {
+        state.pulling = null;
+      }
+      if (start <= version && message.version > version) {
+        ed().collabReceive(message.updates.slice(version - start));
+      }
+      // Never buffer out-of-order payloads: retain only their end version and
+      // pull from the version actually applied, including after a short reply.
       setStatus(state.role === "viewer" ? "readonly" : "live");
       pushPending();
       return;
     }
 
     if (message.t === "resync") {
-      if (!isCurrent(message.fileId)) return;
+      if (!isCurrent(message.fileId) || state.joined !== message.fileId) return;
+      if (!Number.isInteger(message.version) || message.version <= ed().collabVersion()) return;
       // The server replaced the document (rollback) or our version fell out of
       // its log: local pending edits cannot be rebased and are dropped, which is
       // why only the server may ask for this.
+      state.pulling = null;
+      state.neededVersion = Math.max(state.neededVersion, message.version);
+      // Keep an outstanding push gated until its ack, even though its old local
+      // edits are discarded. That ack must not unlock a later push instead.
       ed().loadCollab(message.doc, state.desired.kind, { version: message.version });
       setStatus(state.role === "viewer" ? "readonly" : "live");
+      pushPending();
       sendPresence();
       return;
     }
 
     if (message.t === "pushed") {
+      if (!isCurrent(message.fileId) || state.joined !== message.fileId || !state.pushing) return;
       state.pushing = false;
-      if (!isCurrent(message.fileId)) return;
-      // Accepted or refused, the next step is the same: pull. On acceptance that
-      // confirms our own updates and advances the synced version; on refusal it
-      // brings in what got there first so the pending work can be rebased.
-      pullNow();
+      // An ack releases the request, not the edits. Only the contiguous update
+      // stream confirms/rebases them; don't resend while that stream is behind.
+      state.neededVersion = Math.max(state.neededVersion, message.version);
+      pushPending();
       return;
     }
 
@@ -230,6 +263,13 @@
     }
 
     if (message.t === "error") {
+      // Any failed open completes that request, not just the known file errors.
+      // Errors from other operations must not consume an awaited open reply.
+      if (message.request === "open") {
+        if (!state.opening.length || state.opening[0].fileId !== message.fileId) return;
+        const desired = state.opening.shift();
+        if (desired !== state.desired) return;
+      }
       // A file the server will not share in realtime (not text, not found, or no
       // longer permitted) falls back to the ordinary save path.
       if (["COLLAB_FILE_NOT_FOUND", "COLLAB_NOT_TEXT", "COLLAB_BAD_FILE"].includes(message.code)) {
@@ -249,8 +289,9 @@
   }
 
   function pullNow() {
-    if (!state.joined) return;
-    send({ t: "pull", fileId: state.joined, version: ed().collabVersion() });
+    if (!state.joined || state.pulling !== null) return;
+    const version = ed().collabVersion();
+    if (send({ t: "pull", fileId: state.joined, version })) state.pulling = version;
   }
 
   // Pushes whatever the editor has pending. One push is in flight at a time: the
@@ -258,7 +299,9 @@
   function pushPending() {
     clearTimeout(state.pushTimer);
     state.pushTimer = 0;
-    if (state.pushing || !state.joined || state.role === "viewer") return;
+    if (!state.joined) return;
+    if (ed().collabVersion() < state.neededVersion) return pullNow();
+    if (state.pushing || state.role === "viewer") return;
     const pending = ed().collabPending();
     if (!pending || !pending.updates.length) return;
     state.pushing = send({ t: "push", fileId: state.joined, version: pending.version, updates: pending.updates });
@@ -330,6 +373,8 @@
       state.joined = null;
       state.role = null;
       state.pushing = false;
+      state.pulling = null;
+      state.neededVersion = 0;
       clearTimeout(state.reconnectTimer);
       state.reconnectTimer = 0;
       clearTimeout(state.pushTimer);

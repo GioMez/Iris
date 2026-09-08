@@ -21,13 +21,31 @@ const secret = "session-tests-only-secret-with-sufficient-entropy";
 async function serverFixture(t, env = {}) {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "iris-session-test-"));
   const schema = `iris_sessions_${crypto.randomBytes(8).toString("hex")}`;
-  const admin = new Pool({ connectionString, max: 1 });
-  const pool = new Pool({ connectionString, max: 4, options: `-c search_path=${schema}` });
+  const timeouts = { connectionTimeoutMillis: 3000, query_timeout: 7000, statement_timeout: 5000, lock_timeout: 3000, idle_in_transaction_session_timeout: 10000 };
+  const admin = new Pool({ connectionString, max: 1, ...timeouts });
+  const pool = new Pool({ connectionString, max: 4, ...timeouts, options: `-c search_path=${schema}` });
   const hooks = {};
+  const waits = new Set();
+  const hook = async (name, ...args) => {
+    if (!hooks[name]) return;
+    let timer;
+    let release;
+    const cancelled = new Promise((resolve, reject) => {
+      release = resolve;
+      timer = setTimeout(() => reject(new Error(`Fixture hook timed out: ${name}`)), 5000);
+    });
+    waits.add(release);
+    try { await Promise.race([hooks[name](...args), cancelled]); }
+    finally { clearTimeout(timer); waits.delete(release); }
+  };
   let app;
   let server;
   const sockets = new Set();
+  const streams = new Set();
   t.after(async () => {
+    Object.keys(hooks).forEach((key) => delete hooks[key]);
+    waits.forEach((release) => release());
+    streams.forEach((stream) => stream.destroy());
     if (app) await app.collabShutdown();
     sockets.forEach((socket) => socket.destroy());
     if (server) await new Promise((resolve) => server.close(resolve));
@@ -40,27 +58,49 @@ async function serverFixture(t, env = {}) {
   await runMigrations(pool);
   const injectedDb = {
     async query(sql, params) {
-      if (hooks.beforeQuery) await hooks.beforeQuery(sql, params);
+      await hook("beforeQuery", sql, params);
       const result = await pool.query(sql, params);
-      if (hooks.afterQuery) await hooks.afterQuery(sql, params, result);
+      await hook("afterQuery", sql, params, result);
       return result;
     },
-    connect: () => pool.connect(),
+    async connect() {
+      const client = await pool.connect();
+      return {
+        async query(sql, params) {
+          await hook("beforeClientQuery", sql, params);
+          const result = await client.query(sql, params);
+          await hook("afterClientQuery", sql, params, result);
+          return result;
+        },
+        release: (error) => client.release(error),
+      };
+    },
   };
   const localRequire = (name) => {
     if (name === "./env") return { loadDotEnv() {} };
-    if (name === "node:fs/promises") return {
-      ...fs,
-      async readFile(...args) {
-        if (hooks.beforeReadFile) await hooks.beforeReadFile(...args);
-        return fs.readFile(...args);
+    if (name === "node:fs") return {
+      ...fsSync,
+      createReadStream(...args) {
+        const stream = fsSync.createReadStream(...args);
+        streams.add(stream);
+        stream.once("close", () => streams.delete(stream));
+        return stream;
       },
     };
+    if (name === "node:fs/promises") return Object.fromEntries(Object.entries(fs).map(([method, value]) => [method,
+      ["readFile", "writeFile", "rename", "unlink", "cp", "rm", "mkdir", "rmdir"].includes(method) ? async (...args) => {
+        const suffix = method[0].toUpperCase() + method.slice(1);
+        await hook(`before${suffix}`, ...args);
+        const result = await value(...args);
+        await hook(`after${suffix}`, ...args);
+        return result;
+      } : value,
+    ]));
     if (name === "argon2") return {
       ...argon2,
       async verify(...args) {
         const result = await argon2.verify(...args);
-        if (hooks.afterVerify) await hooks.afterVerify(...args);
+        await hook("afterVerify", ...args);
         return result;
       },
     };
@@ -69,7 +109,7 @@ async function serverFixture(t, env = {}) {
   localRequire.resolve = requireServer.resolve;
   app = compileFunction(`${source}\ndb = injectedDb;\nreturn {
     ...module.exports, makeToken, verifyToken, requireUser, userFromOAuthProfile,
-    collabSessions, collabHandleMessage, collabJoin, collabRecheckProject, collabShutdown
+    collabSessions, collabHandleMessage, collabJoin, collabRecheckProject, collabShutdown, collabPersistNow
   };`, ["require", "module", "__filename", "__dirname", "process", "injectedDb"], { filename: serverPath })(
     localRequire, { exports: {} }, serverPath, path.dirname(serverPath),
     { pid: process.pid, env: {
@@ -92,11 +132,12 @@ async function serverFixture(t, env = {}) {
     return `iris_session=${body}.${sig}`;
   };
   const request = (pathname, { cookie, method = "GET", body } = {}) => fetch(`${baseUrl}${pathname}`, {
+    signal: AbortSignal.timeout(15000),
     method,
     headers: { ...(cookie ? { cookie } : {}), ...(body ? { "content-type": "application/json" } : {}) },
     ...(body ? { body: JSON.stringify(body) } : {}),
   });
-  return { app, pool, hooks, dataDir, baseUrl, cookieFor, request };
+  return { app, pool, hooks, dataDir, baseUrl, cookieFor, request, server, streams };
 }
 
 function deferred() {

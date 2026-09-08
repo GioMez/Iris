@@ -69,6 +69,7 @@
     outputGeneration: 0,
     dirtyFiles: new Map(), // file id -> edit revision not yet persisted
     editRevision: 0,
+    projectRevision: null,
     role: "owner", // project role; "viewer" makes the workspace read-only
   };
 
@@ -77,42 +78,52 @@
   function isReadOnly() { return state.role === "viewer"; }
 
   /* ---------------- persistence (delegated to the projects layer) ---------------- */
-  let persistQueue = Promise.resolve(true);
+  let acknowledgedManifest = null;
   function persist() {
     if (!window.IrisProjects || isReadOnly()) return Promise.resolve(false);
-    const operation = async () => {
-      const dirtyAtStart = new Map(state.dirtyFiles);
-      const saved = await window.IrisProjects.persistCurrent();
-      if (!saved) return false;
-      let dirtyChanged = false;
-      dirtyAtStart.forEach((revision, id) => {
-        if (state.dirtyFiles.get(id) !== revision) return;
-        state.dirtyFiles.delete(id);
-        dirtyChanged = true;
-      });
-      if (dirtyChanged) {
-        renderTabs();
-        if (!state.dirtyFiles.size) clearTimeout(persistT);
-      }
-      // The save is what gives a file created in this session its canonical id,
-      // and with it the ability to join a realtime room.
-      syncRealtimeSession();
-      return true;
-    };
-    persistQueue = persistQueue.then(operation, operation);
-    return persistQueue;
+    return window.IrisProjects.persistCurrent();
   }
   function persistWhenDocumentClean() {
     return state.dirtyFiles.size ? Promise.resolve(false) : persist();
   }
   async function waitForPersistence() {
-    let pending;
-    do {
-      pending = persistQueue;
-      await pending;
-    } while (pending !== persistQueue);
+    if (window.IrisProjects) await window.IrisProjects.waitForPersistence();
     return true;
   }
+  // Text has per-file edit generations. Compare the persistent tree/settings too,
+  // but ignore navigation and folder expansion so browsing is not unsaved work.
+  function persistenceManifest(data = projectSnapshot()) {
+    const { revision, activeId, openTabs, untitledN, ...manifest } = data;
+    const nodes = (items) => (items || []).filter((node) => !node.generated).map((node) => {
+      const { content, open, ...rest } = node;
+      if (node.type === "folder") rest.children = nodes(node.children);
+      return rest;
+    });
+    manifest.project = { ...data.project, nodes: nodes(data.project.nodes) };
+    return JSON.stringify(manifest);
+  }
+  function hasUnsavedChanges() {
+    return state.dirtyFiles.size > 0 || (acknowledgedManifest !== null && persistenceManifest() !== acknowledgedManifest);
+  }
+  function capturePersistence() {
+    const data = projectSnapshot();
+    return { data, manifest: persistenceManifest(data), dirtyFiles: new Map(state.dirtyFiles), editRevision: state.editRevision, generation: state.projectLoadGeneration };
+  }
+  function acknowledgePersistence(snapshot, revision) {
+    if (snapshot.generation !== state.projectLoadGeneration) return false;
+    state.projectRevision = revision;
+    acknowledgedManifest = snapshot.manifest;
+    snapshot.dirtyFiles.forEach((edit, id) => {
+      if (state.dirtyFiles.get(id) === edit) state.dirtyFiles.delete(id);
+    });
+    renderTabs();
+    if (!hasUnsavedChanges()) clearTimeout(persistT);
+    syncRealtimeSession();
+    return true;
+  }
+  document.addEventListener("iris:projecterror", (event) => {
+    toast(window.IrisI18n.error(event.detail, "editor.saveFailed"), "err");
+  });
   function walk(nodes, fn) {
     nodes.forEach((n) => { if (n.type === "folder") walk(n.children, fn); else fn(n); });
   }
@@ -221,6 +232,7 @@
       if (f) {
         f.content = ed().getValue();
         if (!realtime) markFileDirty(f.id);
+        else state.editRevision += 1;
       }
       renderOutline();
       if (!realtime) schedulePersist();
@@ -274,7 +286,9 @@
   // cannot have one yet.
   function syncRealtimeSession() {
     const node = findFile(state.activeId);
-    if (!node || node.kind === "img" || node.generated || node.readOnly) {
+    // Joining loads server text; a save acknowledgement must not replace edits
+    // made after its snapshot was captured.
+    if (!node || node.kind === "img" || node.generated || node.readOnly || state.dirtyFiles.has(node.id)) {
       window.IrisCollab.leave();
       renderSyncStatus();
       return;
@@ -427,7 +441,7 @@
   let persistT;
   function schedulePersist() {
     clearTimeout(persistT);
-    if (!state.autoSave || !state.dirtyFiles.size) return;
+    if (!state.autoSave || !hasUnsavedChanges()) return;
     persistT = setTimeout(() => { void persist(); }, state.autoSaveDelay * 1000);
   }
 
@@ -1062,6 +1076,15 @@
     project.name = data.project.name || project.name;
     project.nodes = data.project.nodes;
     state.assets = data.assets || {};
+    state.projectType = inferProjectType(data);
+    state.projectLanguage = data.language || state.projectLanguage;
+    state.engine = data.engine || "pdflatex";
+    state.compileProfile = normalizeCompileProfile(data.compileProfile);
+    state.lilypondArgs = data.lilypondArgs || "";
+    state.lilypondFormat = data.lilypondFormat || "pdf";
+    state.autoSave = data.autoSave === true;
+    state.autoSaveDelay = normalizeAutoSaveDelay(data.autoSaveDelay ?? 600);
+    state.untitledN = data.untitledN || 0;
     state.fonts = fontSettingsFromTree(data.fonts);
     state.fonts.forEach((font) => { void registerProjectFont(font); });
     setPreviewFont(state.fonts.some((font) => font.family === previousPreviewFont) ? previousPreviewFont : null);
@@ -1092,26 +1115,33 @@
       // re-established for whichever file ended up active.
       syncRealtimeSession();
     }
+    updateProjectTypeUi();
+    updateAutoSaveControls();
+    state.projectRevision = data.revision;
+    acknowledgedManifest = persistenceManifest();
   }
 
   async function refreshFileTree() {
-    if (state.dirtyFiles.size) {
+    if (hasUnsavedChanges()) {
       toast(t("tree.refreshUnsaved"), "err");
       return;
     }
     const button = $("refreshTreeBtn");
     const revision = state.editRevision;
-    const snapshot = JSON.stringify(projectSnapshot());
+    const generation = state.projectLoadGeneration;
+    const snapshot = persistenceManifest();
     button.disabled = true;
     button.classList.add("loading");
     try {
       if (!window.IrisProjects || !window.IrisProjects.refreshCurrent) throw new Error(t("editor.projectsBackendUnavailable"));
-      const data = await window.IrisProjects.refreshCurrent();
-      if (revision !== state.editRevision || state.dirtyFiles.size || JSON.stringify(projectSnapshot()) !== snapshot) {
-        toast(t("tree.refreshChanged"), "err");
-        return;
-      }
-      applyRefreshedFileTree(data);
+      await window.IrisProjects.refreshCurrent((data) => {
+        if (generation !== state.projectLoadGeneration || revision !== state.editRevision || hasUnsavedChanges() || persistenceManifest() !== snapshot) {
+          toast(t("tree.refreshChanged"), "err");
+          return false;
+        }
+        applyRefreshedFileTree(data);
+        return true;
+      });
       toast(t("tree.refreshed"));
     } catch (err) {
       if (err && err.stale) return;
@@ -1332,7 +1362,8 @@
   function projectSnapshot() {
     const f = findFile(state.activeId);
     if (f && (f.kind === "tex" || f.kind === "ly" || f.kind === "bib")) f.content = ed().getValue();
-    return {
+    return JSON.parse(JSON.stringify({
+      revision: state.projectRevision,
       project: { name: project.name, nodes: snapshotNodes(project.nodes) },
       projectType: state.projectType,
       language: state.projectLanguage,
@@ -1347,7 +1378,7 @@
       untitledN: state.untitledN,
       autoSave: state.autoSave,
       autoSaveDelay: state.autoSaveDelay,
-    };
+    }));
   }
   function docFileForCompile() {
     const f = findFile(state.activeId);
@@ -1387,15 +1418,15 @@
     const t0 = performance.now();
     try {
       if (!window.IrisProjects || !window.IrisProjects.compileCurrent) throw new Error(t("editor.projectsBackendUnavailable"));
-      const res = await window.IrisProjects.compileCurrent(projectSnapshot(), {
+      const res = await window.IrisProjects.compileCurrent(() => ({
         engine: state.engine,
-        mainPath: f.path,
+        mainPath: docFileForCompile()?.path,
         texPath: state.texPath,
         lilypondPath: state.lilypondPath,
         lilypondArgs: state.lilypondArgs,
         lilypondFormat: state.lilypondFormat,
         compileProfile: state.compileProfile,
-      });
+      }));
       if (generation !== state.compileGeneration) return;
       const outputGeneration = ++state.outputGeneration;
       state.previewBuildId = res.buildId || null;
@@ -1428,12 +1459,12 @@
       clearCompiledArtifacts();
       state.previewBuildId = null;
       const ms = ((performance.now() - t0) / 1000).toFixed(1);
-      const message = err.message || t("editor.compileFailed");
+      const message = window.IrisI18n.error(err, "editor.compileFailed");
       const res = { success: false, log: t("editor.compileFailedLog", { message }), warnings: [], errors: [err.message || t("editor.compileError")] };
       buildLog(f, res, ms);
       updateCompileStatus(res, ms);
       setView("log");
-      toast(t("editor.compileFailed"), "err");
+      toast(message, "err");
     } finally {
       if (generation === state.compileGeneration) {
         state.compiling = false;
@@ -1967,7 +1998,7 @@
     if (isReadOnly()) { toast(t("projects.readOnlyNotice")); return false; }
     clearTimeout(persistT);
     const saved = await persist();
-    toast(t(saved ? "editor.documentSaved" : "editor.saveFailed"), saved ? "" : "err");
+    if (saved) toast(t("editor.documentSaved"));
     return saved;
   }
   function openExternal(file) {
@@ -2311,7 +2342,7 @@
       else if (key === "h") { e.preventDefault(); findOpen(true); }
     });
     window.addEventListener("beforeunload", (event) => {
-      if (!state.dirtyFiles.size) return;
+      if (!window.IrisProjects?.currentProjectId() || !hasUnsavedChanges()) return;
       event.preventDefault();
       event.returnValue = "";
     });
@@ -2575,7 +2606,7 @@
     if (!isCanonicalFileId(fileId)) {
       // Not yet reconciled: persist so the server assigns the canonical id, then
       // look it up by path from the refreshed project cache.
-      await persist();
+      if (!await persist()) return;
       const resolved = window.IrisProjects && window.IrisProjects.resolveFileId
         ? window.IrisProjects.resolveFileId(node.path)
         : null;
@@ -2750,8 +2781,14 @@
     try {
       // Flush the editor to disk first so the backend's pre-rollback snapshot
       // captures the true current state before the file is overwritten.
-      await persist();
+      if (!await persist()) return;
+      if (hasUnsavedChanges()) { toast(t("tree.refreshChanged"), "err"); return; }
+      const snapshot = capturePersistence();
       const out = await window.IrisProjects.restoreFileVersion(verState.fileId, verState.selectedId);
+      if (snapshot.generation !== state.projectLoadGeneration || snapshot.editRevision !== state.editRevision || snapshot.manifest !== persistenceManifest()) {
+        toast(t("tree.refreshChanged"), "err");
+        return;
+      }
       const node = findFile(verState.node.id) || verState.node;
       if (node) {
         node.content = out.content;
@@ -2785,7 +2822,7 @@
     verState.busy = true;
     if (button) { button.disabled = true; button.classList.add("loading"); }
     try {
-      await persist();
+      if (!await persist()) return;
       const out = await window.IrisProjects.checkpointCurrent();
       const created = (out && Number(out.created)) || 0;
       toast(created ? t("versions.snapshotDone", { count: created }) : t("versions.snapshotNone"));
@@ -2858,7 +2895,8 @@
 
   window.IrisApp = {
     // Load a project's data into the editor and render everything.
-    async load(data) {
+    async load(data, { isCurrent = () => true } = {}) {
+      const previous = capturePersistence();
       const generation = ++state.projectLoadGeneration;
       data = data || {};
       cancelPendingBuild();
@@ -2867,9 +2905,13 @@
         : window.IrisI18n.defaultLanguage;
       await window.IrisI18n.setLanguage(projectLanguage, {
         silent: true,
-        isCurrent: () => generation === state.projectLoadGeneration,
+        isCurrent: () => generation === state.projectLoadGeneration && isCurrent(),
       });
-      if (generation !== state.projectLoadGeneration) return false;
+      if (generation !== state.projectLoadGeneration || !isCurrent()) return false;
+      if (previous.editRevision !== state.editRevision || previous.manifest !== persistenceManifest()) {
+        toast(t("tree.refreshChanged"), "err");
+        return false;
+      }
       state.projectLanguage = projectLanguage;
       project = (data.project && data.project.nodes) ? data.project : { name: data.name || "", nodes: [] };
       state.projectType = inferProjectType(data);
@@ -2898,6 +2940,7 @@
       clearTimeout(persistT);
       state.dirtyFiles.clear();
       state.editRevision = 0;
+      state.projectRevision = data.revision;
       state.role = data.role || "owner";
       applyRoleGate();
       // Follow the project for build notifications, whatever file ends up open.
@@ -2931,6 +2974,7 @@
       if (active) openFile(active);
       else { ed().load("", null); renderOutline(); }
       updateZoomLabel();
+      acknowledgedManifest = persistenceManifest();
       return true;
     },
     // Snapshot the active project for persistence. Source files this client did
@@ -2939,10 +2983,18 @@
     serialize() {
       return projectSnapshot();
     },
-    hasUnsavedChanges() { return state.dirtyFiles.size > 0; },
+    hasUnsavedChanges, capturePersistence, acknowledgePersistence,
     waitForPersistence,
     persistChanges() { return persist(); },
-    setName(name) { project.name = name; },
+    setName(name, revision, previousName = project.name) {
+      if (project.name === previousName) project.name = name;
+      if (Number.isInteger(revision)) {
+        state.projectRevision = revision;
+        const saved = JSON.parse(acknowledgedManifest);
+        saved.project.name = name;
+        acknowledgedManifest = JSON.stringify(saved);
+      }
+    },
     setRole(role) {
       state.role = ["owner", "editor", "viewer"].includes(role) ? role : "viewer";
       applyRoleGate();

@@ -84,20 +84,8 @@ test("realtime text reaches disk on a debounce, on last leave and on shutdown", 
   assert.match(read("db/migrations/013_realtime_revisions.sql"), /'realtime'/);
 });
 
-test("the save path defers to live rooms and to the bytes on disk", () => {
-  // Both writers stamp the authoritative text in, and only after the ids exist.
-  const sites = server.match(/applyCollabAuthority\(id, data\);\s*await writeProjectFile/g) || [];
-  assert.equal(sites.length, 2, "both the save and the checkpoint writer must apply collab authority");
-  server.split("applyCollabAuthority(id, data)").slice(0, -1).forEach((before) => {
-    assert.ok(before.lastIndexOf("syncProjectFiles(id, data)") > before.lastIndexOf("readBody"),
-      "collab authority must be applied after the canonical ids are stamped");
-  });
-  // A source node without content leaves the file on disk untouched.
-  assert.match(server, /\} else if \(node\.content == null\) \{/);
-  assert.match(server, /if \(!await fs\.stat\(abs\)\.then\(\(\) => true, \(\) => false\)\) await fs\.writeFile\(abs, "", "utf8"\)/);
-  // A rollback moves realtime participants onto the restored text.
-  assert.match(server, /collabResetFile\(fileId, target\.content\)/);
-});
+// Save/restore authority and omitted-content persistence are exercised against
+// real PostgreSQL and filesystem I/O in project-mutations.test.js.
 
 test("the client only sends content for files it edited", () => {
   assert.match(app, /function snapshotNodes\(nodes\)/);

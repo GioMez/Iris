@@ -26,14 +26,16 @@ const ALL_MIGRATIONS = [
   "012_versioned_build_outputs.sql",
   "013_realtime_revisions.sql",
   "014_account_session_version.sql",
+  "015_project_revision.sql",
 ];
 const silentLogger = { log() {}, warn() {}, error() {} };
 
 // Each test owns an isolated schema so a failure never leaves state behind.
 async function isolatedSchema(t) {
   const schema = `iris_test_${process.pid}_${crypto.randomBytes(4).toString("hex")}`;
-  const admin = new Pool({ connectionString, max: 1 });
-  const pool = new Pool({ connectionString, max: 2, options: `-c search_path=${schema}` });
+  const timeouts = { connectionTimeoutMillis: 3000, query_timeout: 7000, statement_timeout: 5000, lock_timeout: 3000, idle_in_transaction_session_timeout: 10000 };
+  const admin = new Pool({ connectionString, max: 1, ...timeouts });
+  const pool = new Pool({ connectionString, max: 2, ...timeouts, options: `-c search_path=${schema}` });
   await admin.query(`CREATE SCHEMA ${schema}`);
   t.after(async () => {
     await pool.end();
@@ -342,7 +344,7 @@ test("server administration schema enforces roles, status and OIDC identity", { 
 test("session versions backfill existing accounts and enforce nonnegative integers", { skip: !connectionString }, async (t) => {
   const pool = await isolatedSchema(t);
   const staged = await tempDir(t, "iris-migrations-");
-  for (const name of ALL_MIGRATIONS.slice(0, -1)) {
+  for (const name of ALL_MIGRATIONS.slice(0, 13)) {
     await fs.copyFile(path.join(MIGRATIONS_DIR, name), path.join(staged, name));
   }
   await runMigrations(pool, staged);
@@ -361,6 +363,21 @@ test("session versions backfill existing accounts and enforce nonnegative intege
   }
   await pool.query("UPDATE users SET session_version = session_version + 1 WHERE id = $1", [fresh]);
   assert.equal((await pool.query("SELECT session_version FROM users WHERE id = $1", [fresh])).rows[0].session_version, 1);
+});
+
+test("project revisions backfill and enforce nonnegative integers", { skip: !connectionString, timeout: 20000 }, async (t) => {
+  const pool = await isolatedSchema(t);
+  const staged = await tempDir(t, "iris-migrations-");
+  for (const name of ALL_MIGRATIONS.slice(0, 14)) await fs.copyFile(path.join(MIGRATIONS_DIR, name), path.join(staged, name));
+  await runMigrations(pool, staged);
+  const user = await insertUser(pool, "writer", "writer@example.org");
+  const id = uuidv7();
+  await pool.query("INSERT INTO projects (id, created_by, name, storage_path) VALUES ($1, $2, 'Existing', $3)", [id, user, projectStorageKey(id)]);
+  await runMigrations(pool);
+  assert.equal((await pool.query("SELECT revision FROM projects WHERE id = $1", [id])).rows[0].revision, 0);
+  for (const [value, code] of [[null, "23502"], [-1, "23514"], ["1.5", "22P02"]]) {
+    await assert.rejects(pool.query("UPDATE projects SET revision = $1 WHERE id = $2", [value, id]), (error) => error.code === code);
+  }
 });
 
 test("document versions form an append-only history keyed to a stable file id", { skip: !connectionString }, async (t) => {

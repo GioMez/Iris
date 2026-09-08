@@ -92,7 +92,7 @@ test("all build files download from history instead of appearing in the source t
   assert.match(builds, /data-build-act="download-archive"/);
   assert.match(server, /builds\/\(\$\{UUID_PATTERN\}\)\/files\/download/);
   assert.match(server, /builds\/\(\$\{UUID_PATTERN\}\)\/archive/);
-  assert.match(server, /validateProjectSourceTree\(data\);[\s\S]*syncProjectFiles\(id, data\)/);
+  // Source namespace validation is exercised by compiler.test.js.
   assert.match(app, /\["output", "\.iris"\]\.includes/);
 });
 
@@ -166,9 +166,7 @@ test("file history preview and changes are tabs of the content panel", () => {
 test("file tree supports server refresh and font uploads sync immediately", () => {
   assert.match(html, /id="refreshTreeBtn"[^>]*data-i18n-title="sidebar\.refreshTree"/);
   assert.match(app, /function refreshFileTree\(\)/);
-  assert.match(app, /revision !== state\.editRevision \|\| state\.dirtyFiles\.size/);
-  assert.match(app, /JSON\.stringify\(projectSnapshot\(\)\) !== snapshot/);
-  assert.match(projects, /async function refreshCurrent\(\)/);
+  // Refresh acceptance and revision guards are exercised in project-client.test.js.
   assert.match(app, /function syncFontInTree\(font\)/);
   assert.match(app, /syncFontInTree\(font\)/);
   assert.match(app, /function removeFontSettings\(paths\)/);
@@ -218,7 +216,6 @@ test("dialogs and project navigation share motion without animating the home", (
 
 test("new projects inherit the home language while existing projects retain their own", () => {
   assert.match(projects, /language:\s*window\.IrisI18n\.defaultLanguage/);
-  assert.match(projects, /await window\.IrisApp\.load\(data\)/);
   assert.match(projects, /IrisI18n\.useDefaultLanguage\(\{ silent: true \}\)/);
   assert.match(app, /projectLanguage:\s*"en"/);
   assert.match(app, /language:\s*state\.projectLanguage/);
@@ -376,7 +373,7 @@ test("open file tabs expose unsaved changes until persistence succeeds", () => {
   assert.match(app, /dirtyFiles:\s*new Map\(\)/);
   assert.match(app, /function markFileDirty\(id = state\.activeId\)/);
   assert.match(app, /tree\.dirty/);
-  assert.match(app, /if \(!saved\) return false/);
+  // Save acknowledgements and intervening edits are exercised in project-client.test.js.
   assert.match(css, /\.ftab\.dirty \.dot\{[^}]*opacity:1/);
   assert.match(css, /\.ftab \.dot\{[^}]*background:var\(--semantic-warning\)/);
 });
@@ -386,7 +383,7 @@ test("project autosave is opt-in and uses a configurable long debounce", () => {
   assert.match(html, /id="autoSaveDelay"[^>]*type="number"[^>]*value="600"[^>]*disabled/);
   assert.match(app, /autoSave:\s*false/);
   assert.match(app, /autoSaveDelay:\s*600/);
-  assert.match(app, /if \(!state\.autoSave \|\| !state\.dirtyFiles\.size\) return/);
+  // Behavioral tests cover autosave for both text and manifest changes.
   assert.match(app, /state\.autoSaveDelay \* 1000/);
   assert.match(app, /autoSave:\s*state\.autoSave/);
   assert.match(app, /data\.autoSave === true/);
@@ -421,12 +418,9 @@ test("project and build requests ignore stale asynchronous completions", () => {
   assert.match(builds, /const seq = \+\+buildState\.previewSeq/);
   assert.match(builds, /currentProjectId\(\) !== projectId/);
   assert.match(builds, /data-build-act="cancel-delete"[^\n]*\.focus\(\)/);
-  assert.match(projects, /async function refreshCurrent\(\)[\s\S]*const projectId = currentId/);
-  assert.match(projects, /function persistCurrent\(\)[\s\S]*const projectId = currentId/);
   assert.match(projects, /openGeneration !== sessionGeneration/);
-  assert.match(projects, /saveQueue = saveQueue\.then\(operation, operation\)/);
   assert.match(app, /async function waitForPersistence\(\)/);
-  assert.match(app, /pending !== persistQueue/);
+  // Shared queue ordering and stale completions are exercised in project-client.test.js.
   assert.match(app, /persistChanges\(\) \{ return persist\(\); \}/);
 });
 

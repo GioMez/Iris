@@ -13,6 +13,7 @@ const { uuidv7, isUuid, UUID_PATTERN } = require("./ids");
 const { lifecycleGate, healthStatus, isMutatingMethod, HEALTH_PATH } = require("./lifecycle");
 const { recordAuditEvent } = require("./audit");
 const { collectProjectFiles, reconcileProjectFiles } = require("./project-files");
+const { createProjectMutations } = require("./project-mutations");
 const { hashContent, isVersionableText, contentChanged } = require("./versions");
 const { CollabRooms, CollabError, peerColor, normalizePresence } = require("./collab");
 const { isSystemRole, isUserStatus, leavesNoActiveAdmin, normalizeSearch, userDeletionBlock } = require("./admin");
@@ -72,6 +73,7 @@ const BUILD_ARCHIVE_MAX_BYTES = positiveIntEnv("BUILD_ARCHIVE_MAX_MB", 128) * 10
 const BUILD_ARCHIVE_MAX_ENTRIES = positiveIntEnv("BUILD_ARCHIVE_MAX_ENTRIES", 10000);
 const PROJECT_ARCHIVE_MAX_BYTES = positiveIntEnv("PROJECT_ARCHIVE_MAX_MB", 256) * 1024 * 1024;
 const PROJECT_ARCHIVE_MAX_ENTRIES = positiveIntEnv("PROJECT_ARCHIVE_MAX_ENTRIES", 20000);
+const PROJECT_DOWNLOAD_TIMEOUT_MS = positiveIntEnv("PROJECT_DOWNLOAD_TIMEOUT_MS", 30000);
 const ARGON2_MEMORY_COST = positiveIntEnv("ARGON2_MEMORY_COST", 65536);
 const ARGON2_TIME_COST = positiveIntEnv("ARGON2_TIME_COST", 3);
 const ARGON2_PARALLELISM = positiveIntEnv("ARGON2_PARALLELISM", 1);
@@ -109,6 +111,7 @@ const CODEMIRROR_MODULES = {
 };
 
 let db;
+const projectMutations = createProjectMutations({ fs, getDb: () => db, backupRoot: path.join(DATA_DIR, ".project-backups"), requestError });
 let oauthDiscoveryCache = null;
 let initialAdminCredentials = null;
 let shuttingDown = false;
@@ -924,7 +927,8 @@ async function writeProjectNodes(storagePath, data) {
         // save can no longer overwrite a collaborator's newer text with the copy
         // this client happened to load. A file that does not exist yet is still
         // created, so the tree on disk always matches the manifest.
-        if (!await fs.stat(abs).then(() => true, () => false)) await fs.writeFile(abs, "", "utf8");
+        const stat = await fs.stat(abs).catch((err) => { if (err.code !== "ENOENT") throw err; return null; });
+        if (!stat) await fs.writeFile(abs, "", "utf8");
       } else {
         await fs.writeFile(abs, String(node.content), "utf8");
       }
@@ -950,7 +954,7 @@ async function writeProjectFonts(storagePath, data, expectedFiles) {
 
 async function pruneProjectFiles(storagePath, expectedFiles) {
   async function walkDir(dir, relBase = "") {
-    const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
+    const entries = await fs.readdir(dir, { withFileTypes: true });
     for (const entry of entries) {
       if (entry.name.toLowerCase() === ".iris") continue;
       if (!relBase && entry.name.toLowerCase() === "output") continue;
@@ -958,10 +962,10 @@ async function pruneProjectFiles(storagePath, expectedFiles) {
       const abs = path.join(dir, entry.name);
       if (entry.isDirectory()) {
         await walkDir(abs, rel);
-        const rest = await fs.readdir(abs).catch(() => []);
-        if (!rest.length) await fs.rmdir(abs).catch(() => {});
+        const rest = await fs.readdir(abs);
+        if (!rest.length) await fs.rmdir(abs);
       } else if (!expectedFiles.has(rel)) {
-        await fs.unlink(abs).catch(() => {});
+        await fs.unlink(abs);
       }
     }
   }
@@ -1151,35 +1155,44 @@ async function writeProjectManifest(storagePath, data) {
   await fs.mkdir(irisDir, { recursive: true });
   const file = path.join(irisDir, "project.json");
   const tmp = path.join(irisDir, `.project.${process.pid}.${Date.now()}.tmp`);
-  await fs.writeFile(tmp, JSON.stringify(stripFilePayloads(data), null, 2), "utf8");
-  await fs.rename(tmp, file);
+  try {
+    await fs.writeFile(tmp, JSON.stringify(stripFilePayloads(data), null, 2), "utf8");
+    await fs.rename(tmp, file);
+  } finally {
+    await fs.rm(tmp, { force: true });
+  }
 }
 
 // Moves the bytes of renamed or relocated files on disk before the tree is
 // written, so a rename preserves the file instead of deleting and recreating it.
-// A pure optimization over the delete-plus-create path: on any obstacle it does
-// nothing and lets writeProjectNodes/pruneProjectFiles produce the same result
-// they did before, so it can never lose data the old path would have kept.
+async function preflightProjectRenames(storagePath, renames) {
+  const sources = new Set(renames.map((move) => move.from.toLowerCase()));
+  const destinations = new Set();
+  for (const move of renames) {
+    const destination = move.to.toLowerCase();
+    if (sources.has(destination) || destinations.has(destination)) throw requestError("PROJECT_PATH_INVALID", 400);
+    destinations.add(destination);
+    const src = await fs.lstat(path.join(storagePath, move.from));
+    if (!src.isFile()) throw requestError("PROJECT_PATH_INVALID", 400);
+    const occupied = await fs.lstat(path.join(storagePath, move.to)).catch((err) => { if (err.code !== "ENOENT") throw err; return null; });
+    if (occupied) throw requestError("PROJECT_PATH_INVALID", 400);
+    let parent = path.posix.dirname(move.to);
+    while (parent !== ".") {
+      const stat = await fs.lstat(path.join(storagePath, parent)).catch((err) => { if (err.code !== "ENOENT") throw err; return null; });
+      if (stat && !stat.isDirectory()) throw requestError("PROJECT_PATH_INVALID", 400);
+      parent = path.posix.dirname(parent);
+    }
+  }
+}
+
 async function applyProjectRenames(storagePath, renames) {
   const moves = (renames || []).filter((move) => move.from !== move.to);
-  if (!moves.length) return;
-  const sources = new Set(moves.map((move) => move.from));
+  await preflightProjectRenames(storagePath, moves);
   for (const move of moves) {
-    // Skip the pathological chain or swap where the destination is itself a file
-    // still waiting to move; delete-plus-create handles those exactly as before.
-    if (sources.has(move.to)) continue;
     const src = path.join(storagePath, move.from);
     const dest = path.join(storagePath, move.to);
-    try {
-      await fs.mkdir(path.dirname(dest), { recursive: true });
-      await fs.rename(src, dest);
-    } catch (err) {
-      // Source not on disk yet, or any other obstacle: fall back silently to the
-      // normal write path. ENOENT is the common, expected case for a new file.
-      if (err.code !== "ENOENT") {
-        console.error(`Could not relocate ${move.from} -> ${move.to} in ${storagePath}`, err.message || err);
-      }
-    }
+    await fs.mkdir(path.dirname(dest), { recursive: true });
+    await fs.rename(src, dest);
   }
 }
 
@@ -1193,7 +1206,7 @@ async function writeProjectFile(storagePath, data, renames = []) {
   await writeProjectFonts(storagePath, data, expectedFiles);
   await pruneProjectFiles(storagePath, expectedFiles);
   await writeProjectManifest(storagePath, data);
-  await fs.rm(path.join(storagePath, "project.json"), { force: true }).catch(() => {});
+  await fs.rm(path.join(storagePath, "project.json"), { force: true });
 }
 
 async function collectProjectArchiveEntries(storagePath, projectName, limits = {}) {
@@ -1263,9 +1276,9 @@ function withStorageDir(row) {
 // The caller receives the project row, its resolved storage directory and the
 // requester's role. A permission change takes effect at once because this runs on
 // every request, exactly like the per-request account check in requireUser.
-async function authorizeProject(id, user, capability) {
-  const { rows } = await db.query(
-    `SELECT p.id, p.name, p.storage_path, p.created_at, p.updated_at, m.role
+async function authorizeProject(id, user, capability, queryable = db) {
+  const { rows } = await queryable.query(
+    `SELECT p.id, p.name, p.storage_path, p.created_at, p.updated_at, p.revision, m.role
      FROM projects p JOIN project_members m ON m.project_id = p.id
      WHERE p.id = $1 AND m.user_id = $2`,
     [id, user.sub]
@@ -1276,14 +1289,18 @@ async function authorizeProject(id, user, capability) {
   return { ...withStorageDir(row), role: row.role };
 }
 
+function authorizedProjectGate(id, user, capability, action) {
+  return projectMutations.gate(id, action, () => authorizeProject(id, user, capability));
+}
+
 async function listProjects(req, res, user) {
   const { rows } = await db.query(
-    `SELECT p.id, p.name, p.storage_path, p.created_at, p.updated_at, m.role
+    `SELECT p.id, p.name, p.storage_path, p.created_at, p.updated_at, p.revision, m.role
      FROM projects p JOIN project_members m ON m.project_id = p.id
      WHERE m.user_id = $1 ORDER BY p.updated_at DESC`,
     [user.sub]
   );
-  const projects = await Promise.all(rows.map(async (row) => {
+  const projects = await Promise.all(rows.map((listed) => authorizedProjectGate(listed.id, user, "read", async (row) => {
     let fileCount = 0;
     let projectType = "latex";
     try {
@@ -1295,13 +1312,14 @@ async function listProjects(req, res, user) {
       id: row.id,
       name: row.name,
       role: row.role,
+      revision: row.revision,
       createdAt: toMillis(row.created_at),
       updatedAt: toMillis(row.updated_at),
       fileCount,
       projectType,
     };
-  }));
-  json(res, 200, { projects });
+  }).catch((err) => { if (err.status === 404) return null; throw err; })));
+  json(res, 200, { projects: projects.filter(Boolean) });
 }
 
 // Serializes owner-invariant changes per project, so concurrent role changes on
@@ -1493,61 +1511,99 @@ async function removeProjectMember(req, res, user, projectId, memberId) {
 }
 
 async function getProject(req, res, user, id) {
-  const row = await authorizeProject(id, user, "read");
-  const data = await readProjectFile(row.storageDir);
-  if (!data.project) data.project = { name: row.name, nodes: [] };
-  data.project.name = row.name;
-  data.createdAt = toMillis(row.created_at);
-  data.updatedAt = toMillis(row.updated_at);
-  json(res, 200, { id: row.id, ...data, role: row.role });
+  return authorizedProjectGate(id, user, "read", async (row) => {
+    const data = await readProjectFile(row.storageDir);
+    if (!data.project) data.project = { name: row.name, nodes: [] };
+    data.project.name = row.name;
+    data.createdAt = toMillis(row.created_at);
+    data.updatedAt = toMillis(row.updated_at);
+    json(res, 200, { id: row.id, ...data, revision: row.revision, role: row.role });
+  });
 }
 
 // Reconciles the file-identity ledger against the tree about to be written and
 // stamps each source file node with its canonical UUIDv7 id, so the persisted
 // manifest carries the stable identity. Runs before the manifest is written; it
 // tracks identity only and never moves files on disk.
-async function syncProjectFiles(projectId, data) {
+async function syncProjectFiles(projectId, data, client, storageDir, protect) {
   const nodes = data && data.project && Array.isArray(data.project.nodes) ? data.project.nodes : [];
   const entries = collectProjectFiles(nodes);
   const incoming = entries.map((entry) => ({ nodeId: entry.nodeId, path: entry.path, kind: entry.kind }));
-  const client = await db.connect();
-  try {
-    await client.query("BEGIN");
-    const { rows } = await client.query(
-      "SELECT id, client_ref, path, kind FROM project_files WHERE project_id = $1 AND deleted_at IS NULL ORDER BY created_at, id FOR UPDATE",
-      [projectId]
-    );
-    const plan = reconcileProjectFiles(rows, incoming, { generateId: uuidv7 });
-    // Free paths before they are reused: soft-deletes and renames run before
-    // inserts so the live-path unique index never sees a transient collision.
-    for (const id of plan.softDeletes) {
-      await client.query(
-        "UPDATE project_files SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = $1",
-        [id]
-      );
+  const paths = new Set(incoming.map((file) => file.path.toLowerCase()));
+  if (paths.size !== incoming.length) throw requestError("PROJECT_PATH_INVALID", 400);
+  for (const file of incoming) {
+    let parent = path.posix.dirname(file.path.toLowerCase());
+    while (parent !== ".") {
+      if (paths.has(parent)) throw requestError("PROJECT_PATH_INVALID", 400);
+      parent = path.posix.dirname(parent);
     }
-    for (const update of plan.updates) {
-      await client.query(
-        "UPDATE project_files SET path = $2, kind = $3, updated_at = CURRENT_TIMESTAMP WHERE id = $1",
-        [update.id, update.path, update.kind]
-      );
-    }
-    for (const insert of plan.inserts) {
-      await client.query(
-        "INSERT INTO project_files (id, project_id, client_ref, path, kind) VALUES ($1, $2, $3, $4, $5)",
-        [insert.id, projectId, insert.client_ref, insert.path, insert.kind]
-      );
-    }
-    await client.query("COMMIT");
-    entries.forEach((entry, index) => { entry.node.id = plan.resolved[index].canonicalId; });
-    // Renames the disk layer can carry out as a move instead of delete+create.
-    return { renames: plan.updates.filter((u) => u.fromPath !== u.path).map((u) => ({ from: u.fromPath, to: u.path })) };
-  } catch (err) {
-    await client.query("ROLLBACK").catch(() => {});
-    throw err;
-  } finally {
-    client.release();
   }
+  const { rows } = await client.query(
+    "SELECT id, client_ref, path, kind FROM project_files WHERE project_id = $1 AND deleted_at IS NULL ORDER BY created_at, id FOR UPDATE",
+    [projectId]
+  );
+  const plan = reconcileProjectFiles(rows, incoming, { generateId: uuidv7 });
+  const renames = plan.updates.filter((u) => u.fromPath !== u.path).map((u) => ({ from: u.fromPath, to: u.path }));
+  await preflightProjectRenames(storageDir, renames);
+  await protect();
+  // Free paths before they are reused: soft-deletes and renames run before
+  // inserts so the live-path unique index never sees a transient collision.
+  for (const id of plan.softDeletes) {
+    await client.query(
+      "UPDATE project_files SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = $1",
+      [id]
+    );
+  }
+  for (const update of plan.updates) {
+    await client.query(
+      "UPDATE project_files SET path = $2, kind = $3, updated_at = CURRENT_TIMESTAMP WHERE id = $1",
+      [update.id, update.path, update.kind]
+    );
+  }
+  for (const insert of plan.inserts) {
+    await client.query(
+      "INSERT INTO project_files (id, project_id, client_ref, path, kind) VALUES ($1, $2, $3, $4, $5)",
+      [insert.id, projectId, insert.client_ref, insert.path, insert.kind]
+    );
+  }
+  entries.forEach((entry, index) => { entry.node.id = plan.resolved[index].canonicalId; });
+  return { renames };
+}
+
+function requireProjectRevision(body, row) {
+  if (!Number.isInteger(body.baseRevision) || body.baseRevision < 0 || body.baseRevision > 2147483647) {
+    throw requestError("PROJECT_REVISION_REQUIRED", 428);
+  }
+  if (body.baseRevision !== row.revision) throw requestError("PROJECT_REVISION_CONFLICT", 409, { currentRevision: row.revision });
+}
+
+// The caller holds the project gate and transaction, including any follow-up
+// checkpoint. Name-only saves change the current manifest without reconciling it.
+async function saveProjectTree(id, row, body, data, client, protect, { manifestOnly = false } = {}) {
+  data.project = data.project && Array.isArray(data.project.nodes) ? data.project : { nodes: [] };
+  data.project.name = body.name == null ? row.name : cleanName(body.name);
+  data.projectType = inferProjectType(data);
+  data.lilypondArgs = data.projectType === "lilypond" ? sanitizeLilypondArgsForStorage(data.lilypondArgs) : "";
+  data.lilypondFormat = data.projectType === "lilypond" ? normalizeLilypondFormat(data.lilypondFormat) : "pdf";
+  if (body.compileProfile && typeof body.compileProfile === "object") data.compileProfile = sanitizeCompileProfileForStorage(body.compileProfile, data.projectType);
+  data.createdAt = toMillis(row.created_at);
+  data.updatedAt = Date.now();
+  data.revision = row.revision + 1;
+  validateProjectSourceTree(data);
+  if (manifestOnly) {
+    await protect();
+    await writeProjectManifest(row.storageDir, data);
+  } else {
+    const { renames } = await syncProjectFiles(id, data, client, row.storageDir, protect);
+    applyCollabAuthority(id, data);
+    await writeProjectFile(row.storageDir, data, renames);
+  }
+  const result = await client.query(
+    "UPDATE projects SET name = $1, updated_at = CURRENT_TIMESTAMP, revision = revision + 1 WHERE id = $2 AND revision = $3 RETURNING revision",
+    [data.project.name, id, row.revision]
+  );
+  if (!result.rows.length) throw requestError("PROJECT_REVISION_CONFLICT", 409, { currentRevision: row.revision });
+  return data;
 }
 
 function versionAuthorLabel(user) {
@@ -1591,10 +1647,10 @@ async function snapshotFileIfChanged({ storageDir, file, user, reason }, queryab
 
 // A project checkpoint is serialized so concurrent compilations cannot fork a
 // file's revision chain. It also returns the exact revision used for each file.
-async function captureProjectCheckpoint({ projectId, storageDir, user, reason, files: checkpointFiles = null }) {
-  const client = await db.connect();
+async function captureProjectCheckpoint({ projectId, storageDir, user, reason, files: checkpointFiles = null }, queryable = null) {
+  const client = queryable || await db.connect();
   try {
-    await client.query("BEGIN");
+    if (!queryable) await client.query("BEGIN");
     await client.query("SELECT pg_advisory_xact_lock(4953, hashtext($1))", [projectId]);
     let files = checkpointFiles;
     if (!files) {
@@ -1611,13 +1667,13 @@ async function captureProjectCheckpoint({ projectId, storageDir, user, reason, f
       if (version && version.created) created += 1;
       versions.set(file.id, version ? version.id : null);
     }
-    await client.query("COMMIT");
+    if (!queryable) await client.query("COMMIT");
     return { created, versions };
   } catch (err) {
-    await client.query("ROLLBACK").catch(() => {});
+    if (!queryable) await client.query("ROLLBACK").catch(() => {});
     throw err;
   } finally {
-    client.release();
+    if (!queryable) client.release();
   }
 }
 
@@ -1630,8 +1686,8 @@ async function sourceRevisionForBuild(storageDir, mainPath, sourceFileId, source
   };
 }
 
-async function fileForProject(projectId, fileId) {
-  const { rows } = await db.query(
+async function fileForProject(projectId, fileId, queryable = db) {
+  const { rows } = await queryable.query(
     "SELECT id, path, kind, deleted_at FROM project_files WHERE id = $1 AND project_id = $2",
     [fileId, projectId]
   );
@@ -1640,21 +1696,19 @@ async function fileForProject(projectId, fileId) {
 }
 
 async function checkpointProject(req, res, user, id) {
-  const row = await authorizeProject(id, user, "write");
   const body = await readBody(req);
-  // Persist the editor state first when provided, so the checkpoint reflects it.
-  if (body.data && typeof body.data === "object") {
-    const data = body.data;
-    data.project = data.project && Array.isArray(data.project.nodes) ? data.project : { nodes: [] };
-    data.project.name = row.name;
-    data.projectType = inferProjectType(data);
-    validateProjectSourceTree(data);
-    const { renames } = await syncProjectFiles(id, data);
-    applyCollabAuthority(id, data);
-    await writeProjectFile(row.storageDir, data, renames);
-    await db.query("UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = $1", [id]);
-  }
-  const { created } = await captureProjectCheckpoint({ projectId: id, storageDir: row.storageDir, user, reason: "manual" });
+  const { created, data } = await authorizedProjectGate(id, user, "write", async (project) => {
+    if (!body.data || typeof body.data !== "object") {
+      return captureProjectCheckpoint({ projectId: id, storageDir: project.storageDir, user, reason: "manual" });
+    }
+    return projectMutations.transaction({ id, storageDir: project.storageDir }, async (client, protect) => {
+      const row = await authorizeProject(id, user, "write", client);
+      requireProjectRevision(body, row);
+      const data = await saveProjectTree(id, row, { ...body, name: row.name }, body.data, client, protect);
+      const checkpoint = await captureProjectCheckpoint({ projectId: id, storageDir: row.storageDir, user, reason: "manual" }, client);
+      return { ...checkpoint, data };
+    });
+  });
   await audit({
     ...sessionActor(req, user),
     action: "revision.checkpoint",
@@ -1662,7 +1716,7 @@ async function checkpointProject(req, res, user, id) {
     targetId: id,
     metadata: { reason: "manual", created },
   });
-  json(res, 200, { ok: true, created });
+  json(res, 200, { ok: true, created, ...(data ? { revision: data.revision, data: { id, ...data } } : {}) });
 }
 
 async function listFileVersions(req, res, user, projectId, fileId) {
@@ -1708,43 +1762,48 @@ async function getFileVersion(req, res, user, projectId, fileId, versionId) {
 }
 
 async function restoreFileVersion(req, res, user, projectId, fileId, versionId) {
-  const project = await authorizeProject(projectId, user, "write");
-  const file = await fileForProject(projectId, fileId);
-  if (file.deleted_at) throw requestError("FILE_NOT_FOUND", 404);
-  const { rows } = await db.query(
-    "SELECT id, content, content_hash FROM document_versions WHERE id = $1 AND file_id = $2",
-    [versionId, fileId]
-  );
-  if (!rows.length) throw requestError("VERSION_NOT_FOUND", 404);
-  const target = rows[0];
+  return authorizedProjectGate(projectId, user, "write", async (project) => {
+    const { file, target, newVersionId } = await projectMutations.transaction({ id: projectId, storageDir: project.storageDir }, async (client, protect) => {
+      await authorizeProject(projectId, user, "write", client);
+      const file = await fileForProject(projectId, fileId, client);
+      if (file.deleted_at) throw requestError("FILE_NOT_FOUND", 404);
+      const { rows } = await client.query(
+        "SELECT id, content, content_hash FROM document_versions WHERE id = $1 AND file_id = $2",
+        [versionId, fileId]
+      );
+      if (!rows.length) throw requestError("VERSION_NOT_FOUND", 404);
+      const target = rows[0];
+      await protect();
 
-  // Capture the current state before overwriting it, so a rollback never loses
-  // uncommitted work, then append the rollback revision. History is only added to.
-  await snapshotFileIfChanged({ storageDir: project.storageDir, file, user, reason: "manual" });
-  const abs = path.join(project.storageDir, file.path);
-  await fs.mkdir(path.dirname(abs), { recursive: true });
-  await fs.writeFile(abs, target.content, "utf8");
-  // A rollback replaces the text outside the update stream, so anyone editing
-  // this file in realtime is moved onto the restored content instead of carrying
-  // on from a version that no longer exists.
-  collabResetFile(fileId, target.content);
-  const previous = await latestVersion(fileId);
-  const newVersionId = await insertVersion({
-    fileId,
-    parentId: previous ? previous.id : null,
-    user,
-    reason: "rollback",
-    content: target.content,
+      // Capture the current state before overwriting it, then append the rollback
+      // revision. History is only added to, in the same transaction as the write.
+      await client.query("SELECT pg_advisory_xact_lock(4953, hashtext($1))", [projectId]);
+      await snapshotFileIfChanged({ storageDir: project.storageDir, file, user, reason: "manual" }, client);
+      const abs = path.join(project.storageDir, file.path);
+      await fs.mkdir(path.dirname(abs), { recursive: true });
+      await fs.writeFile(abs, target.content, "utf8");
+      const previous = await latestVersion(fileId, client);
+      const newVersionId = await insertVersion({
+        fileId,
+        parentId: previous ? previous.id : null,
+        user,
+        reason: "rollback",
+        content: target.content,
+      }, client);
+      await client.query("UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = $1", [projectId]);
+      return { file, target, newVersionId };
+    });
+    // Only reset participants after the replacement is committed.
+    collabResetFile(fileId, target.content);
+    await audit({
+      ...sessionActor(req, user),
+      action: "revision.restored",
+      targetType: "revision",
+      targetId: newVersionId,
+      metadata: { fileId, fromVersion: versionId, path: file.path },
+    });
+    json(res, 200, { ok: true, versionId: newVersionId, content: target.content });
   });
-  await db.query("UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = $1", [projectId]);
-  await audit({
-    ...sessionActor(req, user),
-    action: "revision.restored",
-    targetType: "revision",
-    targetId: newVersionId,
-    metadata: { fileId, fromVersion: versionId, path: file.path },
-  });
-  json(res, 200, { ok: true, versionId: newVersionId, content: target.content });
 }
 
 /* ---------------- realtime collaboration (OT sessions) ---------------- */
@@ -1859,10 +1918,17 @@ async function collabJoin(session, fileId) {
   let existing;
   let content;
   let roomGeneration;
-  do {
-    roomGeneration = collabRooms.generation;
-    existing = collabRooms.get(fileId);
-    content = existing ? null : await fs.readFile(path.join(project.storageDir, file.path), "utf8").catch(() => "");
+  const currentFileSql = `SELECT f.path, f.kind, p.revision FROM project_files f JOIN projects p ON p.id = f.project_id
+    WHERE f.id = $1 AND f.project_id = $2 AND f.deleted_at IS NULL`;
+  while (collabActive(session)) {
+    const snapshot = await projectMutations.gate(file.project_id, async () => {
+      const current = (await db.query(currentFileSql, [fileId, file.project_id])).rows[0];
+      if (!current) throw new CollabError("COLLAB_FILE_NOT_FOUND");
+      roomGeneration = collabRooms.generation;
+      existing = collabRooms.get(fileId);
+      content = existing ? null : await fs.readFile(path.join(project.storageDir, current.path), "utf8");
+      return current;
+    });
     let generation;
     do {
       if (!collabActive(session)) return null;
@@ -1871,15 +1937,26 @@ async function collabJoin(session, fileId) {
     } while (generation !== collabAccessGeneration);
     if (!collabActive(session)) return null;
     if (!project) throw new CollabError("COLLAB_FILE_NOT_FOUND");
-    // A room may open, accept edits and retire during either I/O wait. Never
-    // recreate it from a disk snapshot taken before that intervening lifetime.
-  } while (roomGeneration !== collabRooms.generation);
-  const room = collabRooms.open({ fileId, projectId: file.project_id, path: file.path, content: existing ? existing.text() : content });
-  room.storageDir = project.storageDir;
-  room.kind = file.kind || null;
-  room.clients.add(session);
-  session.rooms.set(fileId, { room, role: project.role, projectId: file.project_id });
-  return session.rooms.get(fileId);
+    // Permission I/O must not hold up a retiring room's flush. Recheck the
+    // namespace and room lifetime under the gate before installing the snapshot.
+    const joined = await projectMutations.gate(file.project_id, async () => {
+      const current = (await db.query(currentFileSql, [fileId, file.project_id])).rows[0];
+      if (!current) throw new CollabError("COLLAB_FILE_NOT_FOUND");
+      if (!collabActive(session) || generation !== collabAccessGeneration || roomGeneration !== collabRooms.generation ||
+          current.revision !== snapshot.revision || current.path !== snapshot.path) return null;
+      // Content-only restores do not advance the browser tree revision.
+      if (!existing) content = await fs.readFile(path.join(project.storageDir, current.path), "utf8");
+      if (!collabActive(session) || generation !== collabAccessGeneration || roomGeneration !== collabRooms.generation) return null;
+      const room = collabRooms.open({ fileId, projectId: file.project_id, path: current.path, content: existing ? existing.text() : content });
+      room.storageDir = project.storageDir;
+      room.kind = current.kind || null;
+      room.clients.add(session);
+      session.rooms.set(fileId, { room, role: project.role, projectId: file.project_id });
+      return session.rooms.get(fileId);
+    });
+    if (joined) return joined;
+  }
+  return null;
 }
 
 function collabLeave(session, fileId) {
@@ -1923,29 +2000,39 @@ async function collabPersist(room, { revision = false } = {}) {
 
 async function collabPersistNow(room, revision) {
   if (!room.storageDir) return;
-  if (room.needsPersist()) {
+  return projectMutations.gate(room.projectId, async () => {
+    const { rows } = await db.query(
+      "SELECT f.path, f.kind, p.storage_path FROM project_files f JOIN projects p ON p.id = f.project_id WHERE f.id = $1 AND f.project_id = $2 AND f.deleted_at IS NULL",
+      [room.fileId, room.projectId]
+    );
+    if (!rows.length) return;
+    room.path = rows[0].path;
+    room.kind = rows[0].kind;
+    room.storageDir = resolveProjectStorageDir(DATA_DIR, rows[0].storage_path);
+    if (room.needsPersist()) {
+      const version = room.version;
+      const text = room.text();
+      const abs = path.join(room.storageDir, room.path);
+      await fs.mkdir(path.dirname(abs), { recursive: true });
+      await fs.writeFile(abs, text, "utf8");
+      room.markPersisted(version);
+      room.flushDeadline = 0;
+      await db.query("UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = $1", [room.projectId]);
+    }
+    if (!revision || !room.needsRevision()) return;
     const version = room.version;
-    const text = room.text();
-    const abs = path.join(room.storageDir, room.path);
-    await fs.mkdir(path.dirname(abs), { recursive: true });
-    await fs.writeFile(abs, text, "utf8");
-    room.markPersisted(version);
-    room.flushDeadline = 0;
-    await db.query("UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = $1", [room.projectId]);
-  }
-  if (!revision || !room.needsRevision()) return;
-  const version = room.version;
-  // The revision is attributed to whoever made the most recent accepted edit.
-  const author = room.lastAuthor || null;
-  if (!author) return;
-  await captureProjectCheckpoint({
-    projectId: room.projectId,
-    storageDir: room.storageDir,
-    user: author,
-    reason: "realtime",
-    files: [{ id: room.fileId, path: room.path, kind: room.kind || null }],
-  }).catch((err) => console.error("Realtime revision failed", err));
-  room.markRevisioned(version);
+    // The revision is attributed to whoever made the most recent accepted edit.
+    const author = room.lastAuthor || null;
+    if (!author) return;
+    await captureProjectCheckpoint({
+      projectId: room.projectId,
+      storageDir: room.storageDir,
+      user: author,
+      reason: "realtime",
+      files: [{ id: room.fileId, path: room.path, kind: room.kind || null }],
+    }).catch((err) => console.error("Realtime revision failed", err));
+    room.markRevisioned(version);
+  });
 }
 
 // Debounced persistence: writes after a quiet moment, and at least every
@@ -2102,10 +2189,14 @@ async function collabHandleMessage(session, raw) {
     if (!entry) throw new CollabError("COLLAB_NOT_JOINED");
     if (!roleHasCapability(entry.role, "write")) throw new CollabError("COLLAB_READ_ONLY");
     const result = entry.room.receive(Number(message.version), message.updates, { userId: session.user.sub });
+    // Every replica, including the sender, sees the same accepted stream before
+    // the ack can release another push or a peer can send dependent changes.
+    if (result.accepted) {
+      entry.room.lastAuthor = session.user;
+      collabBroadcast(entry.room, { t: "updates", fileId, version: result.version, updates: result.updates });
+    }
     collabSend(session.socket, { t: "pushed", fileId, accepted: result.accepted, version: result.version });
     if (!result.accepted) return;
-    entry.room.lastAuthor = session.user;
-    collabBroadcast(entry.room, { t: "updates", fileId, version: result.version, updates: result.updates }, session);
     return collabSchedulePersist(entry.room);
   }
 
@@ -2233,7 +2324,15 @@ async function collabUpgrade(req, socket, head, wss) {
         if (!collabActive(session)) return;
         const code = err instanceof CollabError ? err.code : "COLLAB_ERROR";
         if (!(err instanceof CollabError)) console.error("Realtime session error", err);
-        collabSend(ws, { t: "error", code });
+        const response = { t: "error", code };
+        try {
+          const message = JSON.parse(data.toString("utf8"));
+          if (message?.t === "open") {
+            response.request = "open";
+            response.fileId = message.fileId;
+          }
+        } catch {}
+        collabSend(ws, response);
       });
     });
     ws.on("close", () => collabCloseSession(session));
@@ -2301,27 +2400,25 @@ async function createProject(req, res, user) {
   data.lilypondFormat = data.projectType === "lilypond" ? normalizeLilypondFormat(data.lilypondFormat) : "pdf";
   data.createdAt = now;
   data.updatedAt = now;
+  data.revision = 0;
   validateProjectSourceTree(data);
   // The project row must exist before the ledger references it, and the manifest
   // must be written after ids are stamped. On any failure the whole project is
   // rolled back so a half-created project never lingers. The creator becomes the
   // project's first owner through a membership row, the authority for access.
-  await db.query(
-    "INSERT INTO projects (id, created_by, name, storage_path) VALUES ($1, $2, $3, $4)",
-    [id, user.sub, name, storageKey]
-  );
-  await db.query(
-    "INSERT INTO project_members (project_id, user_id, role, invited_by) VALUES ($1, $2, 'owner', $2)",
-    [id, user.sub]
-  );
-  try {
-    await syncProjectFiles(id, data);
+  await projectMutations.gate(id, () => projectMutations.transaction({ id, storageDir: storagePath, create: true }, async (client, protect) => {
+    await protect();
+    await client.query(
+      "INSERT INTO projects (id, created_by, name, storage_path) VALUES ($1, $2, $3, $4)",
+      [id, user.sub, name, storageKey]
+    );
+    await client.query(
+      "INSERT INTO project_members (project_id, user_id, role, invited_by) VALUES ($1, $2, 'owner', $2)",
+      [id, user.sub]
+    );
+    await syncProjectFiles(id, data, client, storagePath, protect);
     await writeProjectFile(storagePath, data);
-  } catch (err) {
-    await db.query("DELETE FROM projects WHERE id = $1", [id]).catch(() => {});
-    await fs.rm(storagePath, { recursive: true, force: true }).catch(() => {});
-    throw err;
-  }
+  }));
   await audit({
     ...sessionActor(req, user),
     action: "project.created",
@@ -2330,43 +2427,38 @@ async function createProject(req, res, user) {
     metadata: { name, projectType: data.projectType },
   });
   json(res, 201, {
-    project: { id, name, projectType: data.projectType, createdAt: now, updatedAt: now, fileCount: countFiles(data) },
+    project: { id, name, revision: 0, projectType: data.projectType, createdAt: now, updatedAt: now, fileCount: countFiles(data) },
     data: { id, ...data },
   });
 }
 
 async function updateProject(req, res, user, id) {
   const body = await readBody(req);
-  const row = await authorizeProject(id, user, "write");
-  const name = body.name == null ? row.name : cleanName(body.name);
-  let data;
-  if (body.data && typeof body.data === "object") data = body.data;
-  else data = await readProjectFile(row.storageDir);
-  data.project = data.project && Array.isArray(data.project.nodes) ? data.project : { nodes: [] };
-  data.project.name = name;
-  data.projectType = inferProjectType(data);
-  data.lilypondArgs = data.projectType === "lilypond" ? sanitizeLilypondArgsForStorage(data.lilypondArgs) : "";
-  data.lilypondFormat = data.projectType === "lilypond" ? normalizeLilypondFormat(data.lilypondFormat) : "pdf";
-  if (body.compileProfile && typeof body.compileProfile === "object") {
-    data.compileProfile = sanitizeCompileProfileForStorage(body.compileProfile, data.projectType);
-  }
-  data.createdAt = toMillis(row.created_at);
-  data.updatedAt = Date.now();
-  validateProjectSourceTree(data);
-  const { renames } = await syncProjectFiles(id, data);
-  applyCollabAuthority(id, data);
-  await writeProjectFile(row.storageDir, data, renames);
-  await db.query("UPDATE projects SET name = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2", [name, id]);
+  const data = await authorizedProjectGate(id, user, "write", async (project) => {
+    return projectMutations.transaction({ id, storageDir: project.storageDir }, async (client, protect) => {
+      const row = await authorizeProject(id, user, "write", client);
+      requireProjectRevision(body, row);
+      const manifestOnly = !body.data || typeof body.data !== "object";
+      const data = manifestOnly ? await readProjectManifest(row.storageDir) : body.data;
+      await saveProjectTree(id, row, body, data, client, protect, { manifestOnly });
+      return manifestOnly ? { ...await readProjectFile(row.storageDir), revision: data.revision } : data;
+    });
+  });
   json(res, 200, {
-    project: { id, name, projectType: data.projectType, createdAt: data.createdAt, updatedAt: data.updatedAt, fileCount: countFiles(data) },
+    project: { id, name: data.project.name, revision: data.revision, projectType: data.projectType, createdAt: data.createdAt, updatedAt: data.updatedAt, fileCount: countFiles(data) },
     data: { id, ...data },
   });
 }
 
 async function deleteProject(req, res, user, id) {
-  const row = await authorizeProject(id, user, "delete");
-  await db.query("DELETE FROM projects WHERE id = $1", [id]);
-  await fs.rm(row.storageDir, { recursive: true, force: true });
+  const row = await authorizedProjectGate(id, user, "delete", async (row) => {
+    await projectMutations.transaction({ id, storageDir: row.storageDir, deleting: true }, async (client, protect) => {
+      await authorizeProject(id, user, "delete", client);
+      await protect();
+      await client.query("DELETE FROM projects WHERE id = $1", [id]);
+    });
+    return row;
+  });
   await audit({
     ...sessionActor(req, user),
     action: "project.deleted",
@@ -2380,38 +2472,60 @@ async function deleteProject(req, res, user, id) {
 }
 
 async function downloadProjectFile(req, res, user, id, url) {
-  const row = await authorizeProject(id, user, "read");
-  const file = await resolveProjectFile(row.storageDir, url.searchParams.get("path"));
-  const fallbackName = file.name.replace(/[^A-Za-z0-9._-]/g, "_") || "download";
-  res.writeHead(200, {
-    "content-type": file.mimeType,
-    "content-length": file.size,
-    "content-disposition": `attachment; filename="${fallbackName}"; filename*=UTF-8''${encodeDispositionValue(file.name)}`,
-    "cache-control": "private, no-store",
-  });
-  await new Promise((resolve, reject) => {
-    const stream = fsSync.createReadStream(file.path);
-    stream.on("error", reject);
-    res.on("finish", resolve);
-    res.on("close", resolve);
-    stream.pipe(res);
+  if (res.destroyed || req.aborted) return;
+  return authorizedProjectGate(id, user, "read", async (row) => {
+    if (res.destroyed || req.aborted) return;
+    const file = await resolveProjectFile(row.storageDir, url.searchParams.get("path"));
+    if (res.destroyed || req.aborted) return;
+    const fallbackName = file.name.replace(/[^A-Za-z0-9._-]/g, "_") || "download";
+    res.writeHead(200, {
+      "content-type": file.mimeType,
+      "content-length": file.size,
+      "content-disposition": `attachment; filename="${fallbackName}"; filename*=UTF-8''${encodeDispositionValue(file.name)}`,
+      "cache-control": "private, no-store",
+    });
+    await new Promise((resolve) => {
+      const stream = fsSync.createReadStream(file.path);
+      const complete = () => {
+        if (!stream.closed || (!res.writableFinished && !res.destroyed)) return;
+        clearTimeout(timer);
+        res.removeListener("close", terminate);
+        res.removeListener("finish", complete);
+        resolve();
+      };
+      const terminate = () => {
+        stream.destroy();
+        res.destroy();
+        complete();
+      };
+      // Backpressure must not let a paused receiver retain the project gate.
+      // After headers, terminate on errors instead of attempting a JSON response.
+      const timer = setTimeout(terminate, PROJECT_DOWNLOAD_TIMEOUT_MS);
+      stream.once("error", terminate);
+      stream.once("close", complete);
+      res.once("close", terminate);
+      res.once("finish", complete);
+      if (res.destroyed || req.aborted) terminate();
+      else stream.pipe(res);
+    });
   });
 }
 
 async function downloadProjectArchive(req, res, user, id) {
-  const row = await authorizeProject(id, user, "read");
-  let archive;
-  try {
-    archive = await buildProjectArchive(row.storageDir, row.name, {
-      maxBytes: PROJECT_ARCHIVE_MAX_BYTES,
-      maxEntries: PROJECT_ARCHIVE_MAX_ENTRIES,
-    });
-  } catch (error) {
-    if (["PROJECT_ARCHIVE_TOO_LARGE", "ZIP_TOO_MANY_ENTRIES", "ZIP_ENTRY_TOO_LARGE"].includes(error && error.code)) {
-      throw requestError("PROJECT_ARCHIVE_TOO_LARGE", 413);
+  const { row, archive } = await authorizedProjectGate(id, user, "read", async (row) => {
+    try {
+      const archive = await buildProjectArchive(row.storageDir, row.name, {
+        maxBytes: PROJECT_ARCHIVE_MAX_BYTES,
+        maxEntries: PROJECT_ARCHIVE_MAX_ENTRIES,
+      });
+      return { row, archive };
+    } catch (error) {
+      if (["PROJECT_ARCHIVE_TOO_LARGE", "ZIP_TOO_MANY_ENTRIES", "ZIP_ENTRY_TOO_LARGE"].includes(error && error.code)) {
+        throw requestError("PROJECT_ARCHIVE_TOO_LARGE", 413);
+      }
+      throw error;
     }
-    throw error;
-  }
+  });
   const fileName = `${slugify(row.name)}.zip`;
   res.writeHead(200, {
     "content-type": "application/zip",
@@ -2489,6 +2603,7 @@ function normalizeImportedProject(data, name, now) {
   data.lilypondFormat = data.projectType === "lilypond" ? normalizeLilypondFormat(data.lilypondFormat) : "pdf";
   data.createdAt = now;
   data.updatedAt = now;
+  data.revision = 0;
   validateProjectSourceTree(data);
   return data;
 }
@@ -2509,7 +2624,8 @@ async function importProjectArchive(req, res, user, url) {
     throw invalidProjectArchive();
   }
 
-  try {
+  await projectMutations.gate(id, () => projectMutations.transaction({ id, storageDir: storagePath, create: true }, async (client, protect) => {
+    await protect();
     await fs.mkdir(storagePath, { recursive: true });
     for (const directory of archive.directories) {
       if (directory === ".iris/") continue;
@@ -2530,21 +2646,17 @@ async function importProjectArchive(req, res, user, url) {
     // The project row precedes the ledger it is referenced by; the ledger sync
     // stamps canonical ids into the tree, then the manifest is persisted with them.
     // The importer becomes the first owner.
-    await db.query(
+    await client.query(
       "INSERT INTO projects (id, created_by, name, storage_path) VALUES ($1, $2, $3, $4)",
       [id, user.sub, name, storageKey]
     );
-    await db.query(
+    await client.query(
       "INSERT INTO project_members (project_id, user_id, role, invited_by) VALUES ($1, $2, 'owner', $2)",
       [id, user.sub]
     );
-    await syncProjectFiles(id, data);
+    await syncProjectFiles(id, data, client, storagePath, protect);
     await writeProjectManifest(storagePath, data);
-  } catch (err) {
-    await db.query("DELETE FROM projects WHERE id = $1", [id]).catch(() => {});
-    await fs.rm(storagePath, { recursive: true, force: true }).catch(() => {});
-    throw err;
-  }
+  }));
 
   await audit({
     ...sessionActor(req, user),
@@ -2554,7 +2666,7 @@ async function importProjectArchive(req, res, user, url) {
     metadata: { name, projectType: data.projectType, fileCount: countFiles(data) },
   });
   json(res, 201, {
-    project: { id, name, projectType: data.projectType, createdAt: now, updatedAt: now, fileCount: countFiles(data) },
+    project: { id, name, revision: 0, projectType: data.projectType, createdAt: now, updatedAt: now, fileCount: countFiles(data) },
     data: { id, ...data },
   });
 }
@@ -3357,45 +3469,47 @@ async function deleteBuildOutput(req, res, user, projectId, buildId) {
 
 async function compileProject(req, res, user, id) {
   const body = await readBody(req);
-  const row = await authorizeProject(id, user, "compile");
-  const name = body.name == null ? row.name : cleanName(body.name);
-  const data = body.data && typeof body.data === "object" ? body.data : await readProjectFile(row.storageDir);
-  data.project = data.project && Array.isArray(data.project.nodes) ? data.project : { nodes: [] };
-  data.project.name = name;
-  const projectType = inferProjectType(data);
-  data.projectType = projectType;
-  validateProjectSourceTree(data);
-  const engine = projectType === "lilypond" ? "lilypond" : String(body.engine || data.engine || "pdflatex").trim();
-  if (projectType === "latex" && !LATEX_ENGINES.has(engine)) {
-    throw requestError("LATEX_ENGINE_UNSUPPORTED", 400);
-  }
-  const binPath = projectType === "lilypond"
-    ? (LILYPOND_PATH_LOCKED ? LILYPOND_BIN_PATH : String(body.lilypondPath || LILYPOND_BIN_PATH || "").trim())
-    : (TEX_PATH_LOCKED ? TEX_BIN_PATH : String(body.texPath || TEX_BIN_PATH || "").trim());
-  const main = findCompileFile(data, body.mainPath, projectType);
-  const mainPath = safeProjectSourcePath(main.path);
-  const storedLilypondArgs = projectType === "lilypond"
-    ? sanitizeLilypondArgsForStorage(body.lilypondArgs ?? data.lilypondArgs)
-    : "";
-  const outputFormat = projectType === "lilypond"
-    ? normalizeLilypondFormat(body.lilypondFormat ?? data.lilypondFormat)
-    : "pdf";
-  const additionalArgs = projectType === "lilypond" ? parseCompileArguments(storedLilypondArgs) : [];
-  const storedCompileProfile = sanitizeCompileProfileForStorage(body.compileProfile || data.compileProfile, projectType);
-  const compileProfile = normalizeCompileProfile(storedCompileProfile, engine, mainPath, projectType, additionalArgs, outputFormat);
-  data.compileProfile = storedCompileProfile;
-  data.lilypondArgs = storedLilypondArgs;
-  data.lilypondFormat = outputFormat;
-  data.createdAt = toMillis(row.created_at);
-  data.updatedAt = Date.now();
-  const { renames } = await syncProjectFiles(id, data);
-  const buildFiles = collectProjectFiles(data.project.nodes).map((entry) => ({
-    id: entry.node.id,
-    path: entry.path,
-    kind: entry.kind,
-  }));
-  await writeProjectFile(row.storageDir, data, renames);
-  await db.query("UPDATE projects SET name = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2", [name, id]);
+  const { row, data, projectType, engine, binPath, main, mainPath, storedLilypondArgs, outputFormat, compileProfile, buildFiles } = await authorizedProjectGate(id, user, "compile", async (project) => {
+    return projectMutations.transaction({ id, storageDir: project.storageDir }, async (client, protect) => {
+      const row = await authorizeProject(id, user, "compile", client);
+      if (body.data && typeof body.data === "object") requireProjectRevision(body, row);
+      const name = body.name == null ? row.name : cleanName(body.name);
+      const data = body.data && typeof body.data === "object" ? body.data : await readProjectFile(row.storageDir);
+      data.project = data.project && Array.isArray(data.project.nodes) ? data.project : { nodes: [] };
+      data.project.name = name;
+      const projectType = inferProjectType(data);
+      data.projectType = projectType;
+      validateProjectSourceTree(data);
+      const engine = projectType === "lilypond" ? "lilypond" : String(body.engine || data.engine || "pdflatex").trim();
+      if (projectType === "latex" && !LATEX_ENGINES.has(engine)) {
+        throw requestError("LATEX_ENGINE_UNSUPPORTED", 400);
+      }
+      const binPath = projectType === "lilypond"
+        ? (LILYPOND_PATH_LOCKED ? LILYPOND_BIN_PATH : String(body.lilypondPath || LILYPOND_BIN_PATH || "").trim())
+        : (TEX_PATH_LOCKED ? TEX_BIN_PATH : String(body.texPath || TEX_BIN_PATH || "").trim());
+      const main = findCompileFile(data, body.mainPath, projectType);
+      const mainPath = safeProjectSourcePath(main.path);
+      const storedLilypondArgs = projectType === "lilypond"
+        ? sanitizeLilypondArgsForStorage(body.lilypondArgs ?? data.lilypondArgs)
+        : "";
+      const outputFormat = projectType === "lilypond"
+        ? normalizeLilypondFormat(body.lilypondFormat ?? data.lilypondFormat)
+        : "pdf";
+      const additionalArgs = projectType === "lilypond" ? parseCompileArguments(storedLilypondArgs) : [];
+      const storedCompileProfile = sanitizeCompileProfileForStorage(body.compileProfile || data.compileProfile, projectType);
+      const compileProfile = normalizeCompileProfile(storedCompileProfile, engine, mainPath, projectType, additionalArgs, outputFormat);
+      data.compileProfile = storedCompileProfile;
+      data.lilypondArgs = storedLilypondArgs;
+      data.lilypondFormat = outputFormat;
+      await saveProjectTree(id, row, body, data, client, protect);
+      const buildFiles = collectProjectFiles(data.project.nodes).map((entry) => ({
+        id: entry.node.id,
+        path: entry.path,
+        kind: entry.kind,
+      }));
+      return { row, data, projectType, engine, binPath, main, mainPath, storedLilypondArgs, outputFormat, compileProfile, buildFiles };
+    });
+  });
   const jobname = path.basename(mainPath).replace(/\.[^.]+$/, "");
   const outputName = `${jobname}.${outputFormat}`;
   const buildId = uuidv7();
@@ -3420,30 +3534,32 @@ async function compileProject(req, res, user, id) {
     // Materialize from the exact request snapshot rather than copying the live
     // project, which another save could change while this build is starting.
     await writeProjectFile(stagingDir, data);
-    const checkpoint = await captureProjectCheckpoint({
-      projectId: id,
-      storageDir: stagingDir,
-      user,
-      reason: "compile",
-      files: buildFiles,
+    await authorizedProjectGate(id, user, "compile", async () => {
+      const checkpoint = await captureProjectCheckpoint({
+        projectId: id,
+        storageDir: stagingDir,
+        user,
+        reason: "compile",
+        files: buildFiles,
+      });
+      source = await sourceRevisionForBuild(
+        stagingDir, mainPath, main.id, checkpoint.versions.get(main.id) || null
+      );
+      buildCreatedAt = await createBuildOutput({
+        id: buildId,
+        projectId: id,
+        sourceFileId: source.sourceFileId,
+        sourceRevisionId: source.sourceRevisionId,
+        sourceContentHash: source.sourceContentHash,
+        user,
+        projectType,
+        compiler: engine,
+        format: outputFormat,
+        mainPath,
+        displayName: outputName,
+      });
+      buildCreated = true;
     });
-    source = await sourceRevisionForBuild(
-      stagingDir, mainPath, main.id, checkpoint.versions.get(main.id) || null
-    );
-    buildCreatedAt = await createBuildOutput({
-      id: buildId,
-      projectId: id,
-      sourceFileId: source.sourceFileId,
-      sourceRevisionId: source.sourceRevisionId,
-      sourceContentHash: source.sourceContentHash,
-      user,
-      projectType,
-      compiler: engine,
-      format: outputFormat,
-      mainPath,
-      displayName: outputName,
-    });
-    buildCreated = true;
     const stagingOutputDir = path.join(stagingDir, "output");
     await fs.mkdir(stagingOutputDir, { recursive: true });
     const fontDir = path.join(stagingDir, "fonts");
@@ -3454,10 +3570,12 @@ async function compileProject(req, res, user, id) {
     const generatedArtifacts = await readCompileArtifacts(stagingOutputDir, jobname, outputFormat);
     const success = result.code === 0 && generatedArtifacts.length > 0;
     const artifacts = success ? versionCompileArtifacts(generatedArtifacts, buildId, uuidv7) : [];
-    if (success) publishedPath = await publishCompileOutput(stagingOutputDir, row.storageDir, buildId);
     const status = success ? "succeeded" : "failed";
-    await finalizeBuildOutput({ id: buildId, status, storagePath: publishedPath, artifacts, result });
-    finalized = true;
+    await authorizedProjectGate(id, user, "compile", async () => {
+      if (success) publishedPath = await publishCompileOutput(stagingOutputDir, row.storageDir, buildId);
+      await finalizeBuildOutput({ id: buildId, status, storagePath: publishedPath, artifacts, result });
+      finalized = true;
+    });
     collabNotifyBuild({ projectId: id, buildId, status, user });
     await audit({
       ...sessionActor(req, user),
@@ -3471,6 +3589,8 @@ async function compileProject(req, res, user, id) {
     const primaryArtifact = artifacts[0] || null;
     const pdfArtifact = outputFormat === "pdf" ? primaryArtifact : null;
     json(res, 200, {
+      revision: data.revision,
+      data: { id, ...data },
       buildId,
       buildStatus: status,
       buildCreatedAt: toMillis(buildCreatedAt),
@@ -3500,6 +3620,7 @@ async function compileProject(req, res, user, id) {
       errors: result.errors,
     });
   } catch (err) {
+    err.params = { ...err.params, savedRevision: data.revision };
     if (buildCreated && !finalized) {
       if (publishedPath) {
         const publishedDir = await resolveBuildDirectory(row.storageDir, buildId, publishedPath).catch(() => null);
@@ -3966,10 +4087,15 @@ async function adminRemoveProjectMember(req, res, actor, projectId, memberId) {
 }
 
 async function adminDeleteProject(req, res, actor, projectId) {
-  const row = await adminProjectRow(projectId);
-  const storageDir = resolveProjectStorageDir(DATA_DIR, row.storage_path);
-  await db.query("DELETE FROM projects WHERE id = $1", [projectId]);
-  await fs.rm(storageDir, { recursive: true, force: true });
+  const row = await projectMutations.gate(projectId, async () => {
+    const row = await adminProjectRow(projectId);
+    const storageDir = resolveProjectStorageDir(DATA_DIR, row.storage_path);
+    await projectMutations.transaction({ id: projectId, storageDir, deleting: true }, async (client, protect) => {
+      await protect();
+      await client.query("DELETE FROM projects WHERE id = $1", [projectId]);
+    });
+    return row;
+  });
   await audit({
     ...sessionActor(req, actor),
     action: "project.deleted",

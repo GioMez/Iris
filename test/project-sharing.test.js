@@ -35,8 +35,8 @@ test("member search is owner-authorized and returns only eligible accounts", () 
   assert.match(server, /resolveMemberUser\(body && body\.identifier, body && body\.userId, true\)/);
 });
 
-test("the database-authoritative project role reaches the workspace", () => {
-  assert.match(server, /json\(res, 200, \{ id: row\.id, \.\.\.data, role: row\.role \}\)/);
+test("the project role reaches the workspace controls", () => {
+  // Database authority is exercised through GET in project-mutations.test.js.
   assert.match(projects, /data\.role = data\.role \|\| \(m && m\.role\)/);
   assert.match(app, /setRole\(role\)[\s\S]*?applyRoleGate\(\)/);
 });

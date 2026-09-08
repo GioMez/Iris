@@ -340,7 +340,9 @@ test("messages stay ordered while opening a room awaits disk I/O", options, asyn
     client.send({ t: "pull", fileId: fixture.fileId, version: 0 });
     release.resolve();
     await client.next("opened");
+    assert.equal((await client.next("updates")).version, 1);
     assert.equal((await client.next("pushed")).version, 1);
+    assert.equal((await client.next("updates")).version, 2);
     assert.equal((await client.next("pushed")).version, 2);
     assert.equal((await client.next("updates")).updates.length, 2);
     assert.equal(fixture.app.collabRooms.get(fixture.fileId).text(), "base first second");

@@ -15,8 +15,10 @@
   let currentId = null;
   let unsavedDecision = null;
   let openGeneration = 0;
+  let openRequestGeneration = 0;
   let saveQueue = Promise.resolve(false);
   const cache = new Map();
+  const clone = (data) => JSON.parse(JSON.stringify(data));
 
   const ROLE_KEY = { owner: "roleOwner", editor: "roleEditor", viewer: "roleViewer" };
   const PROJECT_ROLES = ["owner", "editor", "viewer"];
@@ -154,30 +156,53 @@
   // the content of the files this client itself wrote (see IrisApp.serialize);
   // the cache remains the source for ids, role and counts.
   async function loadData(id) {
-    const data = await api(`/api/projects/${id}`);
-    cache.set(id, data);
-    return data;
+    return api(`/api/projects/${id}`);
   }
 
-  async function refreshCurrent() {
+  function acceptData(id, data, summary) {
+    cache.set(id, clone(data));
+    const meta = metaOf(id);
+    if (meta) Object.assign(meta, {
+      name: data.project.name, revision: data.revision,
+      role: data.role || meta.role,
+      projectType: data.projectType, fileCount: countFiles(data),
+      updatedAt: data.updatedAt || meta.updatedAt,
+    }, summary);
+  }
+
+  function staleSession() {
+    const error = new Error(t("projects.noneOpen"));
+    error.stale = true;
+    return error;
+  }
+
+  function enqueueMutation(operation) {
+    const result = saveQueue.then(operation, operation);
+    saveQueue = result.catch(() => false);
+    return result;
+  }
+
+  async function waitForPersistence() {
+    let pending;
+    do {
+      pending = saveQueue;
+      await pending;
+    } while (pending !== saveQueue);
+  }
+
+  function refreshCurrent(accept) {
     const projectId = currentId;
     const sessionGeneration = openGeneration;
-    if (!projectId) throw new Error(t("projects.noneOpen"));
-    const data = await api(`/api/projects/${projectId}`);
-    if (currentId !== projectId || openGeneration !== sessionGeneration) {
-      const error = new Error(t("projects.noneOpen"));
-      error.stale = true;
-      throw error;
-    }
-    cache.set(projectId, data);
-    const meta = metaOf(projectId);
-    if (meta) {
-      meta.name = (data.project && data.project.name) || meta.name;
-      meta.projectType = data.projectType || meta.projectType;
-      meta.fileCount = countFiles(data);
-      meta.updatedAt = data.updatedAt || meta.updatedAt;
-    }
-    return data;
+    return enqueueMutation(async () => {
+      if (!projectId || currentId !== projectId || openGeneration !== sessionGeneration) throw staleSession();
+      const data = await loadData(projectId);
+      if (currentId !== projectId || openGeneration !== sessionGeneration) throw staleSession();
+      // The editor must accept the tree before its revision or cache can advance.
+      if (typeof accept !== "function" || accept(clone(data)) !== true) throw staleSession();
+      acceptData(projectId, data);
+      setProjName(data.project.name);
+      return data;
+    });
   }
 
   /* ---------------- chooser render ---------------- */
@@ -269,132 +294,112 @@
   }
 
   async function openProject(id) {
-    const generation = ++openGeneration;
-    if (window.IrisApp && window.IrisApp.cancelPendingProjectLoad) window.IrisApp.cancelPendingProjectLoad();
-    try {
-      const data = await loadData(id);
-      if (generation !== openGeneration) return;
-      if (!data || !window.IrisApp) return;
-      const m = metaOf(id);
-      data.role = data.role || (m && m.role) || "owner";
-      if (m) m.role = data.role;
-      currentId = id;
-      if (window.IrisBuilds) window.IrisBuilds.reset();
-      const loaded = await window.IrisApp.load(data);
-      if (generation !== openGeneration || loaded === false) return;
-      setProjName(m ? m.name : (data.project && data.project.name) || "");
-      syncShareTrigger(data.role);
-      window.IrisMotion.setActiveSurface("app");
-      window.IrisMotion.openProject();
-      setTimeout(() => window.IrisEditor.focus(), 0);
-      if (window.IrisBuilds) void window.IrisBuilds.loadLatest(id);
-    } catch (err) {
-      if (generation !== openGeneration) return;
-      console.error(err);
-      currentId = null;
-      syncShareTrigger(null);
-      window.IrisMotion.setActiveSurface("picker");
-      await window.IrisI18n.useDefaultLanguage({ silent: true });
-      await renderPicker();
-      const meta = metaOf(id);
-      setPickerStatus(t("projects.openFailed", { name: meta ? meta.name : t("projects.thisProject"), error: window.IrisI18n.error(err) }), true);
-      focusPicker();
-    }
+    const requestGeneration = ++openRequestGeneration;
+    const sessionGeneration = openGeneration;
+    // Opening adopts a revision just like a write: hold the queue through load,
+    // without invalidating earlier saves while this request waits its turn.
+    return enqueueMutation(async () => {
+      if (requestGeneration !== openRequestGeneration || sessionGeneration !== openGeneration) return false;
+      if (currentId && window.IrisApp.hasUnsavedChanges() && !(await confirmDiscardChanges())) return false;
+      if (requestGeneration !== openRequestGeneration || sessionGeneration !== openGeneration) return false;
+      const generation = ++openGeneration;
+      const isCurrent = () => requestGeneration === openRequestGeneration && generation === openGeneration;
+      if (window.IrisApp && window.IrisApp.cancelPendingProjectLoad) window.IrisApp.cancelPendingProjectLoad();
+      const previous = window.IrisApp && window.IrisApp.capturePersistence();
+      try {
+        const data = await loadData(id);
+        if (!isCurrent()) return false;
+        if (!data || !window.IrisApp) return;
+        const latest = window.IrisApp.capturePersistence();
+        if (previous.generation !== latest.generation || previous.editRevision !== latest.editRevision || previous.manifest !== latest.manifest) return false;
+        const m = metaOf(id);
+        data.role = data.role || (m && m.role) || "owner";
+        if (window.IrisBuilds) window.IrisBuilds.reset();
+        const loaded = await window.IrisApp.load(clone(data), { isCurrent });
+        if (!isCurrent() || loaded === false) return false;
+        currentId = id;
+        acceptData(id, data);
+        setProjName((data.project && data.project.name) || "");
+        syncShareTrigger(data.role);
+        window.IrisMotion.setActiveSurface("app");
+        window.IrisMotion.openProject();
+        setTimeout(() => window.IrisEditor.focus(), 0);
+        if (window.IrisBuilds) void window.IrisBuilds.loadLatest(id);
+      } catch (err) {
+        if (!isCurrent()) return false;
+        console.error(err);
+        if (currentId) {
+          document.dispatchEvent(new CustomEvent("iris:projecterror", { detail: err }));
+          return false;
+        }
+        currentId = null;
+        syncShareTrigger(null);
+        window.IrisMotion.setActiveSurface("picker");
+        await window.IrisI18n.useDefaultLanguage({ silent: true });
+        await renderPicker();
+        const meta = metaOf(id);
+        setPickerStatus(t("projects.openFailed", { name: meta ? meta.name : t("projects.thisProject"), error: window.IrisI18n.error(err) }), true);
+        focusPicker();
+      }
+    });
   }
 
   async function closeCurrent() {
-    const dirty = !!(currentId && window.IrisApp && window.IrisApp.hasUnsavedChanges && window.IrisApp.hasUnsavedChanges());
-    if (dirty && !(await confirmDiscardChanges())) return false;
-    window.IrisMotion.setActiveSurface("picker");
-    if (window.IrisApp && window.IrisApp.waitForPersistence) await window.IrisApp.waitForPersistence();
-    if (dirty) cache.delete(currentId);
-    else await persistCurrent();
-    openGeneration += 1;
-    if (window.IrisApp && window.IrisApp.cancelPendingBuild) window.IrisApp.cancelPendingBuild();
-    if (window.IrisApp && window.IrisApp.cancelPendingProjectLoad) window.IrisApp.cancelPendingProjectLoad();
-    currentId = null;
-    if (window.IrisBuilds) window.IrisBuilds.reset();
-    syncShareTrigger(null);
-    await window.IrisI18n.useDefaultLanguage({ silent: true });
-    document.title = `${t("projects.yourProjects")} · Iris`;
-    setPickerLoading();
-    window.IrisMotion.setActiveSurface("picker");
-    await Promise.all([window.IrisMotion.closeProject(), renderPicker()]);
-    focusPicker();
-    return true;
+    return showPicker();
   }
 
-  function persistCurrent() {
-    if (!currentId || !window.IrisApp) return Promise.resolve(false);
+  function mutateCurrent(suffix, method, options, withData = true) {
     const projectId = currentId;
     const sessionGeneration = openGeneration;
-    const data = window.IrisApp.serialize();
-    const now = Date.now();
-    data.updatedAt = now;
-    cache.set(projectId, data);
-    const m = metaOf(projectId);
-    if (m) {
-      m.name = (data.project && data.project.name) || m.name;
-      m.updatedAt = now;
-      m.fileCount = countFiles(data);
-      m.projectType = data.projectType || m.projectType || "latex";
-    }
-    const name = m ? m.name : data.project.name;
-    const operation = async () => {
+    return enqueueMutation(async () => {
+      const isCurrent = () => currentId === projectId && openGeneration === sessionGeneration;
+      if (!projectId || !isCurrent()) throw staleSession();
+      // Capture only when this operation owns the queue, paired with its base.
+      const snapshot = withData ? window.IrisApp.capturePersistence() : null;
+      const body = typeof options === "function" ? options() : (options || {});
+      if (snapshot) Object.assign(body, {
+        name: snapshot.data.project.name, data: snapshot.data, baseRevision: snapshot.data.revision,
+      });
+      const acknowledge = (revision, data, summary) => {
+        if (!isCurrent() || snapshot.generation !== window.IrisApp.capturePersistence().generation) throw staleSession();
+        if (!Number.isInteger(revision) || revision !== snapshot.data.revision + 1) throw new Error(t("projects.operationFailed"));
+        acceptData(projectId, { ...data, revision }, summary);
+        window.IrisApp.acknowledgePersistence(snapshot, revision);
+      };
+      let out;
       try {
-        const out = await api(`/api/projects/${projectId}`, {
-          method: "PUT",
-          body: JSON.stringify({ name, data }),
-        });
-        const staleReopen = currentId === projectId && openGeneration !== sessionGeneration;
-        if (!staleReopen && out && out.data) cache.set(projectId, out.data);
-        if (!staleReopen && out && out.project && m) Object.assign(m, out.project);
-        return currentId === projectId && openGeneration === sessionGeneration;
+        out = await api(`/api/projects/${projectId}${suffix}`, { method, body: JSON.stringify(body) });
       } catch (err) {
-        console.error("Salvataggio progetto fallito", err);
-        // Write refused (role downgraded to viewer while the project was open):
-        // let the editor drop to read-only and tell the user, instead of failing
-        // silently and risking lost edits.
-        if (currentId === projectId && openGeneration === sessionGeneration && err && err.status === 403) {
+        if (!isCurrent()) throw staleSession();
+        // Build setup can fail after the exact submitted snapshot was committed.
+        // Never fetch a new base and replay a tree that the editor has not seen.
+        if (snapshot && Number.isInteger(err.params?.savedRevision) && err.params.savedRevision === snapshot.data.revision + 1) {
+          acknowledge(err.params.savedRevision, snapshot.data);
+        }
+        if (err.status === 403) {
           document.dispatchEvent(new CustomEvent("iris:writeforbidden"));
         }
-        return false;
+        throw err;
       }
-    };
-    saveQueue = saveQueue.then(operation, operation);
-    return saveQueue;
+      if (!isCurrent()) throw staleSession();
+      if (snapshot) acknowledge(out.revision ?? out.data?.revision ?? out.project?.revision, out.data, out.project);
+      return out;
+    });
   }
 
-  async function compileCurrent(data, options) {
-    if (!currentId) throw new Error(t("projects.noneOpen"));
-    const projectId = currentId;
-    const sessionGeneration = openGeneration;
-    data = data && typeof data === "object" ? data : (window.IrisApp ? window.IrisApp.serialize() : {});
-    const now = Date.now();
-    data.updatedAt = now;
-    cache.set(projectId, data);
-    const m = metaOf(projectId);
-    if (m) {
-      m.name = (data.project && data.project.name) || m.name;
-      m.updatedAt = now;
-      m.fileCount = countFiles(data);
-      m.projectType = data.projectType || m.projectType || "latex";
+  async function persistCurrent() {
+    if (!currentId || !window.IrisApp || currentRole() === "viewer") return false;
+    try {
+      await mutateCurrent("", "PUT");
+      return true;
+    } catch (err) {
+      if (!err.stale) document.dispatchEvent(new CustomEvent("iris:projecterror", { detail: err }));
+      return false;
     }
-    const out = await api(`/api/projects/${projectId}/compile`, {
-      method: "POST",
-      body: JSON.stringify({
-        name: m ? m.name : data.project.name,
-        data,
-        engine: options && options.engine,
-        mainPath: options && options.mainPath,
-        texPath: options && options.texPath,
-        lilypondPath: options && options.lilypondPath,
-        lilypondArgs: options && options.lilypondArgs,
-        lilypondFormat: options && options.lilypondFormat,
-        compileProfile: options && options.compileProfile,
-      }),
-    });
-    if (currentId !== projectId || openGeneration !== sessionGeneration) throw new Error(t("projects.noneOpen"));
+  }
+
+  async function compileCurrent(options) {
+    const out = await mutateCurrent("/compile", "POST", options);
     document.dispatchEvent(new CustomEvent("iris:buildcompleted", { detail: out }));
     return out;
   }
@@ -437,18 +442,13 @@
   }
 
   async function restoreFileVersion(fileId, versionId) {
-    if (!currentId) throw new Error(t("projects.noneOpen"));
-    return api(`/api/projects/${currentId}/files/${fileId}/versions/${versionId}/restore`, {
-      method: "POST",
-      body: "{}",
-    });
+    return mutateCurrent(`/files/${fileId}/versions/${versionId}/restore`, "POST", null, false);
   }
 
   // Manual project-wide checkpoint. The current editor state is expected to be
   // persisted already (callers save first), so the server snapshots from disk.
-  async function checkpointCurrent() {
-    if (!currentId) throw new Error(t("projects.noneOpen"));
-    return api(`/api/projects/${currentId}/checkpoint`, { method: "POST", body: "{}" });
+  async function checkpointCurrent({ withData = false } = {}) {
+    return mutateCurrent("/checkpoint", "POST", null, withData);
   }
 
   /* ---------------- versioned build outputs ---------------- */
@@ -570,17 +570,24 @@
   }
 
   async function renameProject(id, name) {
-    const m = metaOf(id);
-    const data = cache.get(id);
-    if (m) { m.name = name; m.updatedAt = Date.now(); }
-    if (data && data.project) { data.project.name = name; data.updatedAt = Date.now(); }
-    if (id === currentId && window.IrisApp) { window.IrisApp.setName(name); setProjName(name); }
-    const out = await api(`/api/projects/${id}`, {
-      method: "PUT",
-      body: JSON.stringify({ name, data }),
+    const generation = openGeneration;
+    return enqueueMutation(async () => {
+      if (generation !== openGeneration) throw staleSession();
+      const m = metaOf(id);
+      const active = id === currentId;
+      const snapshot = active ? window.IrisApp.capturePersistence() : null;
+      const baseRevision = snapshot ? snapshot.data.revision : (m?.revision ?? cache.get(id)?.revision);
+      const out = await api(`/api/projects/${id}`, {
+        method: "PUT", body: JSON.stringify({ name, baseRevision }),
+      });
+      if (generation !== openGeneration || (snapshot && snapshot.generation !== window.IrisApp.capturePersistence().generation)) throw staleSession();
+      acceptData(id, out.data, out.project);
+      if (active) {
+        window.IrisApp.setName(name, out.data.revision, snapshot.data.project.name);
+        setProjName(window.IrisApp.serialize().project.name);
+      }
+      return out;
     });
-    if (out && out.project && m) Object.assign(m, out.project);
-    if (out && out.data) cache.set(id, out.data);
   }
 
   async function deleteProject(id) {
@@ -954,13 +961,12 @@
 
   /* ---------------- public API ---------------- */
   async function showPicker() {
+    await waitForPersistence();
     const dirty = !!(currentId && window.IrisApp && window.IrisApp.hasUnsavedChanges && window.IrisApp.hasUnsavedChanges());
     if (dirty && !(await confirmDiscardChanges())) return false;
-    window.IrisMotion.setActiveSurface("picker");
-    if (window.IrisApp && window.IrisApp.waitForPersistence) await window.IrisApp.waitForPersistence();
     if (dirty) cache.delete(currentId);
-    else await persistCurrent();
     const hadProject = !!currentId;
+    window.IrisMotion.setActiveSurface("picker");
     openGeneration += 1;
     if (window.IrisApp && window.IrisApp.cancelPendingBuild) window.IrisApp.cancelPendingBuild();
     if (window.IrisApp && window.IrisApp.cancelPendingProjectLoad) window.IrisApp.cancelPendingProjectLoad();
@@ -993,7 +999,7 @@
   }
 
   window.IrisProjects = {
-    showPicker, openProject, closeCurrent, persistCurrent, compileCurrent,
+    showPicker, openProject, closeCurrent, persistCurrent, compileCurrent, waitForPersistence,
     downloadCurrentFile, refreshCurrent, renderPicker, onLogout, resolveFileId,
     listFileVersions, getFileVersion, restoreFileVersion, checkpointCurrent,
     currentProjectId, currentRole, listBuildOutputs, getBuildOutput, loadBuildOutput,

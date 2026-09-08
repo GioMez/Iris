@@ -243,6 +243,31 @@ This is useful when the deployment controls compiler locations centrally.
 
 ## Working with projects
 
+### Concurrent saves
+
+Projects expose a server-owned integer `revision`, introduced by migration `015`.
+Saving a whole-project snapshot requires its `baseRevision`; name-only updates
+use the same precondition without replacing the file tree. Missing or malformed
+preconditions return `428 PROJECT_REVISION_REQUIRED`; stale snapshots return
+`409 PROJECT_REVISION_CONFLICT` before changing files or metadata. Successful
+snapshot saves advance the revision, including the save phase of compilation.
+Realtime text flushes and checkpoints without a submitted tree do not advance it.
+
+The browser serializes its mutations and retains local edits on conflict. It does
+not fetch a newer revision and blindly replay an older tree. Preserve local work
+before explicitly discarding/reopening a conflicting project. Reload browser tabs
+after upgrading so they use the revision-aware save protocol.
+
+Backend mutations are serialized per project through their database transaction
+and filesystem compensation. Required renames fail explicitly rather than
+falling back to empty files; ambiguous chains, swaps and occupied destinations
+are rejected. Handled pre-commit failures restore source bytes and the manifest.
+An uncertain commit or failed compensation retains a backup below
+`DATA_DIR/.project-backups/<project-id>` and blocks access with
+`503 PROJECT_RECOVERY_REQUIRED`. Stop Iris and inspect both persistence layers
+before repairing the project and removing that backup; restart after recovery.
+This is not automatic crash recovery or multi-process filesystem coordination.
+
 ### Portable project archives
 
 Every project card can download a ZIP archive. The archive keeps the project
@@ -410,6 +435,7 @@ already present in the process environment.
 | `DATA_DIR` | `./data/projects` | Root directory for project files. |
 | `PUBLIC_DIR` | `./public` | Static frontend directory. |
 | `MAX_BODY_MB` | `25` | Maximum JSON request body size in MiB. |
+| `PROJECT_DOWNLOAD_TIMEOUT_MS` | `30000` | Hard source-file transfer deadline; a stalled receiver cannot indefinitely block the project's mutations. |
 | `COOKIE_SECURE` | `false` | Set `true` when Iris is served over HTTPS. |
 | `TRUST_PROXY` | `false` | Set `true` only behind a reverse proxy that rewrites `X-Forwarded-For`, so audit events record the client address instead of the proxy. |
 | `MAINTENANCE_FILE` | `DATA_DIR/.maintenance` | Path whose presence puts Iris into maintenance mode: writes are refused, reads continue. |
@@ -681,6 +707,12 @@ that is behind pulls what it missed, rebases its own pending edits on top and
 retries. Because the order is decided in one place, permissions, revocation and
 history stay under server control — which is why OT was chosen over a CRDT. The
 trade-off accepted is that robust offline editing is not supported.
+
+Accepted updates are sent to every replica, including their author, before the
+push acknowledgement. Broadcasts and pull replies share one version-indexed
+stream: the browser discards already-applied prefixes and catches up missing
+ranges before sending further edits. Delayed replies from obsolete sockets or
+file openings cannot replace the current session.
 
 What this changes for a document being edited live:
 
