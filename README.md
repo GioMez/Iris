@@ -774,6 +774,20 @@ next request without a forced logout, while a deactivation or a password reset e
 existing sessions immediately. Every administrative change is written to the audit
 trail.
 
+Sessions carry the account's integer `session_version`, which is incremented
+atomically on deactivation, password reset or change, and local/SSO conversion.
+Older cookies are rejected even when both operations occur in the same second;
+a successful password change issues a replacement cookie only to that client.
+Migration `014` introduces this check, so users must sign in again after upgrading
+from an earlier schema.
+
+Account revocation through Iris closes existing collaboration sockets immediately.
+WebSockets also validate the account on each message and heartbeat, and expire
+without waiting for new activity. Out-of-band account changes are detected on
+the next message or heartbeat (`COLLAB_HEARTBEAT_MS`, 30 seconds by default).
+Accounts awaiting a mandatory password change cannot open a collaboration socket.
+Joins and upgrades already waiting on I/O cannot retain revoked access.
+
 For OIDC accounts, Iris does not replace the identity provider: the durable
 identity is the `issuer` + `subject` pair, and email is only a searchable
 attribute. The console governs the account's server role and enabled state, while

@@ -25,6 +25,7 @@ const ALL_MIGRATIONS = [
   "011_oidc_linked_at.sql",
   "012_versioned_build_outputs.sql",
   "013_realtime_revisions.sql",
+  "014_account_session_version.sql",
 ];
 const silentLogger = { log() {}, warn() {}, error() {} };
 
@@ -336,6 +337,30 @@ test("server administration schema enforces roles, status and OIDC identity", { 
   );
   await pool.query("INSERT INTO users (id, username, email, display_name, password_hash) VALUES ($1, 'd', 'd@e.org', 'd', 'h')", [uuidv7()]);
   await pool.query("INSERT INTO users (id, username, email, display_name, password_hash) VALUES ($1, 'e', 'e@e.org', 'e', 'h')", [uuidv7()]);
+});
+
+test("session versions backfill existing accounts and enforce nonnegative integers", { skip: !connectionString }, async (t) => {
+  const pool = await isolatedSchema(t);
+  const staged = await tempDir(t, "iris-migrations-");
+  for (const name of ALL_MIGRATIONS.slice(0, -1)) {
+    await fs.copyFile(path.join(MIGRATIONS_DIR, name), path.join(staged, name));
+  }
+  await runMigrations(pool, staged);
+  const existing = await insertUser(pool, "existing", "existing@example.org");
+  await runMigrations(pool);
+  const fresh = await insertUser(pool, "fresh", "fresh@example.org");
+  const { rows } = await pool.query("SELECT session_version, session_epoch FROM users ORDER BY username");
+  assert.deepEqual(rows.map((row) => row.session_version), [0, 0]);
+  assert.ok(rows.every((row) => row.session_epoch), "retain the epoch column for existing data");
+  const column = await pool.query(
+    "SELECT data_type FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'users' AND column_name = 'session_version'"
+  );
+  assert.equal(column.rows[0].data_type, "integer");
+  for (const [value, code] of [[null, "23502"], [-1, "23514"], ["1.5", "22P02"]]) {
+    await assert.rejects(pool.query("UPDATE users SET session_version = $1 WHERE id = $2", [value, existing]), (error) => error.code === code);
+  }
+  await pool.query("UPDATE users SET session_version = session_version + 1 WHERE id = $1", [fresh]);
+  assert.equal((await pool.query("SELECT session_version FROM users WHERE id = $1", [fresh])).rows[0].session_version, 1);
 });
 
 test("document versions form an append-only history keyed to a stable file id", { skip: !connectionString }, async (t) => {

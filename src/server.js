@@ -221,7 +221,7 @@ function verifySignedJson(token) {
   if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
   try {
     const payload = JSON.parse(Buffer.from(body, "base64url").toString("utf8"));
-    if (payload.exp && payload.exp < Math.floor(Date.now() / 1000)) return null;
+    if (!payload || !Number.isFinite(payload.exp) || payload.exp <= Math.floor(Date.now() / 1000)) return null;
     return payload;
   } catch {
     return null;
@@ -229,6 +229,7 @@ function verifySignedJson(token) {
 }
 
 function makeToken(user, authMethod = "local") {
+  if (!Number.isSafeInteger(user.session_version) || user.session_version < 0) throw new Error("Invalid session version");
   const payload = {
     sub: String(user.id),
     username: user.username,
@@ -236,6 +237,7 @@ function makeToken(user, authMethod = "local") {
     email: user.email,
     role: user.system_role || user.role || "regular",
     authMethod,
+    sessionVersion: user.session_version,
     iat: Math.floor(Date.now() / 1000),
     exp: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 7,
   };
@@ -244,7 +246,7 @@ function makeToken(user, authMethod = "local") {
 
 function verifyToken(token) {
   const payload = verifySignedJson(token);
-  if (!payload || !payload.exp) return null;
+  if (!payload || !Number.isSafeInteger(payload.sessionVersion) || payload.sessionVersion < 0) return null;
   // Sessions issued before migration 004 carry a numeric subject. Rejecting them
   // here turns a stale cookie into a clean re-login instead of a malformed uuid
   // reaching PostgreSQL.
@@ -431,7 +433,7 @@ async function availableUsername(base) {
 }
 
 const OAUTH_USER_COLUMNS =
-  "id, username, email, display_name, system_role, status, auth_source, oidc_issuer, oidc_subject, oidc_link_pending, session_epoch, password_hash";
+  "id, username, email, display_name, system_role, status, auth_source, oidc_issuer, oidc_subject, oidc_link_pending, session_version, password_hash, password_change_required";
 
 function disabledAccountError() {
   const err = new Error("Account disabled");
@@ -488,13 +490,16 @@ async function userFromOAuthProfile(profile, ip = null) {
       throw new Error("This email is already linked to a different SSO identity");
     }
     if (!emailMatch.oidc_link_pending) throw ssoLinkRequiredError();
-    await db.query(
+    const converted = await db.query(
       `UPDATE users SET oidc_issuer = $1, oidc_subject = $2, auth_source = 'oidc',
          password_hash = NULL, oidc_link_pending = FALSE, oidc_linked_at = CURRENT_TIMESTAMP,
-         updated_at = CURRENT_TIMESTAMP
-       WHERE id = $3`,
+         password_change_required = FALSE, session_version = session_version + 1,
+         session_epoch = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $3 RETURNING ${OAUTH_USER_COLUMNS}`,
       [issuer, subject, emailMatch.id]
     );
+    if (!converted.rows.length) throw requestError("NOT_AUTHENTICATED", 401);
+    collabRevokeUser(emailMatch.id);
     await audit({
       action: "user.oidc_linked",
       actorId: emailMatch.id,
@@ -504,11 +509,7 @@ async function userFromOAuthProfile(profile, ip = null) {
       targetId: emailMatch.id,
       metadata: { issuer },
     });
-    emailMatch.oidc_issuer = issuer;
-    emailMatch.oidc_subject = subject;
-    emailMatch.auth_source = "oidc";
-    emailMatch.password_hash = null;
-    return emailMatch;
+    return converted.rows[0];
   }
 
   if (!OAUTH_AUTO_REGISTER) {
@@ -522,7 +523,7 @@ async function userFromOAuthProfile(profile, ip = null) {
   try {
     const result = await db.query(
       `INSERT INTO users (id, username, email, display_name, system_role, password_hash, auth_source, oidc_issuer, oidc_subject)
-       VALUES ($1, $2, $3, $4, 'regular', NULL, 'oidc', $5, $6) RETURNING id`,
+       VALUES ($1, $2, $3, $4, 'regular', NULL, 'oidc', $5, $6) RETURNING ${OAUTH_USER_COLUMNS}`,
       [uuidv7(), username, profile.email, displayName, issuer, subject]
     );
     const id = String(result.rows[0].id);
@@ -535,7 +536,7 @@ async function userFromOAuthProfile(profile, ip = null) {
       targetId: id,
       metadata: { authSource: "oidc", autoRegistered: true, email: profile.email },
     });
-    return { id, username, email: profile.email, display_name: displayName, system_role: "regular", status: "active", auth_source: "oidc", password_hash: null };
+    return result.rows[0];
   } catch (err) {
     if (err.code !== "23505") throw err;
     const retry = await db.query(
@@ -609,7 +610,7 @@ async function readBody(req) {
 
 // Authenticates against the current database state on every request, not just
 // the signed token. This is what makes an account change take effect at once: a
-// disabled account, a bumped session epoch (a forced sign-out or password reset)
+// disabled account, a bumped session version (a forced sign-out or password reset)
 // or a role change is honoured on the very next request rather than lingering
 // until the token expires.
 async function requireUser(req) {
@@ -618,13 +619,12 @@ async function requireUser(req) {
   if (!payload) throw requestError("NOT_AUTHENTICATED", 401);
 
   const { rows } = await db.query(
-    "SELECT id, username, email, display_name, system_role, status, auth_source, session_epoch, password_change_required FROM users WHERE id = $1 LIMIT 1",
+    "SELECT id, username, email, display_name, system_role, status, auth_source, session_version, password_change_required FROM users WHERE id = $1 LIMIT 1",
     [payload.sub]
   );
   const row = rows[0];
-  if (!row || row.status !== "active") throw requestError("NOT_AUTHENTICATED", 401);
-  const epochSeconds = Math.floor(new Date(row.session_epoch).getTime() / 1000);
-  if (typeof payload.iat === "number" && payload.iat < epochSeconds) throw requestError("NOT_AUTHENTICATED", 401);
+  if (!row || row.status !== "active" || row.session_version !== payload.sessionVersion
+      || payload.exp <= Math.floor(Date.now() / 1000)) throw requestError("NOT_AUTHENTICATED", 401);
 
   return {
     sub: String(row.id),
@@ -637,6 +637,8 @@ async function requireUser(req) {
     passwordChangeRequired: row.password_change_required === true,
     authMethod: payload.authMethod || (row.auth_source === "oidc" ? "sso" : "local"),
     iat: payload.iat,
+    sessionVersion: row.session_version,
+    exp: payload.exp,
   };
 }
 
@@ -1774,6 +1776,51 @@ const COLLAB_PRESENCE_DEBOUNCE_MS = positiveIntEnv("COLLAB_PRESENCE_DEBOUNCE_MS"
 const collabRooms = new CollabRooms();
 const collabSessions = new Set();
 let collabHeartbeat = null;
+// Invalidates auth/membership snapshots held across an await, including joins
+// and upgrades which are not yet visible in the live session/room sets.
+let collabAccessGeneration = 0;
+
+function collabActive(session) {
+  if (session.closed) return false;
+  if (session.socket.readyState !== session.socket.OPEN) {
+    collabCloseSession(session);
+    return false;
+  }
+  if (Date.now() >= session.user.exp * 1000) {
+    collabCloseSession(session, 4401, "session expired");
+    return false;
+  }
+  return true;
+}
+
+async function collabAuthenticate(session) {
+  while (collabActive(session)) {
+    const generation = collabAccessGeneration;
+    let user;
+    try {
+      user = await requireUser(session.request);
+    } catch {
+      collabCloseSession(session, 4401, "not authenticated");
+      return false;
+    }
+    if (!collabActive(session)) return false;
+    if (generation !== collabAccessGeneration) continue;
+    if (user.passwordChangeRequired) {
+      collabCloseSession(session, 4403, "password change required");
+      return false;
+    }
+    session.user = user;
+    return true;
+  }
+  return false;
+}
+
+function collabRevokeUser(userId) {
+  collabAccessGeneration++;
+  collabSessions.forEach((session) => {
+    if (session.user.sub === String(userId)) collabCloseSession(session, 4401, "session revoked");
+  });
+}
 
 function collabSend(socket, message) {
   if (socket.readyState !== socket.OPEN) return;
@@ -1794,6 +1841,7 @@ async function collabMembership(projectId, userId) {
 }
 
 async function collabJoin(session, fileId) {
+  if (!collabActive(session)) return null;
   if (!isUuid(fileId)) throw new CollabError("COLLAB_BAD_FILE");
   if (session.rooms.has(fileId)) return session.rooms.get(fileId);
   const { rows } = await db.query(
@@ -1803,15 +1851,30 @@ async function collabJoin(session, fileId) {
   const file = rows[0];
   // A non-member must not be able to tell an existing file from a missing one.
   if (!file || file.deleted_at) throw new CollabError("COLLAB_FILE_NOT_FOUND");
-  const project = await collabMembership(file.project_id, session.user.sub);
+  let project = await collabMembership(file.project_id, session.user.sub);
+  if (!collabActive(session)) return null;
   if (!project) throw new CollabError("COLLAB_FILE_NOT_FOUND");
   if (file.kind === "img" || file.kind === "font") throw new CollabError("COLLAB_NOT_TEXT");
 
-  const existing = collabRooms.get(fileId);
-  // Only the first participant reads from disk; later joins take the in-memory
-  // text, which is newer than anything on disk.
-  const content = existing ? existing.text() : await fs.readFile(path.join(project.storageDir, file.path), "utf8").catch(() => "");
-  const room = collabRooms.open({ fileId, projectId: file.project_id, path: file.path, content });
+  let existing;
+  let content;
+  let roomGeneration;
+  do {
+    roomGeneration = collabRooms.generation;
+    existing = collabRooms.get(fileId);
+    content = existing ? null : await fs.readFile(path.join(project.storageDir, file.path), "utf8").catch(() => "");
+    let generation;
+    do {
+      if (!collabActive(session)) return null;
+      generation = collabAccessGeneration;
+      project = await collabMembership(file.project_id, session.user.sub);
+    } while (generation !== collabAccessGeneration);
+    if (!collabActive(session)) return null;
+    if (!project) throw new CollabError("COLLAB_FILE_NOT_FOUND");
+    // A room may open, accept edits and retire during either I/O wait. Never
+    // recreate it from a disk snapshot taken before that intervening lifetime.
+  } while (roomGeneration !== collabRooms.generation);
+  const room = collabRooms.open({ fileId, projectId: file.project_id, path: file.path, content: existing ? existing.text() : content });
   room.storageDir = project.storageDir;
   room.kind = file.kind || null;
   room.clients.add(session);
@@ -1904,6 +1967,7 @@ function collabSchedulePersist(room) {
 function collabBroadcast(room, message, except = null) {
   room.clients.forEach((client) => {
     if (client === except) return;
+    if (!collabActive(client)) return;
     collabSend(client.socket, message);
   });
 }
@@ -1937,6 +2001,7 @@ function collabPeersFor(room, recipient) {
 
 function collabBroadcastPeers(room) {
   room.clients.forEach((client) => {
+    if (!collabActive(client)) return;
     collabSend(client.socket, { t: "peers", fileId: room.fileId, peers: collabPeersFor(room, client) });
   });
 }
@@ -1957,11 +2022,13 @@ function collabNotifyBuild({ projectId, buildId, status, user }) {
   };
   collabSessions.forEach((session) => {
     if (session.projectId !== projectId) return;
+    if (!collabActive(session)) return;
     collabSend(session.socket, message);
   });
 }
 
 async function collabHandleMessage(session, raw) {
+  if (!await collabAuthenticate(session) || !collabActive(session)) return;
   let message;
   try {
     message = JSON.parse(raw);
@@ -1972,6 +2039,7 @@ async function collabHandleMessage(session, raw) {
 
   if (message.t === "open") {
     const entry = await collabJoin(session, fileId);
+    if (!entry || !collabActive(session) || session.rooms.get(fileId) !== entry) return;
     collabSend(session.socket, {
       t: "opened",
       fileId,
@@ -1989,7 +2057,14 @@ async function collabHandleMessage(session, raw) {
   if (message.t === "project") {
     const projectId = String(message.projectId || "");
     if (!isUuid(projectId)) throw new CollabError("COLLAB_BAD_PROJECT");
-    const project = await collabMembership(projectId, session.user.sub);
+    let project;
+    let generation;
+    do {
+      if (!collabActive(session)) return;
+      generation = collabAccessGeneration;
+      project = await collabMembership(projectId, session.user.sub);
+    } while (generation !== collabAccessGeneration);
+    if (!collabActive(session)) return;
     if (!project) throw new CollabError("COLLAB_PROJECT_NOT_FOUND");
     session.projectId = projectId;
     return;
@@ -2039,6 +2114,10 @@ async function collabHandleMessage(session, raw) {
 }
 
 function collabCloseSession(session, code = 1000, reason = "") {
+  if (session.closed) return;
+  session.closed = true;
+  clearTimeout(session.expiryTimer);
+  session.projectId = null;
   Array.from(session.rooms.keys()).forEach((fileId) => collabLeave(session, fileId));
   collabSessions.delete(session);
   try {
@@ -2051,11 +2130,19 @@ function collabCloseSession(session, code = 1000, reason = "") {
 // after any membership or project mutation, so a permission change reaches
 // sessions already in progress.
 async function collabRecheckProject(projectId) {
+  collabAccessGeneration++;
   const sessions = Array.from(collabSessions).filter((session) =>
     session.projectId === projectId
     || Array.from(session.rooms.values()).some((entry) => entry.projectId === projectId));
   for (const session of sessions) {
-    const project = await collabMembership(projectId, session.user.sub).catch(() => null);
+    if (!collabActive(session)) continue;
+    let project;
+    let generation;
+    do {
+      generation = collabAccessGeneration;
+      project = await collabMembership(projectId, session.user.sub).catch(() => null);
+    } while (!session.closed && generation !== collabAccessGeneration);
+    if (!collabActive(session)) continue;
     if (!project) {
       // Losing membership also stops the build notifications for the project.
       if (session.projectId === projectId) session.projectId = null;
@@ -2115,28 +2202,41 @@ async function collabUpgrade(req, socket, head, wss) {
   };
   if (shuttingDown || maintenanceActive()) return finish("503 Service Unavailable", "Iris is unavailable");
   let user;
+  let generation;
   try {
-    user = await requireUser(req);
+    do {
+      if (socket.destroyed) return;
+      generation = collabAccessGeneration;
+      user = await requireUser(req);
+    } while (generation !== collabAccessGeneration);
   } catch {
     return finish("401 Unauthorized", "Not authenticated");
   }
+  if (socket.destroyed) return;
+  if (Date.now() >= user.exp * 1000) return finish("401 Unauthorized", "Session expired");
+  if (user.passwordChangeRequired) return finish("403 Forbidden", "Password change required");
   wss.handleUpgrade(req, socket, head, (ws) => {
     // One id per connection, not per user: the same person in two tabs is two
     // participants with two cursors, which is what the others should see.
-    const session = { id: uuidv7(), socket: ws, user, rooms: new Map(), alive: true };
+    const session = { id: uuidv7(), socket: ws, user, request: req, rooms: new Map(), alive: true, closed: false, messages: Promise.resolve() };
     collabSessions.add(session);
+    const expire = () => {
+      if (!collabActive(session)) return;
+      session.expiryTimer = setTimeout(expire, Math.min(user.exp * 1000 - Date.now(), 2147483647));
+      session.expiryTimer.unref();
+    };
+    expire();
     ws.on("pong", () => { session.alive = true; });
     ws.on("message", (data) => {
-      collabHandleMessage(session, data.toString("utf8")).catch((err) => {
+      // Authentication and joins await I/O; keep the OT stream in wire order.
+      session.messages = session.messages.then(() => collabHandleMessage(session, data.toString("utf8"))).catch((err) => {
+        if (!collabActive(session)) return;
         const code = err instanceof CollabError ? err.code : "COLLAB_ERROR";
         if (!(err instanceof CollabError)) console.error("Realtime session error", err);
         collabSend(ws, { t: "error", code });
       });
     });
-    ws.on("close", () => {
-      Array.from(session.rooms.keys()).forEach((fileId) => collabLeave(session, fileId));
-      collabSessions.delete(session);
-    });
+    ws.on("close", () => collabCloseSession(session));
     ws.on("error", () => {});
     collabSend(ws, { t: "ready", sessionId: session.id, color: peerColor(user.sub) });
   });
@@ -2162,9 +2262,11 @@ function collabAttach(server) {
   // keep phantom participants and stay the authority forever.
   collabHeartbeat = setInterval(() => {
     collabSessions.forEach((session) => {
+      if (!collabActive(session)) return;
       if (!session.alive) return collabCloseSession(session, 1001, "unresponsive");
       session.alive = false;
       try { session.socket.ping(); } catch {}
+      void collabAuthenticate(session);
     });
   }, COLLAB_HEARTBEAT_MS);
   if (typeof collabHeartbeat.unref === "function") collabHeartbeat.unref();
@@ -3612,12 +3714,10 @@ async function adminUpdateUser(req, res, actor, targetId) {
       add("status = ?", nextStatus);
       sets.push(nextStatus === "disabled" ? "disabled_at = CURRENT_TIMESTAMP" : "disabled_at = NULL");
     }
-    // Role and status changes are honoured immediately without a forced logout:
-    // requireUser reads the fresh role on every request, and a disabled account is
-    // refused by the status check. Disabling still bumps the epoch so any parallel
-    // in-flight session is cut at once rather than lingering for one request.
+    // Profile/role changes keep sessions; disabling revokes them even if the
+    // account is re-enabled in the same second.
     if (wantsStatus && nextStatus === "disabled") {
-      sets.push("session_epoch = CURRENT_TIMESTAMP");
+      sets.push("session_version = session_version + 1", "session_epoch = CURRENT_TIMESTAMP");
     }
     params.push(targetId);
     try {
@@ -3636,6 +3736,7 @@ async function adminUpdateUser(req, res, actor, targetId) {
     client.release();
   }
 
+  if (wantsStatus && nextStatus === "disabled") collabRevokeUser(targetId);
   if (nextUsername && nextUsername !== before.username) {
     await audit({ ...sessionActor(req, actor), action: "user.username_changed", targetType: "user", targetId, metadata: { from: before.username, to: nextUsername } });
   }
@@ -3652,35 +3753,42 @@ async function adminUpdateUser(req, res, actor, targetId) {
 }
 
 async function adminResetPassword(req, res, actor, targetId) {
-  const { rows } = await db.query("SELECT id, username, auth_source FROM users WHERE id = $1", [targetId]);
+  const { rows } = await db.query("SELECT id, username, auth_source, session_version FROM users WHERE id = $1", [targetId]);
   if (!rows.length) throw requestError("ADMIN_USER_NOT_FOUND", 404);
   if (rows[0].auth_source !== "local") throw requestError("ADMIN_NOT_LOCAL_ACCOUNT", 400);
   const password = crypto.randomBytes(18).toString("base64url");
-  // Bump the epoch so the account's existing sessions end at once, and require a
+  // Bump the version so the account's existing sessions end at once, and require a
   // change on next login so the temporary password is genuinely one-time.
-  await db.query(
-    "UPDATE users SET password_hash = $1, password_change_required = TRUE, session_epoch = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = $2",
-    [await hashPassword(password), targetId]
+  const updated = await db.query(
+    `UPDATE users SET password_hash = $1, password_change_required = TRUE,
+       session_version = session_version + 1, session_epoch = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+     WHERE id = $2 AND auth_source = 'local' AND session_version = $3`,
+    [await hashPassword(password), targetId, rows[0].session_version]
   );
+  if (!updated.rowCount) throw requestError("ADMIN_NOT_LOCAL_ACCOUNT", 400);
+  collabRevokeUser(targetId);
   await audit({ ...sessionActor(req, actor), action: "user.password_reset", targetType: "user", targetId });
   json(res, 200, { ok: true, temporaryPassword: password });
 }
 
 // Undo an SSO conversion (or linking): the account reverts to a local one with a
 // fresh one-time password. It drops the durable identity so a re-link starts
-// clean, and bumps the epoch so any live SSO session ends at once.
+// clean, and bumps the version so any live SSO session ends at once.
 async function adminUnlinkSso(req, res, actor, targetId) {
-  const { rows } = await db.query("SELECT id, username, oidc_subject FROM users WHERE id = $1", [targetId]);
+  const { rows } = await db.query("SELECT id, username, oidc_subject, auth_source, session_version FROM users WHERE id = $1", [targetId]);
   if (!rows.length) throw requestError("ADMIN_USER_NOT_FOUND", 404);
-  if (!rows[0].oidc_subject) throw requestError("ADMIN_NOT_LINKED", 400);
+  if (!rows[0].oidc_subject || rows[0].auth_source !== "oidc") throw requestError("ADMIN_NOT_LINKED", 400);
   const password = crypto.randomBytes(18).toString("base64url");
-  await db.query(
+  const updated = await db.query(
     `UPDATE users SET auth_source = 'local', oidc_issuer = NULL, oidc_subject = NULL,
        oidc_linked_at = NULL, oidc_link_pending = FALSE, password_hash = $1,
-       password_change_required = TRUE, session_epoch = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-     WHERE id = $2`,
-    [await hashPassword(password), targetId]
+       password_change_required = TRUE, session_version = session_version + 1,
+       session_epoch = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+     WHERE id = $2 AND auth_source = 'oidc' AND session_version = $3 AND oidc_subject = $4`,
+    [await hashPassword(password), targetId, rows[0].session_version, rows[0].oidc_subject]
   );
+  if (!updated.rowCount) throw requestError("ADMIN_NOT_LINKED", 400);
+  collabRevokeUser(targetId);
   await audit({ ...sessionActor(req, actor), action: "user.oidc_unlinked", targetType: "user", targetId });
   json(res, 200, { ok: true, temporaryPassword: password });
 }
@@ -3918,6 +4026,7 @@ async function adminDeleteUser(req, res, actor, userId) {
   if (block === "sole_owner") throw requestError("ADMIN_DELETE_SOLE_OWNER", 409);
   if (String(body.confirmation || "") !== target.username) throw requestError("ADMIN_DELETE_CONFIRMATION", 400);
   await db.query("DELETE FROM users WHERE id = $1", [userId]);
+  collabRevokeUser(userId);
   await audit({
     ...sessionActor(req, actor),
     action: "user.deleted",
@@ -4041,7 +4150,7 @@ async function handleApi(req, res, url) {
     const password = String(body.password || "");
     if (!login || !password) return errorJson(res, 400, "AUTH_REQUIRED_FIELDS");
     const { rows } = await db.query(
-      "SELECT id, username, email, display_name, system_role, status, auth_source, session_epoch, password_hash, password_change_required, oidc_linked_at FROM users WHERE LOWER(username) = LOWER($1) OR LOWER(email) = LOWER($2) LIMIT 1",
+      "SELECT id, username, email, display_name, system_role, status, auth_source, session_version, password_hash, password_change_required, oidc_linked_at FROM users WHERE LOWER(username) = LOWER($1) OR LOWER(email) = LOWER($2) LIMIT 1",
       [login, login]
     );
     const user = rows[0];
@@ -4075,8 +4184,12 @@ async function handleApi(req, res, url) {
     }
     if (passwordCheck.needsRehash) {
       const passwordHash = await hashPassword(password);
-      await db.query("UPDATE users SET password_hash = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2", [passwordHash, user.id]);
-      user.password_hash = passwordHash;
+      // Rehash only the credentials we verified, never a concurrent reset.
+      await db.query(
+        `UPDATE users SET password_hash = $1, updated_at = CURRENT_TIMESTAMP
+         WHERE id = $2 AND session_version = $3 AND password_hash = $4 AND status = 'active' AND auth_source = 'local'`,
+        [passwordHash, user.id, user.session_version, user.password_hash]
+      );
     }
     await db.query("UPDATE users SET last_login_at = CURRENT_TIMESTAMP WHERE id = $1", [user.id]);
     await audit({
@@ -4106,28 +4219,35 @@ async function handleApi(req, res, url) {
     if (currentPassword === newPassword) return errorJson(res, 400, "PASSWORD_MUST_DIFFER");
 
     const { rows } = await db.query(
-      "SELECT id, username, email, display_name, system_role, status, auth_source, session_epoch, password_hash FROM users WHERE id = $1 LIMIT 1",
+      "SELECT id, username, email, display_name, system_role, status, auth_source, session_version, password_hash FROM users WHERE id = $1 LIMIT 1",
       [sessionUser.sub]
     );
     const user = rows[0];
-    if (!user || !user.password_hash) {
+    if (!user || !user.password_hash || user.auth_source !== "local") {
       return errorJson(res, 403, "PASSWORD_SSO_ACCOUNT");
     }
     const passwordCheck = await verifyPassword(currentPassword, user.password_hash);
     if (!passwordCheck.valid) return errorJson(res, 401, "PASSWORD_CURRENT_INCORRECT");
 
     const passwordHash = await hashPassword(newPassword);
-    await db.query("UPDATE users SET password_hash = $1, password_change_required = FALSE, updated_at = CURRENT_TIMESTAMP WHERE id = $2", [passwordHash, user.id]);
-    user.password_hash = passwordHash;
-    user.password_change_required = false;
+    const updated = await db.query(
+      `UPDATE users SET password_hash = $1, password_change_required = FALSE,
+         session_version = session_version + 1, session_epoch = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $2 AND session_version = $3 AND password_hash = $4 AND status = 'active' AND auth_source = 'local'
+       RETURNING id, username, email, display_name, system_role, auth_source, session_version, password_change_required`,
+      [passwordHash, user.id, sessionUser.sessionVersion, user.password_hash]
+    );
+    if (!updated.rows.length) return errorJson(res, 401, "NOT_AUTHENTICATED");
+    collabRevokeUser(user.id);
+    const replacement = updated.rows[0];
     await audit({
       ...sessionActor(req, sessionUser),
       action: "user.password_changed",
       targetType: "user",
       targetId: user.id,
     });
-    return json(res, 200, { ok: true, user: publicUser({ ...user, authMethod: "local" }) }, {
-      "set-cookie": cookie("iris_session", makeToken(user, "local"), { maxAge: 60 * 60 * 24 * 7 }),
+    return json(res, 200, { ok: true, user: publicUser({ ...replacement, authMethod: "local" }) }, {
+      "set-cookie": cookie("iris_session", makeToken(replacement, "local"), { maxAge: 60 * 60 * 24 * 7 }),
     });
   }
 
@@ -4153,11 +4273,11 @@ async function handleApi(req, res, url) {
     const body = await readBody(req);
     const nextUsername = validAdminUsername(body.username);
     const { rows } = await db.query(
-      "SELECT id, username, email, display_name, system_role, status, auth_source, session_epoch, password_hash FROM users WHERE id = $1 LIMIT 1",
+      "SELECT id, username, email, display_name, system_role, status, auth_source, session_version, password_hash FROM users WHERE id = $1 LIMIT 1",
       [user.sub]
     );
     const row = rows[0];
-    if (!row) return errorJson(res, 401, "NOT_AUTHENTICATED");
+    if (!row || row.status !== "active" || row.session_version !== user.sessionVersion) return errorJson(res, 401, "NOT_AUTHENTICATED");
     if (nextUsername === row.username) return json(res, 200, { user: publicUser({ ...row, authMethod: user.authMethod }) });
     // Step-up: a local account must re-enter its password to change the username;
     // an SSO account has no local secret, so the live session is the proof.
@@ -4168,7 +4288,11 @@ async function handleApi(req, res, url) {
       if (!check.valid) return errorJson(res, 401, "PASSWORD_CURRENT_INCORRECT");
     }
     try {
-      await db.query("UPDATE users SET username = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2", [nextUsername, user.sub]);
+      const updated = await db.query(
+        "UPDATE users SET username = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 AND session_version = $3 AND status = 'active'",
+        [nextUsername, user.sub, user.sessionVersion]
+      );
+      if (!updated.rowCount) return errorJson(res, 401, "NOT_AUTHENTICATED");
     } catch (err) {
       if (err.code === "23505") return errorJson(res, 409, "ADMIN_USER_EXISTS");
       throw err;

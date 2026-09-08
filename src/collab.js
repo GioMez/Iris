@@ -149,6 +149,7 @@ class CollabRooms {
   constructor({ historyLimit = DEFAULT_HISTORY_LIMIT } = {}) {
     this.rooms = new Map();
     this.historyLimit = historyLimit;
+    this.generation = 0;
   }
 
   get(fileId) {
@@ -163,11 +164,12 @@ class CollabRooms {
     const room = new CollabDocument({ fileId, projectId, path: filePath, content, historyLimit: this.historyLimit });
     room.clients = new Set();
     this.rooms.set(fileId, room);
+    this.generation++;
     return room;
   }
 
   close(fileId) {
-    this.rooms.delete(fileId);
+    if (this.rooms.delete(fileId)) this.generation++;
   }
 
   forProject(projectId) {
