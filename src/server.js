@@ -12,7 +12,7 @@ const { loadDotEnv } = require("./env");
 const { uuidv7, isUuid, UUID_PATTERN } = require("./ids");
 const { lifecycleGate, healthStatus, isMutatingMethod, HEALTH_PATH } = require("./lifecycle");
 const { recordAuditEvent } = require("./audit");
-const { collectProjectFiles, reconcileProjectFiles } = require("./project-files");
+const { normalizeProjectPath, collectProjectFiles, reconcileProjectFiles } = require("./project-files");
 const { createProjectMutations } = require("./project-mutations");
 const { hashContent, isVersionableText, contentChanged } = require("./versions");
 const { CollabRooms, CollabError, peerColor, normalizePresence } = require("./collab");
@@ -972,10 +972,10 @@ async function pruneProjectFiles(storagePath, expectedFiles) {
   await walkDir(storagePath);
 }
 
-async function buildFsNode(storagePath, relPath, entry, generated, textHint = false) {
+async function buildFsNode(storagePath, relPath, entry, generated, textHint = false, strictRead = false) {
   const abs = path.join(storagePath, relPath);
   if (entry.isDirectory()) {
-    const children = await scanFsTree(storagePath, relPath, generated);
+    const children = await scanFsTree(storagePath, relPath, generated, strictRead);
     return {
       type: "folder",
       name: entry.name,
@@ -996,10 +996,10 @@ async function buildFsNode(storagePath, relPath, entry, generated, textHint = fa
   if (!generated) {
     if (textHint || fileIsTextPath(relPath)) {
       node.encoding = "utf8";
-      node.content = await fs.readFile(abs, "utf8").catch(() => "");
+      node.content = await fs.readFile(abs, "utf8").catch((err) => { if (strictRead) throw err; return ""; });
     }
     else {
-      const buf = await fs.readFile(abs).catch(() => null);
+      const buf = await fs.readFile(abs).catch((err) => { if (strictRead) throw err; return null; });
       if (buf) {
         node.binary = true;
         node.encoding = "base64";
@@ -1010,15 +1010,15 @@ async function buildFsNode(storagePath, relPath, entry, generated, textHint = fa
   return node;
 }
 
-async function scanFsTree(storagePath, relBase = "", generated = false) {
+async function scanFsTree(storagePath, relBase = "", generated = false, strictRead = false) {
   const absBase = path.join(storagePath, relBase);
-  const entries = await fs.readdir(absBase, { withFileTypes: true }).catch(() => []);
+  const entries = await fs.readdir(absBase, { withFileTypes: true }).catch((err) => { if (strictRead) throw err; return []; });
   const nodes = [];
   for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
     if (isIgnoredProjectFsEntry(entry.name)) continue;
     if (!relBase && entry.name.toLowerCase() === "output") continue;
     const rel = relBase ? path.posix.join(relBase, entry.name) : entry.name;
-    nodes.push(await buildFsNode(storagePath, rel, entry, generated));
+    nodes.push(await buildFsNode(storagePath, rel, entry, generated, false, strictRead));
   }
   return nodes;
 }
@@ -1036,13 +1036,13 @@ async function resolveProjectFile(storagePath, requestedPath) {
   return { path: fileReal, name: path.basename(rel), mimeType: mimeForProjectFile(rel), size: stat.size };
 }
 
-async function syncNodesWithFilesystem(storagePath, data) {
+async function syncNodesWithFilesystem(storagePath, data, strictRead = false) {
   if (!data.project) data.project = { nodes: [] };
   data.project.nodes = stripGeneratedNodes(data.project.nodes);
 
   const merge = async (nodes, relBase = "") => {
     const absBase = path.join(storagePath, relBase);
-    const entries = await fs.readdir(absBase, { withFileTypes: true }).catch(() => []);
+    const entries = await fs.readdir(absBase, { withFileTypes: true }).catch((err) => { if (strictRead) throw err; return []; });
     const visibleEntries = entries.filter((entry) => !isIgnoredProjectFsEntry(entry.name) && (relBase || entry.name.toLowerCase() !== "output"));
     const entryByName = new Map(visibleEntries.map((entry) => [entry.name, entry]));
     const synced = [];
@@ -1056,13 +1056,13 @@ async function syncNodesWithFilesystem(storagePath, data) {
           node.children = await merge(node.children || [], rel);
           synced.push(node);
         } else {
-          synced.push(await buildFsNode(storagePath, rel, entry, false));
+          synced.push(await buildFsNode(storagePath, rel, entry, false, false, strictRead));
         }
       } else if (node.type === "folder") {
-        synced.push(await buildFsNode(storagePath, rel, entry, false));
+        synced.push(await buildFsNode(storagePath, rel, entry, false, false, strictRead));
       } else {
         const textHint = node.encoding === "utf8" || (node.content != null && !fileIsBinaryNode(node));
-        const hydrated = await buildFsNode(storagePath, rel, entry, false, textHint);
+        const hydrated = await buildFsNode(storagePath, rel, entry, false, textHint, strictRead);
         synced.push({
           ...hydrated,
           ...node,
@@ -1080,7 +1080,7 @@ async function syncNodesWithFilesystem(storagePath, data) {
       if (!relBase && entry.name.toLowerCase() === "output") continue;
       if (known.has(entry.name)) continue;
       const rel = relBase ? path.posix.join(relBase, entry.name) : entry.name;
-      synced.push(await buildFsNode(storagePath, rel, entry, false));
+      synced.push(await buildFsNode(storagePath, rel, entry, false, false, strictRead));
     }
     return synced;
   };
@@ -1088,7 +1088,7 @@ async function syncNodesWithFilesystem(storagePath, data) {
   data.project.nodes = await merge(data.project.nodes, "");
 }
 
-async function readProjectFile(storagePath) {
+async function readProjectFile(storagePath, { strictRead = false } = {}) {
   const metaFile = path.join(storagePath, ".iris", "project.json");
   const legacyFile = path.join(storagePath, "project.json");
   let data;
@@ -1103,6 +1103,8 @@ async function readProjectFile(storagePath) {
   data = data || {};
   if (!data.project) data.project = { nodes: [] };
   data.assets = data.assets || {};
+  // Missing stale manifest entries are reconciled by the scan below. Compile
+  // must not mistake other read failures for empty text or absent assets.
   const hydrate = async (nodes, parentPath = "") => {
     if (!Array.isArray(nodes)) return;
     for (const node of nodes) {
@@ -1114,7 +1116,7 @@ async function readProjectFile(storagePath) {
       const rel = nodeRelPath(node, node.name, parentPath);
       const abs = path.join(storagePath, rel);
       if (fileIsBinaryNode(node)) {
-        const buf = await fs.readFile(abs).catch(() => null);
+        const buf = await fs.readFile(abs).catch((err) => { if (strictRead && err.code !== "ENOENT") throw err; return null; });
         if (buf) {
           const mime = legacy && node.data ? dataUrlMime(node.data) : mimeForProjectFile(rel);
           const dataUrl = `data:${mime};base64,${buf.toString("base64")}`;
@@ -1124,19 +1126,19 @@ async function readProjectFile(storagePath) {
           data.assets[rel] = node.data;
         }
       } else {
-        const content = await fs.readFile(abs, "utf8").catch(() => null);
+        const content = await fs.readFile(abs, "utf8").catch((err) => { if (strictRead && err.code !== "ENOENT") throw err; return null; });
         if (content != null) node.content = content;
         else if (!legacy) node.content = "";
       }
     }
   };
   await hydrate(data.project.nodes);
-  await syncNodesWithFilesystem(storagePath, data);
+  await syncNodesWithFilesystem(storagePath, data, strictRead);
   data.projectType = inferProjectType(data);
   reconcileProjectFonts(data);
   const hydratedFonts = [];
   for (const font of data.fonts) {
-    const buf = await fs.readFile(path.join(storagePath, font.path)).catch(() => null);
+    const buf = await fs.readFile(path.join(storagePath, font.path)).catch((err) => { if (strictRead) throw err; return null; });
     if (!buf) continue;
     font.data = `data:${mimeForProjectFile(font.path)};base64,${buf.toString("base64")}`;
     hydratedFonts.push(font);
@@ -1637,14 +1639,16 @@ async function insertVersion({ fileId, parentId, user, reason, content }, querya
 // Destructive snapshots run under the project gate: use accepted room text and
 // fail on unreadable disk fallbacks. Ordinary checkpoints can target build staging.
 // Unversionable content has no revision and is represented by null.
-async function snapshotFileIfChanged({ storageDir, file, user, reason, authoritative = false }, queryable = db) {
+async function snapshotFileIfChanged({ storageDir, file, user, reason, authoritative = false, strictRead = false }, queryable = db) {
   const room = authoritative && collabRooms.get(file.id);
   const buffer = room ? Buffer.from(room.text(), "utf8") : await fs.readFile(path.join(storageDir, file.path)).catch((err) => {
-    if (authoritative && err.code !== "ENOENT") throw err;
+    if (strictRead || (authoritative && err.code !== "ENOENT")) throw err;
     return null;
   });
   if (!isVersionableText(buffer, file.kind)) return null;
   const content = buffer.toString("utf8");
+  // A compile revision must reproduce the input bytes, not replacement text.
+  if (strictRead && !Buffer.from(content, "utf8").equals(buffer)) return null;
   const previous = await latestVersion(file.id, queryable);
   if (!contentChanged(previous ? previous.content_hash : null, hashContent(content))) {
     return { id: previous.id, created: false };
@@ -1658,7 +1662,7 @@ async function snapshotFileIfChanged({ storageDir, file, user, reason, authorita
 
 // A project checkpoint is serialized so concurrent compilations cannot fork a
 // file's revision chain. It also returns the exact revision used for each file.
-async function captureProjectCheckpoint({ projectId, storageDir, user, reason, files: checkpointFiles = null, authoritative = false }, queryable = null) {
+async function captureProjectCheckpoint({ projectId, storageDir, user, reason, files: checkpointFiles = null, authoritative = false, strictRead = false }, queryable = null) {
   const client = queryable || await db.connect();
   try {
     if (!queryable) await client.query("BEGIN");
@@ -1674,7 +1678,7 @@ async function captureProjectCheckpoint({ projectId, storageDir, user, reason, f
     let created = 0;
     const versions = new Map();
     for (const file of files) {
-      const version = await snapshotFileIfChanged({ storageDir, file, user, reason, authoritative }, client);
+      const version = await snapshotFileIfChanged({ storageDir, file, user, reason, authoritative, strictRead }, client);
       if (version && version.created) created += 1;
       versions.set(file.id, version ? version.id : null);
     }
@@ -3528,53 +3532,9 @@ async function deleteBuildOutput(req, res, user, projectId, buildId) {
 
 async function compileProject(req, res, user, id) {
   const body = await readBody(req);
-  const { row, data, projectType, engine, binPath, main, mainPath, storedLilypondArgs, outputFormat, compileProfile, buildFiles } = await authorizedProjectGate(id, user, "compile", async (project) => {
-    const result = await projectMutations.transaction({ id, storageDir: project.storageDir }, async (client, protect) => {
-      const row = await authorizeProject(id, user, "compile", client);
-      if (body.data && typeof body.data === "object") requireProjectRevision(body, row);
-      const name = body.name == null ? row.name : cleanName(body.name);
-      const data = body.data && typeof body.data === "object" ? body.data : await readProjectFile(row.storageDir);
-      data.project = data.project && Array.isArray(data.project.nodes) ? data.project : { nodes: [] };
-      data.project.name = name;
-      const projectType = inferProjectType(data);
-      data.projectType = projectType;
-      validateProjectSourceTree(data);
-      const engine = projectType === "lilypond" ? "lilypond" : String(body.engine || data.engine || "pdflatex").trim();
-      if (projectType === "latex" && !LATEX_ENGINES.has(engine)) {
-        throw requestError("LATEX_ENGINE_UNSUPPORTED", 400);
-      }
-      const binPath = projectType === "lilypond"
-        ? (LILYPOND_PATH_LOCKED ? LILYPOND_BIN_PATH : String(body.lilypondPath || LILYPOND_BIN_PATH || "").trim())
-        : (TEX_PATH_LOCKED ? TEX_BIN_PATH : String(body.texPath || TEX_BIN_PATH || "").trim());
-      const main = findCompileFile(data, body.mainPath, projectType);
-      const mainPath = safeProjectSourcePath(main.path);
-      const storedLilypondArgs = projectType === "lilypond"
-        ? sanitizeLilypondArgsForStorage(body.lilypondArgs ?? data.lilypondArgs)
-        : "";
-      const outputFormat = projectType === "lilypond"
-        ? normalizeLilypondFormat(body.lilypondFormat ?? data.lilypondFormat)
-        : "pdf";
-      const additionalArgs = projectType === "lilypond" ? parseCompileArguments(storedLilypondArgs) : [];
-      const storedCompileProfile = sanitizeCompileProfileForStorage(body.compileProfile || data.compileProfile, projectType);
-      const compileProfile = normalizeCompileProfile(storedCompileProfile, engine, mainPath, projectType, additionalArgs, outputFormat);
-      data.compileProfile = storedCompileProfile;
-      data.lilypondArgs = storedLilypondArgs;
-      data.lilypondFormat = outputFormat;
-      await saveProjectTree(id, row, body, data, client, protect, { user });
-      const buildFiles = collectProjectFiles(data.project.nodes).map((entry) => ({
-        id: entry.node.id,
-        path: entry.path,
-        kind: entry.kind,
-      }));
-      return { row, data, projectType, engine, binPath, main, mainPath, storedLilypondArgs, outputFormat, compileProfile, buildFiles };
-    });
-    collabReconcileProject(id, result.data);
-    return result;
-  });
-  const jobname = path.basename(mainPath).replace(/\.[^.]+$/, "");
-  const outputName = `${jobname}.${outputFormat}`;
   const buildId = uuidv7();
   const stagingDir = path.join(DATA_DIR, ".build-staging", id, buildId);
+  let confirmedSetup = null;
   let source = null;
   let buildCreatedAt = null;
   let buildCreated = false;
@@ -3591,10 +3551,70 @@ async function compileProject(req, res, user, id) {
   let finalized = false;
   activeBuilds.add(buildId);
   try {
-    await fs.mkdir(path.dirname(stagingDir), { recursive: true });
-    // Materialize from the exact request snapshot rather than copying the live
-    // project, which another save could change while this build is starting.
-    await writeProjectFile(stagingDir, data);
+    const { row, data, projectType, engine, binPath, main, mainPath, storedLilypondArgs, outputFormat, compileProfile, buildFiles } = await authorizedProjectGate(id, user, "compile", async (project) => {
+      const setup = await projectMutations.transaction({ id, storageDir: project.storageDir }, async (client, protect) => {
+        const row = await authorizeProject(id, user, "compile", client);
+        if (body.data && typeof body.data === "object") requireProjectRevision(body, row);
+        const name = body.name == null ? row.name : cleanName(body.name);
+        const data = body.data && typeof body.data === "object" ? body.data : await readProjectFile(row.storageDir, { strictRead: true });
+        data.project = data.project && Array.isArray(data.project.nodes) ? data.project : { nodes: [] };
+        data.project.name = name;
+        const projectType = inferProjectType(data);
+        data.projectType = projectType;
+        validateProjectSourceTree(data);
+        const engine = projectType === "lilypond" ? "lilypond" : String(body.engine || data.engine || "pdflatex").trim();
+        if (projectType === "latex" && !LATEX_ENGINES.has(engine)) {
+          throw requestError("LATEX_ENGINE_UNSUPPORTED", 400);
+        }
+        const binPath = projectType === "lilypond"
+          ? (LILYPOND_PATH_LOCKED ? LILYPOND_BIN_PATH : String(body.lilypondPath || LILYPOND_BIN_PATH || "").trim())
+          : (TEX_PATH_LOCKED ? TEX_BIN_PATH : String(body.texPath || TEX_BIN_PATH || "").trim());
+        const storedLilypondArgs = projectType === "lilypond"
+          ? sanitizeLilypondArgsForStorage(body.lilypondArgs ?? data.lilypondArgs)
+          : "";
+        const outputFormat = projectType === "lilypond"
+          ? normalizeLilypondFormat(body.lilypondFormat ?? data.lilypondFormat)
+          : "pdf";
+        const additionalArgs = projectType === "lilypond" ? parseCompileArguments(storedLilypondArgs) : [];
+        const storedCompileProfile = sanitizeCompileProfileForStorage(body.compileProfile || data.compileProfile, projectType);
+        data.compileProfile = storedCompileProfile;
+        data.lilypondArgs = storedLilypondArgs;
+        data.lilypondFormat = outputFormat;
+        await saveProjectTree(id, row, body, data, client, protect, { user });
+        const buildFiles = collectProjectFiles(data.project.nodes).map((entry) => ({
+          id: entry.node.id,
+          path: entry.path,
+          kind: entry.kind,
+        }));
+        // Select from effective saved bytes after renames and room authority,
+        // preserving candidate DFS order without hydrating the response payload.
+        const candidates = [];
+        for (const file of buildFiles) {
+          if (fileKindForPath(file.path) !== (projectType === "lilypond" ? "ly" : "tex")) continue;
+          candidates.push({ ...file, content: await fs.readFile(path.join(row.storageDir, file.path), "utf8") });
+        }
+        const requestedPath = typeof body.mainPath === "string" ? normalizeProjectPath(body.mainPath) : null;
+        const main = findCompileFile({ project: { nodes: candidates } }, requestedPath, projectType);
+        const mainPath = safeProjectSourcePath(main.path);
+        const compileProfile = normalizeCompileProfile(storedCompileProfile, engine, mainPath, projectType, additionalArgs, outputFormat);
+        return { row, data, projectType, engine, binPath, main, mainPath, storedLilypondArgs, outputFormat, compileProfile, buildFiles };
+      });
+      confirmedSetup = setup;
+      collabReconcileProject(id, setup.data);
+      // Keep the initial gate through the copy: sparse payloads are not file
+      // snapshots, and no save/push/delete may change these bytes mid-copy.
+      await fs.mkdir(path.dirname(stagingDir), { recursive: true });
+      await ensureProjectDirs(stagingDir, setup.data);
+      for (const file of setup.buildFiles) {
+        const bytes = await fs.readFile(path.join(setup.row.storageDir, file.path));
+        const dest = path.join(stagingDir, file.path);
+        await fs.mkdir(path.dirname(dest), { recursive: true });
+        await fs.writeFile(dest, bytes);
+      }
+      return setup;
+    });
+    const jobname = path.basename(mainPath).replace(/\.[^.]+$/, "");
+    const outputName = `${jobname}.${outputFormat}`;
     await authorizedProjectGate(id, user, "compile", async () => {
       const checkpoint = await captureProjectCheckpoint({
         projectId: id,
@@ -3602,6 +3622,7 @@ async function compileProject(req, res, user, id) {
         user,
         reason: "compile",
         files: buildFiles,
+        strictRead: true,
       });
       source = await sourceRevisionForBuild(
         stagingDir, mainPath, main.id, checkpoint.versions.get(main.id) || null
@@ -3681,8 +3702,9 @@ async function compileProject(req, res, user, id) {
       errors: result.errors,
     });
   } catch (err) {
-    err.params = { ...err.params, savedRevision: data.revision };
+    if (confirmedSetup) err.params = { ...err.params, savedRevision: confirmedSetup.data.revision };
     if (buildCreated && !finalized) {
+      const { row, engine, outputFormat } = confirmedSetup;
       if (publishedPath) {
         const publishedDir = await resolveBuildDirectory(row.storageDir, buildId, publishedPath).catch(() => null);
         if (publishedDir) await fs.rm(publishedDir, { recursive: true, force: true }).catch(() => {});

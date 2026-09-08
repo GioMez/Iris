@@ -562,15 +562,27 @@ revisions are deferred to a later phase.
 ### Versioned build outputs
 
 Each compilation has an immutable UUIDv7 build id. The compiler runs in a private
-workspace below `DATA_DIR/.build-staging/`, materialized from the exact submitted
-project snapshot without prior outputs. On success, the generated directory is moved atomically to
+workspace below `DATA_DIR/.build-staging/`. After the save commits, Iris copies
+the effective source bytes into it while still holding the project gate. Omitted
+payloads retain their saved text, binary assets and fonts; accepted room text is
+already authoritative in that save. Prior output and unrelated runtime caches
+are not copied. Once the snapshot is complete, compilation runs outside the gate,
+so later edits cannot change its inputs. On success, the generated directory is moved atomically to
 `output/<build-id>/`; a failed build keeps its diagnostics in PostgreSQL but does
 not publish partial artifacts.
 
+Main-file selection uses effective saved content and normalized paths for the
+project's source type. Snapshot and compile-checkpoint reads are strict: missing
+or unreadable expected inputs fail setup rather than produce empty or incomplete
+build sources. An error after the save committed still reports `savedRevision`;
+an error before commit does not acknowledge a save. Partial staging is cleaned up.
+
 `build_outputs` stores status, author, compiler, format, source file and revision,
 duration, diagnostics, aggregate size and hash. `build_artifacts` stores the
-one-or-many previewable artifacts and their individual hashes. If the main source
-is too large for document history, the build retains its source content hash while
+one-or-many previewable artifacts and their individual hashes. Compile revisions
+and source hashes are read from the staging snapshot, never a newer live room.
+If the main source is too large or cannot be represented losslessly as UTF-8 text
+in document history, the build retains its raw source content hash while
 `source_revision_id` remains empty. Composite foreign keys prevent a build from
 referencing a source file or revision belonging to another project.
 
