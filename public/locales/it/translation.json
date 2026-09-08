@@ -510,6 +510,8 @@
     "connecting": "Connessione…",
     "live": "Tempo reale",
     "readonly": "Tempo reale · sola lettura",
+    "fileUnavailable": "File non disponibile · sola lettura",
+    "fileUnavailableHint": "Questo file è stato eliminato o non è più disponibile. Il testo resta qui per essere copiato e non può essere salvato in questo file. Copia ciò che ti serve prima di aggiornare o ricaricare il progetto.",
     "offline": "Riconnessione…",
     "revoked": "Sessione in tempo reale terminata: il tuo accesso al progetto è cambiato",
     "error": "Tempo reale non disponibile",

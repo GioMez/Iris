@@ -68,6 +68,8 @@
     projectLoadGeneration: 0,
     outputGeneration: 0,
     dirtyFiles: new Map(), // file id -> edit revision not yet persisted
+    unavailableFiles: new Set(), // canonical and local node ids; cleared only by an accepted tree/load
+    canonicalFileIds: new Map(), // local id -> canonical id, stable across local path changes
     editRevision: 0,
     projectRevision: null,
     role: "owner", // project role; "viewer" makes the workspace read-only
@@ -76,11 +78,16 @@
   // The server enforces capabilities; this only shapes the UI. A viewer gets a
   // read-only workspace: no editing, saving, compiling or tree mutations.
   function isReadOnly() { return state.role === "viewer"; }
+  function isFileUnavailable(id = state.activeId) { return state.unavailableFiles.has(id) || state.unavailableFiles.has(canonicalFileId(id)); }
 
   /* ---------------- persistence (delegated to the projects layer) ---------------- */
   let acknowledgedManifest = null;
   function persist() {
     if (!window.IrisProjects || isReadOnly()) return Promise.resolve(false);
+    if (isFileUnavailable()) {
+      toast(t("collab.fileUnavailableHint"), "err");
+      return Promise.resolve(false);
+    }
     return window.IrisProjects.persistCurrent();
   }
   function persistWhenDocumentClean() {
@@ -114,7 +121,7 @@
     state.projectRevision = revision;
     acknowledgedManifest = snapshot.manifest;
     snapshot.dirtyFiles.forEach((edit, id) => {
-      if (state.dirtyFiles.get(id) === edit) state.dirtyFiles.delete(id);
+      if (!isFileUnavailable(id) && state.dirtyFiles.get(id) === edit) state.dirtyFiles.delete(id);
     });
     renderTabs();
     if (!hasUnsavedChanges()) clearTimeout(persistT);
@@ -213,7 +220,7 @@
   function applyRoleGate() {
     const ro = isReadOnly();
     document.documentElement.classList.toggle("iris-readonly", ro);
-    ed().setReadOnly(ro);
+    ed().setReadOnly(ro || isFileUnavailable());
     if (ro) { state.autoSave = false; clearTimeout(persistT); }
     updateAutoSaveControls();
   }
@@ -259,6 +266,25 @@
     document.addEventListener("iris:collabrevoked", () => {
       toast(t("collab.revoked"), "err");
     });
+    document.addEventListener("iris:collabfileclosed", (event) => {
+      const fileId = event.detail && event.detail.fileId;
+      if (!isCanonicalFileId(fileId) || state.unavailableFiles.has(fileId)) return;
+      state.unavailableFiles.add(fileId);
+      // Keep local ids unavailable too, independently of future cache changes.
+      walk(project.nodes, (node) => {
+        if (canonicalFileId(node.id) === fileId) state.unavailableFiles.add(node.id);
+      });
+      state.editRevision += 1; // Reject a tree/load already in flight before closure.
+      const f = findFile(state.activeId);
+      if (f && canonicalFileId(f.id) === fileId) {
+        f.content = ed().getValue();
+        if (ed().collabPending()?.updates.length) markFileDirty(f.id);
+        clearTimeout(persistT);
+        applyRoleGate();
+        renderSyncStatus();
+        toast(t("collab.fileUnavailableHint"), "err");
+      }
+    });
     // A file the server will not share in realtime keeps the ordinary save path;
     // anything typed before that answer is still local, so it must be flagged.
     document.addEventListener("iris:collabunavailable", () => {
@@ -276,11 +302,14 @@
   }
   function canonicalFileId(id) {
     if (isCanonicalFileId(id)) return id;
+    if (state.canonicalFileIds.has(id)) return state.canonicalFileIds.get(id);
     const node = findFile(id);
     const resolved = node && window.IrisProjects && window.IrisProjects.resolveFileId
       ? window.IrisProjects.resolveFileId(node.path)
       : null;
-    return isCanonicalFileId(resolved) ? resolved : null;
+    if (!isCanonicalFileId(resolved)) return null;
+    state.canonicalFileIds.set(id, resolved);
+    return resolved;
   }
   // Joins the room for the open file, or leaves realtime behind for a file that
   // cannot have one yet.
@@ -288,7 +317,7 @@
     const node = findFile(state.activeId);
     // Joining loads server text; a save acknowledgement must not replace edits
     // made after its snapshot was captured.
-    if (!node || node.kind === "img" || node.generated || node.readOnly || state.dirtyFiles.has(node.id)) {
+    if (!node || node.kind === "img" || node.generated || node.readOnly || isFileUnavailable(node.id) || state.dirtyFiles.has(node.id)) {
       window.IrisCollab.leave();
       renderSyncStatus();
       return;
@@ -305,6 +334,7 @@
     connecting: "collab.connecting",
     live: "collab.live",
     readonly: "collab.readonly",
+    "file-unavailable": "collab.fileUnavailable",
     offline: "collab.offline",
     revoked: "collab.revoked",
     error: "collab.error",
@@ -313,13 +343,13 @@
     const chip = $("stSync");
     const label = $("stSyncLabel");
     if (!chip || !label) return;
-    const status = window.IrisCollab.status();
+    const status = isFileUnavailable() ? "file-unavailable" : window.IrisCollab.status();
     const key = SYNC_LABEL[status];
     chip.hidden = !key;
     if (!key) return;
     chip.dataset.sync = status;
     label.textContent = t(key);
-    chip.title = t("collab.title");
+    chip.title = t(status === "file-unavailable" ? "collab.fileUnavailableHint" : "collab.title");
   }
 
   /* ---------------- presence: who else is in this file ---------------- */
@@ -441,7 +471,7 @@
   let persistT;
   function schedulePersist() {
     clearTimeout(persistT);
-    if (!state.autoSave || !hasUnsavedChanges()) return;
+    if (!state.autoSave || isFileUnavailable() || !hasUnsavedChanges()) return;
     persistT = setTimeout(() => { void persist(); }, state.autoSaveDelay * 1000);
   }
 
@@ -647,6 +677,7 @@
     state.activeId = id;
     if (!state.openTabs.includes(id)) state.openTabs.push(id);
     ed().load(f.content || "", f.kind);
+    ed().setReadOnly(isReadOnly() || isFileUnavailable(id));
     renderTabs();
     renderOutline();
     markTree(id);
@@ -1071,6 +1102,8 @@
 
   function applyRefreshedFileTree(data) {
     if (!data || !data.project || !Array.isArray(data.project.nodes)) throw new Error("Invalid project tree");
+    state.unavailableFiles.clear();
+    state.canonicalFileIds.clear();
     const previousActive = state.activeId;
     const previousPreviewFont = state.previewFont;
     project.name = data.project.name || project.name;
@@ -1097,6 +1130,7 @@
     if (!active || active.generated || active.readOnly) active = firstFile();
     if (active && (active.generated || active.readOnly)) active = null;
     state.activeId = active ? active.id : null;
+    ed().setReadOnly(isReadOnly());
     if (state.activeId && !state.openTabs.includes(state.activeId)) state.openTabs.unshift(state.activeId);
     if (!folderNodeByPath(state.selectedFolder)) state.selectedFolder = "";
 
@@ -1353,7 +1387,7 @@
   function snapshotNodes(nodes) {
     return (nodes || []).map((node) => {
       if (node.type === "folder") return { ...node, children: snapshotNodes(node.children) };
-      const writable = state.dirtyFiles.has(node.id) || isRealtimeFile(node.id);
+      const writable = !isFileUnavailable(node.id) && (state.dirtyFiles.has(node.id) || isRealtimeFile(node.id));
       if (writable || node.kind === "img" || node.data != null) return node;
       const { content, ...rest } = node;
       return rest;
@@ -2939,6 +2973,8 @@
       state.autoSaveDelay = normalizeAutoSaveDelay(data.autoSaveDelay ?? 600);
       clearTimeout(persistT);
       state.dirtyFiles.clear();
+      state.unavailableFiles.clear();
+      state.canonicalFileIds.clear();
       state.editRevision = 0;
       state.projectRevision = data.revision;
       state.role = data.role || "owner";

@@ -436,6 +436,7 @@
       // keeps the selection in place and the operation granular for history
       // (and, later, for collaborative editing).
       applyText(next) {
+        if (view.state.readOnly) return;
         const current = view.state.doc.toString();
         if (next === current) return;
         let from = 0;
@@ -453,6 +454,7 @@
         });
       },
       replaceRange(from, to, insert) {
+        if (view.state.readOnly) return;
         view.dispatch({ changes: { from, to, insert }, userEvent: "input.replace" });
       },
       selection() {

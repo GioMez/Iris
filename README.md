@@ -535,14 +535,23 @@ stable file id. A revision is captured on a compilation and on an explicit
 checkpoint, and only when the content actually changed since the file's previous
 revision, so the history stays meaningful rather than recording every keystroke.
 Binary assets are not document revisions. Generated output has a separate,
-build-oriented history described below.
+build-oriented history described below. Inline document history is limited to
+text files of at most 16 MiB.
 
 History is append-only. A rollback does not delete the revisions in between: it
-first snapshots the current state so nothing uncommitted is lost, then writes the
-chosen revision back to the file and records it as a new `rollback` revision. Each
+first snapshots the current server-authoritative text, including accepted edits
+not yet flushed to disk, then writes the chosen revision back to the file and
+records it as a new `rollback` revision. Each
 revision is attributed to a user, and the attribution — like the audit trail —
 outlives a deleted account through a denormalized label. Deleting a project
 cascades its history away; soft-deleting a file keeps it.
+
+File deletion also captures changed, versionable text before pruning its bytes.
+An unreadable existing file aborts the destructive operation; an already-absent
+file does not prevent filesystem refresh or restoration from its history.
+Push admission, snapshots and filesystem changes share the project gate, so an
+edit cannot be acknowledged midway through a destructive transaction and then
+erased. Room changes and restore notifications occur only after confirmed commit.
 
 The relevant endpoints are `POST /api/projects/:id/checkpoint`,
 `GET /api/projects/:id/files/:fileId/versions`,
@@ -727,6 +736,14 @@ What this changes for a document being edited live:
   read-only in place. Losing membership closes the session immediately.
 - A rollback moves every participant onto the restored text.
 - The status bar shows the state of the session for the open file.
+
+Renaming a live file updates its room's path without resetting the OT stream.
+Deleting it closes only that file's session and cancels pending persistence; other
+files and project-wide build notices remain available. The browser retains the
+unavailable file's buffer for copying and locks it against further local changes,
+including Format and Replace. Unconfirmed local text stays protected as unsaved
+work until an explicit discard/reload; deletion never falls back to an ordinary
+save that could recreate the file.
 
 A file can only join a session once it has a canonical id, so a document created
 in the current session becomes collaborative after its first save. Binary assets

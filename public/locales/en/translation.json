@@ -510,6 +510,8 @@
     "connecting": "Connecting…",
     "live": "Realtime",
     "readonly": "Realtime · read-only",
+    "fileUnavailable": "File unavailable · read-only",
+    "fileUnavailableHint": "This file was deleted or is no longer available. Your text is kept here for copying and cannot be saved to this file. Copy anything you need before refreshing or reloading the project.",
     "offline": "Reconnecting…",
     "revoked": "Realtime session ended: your access to this project changed",
     "error": "Realtime unavailable",

@@ -237,6 +237,89 @@ test("resync retires old ranges but waits for the old push ack before sending ne
   converged(r, b);
 });
 
+test("restore rejects a queued old-version push and its ack releases new typing only once", () => {
+  const r = room();
+  const b = browser("local"); b.join(r);
+  b.type({ from: 4, insert: " old" }); b.api.flush();
+  const oldPush = b.socket().last("push");
+  r.reset("restored");
+  b.socket().deliver({ t: "resync", fileId: r.fileId, version: r.version, doc: r.text() });
+  b.type({ from: 8, insert: " new" }); b.tick(); b.api.flush();
+  assert.equal(b.socket().of("push").length, 1);
+  const rejected = r.receive(oldPush.version, oldPush.updates);
+  assert.equal(rejected.accepted, false);
+  b.socket().deliver({ t: "pushed", fileId: r.fileId, ...rejected });
+  assert.equal(b.socket().of("push").length, 2);
+  const ack = accept(r, b);
+  b.socket().deliver(batch(r, 1)); b.socket().deliver(ack);
+  b.socket().deliver(batch(r, 1)); b.tick(); b.api.flush();
+  assert.equal(b.socket().of("push").length, 2);
+  assert.equal(r.text(), "restored new");
+  converged(r, b);
+});
+
+test("deleted room retains real unconfirmed text and ignores late pull, resync and ack", () => {
+  const r = room();
+  const b = browser("local"); b.join(r);
+  b.type({ from: 4, insert: " mine" }); b.api.flush();
+  remote(r, { from: 0, insert: "remote " });
+  b.socket().deliver({ t: "pushed", fileId: r.fileId, accepted: false, version: r.version });
+  assert.equal(b.socket().of("pull").length, 1);
+  b.socket().deliver({ t: "file-closed", fileId: r.fileId });
+  assert.equal(b.api.active(), false);
+  const sent = b.socket().sent.length;
+  b.socket().deliver(batch(r, 0));
+  b.socket().deliver({ t: "resync", fileId: r.fileId, version: 10, doc: "stale" });
+  b.socket().deliver({ t: "pushed", fileId: r.fileId, accepted: false, version: 10 });
+  b.tick(); b.api.flush();
+  assert.equal(b.socket().sent.length, sent);
+  assert.equal(b.doc(), "abcd mine");
+  assert.equal(b.pending(), 1);
+  const other = new CollabDocument({ fileId: "file-2", content: "two" });
+  b.join(other);
+  b.type({ from: 3, insert: "!" }); b.api.flush();
+  const pushes = b.socket().of("push").length;
+  b.socket().deliver({ t: "pushed", fileId: r.fileId, accepted: true, version: 10 });
+  b.socket().deliver({ t: "error", request: "pull", fileId: r.fileId, code: "COLLAB_READ_ONLY" });
+  b.socket().deliver({ t: "file-closed", fileId: r.fileId });
+  b.type({ from: 4, insert: "?" }); b.api.flush();
+  assert.equal(b.api.status(), "live");
+  assert.equal(b.socket().of("push").length, pushes, "old ack must not release the new push");
+  const ack = accept(other, b);
+  b.socket().deliver(batch(other, 0)); b.socket().deliver(ack);
+  const nextAck = accept(other, b);
+  b.socket().deliver(batch(other, 1)); b.socket().deliver(nextAck);
+  converged(other, b);
+});
+
+for (const deleted of ["file-1", "file-2"]) {
+  test(`file closure retires only ${deleted} from an A-B-A open queue`, () => {
+    const b = browser("local");
+    b.api.join("file-1", "tex");
+    const socket = b.socket(); socket.fire("open");
+    b.api.join("file-2", "tex"); b.api.join("file-1", "tex");
+    socket.deliver({ t: "file-closed", fileId: deleted });
+    if (deleted === "file-1") b.api.join("file-2", "tex");
+    // Deleted opens need not reply at all; don't leave their slots blocking B/A.
+    if (deleted === "file-1") {
+      socket.deliver({ t: "error", request: "open", fileId: "file-2", code: "COLLAB_ERROR" });
+    } else {
+      socket.deliver({ t: "opened", fileId: "file-1", doc: "obsolete A", version: 0, role: "viewer" });
+    }
+    assert.equal(b.api.active(), false);
+    const r = new CollabDocument({ fileId: deleted === "file-1" ? "file-2" : "file-1", content: "current" });
+    socket.deliver({ t: "opened", fileId: r.fileId, doc: r.text(), version: 0, role: "editor" });
+    assert.equal(b.api.fileId(), r.fileId);
+    socket.deliver({ t: "opened", fileId: deleted, doc: "late deleted file", version: 30, role: "viewer" });
+    socket.deliver({ t: "error", request: "open", fileId: deleted, code: "COLLAB_FILE_NOT_FOUND" });
+    assert.equal(b.api.status(), "live");
+    b.type({ from: 7, insert: "!" }); b.api.flush();
+    const ack = accept(r, b);
+    socket.deliver(batch(r, 0)); socket.deliver(ack);
+    converged(r, b);
+  });
+}
+
 test("stale file acks cannot release the current file's in-flight push", () => {
   const r = room();
   const b = browser("local"); b.join(r);

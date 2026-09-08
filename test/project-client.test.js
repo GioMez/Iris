@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
+const { ChangeSet } = require("@codemirror/state");
 
 const read = (name) => fs.readFileSync(path.join(__dirname, "../public", name), "utf8");
 const clone = (value) => JSON.parse(JSON.stringify(value));
@@ -33,13 +34,14 @@ function element() {
     },
     setAttribute() {}, removeAttribute() {}, focus() {}, select() {}, remove() {},
     appendChild(child) { this.children.push(child); return child; },
+    replaceChildren(...children) { this.children = children; },
     querySelector() { return element(); }, querySelectorAll() { return []; },
     addEventListener(type, fn) { if (!listeners.has(type)) listeners.set(type, []); listeners.get(type).push(fn); },
     dispatchEvent(event) { (listeners.get(event.type) || []).forEach((fn) => fn.call(this, event)); },
   };
 }
 
-function harness(language = "en") {
+function harness(language = "en", realtime = false) {
   const nodes = new Map();
   const get = (id) => { if (!nodes.has(id)) nodes.set(id, element()); return nodes.get(id); };
   const document = Object.assign(element(), { getElementById: get, createElement: element, documentElement: element(), body: element(), querySelector: get });
@@ -53,14 +55,28 @@ function harness(language = "en") {
   document.dispatchEvent = (event) => { events.push(event); dispatch(event); };
   let surface = "picker";
   let change = () => {};
-  const editor = {
+  let editor = {
     value: "", ready: new Promise(() => {}),
     load(value) { this.value = value; }, getValue() { return this.value; },
     onChange(fn) { change = fn; }, onCursor() {}, onPeers() {},
     setReadOnly() {}, setWordWrap() {}, focus() {},
   };
+  const sockets = [];
+  class Socket {
+    static OPEN = 1;
+    constructor() { this.readyState = 0; this.sent = []; this.handlers = {}; sockets.push(this); }
+    addEventListener(type, fn) { (this.handlers[type] ||= []).push(fn); }
+    fire(type, event = {}) {
+      if (type === "open") this.readyState = 1;
+      for (const fn of this.handlers[type] || []) fn(event);
+    }
+    deliver(message) { this.fire("message", { data: JSON.stringify(message) }); }
+    send(raw) { this.sent.push(JSON.parse(raw)); }
+    close() { this.readyState = 3; }
+    of(type) { return this.sent.filter((m) => m.t === type); }
+  }
   const context = vm.createContext({
-    console: { error() {}, warn() {} }, document, URL, URLSearchParams, performance,
+    console: { error() {}, warn() {} }, document, URL, URLSearchParams, performance, WebSocket: Socket,
     setTimeout(fn, delay) { timers.push({ fn, delay }); return timers.length; },
     clearTimeout(id) { if (timers[id - 1]) timers[id - 1].cleared = true; }, requestAnimationFrame() {},
     CustomEvent: class { constructor(type, init) { this.type = type; this.detail = init && init.detail; } },
@@ -72,6 +88,7 @@ function harness(language = "en") {
       }));
     },
     window: {
+      location: { protocol: "http:", host: "test" },
       addEventListener: windowEvents.addEventListener,
       matchMedia() { return { matches: false, addEventListener() {} }; },
       IrisEditor: editor, IrisIcons: { icon() { return ""; } },
@@ -94,12 +111,57 @@ function harness(language = "en") {
   // Expose lexical entry points only in the VM; the shipping API stays focused.
   function run(name, exposure = "") {
     let source = read(name).replace('import("/vendor/pdfjs/pdf.min.mjs")', 'Promise.resolve({ GlobalWorkerOptions: {} })');
+    if (name === "iris-editor.js") source = source.replace(/import\("([^"]+)"\)/g, 'Promise.resolve(editorModules["$1"])');
     const end = source.lastIndexOf("})();");
     source = source.slice(0, end) + exposure + source.slice(end);
     vm.runInContext(source, context, { filename: name });
   }
   run("iris-net.js");
-  run("iris-app.js", "window.appTest = { state, findFile, wire, wireEditorEvents, refreshFileTree, saveProject, openFileHistory, snapshotProject, confirmRestore, verState, openTreeRename, confirmTreeRename };\n");
+  if (realtime) {
+    // Run the shipping adapter and real CM extensions; only view rendering is
+    // headless. Like EditorView.dispatch, this does not enforce state.readOnly.
+    const viewModule = require("@codemirror/view");
+    let view;
+    class HeadlessView {
+      constructor({ state }) {
+        this.state = state;
+        this.scrollDOM = { getBoundingClientRect: () => ({ top: 0, bottom: 500 }) };
+        view = this;
+      }
+      setState(state) { this.state = state; }
+      dispatch(...specs) {
+        const startState = this.state;
+        const tr = specs.length === 1 && specs[0].state ? specs[0] : startState.update(...specs);
+        this.state = tr.state;
+        for (const listener of this.state.facet(viewModule.EditorView.updateListener)) {
+          listener({ startState, state: this.state, view: this, transactions: [tr], changes: tr.changes, docChanged: tr.docChanged, selectionSet: !!tr.selection });
+        }
+      }
+      focus() {}
+      requestMeasure() {}
+      coordsAtPos() { return null; }
+    }
+    Object.setPrototypeOf(HeadlessView, viewModule.EditorView);
+    context.editorModules = {
+      "@codemirror/state": require("@codemirror/state"),
+      "@codemirror/view": { ...viewModule, EditorView: HeadlessView },
+      "@codemirror/language": require("@codemirror/language"),
+      "@codemirror/commands": require("@codemirror/commands"),
+      "@lezer/highlight": require("@lezer/highlight"),
+      "@codemirror/collab": require("@codemirror/collab"),
+    };
+    // StringStream checks instanceof RegExp, so syntax runs in CM's realm.
+    vm.compileFunction(read("iris-latex.js"), ["window"])(context.window);
+    context.IrisLatex = context.window.IrisLatex;
+    vm.compileFunction(read("iris-lilypond.js"), ["window", "IrisLatex"])(context.window, context.IrisLatex);
+    context.IrisLilyPond = context.window.IrisLilyPond;
+    run("iris-editor.js");
+    editor = context.window.IrisEditor;
+    Object.defineProperty(editor, "value", { get: () => editor.getValue() });
+    editor.isReadOnly = () => view.state.readOnly;
+    run("iris-collab.js");
+  }
+  run("iris-app.js", "window.appTest = { state, findFile, wire, wireEditorEvents, openFile, syncRealtimeSession, canonicalFileId, refreshFileTree, saveProject, openFileHistory, snapshotProject, confirmRestore, verState, openTreeRename, confirmTreeRename, folderNodeByPath };\n");
   run("iris-projects.js", "window.projectsTest = { renameProject, cache, metaOf, finishDiscardDecision };\n");
   context.window.appTest.wireEditorEvents();
   return {
@@ -107,8 +169,13 @@ function harness(language = "en") {
     app: context.window.IrisApp, projects: context.window.IrisProjects,
     a: context.window.appTest, p: context.window.projectsTest,
     editor, requests, events, get, timers, windowEvents, surface: () => surface, t,
-    edit(value) { editor.value = value; change(); },
+    socket: () => sockets.at(-1),
+    edit(value) {
+      if (realtime) editor.applyText(value);
+      else { editor.value = value; change(); }
+    },
     async open(data = projectData()) {
+      if (realtime) { await editor.ready; assert.equal(editor.available, true); }
       const pending = this.projects.openProject(data.id);
       await tick(); requests.at(-1).reply(data); await pending;
       assert.equal(this.projects.currentProjectId(), data.id);
@@ -514,6 +581,281 @@ for (const completionOrder of ["rename-first", "open-first"]) {
     h.ack(h.requests.at(-1), 6); assert.equal(await saving, true);
   });
 }
+
+const mainFileId = "11111111-1111-4111-8111-111111111111";
+const otherFileId = "22222222-2222-4222-8222-222222222222";
+function sharedProject() {
+  const data = projectData();
+  data.project.nodes[0].id = mainFileId;
+  data.project.nodes.push({ type: "file", id: otherFileId, name: "other.tex", path: "other.tex", kind: "tex", content: "other" });
+  data.activeId = mainFileId; data.openTabs = [mainFileId];
+  return data;
+}
+async function openShared(h) {
+  await h.open(sharedProject());
+  h.socket().fire("open");
+  h.socket().deliver({ t: "opened", fileId: mainFileId, version: 0, doc: "original", role: "owner" });
+}
+
+for (const language of ["en", "it"]) {
+  test(`deleted active text stays copyable and dirty with only that file read-only (${language})`, options, async () => {
+    const h = harness(language, true); await openShared(h);
+    h.edit("original with unconfirmed work");
+    h.window.IrisCollab.flush();
+    assert.equal(h.app.hasUnsavedChanges(), false, "live OT text is not on the ordinary save path");
+    const socket = h.socket();
+    socket.deliver({ t: "file-closed", fileId: mainFileId });
+    assert.equal(h.editor.isReadOnly(), true);
+    assert.equal(h.editor.value, "original with unconfirmed work");
+    assert.equal(h.editor.collabPending().updates.length, 1);
+    assert.equal(h.a.findFile(mainFileId).content, "original with unconfirmed work");
+    assert.equal(h.app.hasUnsavedChanges(), true);
+    assert.equal(h.a.state.role, "owner");
+    assert.equal(h.window.IrisCollab.watching(), "p1");
+    assert.equal(socket.readyState, 1);
+    assert.equal(h.app.serialize().revision, 4);
+    assert.equal(h.p.cache.get("p1").revision, 4);
+    assert.equal(h.get("stSyncLabel").textContent, h.t("collab.fileUnavailable"));
+    assert.notEqual(h.t("collab.fileUnavailable"), "collab.fileUnavailable");
+    assert.equal(h.get("stSync").title, h.t("collab.fileUnavailableHint"));
+    const revision = h.a.state.editRevision;
+    socket.deliver({ t: "file-closed", fileId: mainFileId });
+    assert.equal(h.a.state.editRevision, revision);
+    h.app.setRole("owner");
+    assert.equal(h.editor.isReadOnly(), true, "project role updates must not unlock the missing file");
+    assert.equal(await h.a.saveProject(), false);
+    assert.equal(h.requests.length, 1, "neither refetch nor ordinary-save fallback");
+    const node = h.app.serialize().project.nodes[0];
+    assert.equal(node.content, undefined, "unconfirmed deleted text must never enter a normal-save payload");
+    assert.equal(Object.hasOwn(node, "readOnly"), false, "the gate is not persisted in the tree");
+    h.a.openFile(otherFileId);
+    socket.deliver({ t: "opened", fileId: otherFileId, version: 0, doc: "other", role: "owner" });
+    assert.equal(h.editor.isReadOnly(), false);
+    h.edit("other edited"); h.window.IrisCollab.flush();
+    assert.equal(socket.of("push").at(-1).fileId, otherFileId);
+    const snapshot = h.app.capturePersistence();
+    h.app.acknowledgePersistence(snapshot, 5);
+    assert.equal(h.app.hasUnsavedChanges(), true, "a normal save cannot acknowledge excluded missing-file text");
+    h.a.openFile(mainFileId);
+    assert.equal(h.editor.value, "original with unconfirmed work");
+    assert.equal(h.editor.isReadOnly(), true);
+    assert.equal(socket.of("open").filter((m) => m.fileId === mainFileId).length, 1);
+    const closing = h.projects.closeCurrent(); await tick();
+    assert.equal(h.get("projUnsavedModal").classList.contains("on"), true);
+    await h.p.finishDiscardDecision(false); assert.equal(await closing, false);
+  });
+}
+
+test("missing-file open preserves pre-open typing without enabling normal save or rejoin", options, async () => {
+  const h = harness("en", true); await h.open({ ...sharedProject(), autoSave: true }); h.a.wire();
+  const socket = h.socket(); socket.fire("open");
+  h.edit("typed before open");
+  assert.equal(h.timers.filter((timer) => !timer.cleared && timer.delay === 600000).length, 1);
+  socket.deliver({ t: "error", request: "open", fileId: mainFileId, code: "COLLAB_FILE_NOT_FOUND" });
+  assert.equal(h.editor.isReadOnly(), true);
+  assert.equal(h.editor.value, "typed before open");
+  assert.equal(h.app.hasUnsavedChanges(), true);
+  assert.equal(await h.app.persistChanges(), false);
+  h.a.syncRealtimeSession();
+  assert.equal(socket.of("open").length, 1);
+  assert.equal(h.requests.length, 1);
+  assert.equal(h.events.some((event) => event.type === "iris:collabunavailable"), false);
+  assert.equal(h.timers.filter((timer) => !timer.cleared && timer.delay === 600000).length, 0);
+  h.get("autoSaveDelay").value = "25";
+  h.get("autoSaveDelay").dispatchEvent({ type: "input" });
+  assert.equal(h.timers.filter((timer) => !timer.cleared && timer.delay === 25000).length, 0, "settings must not restart autosave for the missing file");
+});
+
+for (const [renamed, closeFirst] of [["file", true], ["ancestor", true], ["file", false], ["ancestor", false]]) {
+  test(`a reconciled local node stays unavailable after ${renamed} rename (${closeFirst ? "closure first" : "rename first"})`, options, async () => {
+    const h = harness("en", true);
+    const data = sharedProject();
+    const local = data.project.nodes[0];
+    local.id = "untitled_1"; local.path = "chapter/main.tex";
+    data.project.nodes[0] = { type: "folder", name: "chapter", open: true, children: [local] };
+    data.activeId = local.id; data.openTabs = [local.id];
+    await h.open(data); h.socket().fire("open"); h.edit("saved text");
+    const saving = h.app.persistChanges(); await tick();
+    const request = h.requests.at(-1);
+    const reconciled = clone(request.body.data); reconciled.revision = 5;
+    reconciled.project.nodes[0].children[0].id = mainFileId;
+    request.reply({ project: { id: "p1", name: "Score", revision: 5 }, data: reconciled });
+    assert.equal(await saving, true);
+    assert.equal(h.projects.resolveFileId("chapter/main.tex"), mainFileId);
+    const cached = clone(h.p.cache.get("p1"));
+    h.socket().deliver({ t: "opened", fileId: mainFileId, version: 0, doc: "saved text", role: "owner" });
+    h.edit("saved text with pending work");
+    const pending = clone(h.editor.collabPending());
+    if (closeFirst) h.socket().deliver({ t: "file-closed", fileId: mainFileId });
+    const root = h.a.folderNodeByPath("").nodes;
+    h.a.openTreeRename(renamed === "file" ? h.a.findFile(local.id) : root[0], renamed === "file" ? root[0].children : root, renamed === "file" ? "chapter/" : "");
+    h.get("treeRenameInput").value = renamed === "file" ? "renamed.tex" : "renamed";
+    h.a.confirmTreeRename(); await tick();
+    assert.equal(h.a.findFile(local.id).path, renamed === "file" ? "chapter/renamed.tex" : "renamed/main.tex");
+    assert.equal(h.requests.length, closeFirst ? 2 : 3, "only a rename started before closure can issue its PUT");
+    if (!closeFirst) {
+      const renameRequest = h.requests.at(-1);
+      assert.equal(renameRequest.method, "PUT");
+      assert.equal(renameRequest.body.baseRevision, 5);
+      h.socket().deliver({ t: "file-closed", fileId: mainFileId });
+      renameRequest.reply({ errorCode: "PROJECT_REVISION_CONFLICT" }, 409);
+      await h.app.waitForPersistence();
+    }
+    assert.equal(h.editor.isReadOnly(), true, "closure must find the local node even after its path changed");
+    assert.equal(h.a.canonicalFileId(local.id), mainFileId);
+    assert.equal(h.editor.value, "saved text with pending work");
+    assert.deepEqual(clone(h.editor.collabPending()), pending);
+    assert.equal(h.a.state.dirtyFiles.has(local.id), true);
+    assert.equal(h.app.serialize().revision, 5);
+    assert.deepEqual(clone(h.p.cache.get("p1")), cached);
+    assert.equal(h.app.serialize().project.nodes[0].children[0].content, undefined);
+    h.a.openFile(local.id);
+    assert.equal(h.editor.isReadOnly(), true, "reopening must not depend on the old cached path");
+    assert.equal(h.editor.value, "saved text with pending work");
+    h.app.setRole("owner");
+    assert.equal(h.editor.isReadOnly(), true);
+    assert.equal(h.a.state.role, "owner");
+    assert.equal(await h.app.persistChanges(), false);
+    h.a.openFile(otherFileId);
+    h.socket().deliver({ t: "opened", fileId: otherFileId, version: 0, doc: "other", role: "owner" });
+    h.edit("other edited");
+    const otherSave = h.app.persistChanges(); await tick();
+    const next = h.requests.at(-1);
+    assert.equal(next.method, "PUT");
+    assert.equal(next.body.baseRevision, 5);
+    assert.equal(next.body.data.project.nodes[0].children[0].content, undefined, "saving another file excludes the retained text too");
+    assert.equal(next.body.data.project.nodes[1].content, "other edited");
+    next.reply({ errorCode: "PROJECT_REVISION_CONFLICT" }, 409);
+    assert.equal(await otherSave, false);
+    assert.equal(h.app.serialize().revision, 5);
+    assert.equal(h.p.cache.get("p1").revision, 5);
+    h.app.acknowledgePersistence(h.app.capturePersistence(), 6);
+    assert.equal(h.a.state.dirtyFiles.has(local.id), true, "excluded text cannot be acknowledged by a later save");
+    h.a.openFile(local.id);
+    assert.equal(h.editor.isReadOnly(), true);
+    assert.equal(h.editor.value, "saved text with pending work");
+    assert.equal(h.socket().of("open").filter((m) => m.fileId === mainFileId).length, 1);
+    assert.equal(h.window.IrisCollab.watching(), "p1");
+    assert.equal(await h.app.load({ ...data, revision: 8 }, { isCurrent: () => false }), false);
+    assert.equal(h.a.canonicalFileId(local.id), mainFileId, "a refused load must retain the binding for the renamed path");
+    const reloaded = clone(data); reloaded.revision = 8;
+    reloaded.project.nodes[0].children[0].id = mainFileId;
+    reloaded.activeId = mainFileId; reloaded.openTabs = [mainFileId];
+    assert.equal(await h.app.load(reloaded), true);
+    assert.equal(h.a.canonicalFileId(local.id), null, "an accepted load must retire bindings for replaced local nodes");
+    assert.equal(h.editor.isReadOnly(), false, "an accepted load clears the local-id association too");
+    h.edit("editable after accepted load");
+    assert.equal(h.editor.value, "editable after accepted load");
+  });
+}
+
+for (const [action, button, edited] of [
+  ["Format", "btnFormat", "needle needle"],
+  ["Replace One", "replaceOne", "  edited needle  "],
+  ["Replace All", "replaceAll", "  edited edited  "],
+]) {
+  test(`${action} cannot change a closed buffer through the real editor adapter`, options, async () => {
+    const h = harness("en", true); await openShared(h); h.a.wire();
+    h.edit("  needle needle  ");
+    h.get("findInput").value = "needle"; h.get("replaceInput").value = "edited";
+    h.get("findInput").dispatchEvent({ type: "input" });
+    const pending = clone(h.editor.collabPending());
+    h.socket().deliver({ t: "file-closed", fileId: mainFileId });
+    assert.equal(h.editor.isReadOnly(), true);
+    h.get(button).dispatchEvent({ type: "click" });
+    assert.equal(h.editor.value, "  needle needle  ");
+    assert.deepEqual(clone(h.editor.collabPending()), pending, "programmatic edits must not alter the retained OT queue");
+    assert.equal(h.a.findFile(mainFileId).content, "  needle needle  ");
+    assert.equal(h.a.state.role, "owner");
+    assert.equal(h.app.hasUnsavedChanges(), true);
+    assert.equal(h.requests.length, 1);
+
+    h.a.openFile(otherFileId);
+    h.socket().deliver({ t: "opened", fileId: otherFileId, version: 0, doc: "  needle needle  ", role: "owner" });
+    assert.equal(h.editor.isReadOnly(), false);
+    h.get("findInput").dispatchEvent({ type: "input" });
+    h.get(button).dispatchEvent({ type: "click" });
+    assert.equal(h.editor.value, edited, `${action} must still work on another file`);
+    assert.equal(h.editor.collabPending().updates.length, 1);
+    h.window.IrisCollab.flush();
+    assert.equal(h.socket().of("push").at(-1).fileId, otherFileId);
+    assert.equal(h.a.findFile(mainFileId).content, "  needle needle  ");
+  });
+}
+
+test("the real adapter still allows authoritative loads and remote updates while read-only", options, async () => {
+  const h = harness("en", true); await openShared(h);
+  h.editor.setReadOnly(true);
+  h.editor.loadCollab("base", "tex", { version: 7 });
+  h.editor.collabReceive([{ clientID: "remote", changes: ChangeSet.of({ from: 4, insert: "!" }, 4).toJSON() }]);
+  assert.equal(h.editor.value, "base!");
+  assert.equal(h.editor.collabVersion(), 8);
+  assert.equal(h.editor.collabPending(), null);
+  assert.equal(h.editor.isReadOnly(), true);
+  h.editor.load("plain", "tex");
+  assert.equal(h.editor.value, "plain");
+  assert.equal(h.editor.isReadOnly(), true);
+});
+
+for (const reload of ["refresh", "project load"]) {
+  test(`accepted ${reload} clears transient file read-only and allows a new room`, options, async () => {
+    const h = harness("en", true); await openShared(h);
+    if (reload === "project load") h.edit("explicitly discarded pending text");
+    h.socket().deliver({ t: "file-closed", fileId: mainFileId });
+    assert.equal(h.editor.isReadOnly(), true);
+    assert.equal(h.app.hasUnsavedChanges(), reload === "project load", "only unconfirmed text requires discard");
+    const pending = reload === "refresh" ? h.a.refreshFileTree() : h.projects.openProject("p1");
+    await tick();
+    if (reload === "project load") {
+      assert.equal(h.get("projUnsavedModal").classList.contains("on"), true);
+      await h.p.finishDiscardDecision(true); await tick();
+    }
+    const data = sharedProject(); data.revision = 8; data.project.nodes[0].content = "accepted";
+    h.requests.at(-1).reply(data); await pending;
+    assert.equal(h.editor.isReadOnly(), false);
+    assert.equal(h.editor.value, "accepted");
+    assert.equal(h.app.serialize().revision, 8);
+    assert.equal(h.p.cache.get("p1").revision, 8);
+    if (reload === "project load") h.socket().fire("open");
+    assert.equal(h.socket().of("open").filter((m) => m.fileId === mainFileId).length, reload === "refresh" ? 2 : 1);
+    h.socket().deliver({ t: "opened", fileId: mainFileId, version: 4, doc: "accepted", role: "owner" });
+    h.edit("accepted edit"); h.window.IrisCollab.flush();
+    assert.equal(h.socket().of("push").at(-1).version, 4);
+  });
+}
+
+test("file closure during a refresh rejects its pre-deletion tree even without pending text", options, async () => {
+  const h = harness("en", true); await openShared(h);
+  const pending = h.a.refreshFileTree(); await tick();
+  h.socket().deliver({ t: "file-closed", fileId: mainFileId });
+  h.requests.at(-1).reply({ ...sharedProject(), revision: 8 }); await pending;
+  assert.equal(h.editor.isReadOnly(), true);
+  assert.equal(h.editor.value, "original");
+  assert.equal(h.app.serialize().revision, 4);
+  assert.equal(h.p.cache.get("p1").revision, 4);
+  assert.equal(h.socket().of("open").length, 1);
+  assert.equal(h.app.hasUnsavedChanges(), false);
+});
+
+test("a refused reload retains file unavailability, buffer, revision and cache", options, async () => {
+  const h = harness("en", true); await openShared(h);
+  h.edit("keep pending text");
+  h.socket().deliver({ t: "file-closed", fileId: mainFileId });
+  let finishLanguage;
+  h.window.IrisI18n.setLanguage = () => new Promise((resolve) => { finishLanguage = resolve; });
+  const pending = h.projects.openProject("p1"); await tick();
+  await h.p.finishDiscardDecision(true); await tick();
+  h.requests.at(-1).reply({ ...sharedProject(), revision: 8 }); await tick();
+  h.app.setName("changed during reload");
+  finishLanguage(); assert.equal(await pending, false);
+  assert.equal(h.editor.value, "keep pending text");
+  assert.equal(h.editor.isReadOnly(), true);
+  assert.equal(h.app.hasUnsavedChanges(), true);
+  assert.equal(h.app.serialize().revision, 4);
+  assert.equal(h.p.cache.get("p1").revision, 4);
+  h.a.syncRealtimeSession();
+  assert.equal(h.socket().of("open").length, 1);
+});
 
 test("open retains the queue through asynchronous editor loading", options, async () => {
   const h = harness(); h.p.cache.set("p1", projectData());

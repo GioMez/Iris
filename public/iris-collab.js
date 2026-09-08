@@ -38,7 +38,7 @@
     desired: null,       // { fileId, kind }
     joined: null,        // fileId confirmed open by the server
     opening: [],         // desired rooms awaiting a reply, in socket request order
-    status: "off",       // off | connecting | live | offline | readonly | revoked | error
+    status: "off",       // off | connecting | live | offline | readonly | file-unavailable | revoked | error
     role: null,
     attempt: 0,
     reconnectTimer: 0,
@@ -157,6 +157,19 @@
     return !!state.desired && state.desired.fileId === fileId;
   }
 
+  function fileClosed(fileId) {
+    if (!fileId || (!isCurrent(fileId) && !state.opening.some((room) => room.fileId === fileId))) return;
+    // Deleted opens may never reply. Retire just those slots, preserving the
+    // identity and order of other files' queued opens (including A -> B -> A).
+    state.opening = state.opening.filter((room) => room.fileId !== fileId);
+    if (isCurrent(fileId)) {
+      window.IrisCollab.leave();
+      setStatus("file-unavailable");
+    }
+    // Leave the editor's document and unconfirmed edits intact for copying.
+    document.dispatchEvent(new CustomEvent("iris:collabfileclosed", { detail: { fileId } }));
+  }
+
   function handle(message) {
     if (message.t === "ready") {
       state.sessionId = message.sessionId;
@@ -253,6 +266,11 @@
       return;
     }
 
+    if (message.t === "file-closed") {
+      fileClosed(message.fileId);
+      return;
+    }
+
     if (message.t === "revoked") {
       if (!isCurrent(message.fileId)) return;
       state.desired = null;
@@ -270,9 +288,14 @@
         const desired = state.opening.shift();
         if (desired !== state.desired) return;
       }
-      // A file the server will not share in realtime (not text, not found, or no
-      // longer permitted) falls back to the ordinary save path.
-      if (["COLLAB_FILE_NOT_FOUND", "COLLAB_NOT_TEXT", "COLLAB_BAD_FILE"].includes(message.code)) {
+      if (message.fileId && !isCurrent(message.fileId)) return;
+      if (message.code === "COLLAB_FILE_NOT_FOUND") {
+        fileClosed(message.fileId || (state.desired && state.desired.fileId));
+        return;
+      }
+      // Unsupported file formats can still use ordinary persistence. A missing
+      // canonical file cannot: saving its retained buffer could recreate it.
+      if (["COLLAB_NOT_TEXT", "COLLAB_BAD_FILE"].includes(message.code)) {
         state.desired = null;
         state.joined = null;
         setStatus("off");

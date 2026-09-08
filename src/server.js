@@ -1525,7 +1525,7 @@ async function getProject(req, res, user, id) {
 // stamps each source file node with its canonical UUIDv7 id, so the persisted
 // manifest carries the stable identity. Runs before the manifest is written; it
 // tracks identity only and never moves files on disk.
-async function syncProjectFiles(projectId, data, client, storageDir, protect) {
+async function syncProjectFiles(projectId, data, client, storageDir, protect, user) {
   const nodes = data && data.project && Array.isArray(data.project.nodes) ? data.project.nodes : [];
   const entries = collectProjectFiles(nodes);
   const incoming = entries.map((entry) => ({ nodeId: entry.nodeId, path: entry.path, kind: entry.kind }));
@@ -1545,6 +1545,12 @@ async function syncProjectFiles(projectId, data, client, storageDir, protect) {
   const plan = reconcileProjectFiles(rows, incoming, { generateId: uuidv7 });
   const renames = plan.updates.filter((u) => u.fromPath !== u.path).map((u) => ({ from: u.fromPath, to: u.path }));
   await preflightProjectRenames(storageDir, renames);
+  if (plan.softDeletes.length) {
+    await captureProjectCheckpoint({
+      projectId, storageDir, user, reason: "manual", authoritative: true,
+      files: rows.filter((file) => plan.softDeletes.includes(file.id)),
+    }, client);
+  }
   await protect();
   // Free paths before they are reused: soft-deletes and renames run before
   // inserts so the live-path unique index never sees a transient collision.
@@ -1579,7 +1585,7 @@ function requireProjectRevision(body, row) {
 
 // The caller holds the project gate and transaction, including any follow-up
 // checkpoint. Name-only saves change the current manifest without reconciling it.
-async function saveProjectTree(id, row, body, data, client, protect, { manifestOnly = false } = {}) {
+async function saveProjectTree(id, row, body, data, client, protect, { manifestOnly = false, user } = {}) {
   data.project = data.project && Array.isArray(data.project.nodes) ? data.project : { nodes: [] };
   data.project.name = body.name == null ? row.name : cleanName(body.name);
   data.projectType = inferProjectType(data);
@@ -1594,7 +1600,7 @@ async function saveProjectTree(id, row, body, data, client, protect, { manifestO
     await protect();
     await writeProjectManifest(row.storageDir, data);
   } else {
-    const { renames } = await syncProjectFiles(id, data, client, row.storageDir, protect);
+    const { renames } = await syncProjectFiles(id, data, client, row.storageDir, protect, user);
     applyCollabAuthority(id, data);
     await writeProjectFile(row.storageDir, data, renames);
   }
@@ -1628,10 +1634,15 @@ async function insertVersion({ fileId, parentId, user, reason, content }, querya
   return id;
 }
 
-// Resolves the exact revision for the on-disk content, inserting it when changed.
+// Destructive snapshots run under the project gate: use accepted room text and
+// fail on unreadable disk fallbacks. Ordinary checkpoints can target build staging.
 // Unversionable content has no revision and is represented by null.
-async function snapshotFileIfChanged({ storageDir, file, user, reason }, queryable = db) {
-  const buffer = await fs.readFile(path.join(storageDir, file.path)).catch(() => null);
+async function snapshotFileIfChanged({ storageDir, file, user, reason, authoritative = false }, queryable = db) {
+  const room = authoritative && collabRooms.get(file.id);
+  const buffer = room ? Buffer.from(room.text(), "utf8") : await fs.readFile(path.join(storageDir, file.path)).catch((err) => {
+    if (authoritative && err.code !== "ENOENT") throw err;
+    return null;
+  });
   if (!isVersionableText(buffer, file.kind)) return null;
   const content = buffer.toString("utf8");
   const previous = await latestVersion(file.id, queryable);
@@ -1647,7 +1658,7 @@ async function snapshotFileIfChanged({ storageDir, file, user, reason }, queryab
 
 // A project checkpoint is serialized so concurrent compilations cannot fork a
 // file's revision chain. It also returns the exact revision used for each file.
-async function captureProjectCheckpoint({ projectId, storageDir, user, reason, files: checkpointFiles = null }, queryable = null) {
+async function captureProjectCheckpoint({ projectId, storageDir, user, reason, files: checkpointFiles = null, authoritative = false }, queryable = null) {
   const client = queryable || await db.connect();
   try {
     if (!queryable) await client.query("BEGIN");
@@ -1663,7 +1674,7 @@ async function captureProjectCheckpoint({ projectId, storageDir, user, reason, f
     let created = 0;
     const versions = new Map();
     for (const file of files) {
-      const version = await snapshotFileIfChanged({ storageDir, file, user, reason }, client);
+      const version = await snapshotFileIfChanged({ storageDir, file, user, reason, authoritative }, client);
       if (version && version.created) created += 1;
       versions.set(file.id, version ? version.id : null);
     }
@@ -1701,13 +1712,15 @@ async function checkpointProject(req, res, user, id) {
     if (!body.data || typeof body.data !== "object") {
       return captureProjectCheckpoint({ projectId: id, storageDir: project.storageDir, user, reason: "manual" });
     }
-    return projectMutations.transaction({ id, storageDir: project.storageDir }, async (client, protect) => {
+    const result = await projectMutations.transaction({ id, storageDir: project.storageDir }, async (client, protect) => {
       const row = await authorizeProject(id, user, "write", client);
       requireProjectRevision(body, row);
-      const data = await saveProjectTree(id, row, { ...body, name: row.name }, body.data, client, protect);
+      const data = await saveProjectTree(id, row, { ...body, name: row.name }, body.data, client, protect, { user });
       const checkpoint = await captureProjectCheckpoint({ projectId: id, storageDir: row.storageDir, user, reason: "manual" }, client);
       return { ...checkpoint, data };
     });
+    collabReconcileProject(id, result.data);
+    return result;
   });
   await audit({
     ...sessionActor(req, user),
@@ -1778,7 +1791,7 @@ async function restoreFileVersion(req, res, user, projectId, fileId, versionId) 
       // Capture the current state before overwriting it, then append the rollback
       // revision. History is only added to, in the same transaction as the write.
       await client.query("SELECT pg_advisory_xact_lock(4953, hashtext($1))", [projectId]);
-      await snapshotFileIfChanged({ storageDir: project.storageDir, file, user, reason: "manual" }, client);
+      await snapshotFileIfChanged({ storageDir: project.storageDir, file, user, reason: "manual", authoritative: true }, client);
       const abs = path.join(project.storageDir, file.path);
       await fs.mkdir(path.dirname(abs), { recursive: true });
       await fs.writeFile(abs, target.content, "utf8");
@@ -1970,10 +1983,13 @@ function collabLeave(session, fileId) {
   clearTimeout(room.revisionTimer);
   // Last one out persists the document and records the consolidated revision
   // before the room — and with it the authoritative text — is released. The room
-  // is only dropped if nobody rejoined while the write was in flight.
-  collabTrack(collabPersist(room, { revision: true }).then(() => {
-    if (!room.clients.size) collabRooms.close(room.fileId);
-  }));
+  // is only dropped when empty and clean: a rejoining peer may have edited it
+  // again before this earlier flush's retirement gets the project gate.
+  collabTrack(collabPersist(room, { revision: true }).then(() => projectMutations.gate(room.projectId, () => {
+    if (collabRooms.get(room.fileId) === room && !room.clients.size && !room.needsPersist() && !room.needsRevision()) {
+      collabRooms.close(room.fileId);
+    }
+  })));
 }
 
 // Tracks in-flight persistence so shutdown can wait for it.
@@ -2001,6 +2017,7 @@ async function collabPersist(room, { revision = false } = {}) {
 async function collabPersistNow(room, revision) {
   if (!room.storageDir) return;
   return projectMutations.gate(room.projectId, async () => {
+    if (collabRooms.get(room.fileId) !== room) return;
     const { rows } = await db.query(
       "SELECT f.path, f.kind, p.storage_path FROM project_files f JOIN projects p ON p.id = f.project_id WHERE f.id = $1 AND f.project_id = $2 AND f.deleted_at IS NULL",
       [room.fileId, room.projectId]
@@ -2187,17 +2204,21 @@ async function collabHandleMessage(session, raw) {
   if (message.t === "push") {
     const entry = session.rooms.get(fileId);
     if (!entry) throw new CollabError("COLLAB_NOT_JOINED");
-    if (!roleHasCapability(entry.role, "write")) throw new CollabError("COLLAB_READ_ONLY");
-    const result = entry.room.receive(Number(message.version), message.updates, { userId: session.user.sub });
-    // Every replica, including the sender, sees the same accepted stream before
-    // the ack can release another push or a peer can send dependent changes.
-    if (result.accepted) {
-      entry.room.lastAuthor = session.user;
-      collabBroadcast(entry.room, { t: "updates", fileId, version: result.version, updates: result.updates });
-    }
-    collabSend(session.socket, { t: "pushed", fileId, accepted: result.accepted, version: result.version });
-    if (!result.accepted) return;
-    return collabSchedulePersist(entry.room);
+    return projectMutations.gate(entry.projectId, () => {
+      if (!collabActive(session)) return;
+      if (session.rooms.get(fileId) !== entry || collabRooms.get(fileId) !== entry.room) throw new CollabError("COLLAB_NOT_JOINED");
+      if (!roleHasCapability(entry.role, "write")) throw new CollabError("COLLAB_READ_ONLY");
+      const result = entry.room.receive(Number(message.version), message.updates, { userId: session.user.sub });
+      // Every replica, including the sender, sees the same accepted stream before
+      // the ack can release another push or a peer can send dependent changes.
+      if (result.accepted) {
+        entry.room.lastAuthor = session.user;
+        collabBroadcast(entry.room, { t: "updates", fileId, version: result.version, updates: result.updates });
+      }
+      collabSend(session.socket, { t: "pushed", fileId, accepted: result.accepted, version: result.version });
+      if (!result.accepted) return;
+      return collabSchedulePersist(entry.room);
+    });
   }
 
   if (message.t === "ping") return collabSend(session.socket, { t: "pong" });
@@ -2273,6 +2294,43 @@ function applyCollabAuthority(projectId, data) {
     }
   };
   walk(data && data.project && data.project.nodes);
+}
+
+// Called synchronously after confirmed commit, still inside the project gate.
+// Renames keep the OT stream; removed files already have their final snapshot.
+// A null tree means project deletion, which revokes membership rather than files.
+function collabReconcileProject(projectId, data = null) {
+  const files = new Map((data ? collectProjectFiles(data.project.nodes) : []).map((file) => [file.nodeId, file]));
+  const revoked = new Set();
+  if (!data) {
+    collabAccessGeneration++;
+    collabSessions.forEach((session) => {
+      if (session.projectId !== projectId) return;
+      session.projectId = null;
+      revoked.add(session);
+    });
+  }
+  for (const room of collabRooms.forProject(projectId)) {
+    const file = files.get(room.fileId);
+    if (file) {
+      room.path = file.path;
+      room.kind = file.kind;
+      continue;
+    }
+    clearTimeout(room.flushTimer);
+    clearTimeout(room.revisionTimer);
+    room.clients.forEach((session) => {
+      if (session.rooms.get(room.fileId)?.room !== room) return;
+      session.rooms.delete(room.fileId);
+      collabSend(session.socket, { t: data ? "file-closed" : "revoked", fileId: room.fileId });
+      if (!data) revoked.add(session);
+    });
+    room.clients.clear();
+    collabRooms.close(room.fileId);
+  }
+  revoked.forEach((session) => {
+    if (!session.rooms.size) collabCloseSession(session, 4403, "permission revoked");
+  });
 }
 
 // A file replaced outside the update stream (a rollback, or a refresh from disk)
@@ -2434,15 +2492,17 @@ async function createProject(req, res, user) {
 
 async function updateProject(req, res, user, id) {
   const body = await readBody(req);
+  const manifestOnly = !body.data || typeof body.data !== "object";
   const data = await authorizedProjectGate(id, user, "write", async (project) => {
-    return projectMutations.transaction({ id, storageDir: project.storageDir }, async (client, protect) => {
+    const saved = await projectMutations.transaction({ id, storageDir: project.storageDir }, async (client, protect) => {
       const row = await authorizeProject(id, user, "write", client);
       requireProjectRevision(body, row);
-      const manifestOnly = !body.data || typeof body.data !== "object";
       const data = manifestOnly ? await readProjectManifest(row.storageDir) : body.data;
-      await saveProjectTree(id, row, body, data, client, protect, { manifestOnly });
+      await saveProjectTree(id, row, body, data, client, protect, { manifestOnly, user });
       return manifestOnly ? { ...await readProjectFile(row.storageDir), revision: data.revision } : data;
     });
+    if (!manifestOnly) collabReconcileProject(id, saved);
+    return saved;
   });
   json(res, 200, {
     project: { id, name: data.project.name, revision: data.revision, projectType: data.projectType, createdAt: data.createdAt, updatedAt: data.updatedAt, fileCount: countFiles(data) },
@@ -2457,6 +2517,7 @@ async function deleteProject(req, res, user, id) {
       await protect();
       await client.query("DELETE FROM projects WHERE id = $1", [id]);
     });
+    collabReconcileProject(id);
     return row;
   });
   await audit({
@@ -2466,8 +2527,6 @@ async function deleteProject(req, res, user, id) {
     targetId: id,
     metadata: { name: row.name },
   });
-  // The project is gone, so every open realtime session on it loses membership.
-  await collabRecheckProject(id);
   json(res, 200, { ok: true });
 }
 
@@ -3470,7 +3529,7 @@ async function deleteBuildOutput(req, res, user, projectId, buildId) {
 async function compileProject(req, res, user, id) {
   const body = await readBody(req);
   const { row, data, projectType, engine, binPath, main, mainPath, storedLilypondArgs, outputFormat, compileProfile, buildFiles } = await authorizedProjectGate(id, user, "compile", async (project) => {
-    return projectMutations.transaction({ id, storageDir: project.storageDir }, async (client, protect) => {
+    const result = await projectMutations.transaction({ id, storageDir: project.storageDir }, async (client, protect) => {
       const row = await authorizeProject(id, user, "compile", client);
       if (body.data && typeof body.data === "object") requireProjectRevision(body, row);
       const name = body.name == null ? row.name : cleanName(body.name);
@@ -3501,7 +3560,7 @@ async function compileProject(req, res, user, id) {
       data.compileProfile = storedCompileProfile;
       data.lilypondArgs = storedLilypondArgs;
       data.lilypondFormat = outputFormat;
-      await saveProjectTree(id, row, body, data, client, protect);
+      await saveProjectTree(id, row, body, data, client, protect, { user });
       const buildFiles = collectProjectFiles(data.project.nodes).map((entry) => ({
         id: entry.node.id,
         path: entry.path,
@@ -3509,6 +3568,8 @@ async function compileProject(req, res, user, id) {
       }));
       return { row, data, projectType, engine, binPath, main, mainPath, storedLilypondArgs, outputFormat, compileProfile, buildFiles };
     });
+    collabReconcileProject(id, result.data);
+    return result;
   });
   const jobname = path.basename(mainPath).replace(/\.[^.]+$/, "");
   const outputName = `${jobname}.${outputFormat}`;
@@ -4094,6 +4155,7 @@ async function adminDeleteProject(req, res, actor, projectId) {
       await protect();
       await client.query("DELETE FROM projects WHERE id = $1", [projectId]);
     });
+    collabReconcileProject(projectId);
     return row;
   });
   await audit({
@@ -4103,7 +4165,6 @@ async function adminDeleteProject(req, res, actor, projectId) {
     targetId: projectId,
     metadata: { name: row.name, via: "admin" },
   });
-  await collabRecheckProject(projectId);
   json(res, 200, { ok: true });
 }
 

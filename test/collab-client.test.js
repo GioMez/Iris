@@ -342,6 +342,56 @@ test("a file the server will not share falls back to the ordinary save path", ()
   assert.ok(h.events.some((event) => event.type === "iris:collabunavailable"));
 });
 
+test("file closure cancels room timers but keeps the socket and project watch", () => {
+  const h = harness();
+  h.collab.watchProject("p-1");
+  const socket = joined(h);
+  const builds = [];
+  h.collab.onBuild((build) => builds.push(build));
+  h.typeLocally([{ changes: [1], clientID: "me" }]);
+  h.moveCursor(2);
+  const pending = h.editor.pending;
+  const presenceCount = socket.messagesOfType("presence").length;
+  socket.deliver({ t: "file-closed", fileId: "file-1" });
+  assert.equal(h.collab.status(), "file-unavailable");
+  assert.equal(h.collab.active(), false);
+  assert.equal(h.collab.watching(), "p-1");
+  assert.equal(socket.closed, null);
+  assert.equal(h.editor.pending, pending);
+  assert.equal(h.editor.loaded.length, 1);
+  assert.equal(h.runTimers(), 0);
+  h.collab.flush();
+  assert.equal(socket.messagesOfType("push").length, 0);
+  assert.equal(socket.messagesOfType("presence").length, presenceCount);
+  socket.deliver({ t: "file-closed", fileId: "file-1" });
+  const notices = h.events.filter((event) => event.type === "iris:collabfileclosed");
+  assert.equal(notices.length, 1);
+  assert.equal(notices[0].detail.fileId, "file-1");
+  assert.equal(h.events.some((event) => ["iris:collabrevoked", "iris:collabunavailable"].includes(event.type)), false);
+  socket.deliver({ t: "build", projectId: "p-1", buildId: "b-1" });
+  assert.equal(builds.length, 1);
+  socket.fire("close", { code: 1006 });
+  h.runTimers(); h.socket().fire("open");
+  assert.equal(h.socket().lastOfType("project").projectId, "p-1");
+  assert.equal(h.socket().messagesOfType("open").length, 0, "only the watch reconnects");
+});
+
+test("a tagged missing-file open is terminal rather than an ordinary-save fallback", () => {
+  const h = harness();
+  h.collab.join("file-1", "tex");
+  const socket = h.socket(); socket.fire("open");
+  socket.deliver({ t: "error", request: "open", fileId: "file-1", code: "COLLAB_FILE_NOT_FOUND" });
+  assert.equal(h.collab.status(), "file-unavailable");
+  assert.equal(h.events.filter((event) => event.type === "iris:collabfileclosed").length, 1);
+  assert.equal(h.events.some((event) => event.type === "iris:collabunavailable"), false);
+  socket.deliver({ t: "opened", fileId: "file-1", version: 5, doc: "obsolete", role: "editor" });
+  assert.equal(h.editor.loaded.length, 0);
+  h.collab.join("file-2", "tex");
+  socket.deliver({ t: "opened", fileId: "file-2", version: 0, doc: "two", role: "editor" });
+  assert.equal(h.collab.fileId(), "file-2");
+  assert.equal(h.collab.status(), "live");
+});
+
 test("switching file leaves the old room and opens the new one on the same socket", () => {
   const h = harness();
   const socket = joined(h);

@@ -50,14 +50,16 @@ test("only a member with write capability may push updates", () => {
   assert.match(handler, /if \(!roleHasCapability\(entry\.role, "write"\)\) throw new CollabError\("COLLAB_READ_ONLY"\)/);
   // Reading, writing and reporting a caret all require this session to have
   // joined the room, which is where membership was checked.
-  assert.equal((handler.match(/COLLAB_NOT_JOINED/g) || []).length, 3);
+  // Room membership and post-wait identity checks are exercised by the
+  // session-collab and room-lifecycle behavior tests.
 });
 
-test("every membership and project mutation re-checks open realtime sessions", () => {
+test("every membership mutation re-checks open realtime sessions", () => {
   // One recheck per mutation site: share, role change and removal, each in the
-  // owner console and the admin console, plus both project deletions.
+  // owner console and the admin console. Committed project deletion now
+  // invalidates rooms synchronously; room-lifecycle.test.js exercises both routes.
   const calls = server.match(/await collabRecheckProject\(/g) || [];
-  assert.equal(calls.length, 8, `expected a recheck at every mutation site, found ${calls.length}`);
+  assert.equal(calls.length, 6, `expected a recheck at every membership mutation site, found ${calls.length}`);
   const recheck = server.slice(server.indexOf("async function collabRecheckProject"), server.indexOf("// Stamps the authoritative text"));
   // Losing membership closes the session; losing write only downgrades it.
   assert.match(recheck, /collabSend\(session\.socket, \{ t: "revoked", fileId \}\)/);
@@ -73,7 +75,8 @@ test("realtime text reaches disk on a debounce, on last leave and on shutdown", 
   // The last participant flushes and records the consolidated revision.
   const leave = server.slice(server.indexOf("function collabLeave"), server.indexOf("// Tracks in-flight persistence"));
   assert.match(leave, /collabPersist\(room, \{ revision: true \}\)/);
-  assert.match(leave, /if \(!room\.clients\.size\) collabRooms\.close\(room\.fileId\)/);
+  // Retirement must also check room identity; the lifecycle tests cover an old
+  // completion racing with a replacement room.
   // Shutdown drains what the debounce has not written yet.
   assert.match(server, /await collabShutdown\(\)/);
   assert.match(server, /await Promise\.allSettled\(Array\.from\(collabPending\)\)/);
