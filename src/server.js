@@ -39,6 +39,7 @@ const {
 } = require("./project-templates");
 const { createZip, extractZip } = require("./zip");
 const { parseCompileLog, compileDiagnosticsView } = require("./compile-diagnostics");
+const { normalizeCustomCommands } = require("../public/iris-completion");
 const {
   buildStoragePath,
   publishCompileOutput,
@@ -178,6 +179,7 @@ const CODEMIRROR_MODULES = {
   "language.js": path.join(path.dirname(require.resolve("@codemirror/language")), "index.js"),
   "commands.js": path.join(path.dirname(require.resolve("@codemirror/commands")), "index.js"),
   "collab.js": path.join(path.dirname(require.resolve("@codemirror/collab")), "index.js"),
+  "autocomplete.js": path.join(path.dirname(require.resolve("@codemirror/autocomplete")), "index.js"),
   "lezer-common.js": path.join(path.dirname(require.resolve("@lezer/common")), "index.js"),
   "lezer-highlight.js": path.join(path.dirname(require.resolve("@lezer/highlight")), "index.js"),
   "style-mod.js": path.join(path.dirname(require.resolve("style-mod")), "..", "src", "style-mod.js"),
@@ -1948,6 +1950,7 @@ async function saveProjectTree(id, row, body, data, client, protect, { manifestO
   data.lilypondFormat = data.projectType === "lilypond" ? normalizeLilypondFormat(data.lilypondFormat) : "pdf";
   data.mainPath = sanitizeMainPathForStorage(data.mainPath);
   if (body.compileProfile && typeof body.compileProfile === "object") data.compileProfile = sanitizeCompileProfileForStorage(body.compileProfile, data.projectType);
+  data.customCommands = sanitizeCustomCommandsForStorage(data.customCommands);
   data.createdAt = toMillis(row.created_at);
   data.updatedAt = Date.now();
   data.revision = row.revision + 1;
@@ -3150,6 +3153,7 @@ async function createProject(req, res, user) {
   data.lilypondFormat = data.projectType === "lilypond" ? normalizeLilypondFormat(data.lilypondFormat) : "pdf";
   data.mainPath = sanitizeMainPathForStorage(data.mainPath);
   data.createdAt = now;
+  data.customCommands = sanitizeCustomCommandsForStorage(data.customCommands);
   data.updatedAt = now;
   data.revision = 0;
   validateProjectSourceTree(data);
@@ -3389,6 +3393,7 @@ function normalizeImportedProject(data, name, now) {
     ? "lilypond"
     : (LATEX_ENGINES.has(data.engine) ? data.engine : "pdflatex");
   data.compileProfile = sanitizeCompileProfileForStorage(data.compileProfile, data.projectType);
+  data.customCommands = sanitizeCustomCommandsForStorage(data.customCommands);
   data.lilypondArgs = data.projectType === "lilypond" ? sanitizeLilypondArgsForStorage(data.lilypondArgs) : "";
   data.lilypondFormat = data.projectType === "lilypond" ? normalizeLilypondFormat(data.lilypondFormat) : "pdf";
   data.mainPath = sanitizeMainPathForStorage(data.mainPath);
@@ -3669,6 +3674,13 @@ function sanitizeLilypondArgsForStorage(value) {
     throw requestError("LILYPOND_ARGUMENTS_INVALID", 400);
   }
   return input;
+}
+
+function sanitizeCustomCommandsForStorage(value) {
+  try { return normalizeCustomCommands(value); }
+  catch (error) {
+    throw requestError("CUSTOM_COMMANDS_INVALID", 400, { language: error.kind === "ly" ? "LilyPond" : "LaTeX", line: error.line || 1 });
+  }
 }
 
 // The project's main source file, kept as a project-relative path. Empty means

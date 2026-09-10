@@ -92,6 +92,16 @@
     "replaced_one": "{{count}} occurrence replaced",
     "replaced_other": "{{count}} occurrences replaced"
   },
+  "completion": {
+    "suggestions": "Completions",
+    "custom": "Custom",
+    "settingsTitle": "Custom completion commands",
+    "help": "One command name per line, with or without the backslash. Up to 200 per language, 80 characters per name. Apply changes, then save the project to share them.",
+    "latexCommands": "LaTeX commands",
+    "lilypondCommands": "LilyPond commands",
+    "apply": "Apply commands",
+    "invalid": "{{language}}, line {{line}}: enter a command name without arguments or spaces. Maximum 200 names, 80 characters each."
+  },
   "diagnostics": {
     "title": "Diagnostics",
     "show": "Show diagnostics",
@@ -193,7 +203,7 @@
     "fontPreviewTitle": "Font preview",
     "fontPreview": "The quick brown fox — Laboratory Report — 0123456789",
     "editor": "Editor",
-    "editorDescription": "LaTeX source editing and formatting preferences.",
+    "editorDescription": "Source editing and formatting preferences.",
     "autoIndent": "Auto-indent",
     "autoIndentDescription": "Keep the current indentation and automatically indent inside environments when starting a new line.",
     "autosave": "Autosave",
@@ -755,6 +765,7 @@
     "unitMegabytes": "{{value}} MiB"
   },
   "api": {
+    "CUSTOM_COMMANDS_INVALID": "Invalid custom commands for {{language}} at line {{line}}. Use command names only, at most 200 per language and 80 characters per name.",
     "AUTH_REQUIRED_FIELDS": "Enter your username and password.",
     "AUTH_SSO_ACCOUNT": "This account uses SSO. Sign in with the SSO button.",
     "AUTH_CONVERTED_TO_SSO": "This account has been linked to SSO and can no longer sign in with local credentials.",

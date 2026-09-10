@@ -300,6 +300,16 @@ button{font-family:inherit;color:inherit}
 .cm-host .cm-specialChar{color:var(--semantic-danger);background:rgba(247,118,142,.14);border-radius:2px;outline:1px solid rgba(247,118,142,.34)}
 .cm-host .cm-iris-invisible{display:inline-block;width:1ch;text-align:center;line-height:inherit}
 .cm-host .cm-line{padding:0 var(--editor-pad-x)}
+.cm-host .cm-editor .cm-tooltip.cm-tooltip-autocomplete{background:var(--panel);border:1px solid var(--border);border-radius:8px;color:var(--txt);box-shadow:var(--shadow);overflow:hidden}
+.cm-host .cm-editor .cm-tooltip.cm-tooltip-autocomplete>ul{font:12px var(--font-code);max-height:240px;min-width:220px}
+.cm-host .cm-editor .cm-tooltip.cm-tooltip-autocomplete>ul>li{padding:5px 9px;line-height:1.5}
+.cm-host .cm-editor .cm-tooltip.cm-tooltip-autocomplete>ul>li[aria-selected="true"]{background:var(--selection-soft);color:var(--selection)}
+.cm-host .cm-completionMatchedText{color:var(--accent);font-weight:600;text-decoration:none}
+.cm-host .cm-completionDetail{display:inline-block;vertical-align:middle;color:var(--txt-mut);font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis}
+.completion-settings{margin-top:20px;padding-top:18px;border-top:1px solid var(--border)}
+.completion-settings .field{margin-top:14px}
+.completion-input{display:block;width:100%;resize:vertical;min-height:90px;font-family:var(--font-code);line-height:1.6}
+.completion-notice{color:var(--semantic-danger);font-size:12px;line-height:1.5}
 .cm-host .cm-gutters{background:var(--editor-bg);color:var(--txt-mut);border:none}
 .cm-host .cm-lineNumbers .cm-gutterElement{min-width:calc(var(--gutter-w) - 12px);padding:0 12px 0 6px;text-align:right}
 .cm-host .cm-activeLineGutter{background:transparent;color:var(--txt-dim)}

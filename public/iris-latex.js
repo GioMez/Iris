@@ -205,31 +205,53 @@
 
   const LITERAL_ENVIRONMENTS = new Set(["verbatim", "verbatim*", "Verbatim", "BVerbatim", "LVerbatim", "lstlisting", "minted", "comment", "filecontents", "filecontents*"]);
 
-  function environmentTokens(src) {
+  function environmentTokens(src, context = null) {
     const tokens = [];
+    const mask = (from, to) => { if (context) context.ranges.push({ from, to }); };
     // Consume escaped backslashes and percent signs before interpreting the
     // next environment or comment. Verbatim bodies are literal.
-    const re = /\\(begin|end)\s*\{([^{}\r\n]+)\}|\\verb\*?([^\sA-Za-z])|\\[A-Za-z@]+|\\[\s\S]|%[^\n]*/g;
+    const re = /\\(begin|end)\s*\{([^{}\r\n]+)\}|\\verb\*?([^\sA-Za-z])|\\[\p{L}@]+|\\[\s\S]|%[^\n]*/gu;
     let match;
     while ((match = re.exec(src))) {
       if (match[3]) {
         const end = src.indexOf(match[3], re.lastIndex);
         const lineEnd = src.indexOf("\n", re.lastIndex);
-        re.lastIndex = end < 0 || (lineEnd >= 0 && end > lineEnd) ? (lineEnd < 0 ? src.length : lineEnd) : end + 1;
+        const closed = end >= 0 && (lineEnd < 0 || end < lineEnd);
+        re.lastIndex = closed ? end + 1 : (lineEnd < 0 ? src.length : lineEnd);
+        mask(match.index, re.lastIndex);
+        if (context && !closed && lineEnd < 0) context.active = false;
         continue;
       }
-      if (!match[1]) continue;
+      if (!match[1]) {
+        if (match[0].startsWith("%")) {
+          mask(match.index, re.lastIndex);
+          if (context && re.lastIndex === src.length) context.active = false;
+        } else if (/^\\[^\p{L}@]$/u.test(match[0])) mask(match.index, re.lastIndex);
+        continue;
+      }
       const token = { type: match[1], name: match[2].trim(), from: match.index, to: re.lastIndex };
       tokens.push(token);
       if (token.type === "begin" && LITERAL_ENVIRONMENTS.has(token.name)) {
         const close = `\\end{${token.name}}`;
         const end = src.indexOf(close, re.lastIndex);
-        if (end < 0) break;
+        mask(token.to, end < 0 ? src.length : end);
+        if (end < 0) { if (context) context.active = false; break; }
         tokens.push({ type: "end", name: token.name, from: end, to: end + close.length });
         re.lastIndex = end + close.length;
       }
     }
     return tokens;
+  }
+
+  function completionText(src) {
+    const context = { ranges: [], active: true };
+    environmentTokens(src, context);
+    let code = "", from = 0;
+    for (const range of context.ranges) {
+      code += src.slice(from, range.from) + src.slice(range.from, range.to).replace(/[^\n]/g, " ");
+      from = range.to;
+    }
+    return { code: code + src.slice(from), active: context.active };
   }
 
   // Describes the block immediately before the caret and its existing closer,
@@ -392,5 +414,5 @@
     return found.sort((a, b) => a.from - b.from || b.to - a.to);
   }
 
-  window.IrisLatex = { highlight, format, indentOnEnter, blockAtEnter, outline, regions, escAll, stream };
+  window.IrisLatex = { highlight, format, indentOnEnter, blockAtEnter, completionText, outline, regions, escAll, stream };
 })();

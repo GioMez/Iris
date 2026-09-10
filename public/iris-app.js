@@ -50,6 +50,7 @@
     wordWrap: false,
     autoSave: false,
     autoSaveDelay: 600,
+    customCommands: { tex: [], ly: [] },
     zoom: 1, fit: true,
     view: "preview",
     previewKind: "empty",
@@ -93,6 +94,8 @@
   function isFileUnavailable(id = state.activeId) { return state.unavailableFiles.has(id) || state.unavailableFiles.has(canonicalFileId(id)); }
   function applyEditorGate() {
     ed().setReadOnly(isReadOnly() || isFileUnavailable() || window.IrisCollab.paused());
+    const locked = isReadOnly() || window.IrisCollab.paused();
+    ["completionTex", "completionLy", "completionApply"].forEach((id) => { $(id).disabled = locked; });
   }
 
   /* ---------------- persistence (delegated to the projects layer) ---------------- */
@@ -256,6 +259,7 @@
       // An authoritative reload may change main-file detection without an edit.
       const file = findFile(state.activeId);
       if (file && file.kind !== "img") file.content = ed().getValue();
+      updateCompletionContext();
       applyDiagnosticsToEditor();
       renderMainFileMarker();
     });
@@ -1373,6 +1377,37 @@
     // filled again from the presence the transport is already holding.
     renderTreePresence();
     renderMainFileMarker();
+    updateCompletionContext();
+  }
+
+  function updateCompletionContext() {
+    ed().setCompletionContext({ nodes: project.nodes, activePath: findFile(state.activeId)?.path,
+      customCommands: state.customCommands, customLabel: t("completion.custom"), suggestionsLabel: t("completion.suggestions") });
+  }
+
+  function renderCustomCommands() {
+    $("completionTex").value = state.customCommands.tex.join("\n");
+    $("completionLy").value = state.customCommands.ly.join("\n");
+    $("completionNotice").hidden = true;
+    $("completionTex").removeAttribute("aria-invalid");
+    $("completionLy").removeAttribute("aria-invalid");
+  }
+
+  function applyCustomCommands() {
+    if (isReadOnly() || window.IrisCollab.paused()) return;
+    try {
+      const commands = window.IrisCompletion.normalizeCustomCommands({ tex: $("completionTex").value, ly: $("completionLy").value });
+      state.customCommands = commands;
+      renderCustomCommands();
+      updateCompletionContext();
+      void persistWhenDocumentClean();
+    } catch (error) {
+      $("completionTex").removeAttribute("aria-invalid");
+      $("completionLy").removeAttribute("aria-invalid");
+      $(error.kind === "ly" ? "completionLy" : "completionTex").setAttribute("aria-invalid", "true");
+      $("completionNotice").textContent = t("completion.invalid", { language: error.kind === "ly" ? "LilyPond" : "LaTeX", line: error.line || 1 });
+      $("completionNotice").hidden = false;
+    }
   }
 
   function renderMainFileMarker() {
@@ -1415,6 +1450,8 @@
     state.lilypondFormat = data.lilypondFormat || "pdf";
     state.autoSave = data.autoSave === true;
     state.autoSaveDelay = normalizeAutoSaveDelay(data.autoSaveDelay ?? 600);
+    state.customCommands = window.IrisCompletion.normalizeCustomCommands(data.customCommands);
+    renderCustomCommands();
     state.untitledN = data.untitledN || 0;
     state.fonts = fontSettingsFromTree(data.fonts);
     state.fonts.forEach((font) => { void registerProjectFont(font); });
@@ -1764,6 +1801,7 @@
       untitledN: state.untitledN,
       autoSave: state.autoSave,
       autoSaveDelay: state.autoSaveDelay,
+      customCommands: state.customCommands,
     }));
   }
   // Source files eligible to be the project's main one, in tree order.
@@ -2663,6 +2701,7 @@
 
   /* ---------------- wiring ---------------- */
   function wire() {
+    $("completionApply").addEventListener("click", applyCustomCommands);
     // topbar
     $("btnCompile").addEventListener("click", compile);
     $("btnWrap").addEventListener("click", () => setWordWrap(!state.wordWrap, true));
@@ -3624,6 +3663,8 @@
       state.untitledN = data.untitledN || 0;
       state.autoSave = data.autoSave === true;
       state.autoSaveDelay = normalizeAutoSaveDelay(data.autoSaveDelay ?? 600);
+      state.customCommands = window.IrisCompletion.normalizeCustomCommands(data.customCommands);
+      renderCustomCommands();
       clearTimeout(persistT);
       state.dirtyFiles.clear();
       state.unavailableFiles.clear();

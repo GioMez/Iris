@@ -95,7 +95,7 @@ function harness(language = "en", realtime = false) {
     value: "", ready: new Promise(() => {}),
     load(value) { this.value = value; load(); }, getValue() { return this.value; },
     onChange(fn) { change = fn; }, onCursor() {}, onPeers() {},
-    setReadOnly() {}, setWordWrap() {}, setSharedRegion() {}, setDiagnostics() {}, onLoad(fn) { load = fn; }, focus() {},
+    setReadOnly() {}, setWordWrap() {}, setSharedRegion() {}, setDiagnostics() {}, setCompletionContext() {}, onLoad(fn) { load = fn; }, focus() {},
   };
   const sockets = [];
   class Socket {
@@ -156,6 +156,7 @@ function harness(language = "en", realtime = false) {
   }
   run("iris-net.js");
   run("iris-diagnostics.js");
+  run("iris-completion.js");
   if (realtime) {
     // Run the shipping adapter and real CM extensions; only view rendering is
     // headless. Like EditorView.dispatch, this does not enforce state.readOnly.
@@ -189,6 +190,7 @@ function harness(language = "en", realtime = false) {
       "@codemirror/commands": require("@codemirror/commands"),
       "@lezer/highlight": require("@lezer/highlight"),
       "@codemirror/collab": require("@codemirror/collab"),
+      "@codemirror/autocomplete": require("@codemirror/autocomplete"),
     };
     // StringStream checks instanceof RegExp, so syntax runs in CM's realm.
     vm.compileFunction(read("iris-latex.js"), ["window"])(context.window);
@@ -200,17 +202,24 @@ function harness(language = "en", realtime = false) {
     Object.defineProperty(editor, "value", { get: () => editor.getValue() });
     editor.isReadOnly = () => view.state.readOnly;
     editor.pressKey = (key) => {
-      const binding = view.state.facet(viewModule.keymap).flat().find((binding) => binding.key === key);
-      assert.ok(binding, `Missing editor binding: ${key}`);
-      return binding.run(view);
+      const bindings = view.state.facet(viewModule.keymap).flat().filter((binding) => binding.key === key);
+      assert.ok(bindings.length, `Missing editor binding: ${key}`);
+      return bindings.some((binding) => binding.run(view));
+    };
+    editor.typeText = (text) => {
+      if (view.state.readOnly) return;
+      const { from, to } = view.state.selection.main;
+      if (!view.state.facet(viewModule.EditorView.inputHandler).some((handler) => handler(view, from, to, text))) {
+        view.dispatch(view.state.replaceSelection(text), { userEvent: "input.type" });
+      }
     };
     editor.undo = () => context.editorModules["@codemirror/commands"].undo(view);
-    editor.selectCarets = (positions) => {
+    editor.selectCarets = (positions, main = 0) => {
       const S = context.editorModules["@codemirror/state"];
       view.dispatch({
         effects: S.StateEffect.appendConfig.of(S.EditorState.allowMultipleSelections.of(true)),
       });
-      view.dispatch({ selection: S.EditorSelection.create(positions.map((pos) => S.EditorSelection.cursor(pos))) });
+      view.dispatch({ selection: S.EditorSelection.create(positions.map((pos) => S.EditorSelection.cursor(pos)), main) });
     };
     editor.carets = () => view.state.selection.ranges.map((range) => range.from);
     run("iris-collab.js");
@@ -258,6 +267,131 @@ function diagnosticBuild(diagnostics, overrides = {}) {
 }
 
 function diagnosticRows(h) { return h.get("diagnosticsList").children; }
+
+test("custom completion commands load, apply and persist as project settings", options, async () => {
+  const h = harness(); await h.open({ ...projectData(), customCommands: { tex: ["\\existing"], ly: [] } });
+  assert.equal(h.get("completionTex").value, "\\existing");
+  h.a.wire();
+  h.get("completionTex").value = "myMacro\n\\myMacro";
+  h.get("completionLy").value = "my-music";
+  h.get("completionApply").dispatchEvent({ type: "click" });
+  await tick();
+  const request = h.requests.at(-1);
+  assert.deepEqual(clone(h.app.serialize().customCommands), { tex: ["\\myMacro"], ly: ["\\my-music"] });
+  assert.deepEqual(request.body.data.customCommands, { tex: ["\\myMacro"], ly: ["\\my-music"] });
+  h.ack(request, 5); await tick();
+  assert.equal(h.app.hasUnsavedChanges(), false);
+  await h.app.load(projectData(6));
+  assert.equal(h.get("completionTex").value, "");
+  assert.deepEqual(clone(h.app.serialize().customCommands), { tex: [], ly: [] });
+});
+
+test("invalid custom commands stay in the form and do not replace valid project commands", options, async () => {
+  const h = harness("it"); await h.open({ ...projectData(), customCommands: { tex: ["\\existing"], ly: [] } });
+  h.a.wire();
+  const before = h.requests.length;
+  h.get("completionTex").value = "\\invalid{argument}";
+  h.get("completionApply").dispatchEvent({ type: "click" });
+  await tick();
+  assert.deepEqual(clone(h.app.serialize().customCommands.tex), ["\\existing"]);
+  assert.equal(h.get("completionTex").value, "\\invalid{argument}");
+  assert.equal(h.get("completionTex").getAttribute("aria-invalid"), "true");
+  assert.equal(h.get("completionNotice").hidden, false);
+  assert.equal(h.requests.length, before);
+  h.app.setRole("viewer");
+  assert.equal(h.get("completionApply").disabled, true);
+  h.get("completionTex").value = "\\forbidden";
+  h.get("completionApply").dispatchEvent({ type: "click" });
+  assert.deepEqual(clone(h.app.serialize().customCommands.tex), ["\\existing"]);
+});
+
+for (const kind of ["tex", "ly"]) {
+  test(`${kind} typed braces pair, overtype and delete as an editor operation`, options, async () => {
+    const h = harness("en", true); await h.editor.ready;
+    h.editor.load("", kind);
+    h.editor.typeText("{");
+    assert.equal(sourceWithCaret(h.editor), "{¦}");
+    h.editor.typeText("}");
+    assert.equal(sourceWithCaret(h.editor), "{}¦");
+    h.editor.select(1);
+    h.editor.pressKey("Backspace");
+    assert.equal(sourceWithCaret(h.editor), "¦");
+    h.editor.load("% comment", kind); h.editor.select(9);
+    h.editor.typeText("{");
+    assert.equal(sourceWithCaret(h.editor), "% comment{¦");
+    h.editor.load("\\", kind); h.editor.select(1);
+    h.editor.typeText("{");
+    assert.equal(sourceWithCaret(h.editor), "\\{¦");
+  });
+}
+
+test("LilyPond octave apostrophes and Scheme openings are not automatically paired", options, async () => {
+  const h = harness("en", true); await h.editor.ready;
+  h.editor.load("c", "ly"); h.editor.select(1);
+  h.editor.typeText("'");
+  assert.equal(sourceWithCaret(h.editor), "c'¦");
+  h.editor.load("#", "ly"); h.editor.select(1);
+  h.editor.typeText("{");
+  assert.equal(sourceWithCaret(h.editor), "#{¦");
+});
+
+test("Backspace after an escaped brace preserves the enclosing group's closing brace", options, async () => {
+  const h = harness("en", true); await h.editor.ready;
+  h.editor.load("\\textbf{\\{}", "tex"); h.editor.select(10);
+  h.editor.pressKey("Backspace");
+  assert.equal(h.editor.getValue(), "\\textbf{\\}");
+});
+
+test("paired Backspace handles mixed escaped and ordinary carets in one edit", options, async () => {
+  const h = harness("en", true); await h.editor.ready;
+  const source = "{}\n\\textbf{\\{}";
+  h.editor.load(source, "tex"); h.editor.selectCarets([1, 13]);
+  h.editor.pressKey("Backspace");
+  assert.equal(h.editor.getValue(), "\n\\textbf{\\}");
+  h.editor.undo();
+  assert.equal(h.editor.getValue(), source);
+});
+
+for (const [source, positions, expected] of [
+  ["\\section\n\\", [8, 10], "\\section{}\n\\{"],
+  ["\\section\n% comment", [8, 18], "\\section{}\n% comment{"],
+  ["% comment\n\\section", [9, 18], "% comment{\n\\section{}"],
+]) {
+  test(`brace pairing evaluates every caret independently: ${JSON.stringify(source)}`, options, async () => {
+    const h = harness("en", true); await h.editor.ready;
+    h.editor.load(source, "tex"); h.editor.selectCarets(positions);
+    h.editor.typeText("{");
+    assert.equal(h.editor.getValue(), expected);
+    assert.equal(h.editor.carets().length, 2);
+    h.editor.undo();
+    assert.equal(h.editor.getValue(), source);
+  });
+}
+
+test("ordinary character input never scans the source to configure brace pairing", options, async () => {
+  const h = harness("en", true); await h.editor.ready;
+  h.editor.load("Text ", "tex"); h.editor.select(5);
+  let scans = 0;
+  const scan = h.window.IrisLatex.completionText;
+  h.window.IrisLatex.completionText = (text) => { scans++; return scan(text); };
+  h.editor.typeText("a");
+  assert.equal(h.editor.getValue(), "Text a");
+  assert.equal(scans, 0);
+});
+
+for (const main of [0, 1]) {
+  test(`generated brace markers survive ordinary typing on every caret line (primary: ${main})`, options, async () => {
+    const h = harness("en", true); await h.editor.ready;
+    h.editor.load("\n", "tex"); h.editor.selectCarets([0, 1], main);
+    h.editor.typeText("{");
+    assert.equal(h.editor.getValue(), "{}\n{}");
+    h.editor.typeText("a");
+    assert.equal(h.editor.getValue(), "{a}\n{a}");
+    h.editor.typeText("}");
+    assert.equal(h.editor.getValue(), "{a}\n{a}");
+    assert.deepEqual(clone(h.editor.carets()), [3, 7]);
+  });
+}
 
 const ENTER_CASES = [
   ["LaTeX environment", "tex", "\\begin{itemize}¦", "\\begin{itemize}\n  ¦\n\\end{itemize}"],

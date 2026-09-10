@@ -226,7 +226,12 @@
       }
     }
 
-    return { code, structure };
+    return { code, structure, active: state === "code" };
+  }
+
+  function completionText(src) {
+    const { structure, active } = outlineSource(src);
+    return { code: structure, active };
   }
 
   function quotedArgument(src, offset) {
@@ -441,5 +446,5 @@
     return found.sort((a, b) => a.from - b.from || b.to - a.to);
   }
 
-  window.IrisLilyPond = { highlight, format, indentOnEnter, blockAtEnter, outline, regions, stream };
+  window.IrisLilyPond = { highlight, format, indentOnEnter, blockAtEnter, completionText, outline, regions, stream };
 })();

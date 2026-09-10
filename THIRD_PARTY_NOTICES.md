@@ -31,7 +31,8 @@ Source: https://github.com/tabler/tabler-icons
 ## CodeMirror
 
 Iris serves CodeMirror 6 (`@codemirror/state`, `@codemirror/view`,
-`@codemirror/language`, `@codemirror/commands`, `@codemirror/collab`) and its
+`@codemirror/language`, `@codemirror/commands`, `@codemirror/collab`,
+`@codemirror/autocomplete`) and its
 runtime dependencies (`@lezer/common`, `@lezer/highlight`, `style-mod`,
 `w3c-keyname`, `crelt`, `@marijn/find-cluster-break`) to the browser as
 unmodified ES modules from `node_modules` via `/vendor/codemirror/`. The backend

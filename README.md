@@ -55,6 +55,8 @@ the Node.js service handles authentication, persistence, and compilation.
   autosave.
 - Enter completes LaTeX environments and LilyPond `{ … }` / `<< … >>` blocks,
   placing the caret inside and following the auto-indent preference.
+- Contextual autocompletion for LaTeX commands, environments, labels and citations,
+  and LilyPond commands, contexts and variables, with automatic curly-brace pairs.
 - Realtime collaborative editing of the same document by several members, with
   the server as the single authority that orders concurrent changes.
 - Presence for the open file: who else is editing it, where their cursors and
@@ -79,6 +81,22 @@ the Node.js service handles authentication, persistence, and compilation.
 
 Iris does not currently provide Git integration or a hosted compilation service.
 It is designed to run on infrastructure you control.
+
+## Editor completion
+
+Suggestions appear while typing a command or a supported argument. Press
+**Ctrl+Space** to request suggestions, use the arrow keys to choose one, and
+accept with **Enter** or **Tab**. **Escape** dismisses the list.
+
+LaTeX references use labels from the project's TeX sources, and citations use
+keys from its `.bib` files. Project-defined macros and environments, and
+LilyPond variables in `.ly` and `.ily` files, also contribute suggestions.
+
+Under **Settings → Editor → Custom completion commands**, add one command name
+per line in the LaTeX or LilyPond list. The leading backslash is optional.
+Each language accepts up to 200 commands, with at most 80 characters per name.
+Apply the lists and save the project to share them with collaborators; these
+settings also travel with project ZIP exports and imports.
 
 ## Localization
 

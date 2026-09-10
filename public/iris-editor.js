@@ -53,13 +53,14 @@
   }
 
   async function createCodeMirror() {
-    const [S, V, L, C, H, CO] = await Promise.all([
+    const [S, V, L, C, H, CO, A] = await Promise.all([
       import("@codemirror/state"),
       import("@codemirror/view"),
       import("@codemirror/language"),
       import("@codemirror/commands"),
       import("@lezer/highlight"),
       import("@codemirror/collab"),
+      import("@codemirror/autocomplete"),
     ]);
 
     // Custom tags mapped straight onto the existing t-* token classes so the
@@ -87,6 +88,78 @@
     };
 
     const flags = { wordWrap: false, autoIndent: true, readOnly: false, kind: null };
+    let completionContext = {};
+    let completionTitle = "";
+    const completionPhrases = new S.Compartment();
+    const completionSyntax = { tex: window.IrisLatex, ly: window.IrisLilyPond };
+    const completionSources = Object.fromEntries(["tex", "ly"].map((kind) =>
+      [kind, window.IrisCompletion.createSource(kind, () => completionContext, completionSyntax)]));
+    const completions = A.autocompletion({
+      activateOnTyping: true,
+      override: [(context) => completionSources[flags.kind]?.(context) || null],
+      defaultKeymap: false,
+    });
+    // Only curly braces are paired. Lexical checks run in the brace handlers.
+    const bracketConfig = S.EditorState.languageData.of(() => [{ closeBrackets: { brackets: ["{"] } }]);
+    const braceEffect = S.StateEffect.define({
+      map(value, changes) {
+        const pos = changes.mapPos(value.pos, -1, S.MapMode.TrackAfter);
+        return pos == null ? undefined : { ...value, pos };
+      },
+    });
+    const braceMark = new class extends S.RangeValue {};
+    braceMark.startSide = 1;
+    braceMark.endSide = -1;
+    // Retain markers on every caret's line, not just the primary selection's.
+    const braceMarkers = S.StateField.define({
+      create: () => S.RangeSet.empty,
+      update(markers, tr) {
+        markers = markers.map(tr.changes);
+        for (const effect of tr.effects) if (effect.is(braceEffect)) {
+          const { pos, add } = effect.value;
+          markers = add ? markers.update({ add: [braceMark.range(pos, pos + 1)] })
+            : markers.update({ filterFrom: pos, filterTo: pos + 1, filter: (from) => from !== pos });
+        }
+        return markers;
+      },
+    });
+    const canPairAt = (state, pos) => window.IrisCompletion.canPairBrace(
+      flags.kind === "bib" ? "tex" : flags.kind, state.sliceDoc(0, pos), completionSyntax
+    );
+    const singleSelection = (state, range) => state.update({ selection: S.EditorSelection.create([range]) }).state;
+    const bracketInput = S.Prec.highest(V.EditorView.inputHandler.of((view, from, to, text) => {
+      if ((text !== "{" && text !== "}") || view.state.readOnly || view.composing || view.compositionStarted) return false;
+      const state = view.state;
+      if (from !== state.selection.main.from || to !== state.selection.main.to) return false;
+      const changes = state.changeByRange((range) => {
+        const allowed = canPairAt(state, range.from);
+        if (text === "}" && allowed && range.empty && state.sliceDoc(range.from, range.from + 1) === "}") {
+          let marked = false;
+          state.field(braceMarkers).between(range.from, range.from + 1, (from) => { if (from === range.from) marked = true; });
+          if (marked) return { range: S.EditorSelection.cursor(range.from + 1), effects: braceEffect.of({ pos: range.from, add: false }) };
+        }
+        const tr = text === "{" && allowed ? A.insertBracket(singleSelection(state, range), text) : null;
+        return tr ? { changes: tr.changes, range: tr.state.selection.main, effects: braceEffect.of({ pos: tr.state.selection.main.to, add: true }) }
+          : { changes: { from: range.from, to: range.to, insert: text }, range: S.EditorSelection.cursor(range.from + text.length) };
+      });
+      view.dispatch(changes, { scrollIntoView: true, userEvent: "input.type" });
+      return true;
+    }));
+    const deleteBracePair = (view) => {
+      const state = view.state;
+      const between = (range) => range.empty && range.from > 0 && state.sliceDoc(range.from - 1, range.from + 1) === "{}";
+      if (state.readOnly || !state.selection.ranges.some(between)) return false;
+      const changes = state.changeByRange((range) => {
+        let tr = null;
+        const target = { state: singleSelection(state, range), dispatch: (transaction) => { tr = transaction; } };
+        if (between(range) && canPairAt(state, range.from - 1)) A.deleteBracketPair(target);
+        else C.deleteCharBackward(target);
+        return tr ? { changes: tr.changes, range: tr.state.selection.main, effects: tr.effects } : { range };
+      });
+      if (changes.changes.empty) return false;
+      view.dispatch(changes, { scrollIntoView: true, userEvent: "delete.backward" });
+      return true;
+    };
     const syntax = () => (flags.kind === "ly" ? window.IrisLilyPond : window.IrisLatex);
     const languageCompartment = new S.Compartment();
     const wrapCompartment = new S.Compartment();
@@ -150,6 +223,9 @@
       return true;
     };
     const editorKeymap = [
+      ...A.completionKeymap,
+      { key: "Tab", run: A.acceptCompletion },
+      { key: "Backspace", run: deleteBracePair },
       { key: "Tab", run: (view) => insertText(view, "  ") },
       { key: "Enter", run: enterCommand },
       { key: "Shift-Enter", run: enterCommand },
@@ -477,6 +553,11 @@
           regionField,
           regionLines,
           C.history(),
+          completions,
+          completionPhrases.of(S.EditorState.phrases.of({ Completions: completionTitle || "Completions" })),
+          bracketConfig,
+          bracketInput,
+          braceMarkers,
           V.keymap.of(editorKeymap),
           languageCompartment.of(flags.kind === "ly" ? languages.ly : languages.tex),
           irisHighlight,
@@ -606,6 +687,14 @@
       },
       setDiagnostics(items) { view.dispatch({ effects: diagnostics.effect.of(items) }); },
       diagnostics() { return diagnostics.read(view.state); },
+      setCompletionContext(context) {
+        completionContext = context || {};
+        A.closeCompletion(view);
+        if (completionContext.suggestionsLabel && completionContext.suggestionsLabel !== completionTitle) {
+          completionTitle = completionContext.suggestionsLabel;
+          view.dispatch({ effects: completionPhrases.reconfigure(S.EditorState.phrases.of({ Completions: completionTitle })) });
+        }
+      },
       // Replaces the set of participants shown in the document. An empty list
       // clears them, which is what leaving or losing the connection does.
       setPeers(peers) {
@@ -728,6 +817,7 @@
       setAutoIndent(on) { flags.autoIndent = !!on; },
       setReadOnly(on) {
         flags.readOnly = !!on;
+        if (flags.readOnly) A.closeCompletion(view);
         view.dispatch({ effects: readOnlyCompartment.reconfigure(S.EditorState.readOnly.of(flags.readOnly)) });
       },
       // ranges: ordered [{from, to}]; activeIndex marks the current match.
@@ -774,7 +864,7 @@
   };
   // Every mutating call is a no-op until the modules resolve, and stays one if
   // they never do, so the rest of the app needs no readiness checks.
-  ["focus", "load", "loadCollab", "applyText", "replaceRange", "select", "setWordWrap", "setAutoIndent", "setReadOnly", "highlightMatches", "collabReceive", "setPeers", "setSharedRegion", "setDiagnostics"].forEach((method) => {
+  ["focus", "load", "loadCollab", "applyText", "replaceRange", "select", "setWordWrap", "setAutoIndent", "setReadOnly", "highlightMatches", "collabReceive", "setPeers", "setSharedRegion", "setDiagnostics", "setCompletionContext"].forEach((method) => {
     api[method] = (...args) => { if (impl) impl[method](...args); };
   });
   // Resolves either way: the app still boots (tree, preview, builds, history)

@@ -13,6 +13,7 @@
     "test:integration": "node --test test/postgresql.integration.test.js"
   },
   "dependencies": {
+    "@codemirror/autocomplete": "6.20.3",
     "@codemirror/collab": "6.1.1",
     "@codemirror/commands": "6.10.4",
     "@codemirror/language": "6.12.4",

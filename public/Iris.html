@@ -18,6 +18,7 @@
     "@codemirror/language": "/vendor/codemirror/language.js",
     "@codemirror/commands": "/vendor/codemirror/commands.js",
     "@codemirror/collab": "/vendor/codemirror/collab.js",
+    "@codemirror/autocomplete": "/vendor/codemirror/autocomplete.js",
     "@lezer/common": "/vendor/codemirror/lezer-common.js",
     "@lezer/highlight": "/vendor/codemirror/lezer-highlight.js",
     "style-mod": "/vendor/codemirror/style-mod.js",
@@ -325,6 +326,20 @@
             </div>
             <div class="hint" data-i18n="settings.autosaveHint">For a conservative fallback: 300 seconds is 5 minutes, 900 is 15 minutes.</div>
           </div>
+        </div>
+        <div class="completion-settings">
+          <h5 class="set-row-title" data-i18n="completion.settingsTitle">Custom completion commands</h5>
+          <p class="hint" id="completionHelp" data-i18n="completion.help">One command name per line, with or without the backslash. Up to 200 per language, 80 characters per name. Apply changes, then save the project to share them.</p>
+          <div class="field">
+            <label class="label" for="completionTex" data-i18n="completion.latexCommands">LaTeX commands</label>
+            <textarea class="input completion-input" id="completionTex" rows="4" maxlength="20000" spellcheck="false" autocomplete="off" aria-describedby="completionHelp completionNotice" placeholder="\myMacro"></textarea>
+          </div>
+          <div class="field">
+            <label class="label" for="completionLy" data-i18n="completion.lilypondCommands">LilyPond commands</label>
+            <textarea class="input completion-input" id="completionLy" rows="4" maxlength="20000" spellcheck="false" autocomplete="off" aria-describedby="completionHelp completionNotice" placeholder="\my-music"></textarea>
+          </div>
+          <p class="completion-notice" id="completionNotice" role="alert" hidden></p>
+          <button class="btn sm" id="completionApply" type="button" data-i18n="completion.apply">Apply commands</button>
         </div>
       </section>
       <button class="set-accordion-trigger" type="button" data-set="compile" aria-expanded="false" aria-controls="settingsPanelCompile"><span data-icon="terminal-2"></span><span data-i18n="settings.compile">Compilation</span><span class="set-chevron" data-icon="chevron-down"></span></button>
@@ -1338,6 +1353,7 @@
 <script src="iris-latex.js"></script>
 <script src="iris-lilypond.js"></script>
 <script src="iris-structure.js"></script>
+<script src="iris-completion.js"></script>
 <script src="iris-diagnostics.js"></script>
 <script src="iris-editor.js"></script>
 <script src="iris-collab.js"></script>

@@ -92,6 +92,16 @@
     "replaced_one": "{{count}} occorrenza sostituita",
     "replaced_other": "{{count}} occorrenze sostituite"
   },
+  "completion": {
+    "suggestions": "Suggerimenti",
+    "custom": "Personalizzato",
+    "settingsTitle": "Comandi personalizzati per l’autocompletamento",
+    "help": "Un nome di comando per riga, con o senza barra inversa. Massimo 200 per linguaggio e 80 caratteri per nome. Applica le modifiche e salva il progetto per condividerle.",
+    "latexCommands": "Comandi LaTeX",
+    "lilypondCommands": "Comandi LilyPond",
+    "apply": "Applica comandi",
+    "invalid": "{{language}}, riga {{line}}: inserisci un nome di comando senza argomenti o spazi. Massimo 200 nomi, ciascuno di 80 caratteri."
+  },
   "diagnostics": {
     "title": "Diagnostiche",
     "show": "Mostra diagnostiche",
@@ -193,7 +203,7 @@
     "fontPreviewTitle": "Anteprima font",
     "fontPreview": "The quick brown fox — Relazione di Laboratorio — 0123456789",
     "editor": "Editor",
-    "editorDescription": "Preferenze di scrittura e formattazione del codice LaTeX.",
+    "editorDescription": "Preferenze di scrittura e formattazione dei sorgenti.",
     "autoIndent": "Auto-indent",
     "autoIndentDescription": "Mantieni il rientro corrente e indenta automaticamente all'interno degli ambienti quando vai a capo.",
     "autosave": "Autosalvataggio",
@@ -755,6 +765,7 @@
     "unitMegabytes": "{{value}} MiB"
   },
   "api": {
+    "CUSTOM_COMMANDS_INVALID": "Comandi personalizzati non validi per {{language}}, riga {{line}}. Inserisci solo nomi di comando, massimo 200 per linguaggio e 80 caratteri per nome.",
     "AUTH_REQUIRED_FIELDS": "Inserisci nome utente e password.",
     "AUTH_SSO_ACCOUNT": "Questo account usa SSO. Accedi con il pulsante SSO.",
     "AUTH_CONVERTED_TO_SSO": "Questo account è stato collegato a un SSO e non è più possibile accedere con credenziali locali.",
