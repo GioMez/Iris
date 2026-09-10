@@ -21,6 +21,13 @@
 //         onCursor(fn) with { line, column, fromLine, toLine, head, from, to }.
 (function () {
   const LINE_H = 21;
+  // Spaces that read as an ordinary gap and are not one. CodeMirror wants a
+  // global regex to scan lines with; the membership test needs a separate
+  // non-global copy, because `test` on a /g regex carries lastIndex forward.
+  const INVISIBLE_SPACE_CLASS = "[\\u00a0\\u1680\\u2000-\\u200a\\u202f\\u205f\\u3000]";
+  const INVISIBLE_SPACES = new RegExp(INVISIBLE_SPACE_CLASS, "g");
+  const IS_INVISIBLE_SPACE = new RegExp(INVISIBLE_SPACE_CLASS);
+  const codePointLabel = (code) => `U+${code.toString(16).toUpperCase().padStart(4, "0")}`;
   const handlers = { change: [], cursor: [], sync: [], peers: [] };
   let impl = null;
 
@@ -397,8 +404,40 @@
       return S.EditorState.create({
         doc: content,
         extensions: [
+          // Without this CodeMirror resolves its own defaults as a light
+          // theme: the drawn selection came out lavender over a dark editor.
+          V.EditorView.darkTheme.of(true),
           V.lineNumbers(),
           V.highlightActiveLineGutter(),
+          // Characters that are invisible in the source but break a build: a
+          // control code, a bidi mark, or one of the exotic spaces a paste out
+          // of a word processor carries in. CodeMirror flags the first two on
+          // its own; the spaces have to be named.
+          V.highlightSpecialChars({
+            addSpecialChars: INVISIBLE_SPACES,
+            render(code, description) {
+              if (!IS_INVISIBLE_SPACE.test(String.fromCharCode(code))) return null;
+              const label = window.IrisI18n
+                ? window.IrisI18n.t("editor.invisibleSpace", { code: codePointLabel(code) })
+                : description;
+              const node = document.createElement("span");
+              node.className = "cm-specialChar cm-iris-invisible";
+              node.textContent = "\u00b7";
+              node.title = label;
+              node.setAttribute("aria-label", label);
+              return node;
+            },
+          }),
+          // Selection and caret drawn by CodeMirror rather than the browser:
+          // it is what makes several cursors and a column selection visible,
+          // and it keeps the selection on screen while the find bar has focus.
+          V.drawSelection(),
+          V.dropCursor(),
+          V.rectangularSelection(),
+          V.crosshairCursor(),
+          // LaTeX is brace-dense; pairing them is the difference between
+          // reading a nested macro and counting it.
+          L.bracketMatching(),
           peersField,
           peerGutter,
           peerLines,

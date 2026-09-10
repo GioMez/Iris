@@ -15,6 +15,8 @@
   --accent-press:#5ab0e0;
   --selection:#a9b8ff;
   --selection-soft:rgba(122,162,247,.14);
+  --editor-selection:#283457;
+  --editor-selection-idle:#222a42;
   --selection-line:rgba(122,162,247,.32);
   /* semantic and categorical colors */
   --semantic-success:#9ece6a;
@@ -278,6 +280,22 @@ button{font-family:inherit;color:inherit}
   font-weight:400;letter-spacing:0;font-variant-ligatures:none;font-kerning:none;
   font-feature-settings:"liga" 0,"clig" 0,"calt" 0,"kern" 0;tab-size:2;overscroll-behavior:none}
 .cm-host .cm-content{padding:var(--editor-pad-y) 0;caret-color:var(--accent);color:var(--syntax-text)}
+/* Selection and caret are drawn by the editor, so the selection survives the
+   editor losing focus to the find bar and extends to every additional cursor.
+   Opaque, and darker than the translucent blue used elsewhere: a selection
+   band sits under syntax colours, and a tint washed the tokens out. */
+.cm-host .cm-editor .cm-selectionLayer .cm-selectionBackground{background:var(--editor-selection-idle)}
+.cm-host .cm-editor.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground{background:var(--editor-selection)}
+.cm-host .cm-cursor,.cm-host .cm-dropCursor{border-left:2px solid var(--accent)}
+.cm-host .cm-cursor-secondary{border-left-color:var(--selection)}
+/* A matched pair is underlined rather than boxed: at this density a box on
+   every brace under the caret would fight the syntax colours. */
+.cm-host .cm-matchingBracket{background:rgba(125,207,255,.14);box-shadow:inset 0 -2px 0 var(--accent);border-radius:2px}
+.cm-host .cm-nonmatchingBracket{background:rgba(247,118,142,.16);box-shadow:inset 0 -2px 0 var(--semantic-danger);border-radius:2px}
+/* An invisible character that reaches the compiler is a lost afternoon; give
+   it a shape and the danger colour rather than letting it pass as a space. */
+.cm-host .cm-specialChar{color:var(--semantic-danger);background:rgba(247,118,142,.14);border-radius:2px;outline:1px solid rgba(247,118,142,.34)}
+.cm-host .cm-iris-invisible{display:inline-block;width:1ch;text-align:center;line-height:inherit}
 .cm-host .cm-line{padding:0 var(--editor-pad-x)}
 .cm-host .cm-gutters{background:var(--editor-bg);color:var(--txt-mut);border:none}
 .cm-host .cm-lineNumbers .cm-gutterElement{min-width:calc(var(--gutter-w) - 12px);padding:0 12px 0 6px;text-align:right}
@@ -818,7 +836,10 @@ html:not(.iris-inproject) #projChip{display:none}
    this only keeps a viewer from starting edits they cannot persist. */
 .iris-readonly #btnSave,.iris-readonly #btnSnapshot,.iris-readonly #btnCompile,.iris-readonly #btnFormat,
 .iris-readonly #btnNew,.iris-readonly #newFileBtn,.iris-readonly #btnOpen,
-.iris-readonly #btnAttach,.iris-readonly .node-tools{display:none!important}
+.iris-readonly #btnAttach,.iris-readonly .node-tools,
+/* Find stays available to a viewer; replace cannot work for one, and used to
+   sit there fully enabled doing nothing on every click. */
+.iris-readonly .findbar .findrow+.findrow{display:none!important}
 
 /* Mandatory first-login password change: the modal cannot be dismissed. */
 #passwordModal.forced [data-close]{display:none!important}

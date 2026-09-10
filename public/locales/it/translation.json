@@ -538,6 +538,7 @@
     "saveFailed": "Salvataggio non riuscito",
     "opened": "Aperto {{name}}",
     "formatted": "Codice formattato",
+    "invisibleSpace": "Spazio invisibile ({{code}}): può rompere la compilazione",
     "unavailable": "Impossibile caricare l'editor. Ricarica la pagina; se il problema persiste, contatta l'amministratore di Iris."
   },
   "collab": {

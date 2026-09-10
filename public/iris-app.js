@@ -2975,7 +2975,11 @@
   function updateFindCount() {
     const q = $("findInput").value, n = fState.matches.length;
     $("findCount").textContent = n ? `${fState.idx + 1}/${n}` : (q ? "0/0" : "");
-    $("findInput").classList.toggle("nomatch", !!q && !n);
+    const missed = !!q && !n;
+    $("findInput").classList.toggle("nomatch", missed);
+    // The red border alone never reached anyone reading the field's state.
+    if (missed) $("findInput").setAttribute("aria-invalid", "true");
+    else $("findInput").removeAttribute("aria-invalid");
   }
   function findSelect() {
     const n = fState.matches.length; if (!n) return;

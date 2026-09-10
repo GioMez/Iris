@@ -538,6 +538,7 @@
     "saveFailed": "Save failed",
     "opened": "Opened {{name}}",
     "formatted": "Source formatted",
+    "invisibleSpace": "Invisible space ({{code}}) — it can break compilation",
     "unavailable": "The editor could not be loaded. Reload the page; if the problem persists, contact your Iris administrator."
   },
   "collab": {

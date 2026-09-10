@@ -56,6 +56,17 @@
     )).filter((element) => !element.hidden && element.getAttribute("aria-hidden") !== "true" && element.getClientRects().length > 0);
   }
 
+  // The header's close control is the first focusable element in every dialog
+  // and is never what the dialog is for: it made a Space typed straight after
+  // opening dismiss the dialog, and it announced "Close" before the real first
+  // field. Prefer a declared target, then the first control outside the header.
+  function initialFocusTarget(dialog) {
+    const declared = dialog.querySelector("[autofocus]");
+    if (declared && !declared.disabled) return declared;
+    const focusable = focusableElements(dialog);
+    return focusable.find((element) => !element.closest(".m-head")) || focusable[0];
+  }
+
   function focusActiveSurface() {
     const targets = {
       app: window.IrisEditor ? window.IrisEditor.focusTarget() : null,
@@ -106,7 +117,7 @@
     dialog.classList.add("on");
     syncSurfaceInteractivity();
     if (!dialog.contains(document.activeElement)) {
-      const focusTarget = dialog.querySelector("[autofocus]") || focusableElements(dialog)[0];
+      const focusTarget = initialFocusTarget(dialog);
       if (focusTarget) focusTarget.focus();
     }
     return dialog;

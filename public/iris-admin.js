@@ -496,7 +496,10 @@
     document.querySelectorAll("[data-admin-close]").forEach((b) =>
       b.addEventListener("click", (e) => { void closeDialog(e.target.closest(".scrim")); })
     );
-    document.querySelectorAll("#adminCreateModal, #adminEditModal, #adminCredsModal, #adminDeleteUserModal").forEach((scrim) =>
+    // Only the credentials dialog, which holds nothing the user typed. The
+    // three form dialogs used to discard a half-filled form on a stray click
+    // outside; Escape and Cancel still close them, as in every other dialog.
+    document.querySelectorAll("#adminCredsModal").forEach((scrim) =>
       scrim.addEventListener("click", (e) => { if (e.target === scrim) void closeDialog(scrim); })
     );
     $("adminResetConfirmModal").addEventListener("click", (event) => {

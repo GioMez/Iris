@@ -109,8 +109,8 @@
         <div class="findbar" id="findBar">
           <div class="findrow">
             <span class="findic" data-icon="search"></span>
-            <input class="findinput" id="findInput" placeholder="Find" data-i18n-placeholder="find.find" spellcheck="false" autocomplete="off">
-            <span class="findcount" id="findCount"></span>
+            <input class="findinput" id="findInput" placeholder="Find" data-i18n-placeholder="find.find" spellcheck="false" autocomplete="off" aria-describedby="findCount">
+            <span class="findcount" id="findCount" role="status" aria-live="polite"></span>
             <button class="findbtn" id="findPrev" title="Previous (⇧⏎)" aria-label="Previous result" data-i18n-title="find.previousTitle" data-i18n-aria-label="find.previousAria"><span data-icon="chevron-left"></span></button>
             <button class="findbtn" id="findNext" title="Next (⏎)" aria-label="Next result" data-i18n-title="find.nextTitle" data-i18n-aria-label="find.nextAria"><span data-icon="chevron-right"></span></button>
             <button class="findbtn toggle" id="findCase" title="Match case" data-i18n-title="find.caseSensitive">Aa</button>
