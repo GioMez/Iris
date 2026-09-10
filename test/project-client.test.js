@@ -164,6 +164,7 @@ function harness(language = "en", realtime = false) {
     class HeadlessView {
       constructor({ state }) {
         this.state = state;
+        this.dispatch = this.dispatch.bind(this);
         this.scrollDOM = { getBoundingClientRect: () => ({ top: 0, bottom: 500 }) };
         view = this;
       }
@@ -198,6 +199,20 @@ function harness(language = "en", realtime = false) {
     editor = context.window.IrisEditor;
     Object.defineProperty(editor, "value", { get: () => editor.getValue() });
     editor.isReadOnly = () => view.state.readOnly;
+    editor.pressKey = (key) => {
+      const binding = view.state.facet(viewModule.keymap).flat().find((binding) => binding.key === key);
+      assert.ok(binding, `Missing editor binding: ${key}`);
+      return binding.run(view);
+    };
+    editor.undo = () => context.editorModules["@codemirror/commands"].undo(view);
+    editor.selectCarets = (positions) => {
+      const S = context.editorModules["@codemirror/state"];
+      view.dispatch({
+        effects: S.StateEffect.appendConfig.of(S.EditorState.allowMultipleSelections.of(true)),
+      });
+      view.dispatch({ selection: S.EditorSelection.create(positions.map((pos) => S.EditorSelection.cursor(pos))) });
+    };
+    editor.carets = () => view.state.selection.ranges.map((range) => range.from);
     run("iris-collab.js");
   }
   run("iris-app.js", "window.appTest = { state, findFile, wire, wireEditorEvents, openFile, syncRealtimeSession, canonicalFileId, refreshFileTree, saveProject, openFileHistory, snapshotProject, confirmRestore, verState, openTreeRename, confirmTreeRename, folderNodeByPath, docFileForCompile };\n");
@@ -243,6 +258,159 @@ function diagnosticBuild(diagnostics, overrides = {}) {
 }
 
 function diagnosticRows(h) { return h.get("diagnosticsList").children; }
+
+const ENTER_CASES = [
+  ["LaTeX environment", "tex", "\\begin{itemize}¦", "\\begin{itemize}\n  ¦\n\\end{itemize}"],
+  ["custom starred environment", "tex", "  \\begin {custom-env*}¦", "  \\begin {custom-env*}\n    ¦\n  \\end{custom-env*}"],
+  ["LaTeX inline pair", "tex", "\\begin{align}¦ \\end{align}", "\\begin{align}\n  ¦\n\\end{align}"],
+  ["LaTeX existing end", "tex", "\\begin{itemize}¦\n  \\item Text\n\\end{itemize}", "\\begin{itemize}\n  ¦\n  \\item Text\n\\end{itemize}"],
+  ["nested LaTeX environment", "tex", "\\begin{document}\n  \\begin{itemize}¦\n\\end{document}", "\\begin{document}\n  \\begin{itemize}\n    ¦\n  \\end{itemize}\n\\end{document}"],
+  ["nested same-name environment", "tex", "\\begin{itemize}\n  \\begin{itemize}¦\n\\end{itemize}", "\\begin{itemize}\n  \\begin{itemize}\n    ¦\n  \\end{itemize}\n\\end{itemize}"],
+  ["wrapped same-name environment", "tex", "\\begin{document}\n\\begin{itemize}\n  \\begin{itemize}¦\n\\end{itemize}\n\\end{document}", "\\begin{document}\n\\begin{itemize}\n  \\begin{itemize}\n    ¦\n  \\end{itemize}\n\\end{itemize}\n\\end{document}"],
+  ["earlier unclosed environment outside this scope", "tex", "\\begin{outer}\n\\begin{inner}\n\\end{outer}\n\\begin{inner}¦\n\\end{inner}", "\\begin{outer}\n\\begin{inner}\n\\end{outer}\n\\begin{inner}\n  ¦\n\\end{inner}"],
+  ["nested LaTeX inline pair", "tex", "\\begin{itemize}\n  \\begin{itemize}¦ \\end{itemize}", "\\begin{itemize}\n  \\begin{itemize}\n    ¦\n  \\end{itemize}"],
+  ["already balanced nested environments", "tex", "\\begin{itemize}\n  \\begin{itemize}¦\n  \\end{itemize}\n\\end{itemize}", "\\begin{itemize}\n  \\begin{itemize}\n    ¦\n  \\end{itemize}\n\\end{itemize}"],
+  ["commented LaTeX end", "tex", "\\begin{itemize}¦\n% \\end{itemize}", "\\begin{itemize}\n  ¦\n\\end{itemize}\n% \\end{itemize}"],
+  ["LaTeX trailing comment", "tex", "\\begin{itemize} % list¦", "\\begin{itemize} % list\n  ¦\n\\end{itemize}"],
+  ["LaTeX comment text", "tex", "% \\begin{itemize}¦", "% \\begin{itemize}\n¦"],
+  ["escaped begin command", "tex", "\\\\begin{itemize}¦", "\\\\begin{itemize}\n¦"],
+  ["inline verbatim text", "tex", "\\verb|\\begin{itemize}|¦", "\\verb|\\begin{itemize}|\n¦"],
+  ["verbatim environment body", "tex", "\\begin{verbatim}\n\\begin{itemize}¦", "\\begin{verbatim}\n\\begin{itemize}\n¦"],
+  ["verbatim environment opener", "tex", "\\begin{verbatim}¦", "\\begin{verbatim}\n  ¦\n\\end{verbatim}"],
+  ["LilyPond braces", "ly", "\\score {¦", "\\score {\n  ¦\n}"],
+  ["LilyPond simultaneous music", "ly", "  \\new StaffGroup <<¦", "  \\new StaffGroup <<\n    ¦\n  >>"],
+  ["LilyPond inline pair", "ly", "music = {¦ }", "music = {\n  ¦\n}"],
+  ["LilyPond existing close", "ly", "\\score {¦\n  c1\n}", "\\score {\n  ¦\n  c1\n}"],
+  ["nested LilyPond braces", "ly", "\\score {\n  \\new Staff {¦\n}", "\\score {\n  \\new Staff {\n    ¦\n  }\n}"],
+  ["nested LilyPond inline pair", "ly", "\\score {\n  \\new Staff {¦ }", "\\score {\n  \\new Staff {\n    ¦\n  }"],
+  ["nested LilyPond simultaneous music", "ly", "<<\n  <<¦\n>>", "<<\n  <<\n    ¦\n  >>\n>>"],
+  ["wrapped LilyPond simultaneous music", "ly", "\\score {\n  <<\n    <<¦\n  >>\n}", "\\score {\n  <<\n    <<\n      ¦\n    >>\n  >>\n}"],
+  ["earlier unclosed LilyPond block outside this scope", "ly", "{\n<<\n}\n<<¦\n>>", "{\n<<\n}\n<<\n  ¦\n>>"],
+  ["Scheme music-literal opener is not an ordinary brace", "ly", "#{¦", "#{\n¦"],
+  ["LilyPond mixed blocks", "ly", "\\score {\n  <<¦\n}", "\\score {\n  <<\n    ¦\n  >>\n}"],
+  ["LilyPond comment text", "ly", "% \\score {¦", "% \\score {\n¦"],
+  ["LilyPond trailing comment", "ly", "\\score { % music¦", "\\score { % music\n  ¦\n}"],
+  ["LilyPond block comment", "ly", "%{\n\\score {¦\n%}", "%{\n\\score {\n¦\n%}"],
+  ["LilyPond string", "ly", '\\markup "text {¦"', '\\markup "text {\n¦"'],
+  ["LilyPond escaped brace", "ly", "\\{¦", "\\{\n¦"],
+  ["LilyPond string after opener", "ly", '\\markup { "Text"¦', '\\markup { "Text"\n¦'],
+  ["ordinary text", "tex", "  Text¦", "  Text\n  ¦"],
+  ["inline body text", "tex", "\\begin{itemize}¦body", "\\begin{itemize}\n  ¦body"],
+  ["unrelated unclosed later block", "ly", "{¦}\n{", "{\n  ¦\n}\n{"],
+];
+
+function sourceWithCaret(editor) {
+  const { from, to } = editor.selection();
+  assert.equal(from, to, "Enter leaves a caret, not a selected generated block");
+  return editor.getValue().slice(0, from) + "¦" + editor.getValue().slice(from);
+}
+
+for (const [label, kind, before, after] of ENTER_CASES) {
+  test(`Enter completion: ${label}`, { timeout: 5000 }, async () => {
+    const h = harness("en", true); await h.editor.ready;
+    h.editor.load(before.replace("¦", ""), kind);
+    h.editor.select(before.indexOf("¦"));
+    h.editor.pressKey("Enter");
+    assert.equal(sourceWithCaret(h.editor), after);
+  });
+}
+
+test("Enter completion respects disabled auto-indent and remains one undoable edit", options, async () => {
+  const h = harness("en", true); await h.editor.ready;
+  const source = "  \\begin{itemize}";
+  h.editor.load(source, "tex"); h.editor.select(source.length);
+  h.editor.setAutoIndent(false);
+  let changes = 0;
+  h.editor.onChange(() => { changes++; });
+  h.editor.pressKey("Enter");
+  assert.equal(sourceWithCaret(h.editor), source + "\n¦\n\\end{itemize}");
+  assert.equal(changes, 1);
+  h.editor.undo();
+  assert.equal(sourceWithCaret(h.editor), source + "¦");
+});
+
+test("Enter completion respects read-only documents and ordinary selection replacement", options, async () => {
+  const h = harness("en", true); await h.editor.ready;
+  h.editor.load("\\score {", "ly"); h.editor.select(8); h.editor.setReadOnly(true);
+  h.editor.pressKey("Enter");
+  assert.equal(sourceWithCaret(h.editor), "\\score {¦");
+  h.editor.setReadOnly(false);
+  h.editor.load("first\nsecond", "tex"); h.editor.select(0, 12);
+  h.editor.pressKey("Enter");
+  assert.equal(sourceWithCaret(h.editor), "\n¦");
+  h.editor.load("\\begin{itemize}replace this", "tex");
+  h.editor.select(15, 27);
+  h.editor.pressKey("Enter");
+  assert.equal(sourceWithCaret(h.editor), "\\begin{itemize}\n  ¦");
+});
+
+test("Enter completion sends the entire generated block as one collaborative update", options, async () => {
+  const h = harness("en", true); await h.editor.ready;
+  h.editor.loadCollab("<<", "ly", { version: 5 }); h.editor.select(2);
+  h.editor.pressKey("Enter");
+  const pending = h.editor.collabPending();
+  assert.equal(pending.version, 5);
+  assert.equal(pending.updates.length, 1);
+  assert.equal(sourceWithCaret(h.editor), "<<\n  ¦\n>>");
+});
+
+test("Enter completion uses each caret's own environment and keeps both inner cursors", options, async () => {
+  const h = harness("en", true); await h.editor.ready;
+  h.editor.load("\\begin{a}\n\\begin{b}", "tex");
+  h.editor.selectCarets([9, 19]);
+  assert.equal(h.editor.carets().length, 2);
+  h.editor.pressKey("Enter");
+  assert.equal(h.editor.getValue(), "\\begin{a}\n  \n\\end{a}\n\\begin{b}\n  \n\\end{b}");
+  assert.deepEqual(clone(h.editor.carets()), [12, 33]);
+});
+
+test("Enter completion keeps nearby carets from consuming the same closing gap", options, async () => {
+  const h = harness("en", true); await h.editor.ready;
+  h.editor.load("{   }", "ly");
+  h.editor.selectCarets([1, 3]);
+  assert.equal(h.editor.carets().length, 2);
+  assert.doesNotThrow(() => h.editor.pressKey("Enter"));
+  assert.equal(h.editor.getValue().replace(/\s/g, ""), "{}");
+  assert.equal(new Set(h.editor.carets()).size, 2);
+});
+
+test("Enter completion adds only one closer when two carets share an unclosed opener", options, async () => {
+  const h = harness("en", true); await h.editor.ready;
+  h.editor.load("{   ", "ly");
+  h.editor.selectCarets([1, 3]);
+  h.editor.pressKey("Enter");
+  assert.equal(h.editor.getValue().replace(/\s/g, ""), "{}");
+  assert.equal(new Set(h.editor.carets()).size, 2);
+});
+
+test("Enter completion coordinates nested caret completions with an existing outer end", options, async () => {
+  const h = harness("en", true); await h.editor.ready;
+  h.editor.load("\\begin{a}\n\\begin{a}\n\\end{a}", "tex");
+  h.editor.selectCarets([9, 19]);
+  h.editor.pressKey("Enter");
+  assert.equal(h.editor.getValue(), "\\begin{a}\n  \n\\begin{a}\n  \n\\end{a}\n\\end{a}");
+  assert.equal(new Set(h.editor.carets()).size, 2);
+});
+
+for (const [extension, source, closing] of [["ily", "\\score {", "}"], ["sty", "\\begin{itemize}", "\\end{itemize}"], ["cls", "\\begin{itemize}", "\\end{itemize}"]]) {
+  for (const shared of [false, true]) {
+    test(`Enter completion in included .${extension} sources (shared: ${shared})`, options, async () => {
+      const h = harness("en", true);
+      const data = projectData();
+      const id = "019f9910-0000-7000-8000-000000000008";
+      data.project.nodes.push({ type: "file", id, name: `included.${extension}`, path: `included.${extension}`, kind: "file", content: source });
+      data.activeId = id; data.openTabs = [id];
+      await h.open(data);
+      if (shared) {
+        h.socket().fire("open");
+        h.socket().deliver({ t: "opened", fileId: id, version: 0, doc: source, role: "owner" });
+      }
+      h.editor.select(source.length);
+      h.editor.pressKey("Enter");
+      assert.equal(sourceWithCaret(h.editor), source + "\n  ¦\n" + closing);
+    });
+  }
+}
 
 function mainMarkerRows(h) {
   return h.get("tree").children.filter((row) => row.dataset.id && row.querySelector(".node-main")?.hidden === false);

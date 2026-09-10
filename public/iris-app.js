@@ -367,7 +367,7 @@
       renderSyncStatus();
       return;
     }
-    window.IrisCollab.join(fileId, node.kind);
+    window.IrisCollab.join(fileId, editorKind(node));
   }
   const SYNC_LABEL = {
     connecting: "collab.connecting",
@@ -937,7 +937,7 @@
     setWorkspaceView("editor");
     state.activeId = id;
     if (!state.openTabs.includes(id)) state.openTabs.push(id);
-    ed().load(f.content || "", f.kind);
+    ed().load(f.content || "", editorKind(f));
     applyEditorGate();
     renderTabs();
     renderOutline();
@@ -964,9 +964,14 @@
   function inferKind(name, prev) {
     if (prev === "img") return "img";
     if (/\.bib$/i.test(name)) return "bib";
-    if (/\.ly$/i.test(name)) return "ly";
-    if (/\.(tex|txt)$/i.test(name)) return "tex";
+    if (/\.(ly|ily)$/i.test(name)) return "ly";
+    if (/\.(tex|txt|sty|cls|ltx)$/i.test(name)) return "tex";
     return prev || "tex";
+  }
+  // Included sources use the same editing support as their parent document,
+  // even when the storage manifest describes them as generic text files.
+  function editorKind(file) {
+    return inferKind(file.path || file.name || "", file.kind);
   }
   function hasSiblingNamed(parent, node, name) {
     return parent.some((x) => x !== node && x.name.toLowerCase() === name.toLowerCase());
@@ -1435,7 +1440,7 @@
       previewImage(active);
       markTree(active.id);
     } else {
-      ed().load(active.content || "", active.kind);
+      ed().load(active.content || "", editorKind(active));
       renderOutline();
       markTree(active.id);
       // Reloading the document leaves any realtime session behind, so it is
@@ -3471,7 +3476,7 @@
         // restored text to every participant, this tab included, so replacing the
         // document here would drop it out of the session.
         if (node.id === state.activeId && !isRealtimeFile(node.id)) {
-          ed().load(out.content, node.kind);
+          ed().load(out.content, editorKind(node));
           renderOutline();
         }
       }

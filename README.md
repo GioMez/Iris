@@ -53,6 +53,8 @@ the Node.js service handles authentication, persistence, and compilation.
 - A CodeMirror 6 source editor with syntax highlighting, document outline,
   search and replace, formatting, optional word wrapping, and configurable
   autosave.
+- Enter completes LaTeX environments and LilyPond `{ … }` / `<< … >>` blocks,
+  placing the caret inside and following the auto-indent preference.
 - Realtime collaborative editing of the same document by several members, with
   the server as the single authority that orders concurrent changes.
 - Presence for the open file: who else is editing it, where their cursors and

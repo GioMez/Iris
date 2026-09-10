@@ -106,8 +106,8 @@
     const COLLAB_LOG_LIMIT = 400;
     let collabLog = [];
 
-    // Tab and Enter reproduce the legacy editor: two-space insert and the
-    // syntax modules' indent-on-enter. Mod-Enter stays unbound so the global
+    // Tab inserts two spaces; Enter uses the syntax modules to complete blocks
+    // and indent the inner line. Mod-Enter stays unbound so the global
     // compile shortcut keeps working from inside the editor.
     const insertText = (view, text) => {
       if (view.state.readOnly) return true;
@@ -115,10 +115,39 @@
       return true;
     };
     const enterCommand = (view) => {
-      if (!flags.autoIndent) return insertText(view, "\n");
-      const range = view.state.selection.main;
-      const before = view.state.sliceDoc(view.state.doc.lineAt(range.from).from, range.from);
-      return insertText(view, syntax().indentOnEnter(before, before.length));
+      if (view.state.readOnly) return true;
+      let value = view.state.doc.toString();
+      const language = syntax();
+      const plans = new Map();
+      const ranges = view.state.selection.ranges;
+      // Plan from right to left: earlier carets see the closers already added
+      // for inner blocks. Each original source prefix still has stable offsets.
+      for (let i = ranges.length - 1; i >= 0; i--) {
+        const range = ranges[i];
+        const line = view.state.doc.lineAt(range.from);
+        const nextLine = value.indexOf("\n", range.from);
+        const lineTo = nextLine < 0 ? value.length : nextLine;
+        const block = flags.kind === "tex" || flags.kind === "ly" ? language.blockAtEnter(value, range.from) : null;
+        const lead = flags.autoIndent ? line.text.match(/^[\t ]*/)[0] : "";
+        let insert = flags.autoIndent ? language.indentOnEnter(value, range.from, block) : "\n";
+        const caret = range.from + insert.length;
+        let to = range.to;
+        if (range.empty && block) {
+          if (block.closingFrom != null && /^[\t ]*$/.test(value.slice(range.from, block.closingFrom))) {
+            // Expand an inline pair, preserving the existing closing token.
+            to = block.closingFrom;
+            insert += "\n" + lead;
+          } else if (block.needsClose && /^[\t ]*$/.test(value.slice(range.from, lineTo))) {
+            to = lineTo;
+            insert += "\n" + lead + block.close;
+          }
+        }
+        plans.set(range, { changes: { from: range.from, to, insert }, range: S.EditorSelection.cursor(caret) });
+        value = value.slice(0, range.from) + insert + value.slice(to);
+      }
+      const changes = view.state.changeByRange((range) => plans.get(range));
+      view.dispatch(changes, { scrollIntoView: true, userEvent: "input.type" });
+      return true;
     };
     const editorKeymap = [
       { key: "Tab", run: (view) => insertText(view, "  ") },

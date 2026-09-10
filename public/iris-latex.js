@@ -196,13 +196,71 @@
   }
 
   /* ---- newline auto-indent ---- */
-  function indentOnEnter(value, pos) {
+  function indentOnEnter(value, pos, block = blockAtEnter(value, pos)) {
     const before = value.slice(0, pos);
     const line = before.slice(before.lastIndexOf("\n") + 1);
     const lead = (line.match(/^[\t ]*/) || [""])[0];
-    let extra = "";
-    if (/\\begin\{[^}]*\}\s*$/.test(line.replace(/[\t ]+$/, ""))) extra = "  ";
-    return "\n" + lead + extra;
+    return "\n" + lead + (block ? "  " : "");
+  }
+
+  const LITERAL_ENVIRONMENTS = new Set(["verbatim", "verbatim*", "Verbatim", "BVerbatim", "LVerbatim", "lstlisting", "minted", "comment", "filecontents", "filecontents*"]);
+
+  function environmentTokens(src) {
+    const tokens = [];
+    // Consume escaped backslashes and percent signs before interpreting the
+    // next environment or comment. Verbatim bodies are literal.
+    const re = /\\(begin|end)\s*\{([^{}\r\n]+)\}|\\verb\*?([^\sA-Za-z])|\\[A-Za-z@]+|\\[\s\S]|%[^\n]*/g;
+    let match;
+    while ((match = re.exec(src))) {
+      if (match[3]) {
+        const end = src.indexOf(match[3], re.lastIndex);
+        const lineEnd = src.indexOf("\n", re.lastIndex);
+        re.lastIndex = end < 0 || (lineEnd >= 0 && end > lineEnd) ? (lineEnd < 0 ? src.length : lineEnd) : end + 1;
+        continue;
+      }
+      if (!match[1]) continue;
+      const token = { type: match[1], name: match[2].trim(), from: match.index, to: re.lastIndex };
+      tokens.push(token);
+      if (token.type === "begin" && LITERAL_ENVIRONMENTS.has(token.name)) {
+        const close = `\\end{${token.name}}`;
+        const end = src.indexOf(close, re.lastIndex);
+        if (end < 0) break;
+        tokens.push({ type: "end", name: token.name, from: end, to: end + close.length });
+        re.lastIndex = end + close.length;
+      }
+    }
+    return tokens;
+  }
+
+  // Describes the block immediately before the caret and its existing closer,
+  // if any. The editor owns insertion, indentation and cursor placement.
+  function blockAtEnter(src, pos) {
+    const lineStart = src.lastIndexOf("\n", pos - 1) + 1;
+    if (!/\\begin\b/.test(src.slice(lineStart, pos))) return null;
+    const tokens = environmentTokens(src);
+    const open = [], unclosed = [], closings = new Map();
+    let candidate = null;
+    for (const token of tokens) {
+      if (token.type === "begin") {
+        open.push(token);
+        if (token.from >= lineStart && token.to <= pos && !withoutComments(src.slice(token.to, pos)).trim()) candidate = token;
+      } else {
+        for (let i = open.length - 1; i >= 0; i--) {
+          if (open[i].name !== token.name) continue;
+          closings.set(open[i].from, token.from);
+          unclosed.push(...open.slice(i + 1).map((entry) => ({ ...entry, until: token.from })));
+          open.splice(i);
+          break;
+        }
+      }
+    }
+    if (!candidate || !candidate.name) return null;
+    unclosed.push(...open.map((entry) => ({ ...entry, until: src.length })));
+    // When a new nested opener was typed before an outer end, that end must
+    // remain available to the enclosing environment, including same-name nests.
+    const reserved = unclosed.some((entry) => entry.from < candidate.from && candidate.from < entry.until && entry.name === candidate.name);
+    const closingFrom = closings.get(candidate.from) ?? null;
+    return { close: `\\end{${candidate.name}}`, closingFrom, needsClose: reserved || closingFrom == null };
   }
 
   /* ---- document outline from \section / \subsection ---- */
@@ -334,5 +392,5 @@
     return found.sort((a, b) => a.from - b.from || b.to - a.to);
   }
 
-  window.IrisLatex = { highlight, format, indentOnEnter, outline, regions, escAll, stream };
+  window.IrisLatex = { highlight, format, indentOnEnter, blockAtEnter, outline, regions, escAll, stream };
 })();

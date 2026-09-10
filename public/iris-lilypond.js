@@ -132,11 +132,31 @@
     return out.join("\n");
   }
 
-  function indentOnEnter(value, pos) {
+  function indentOnEnter(value, pos, block = blockAtEnter(value, pos)) {
     const before = value.slice(0, pos);
     const line = before.slice(before.lastIndexOf("\n") + 1);
     const lead = (line.match(/^[\t ]*/) || [""])[0];
-    return "\n" + lead + (/({|<<)\s*$/.test(structuralLine(line)) ? "  " : "");
+    return "\n" + lead + (block ? "  " : "");
+  }
+
+  function blockAtEnter(src, pos) {
+    const lineStart = src.lastIndexOf("\n", pos - 1) + 1;
+    if (!/(?:\{|<<)[\t ]*(?:%[^\n]*)?$/.test(src.slice(lineStart, pos))) return null;
+    const { code, structure } = outlineSource(src);
+    // Escaped braces are commands, not block delimiters. Keep the offsets used
+    // by the outline parser while excluding them from the balanced-span scan.
+    const clean = structure.replace(/\\(?:[A-Za-z-]+|[^\n])/g, (command) => " ".repeat(command.length));
+    const match = clean.slice(lineStart, pos).match(/(\{|<<)[\t ]*$/);
+    if (!match) return null;
+    const from = lineStart + match.index;
+    // Scheme music literals use #{ ... #}, not an ordinary brace pair.
+    if (match[1] === "{" && clean[from - 1] === "#") return null;
+    if (code.slice(from + match[1].length, pos).trim()) return null;
+    const close = match[1] === "{" ? "}" : ">>";
+    const { spans, unclosed } = scanBlockSpans(clean);
+    const reserved = unclosed.some((entry) => entry.at < from && from < entry.until && entry.token === close);
+    const end = spans.get(from);
+    return { close, closingFrom: end == null ? null : end - close.length, needsClose: reserved || end == null };
   }
 
   function outlineSource(src) {
@@ -347,14 +367,16 @@
   // unbalance the nesting.
 
   // Every balanced { } and << >> span, keyed by the offset it opens at.
-  function blockSpans(structure) {
+  function scanBlockSpans(structure) {
     const spans = new Map();
     const open = [];
+    const unclosed = [];
     for (let i = 0; i < structure.length; i++) {
       const closeAt = (token, end) => {
         for (let k = open.length - 1; k >= 0; k--) {
           if (open[k].token !== token) continue;
           spans.set(open[k].at, end);
+          unclosed.push(...open.slice(k + 1).map((entry) => ({ ...entry, until: end })));
           open.splice(k);
           return;
         }
@@ -364,6 +386,12 @@
       if (structure[i] === "{") { open.push({ token: "}", at: i }); continue; }
       if (structure[i] === "}") closeAt("}", i + 1);
     }
+    unclosed.push(...open.map((entry) => ({ ...entry, until: structure.length })));
+    return { spans, open, unclosed };
+  }
+
+  function blockSpans(structure) {
+    const { spans, open } = scanBlockSpans(structure);
     // A block left open runs to the end of the file rather than being dropped.
     open.forEach((entry) => { if (!spans.has(entry.at)) spans.set(entry.at, structure.length); });
     return spans;
@@ -413,5 +441,5 @@
     return found.sort((a, b) => a.from - b.from || b.to - a.to);
   }
 
-  window.IrisLilyPond = { highlight, format, indentOnEnter, outline, regions, stream };
+  window.IrisLilyPond = { highlight, format, indentOnEnter, blockAtEnter, outline, regions, stream };
 })();
