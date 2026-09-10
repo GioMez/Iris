@@ -40,23 +40,23 @@
     </div>
     <div class="tbar-scroll">
       <div class="tsep"></div>
-      <button class="tbtn" id="btnCloseProject" title="Close the project and return to the list" data-i18n-title="toolbar.projectsTitle"><span class="ic" data-icon="arrow-left"></span><span data-i18n="toolbar.projects">Projects</span></button>
+      <button class="tbtn" id="btnCloseProject" type="button" title="Close the project and return to the list" aria-label="Projects" data-i18n-aria-label="toolbar.projects" data-i18n-title="toolbar.projectsTitle"><span class="ic" data-icon="arrow-left"></span><span data-i18n="toolbar.projects">Projects</span></button>
       <div class="projchip" id="projChip"><span class="pdot" data-icon="file-code-2"></span><span id="projChipName">—</span></div>
       <div class="tsep"></div>
-      <button class="tbtn" id="btnNew" title="New file (Ctrl/Cmd+N)" data-i18n-title="toolbar.newTitle" aria-keyshortcuts="Control+N Meta+N"><span class="ic" data-icon="file-plus"></span><span data-i18n="toolbar.new">New</span></button>
-      <button class="tbtn" id="btnOpen" title="Open file (Ctrl/Cmd+O)" data-i18n-title="toolbar.openTitle" aria-keyshortcuts="Control+O Meta+O"><span class="ic" data-icon="folder-open"></span><span data-i18n="toolbar.open">Open</span></button>
-      <button class="tbtn" id="btnAttach"><span class="ic" data-icon="paperclip"></span><span data-i18n="toolbar.attach">Attach</span></button>
+      <button class="tbtn" id="btnNew" type="button" title="New file (Ctrl/Cmd+N)" aria-label="New file" data-i18n-aria-label="toolbar.new" data-i18n-title="toolbar.newTitle" aria-keyshortcuts="Control+N Meta+N"><span class="ic" data-icon="file-plus"></span><span data-i18n="toolbar.new">New</span></button>
+      <button class="tbtn" id="btnOpen" type="button" title="Open file (Ctrl/Cmd+O)" aria-label="Open file" data-i18n-aria-label="toolbar.open" data-i18n-title="toolbar.openTitle" aria-keyshortcuts="Control+O Meta+O"><span class="ic" data-icon="folder-open"></span><span data-i18n="toolbar.open">Open</span></button>
+      <button class="tbtn" id="btnAttach" type="button" title="Attach file" aria-label="Attach file" data-i18n-aria-label="attach.title" data-i18n-title="attach.title"><span class="ic" data-icon="paperclip"></span><span data-i18n="toolbar.attach">Attach</span></button>
     </div>
     <div class="workspace-switch" id="workspaceSwitch" role="tablist" aria-label="Workspace" data-i18n-aria-label="workspace.aria">
-      <button class="on" type="button" role="tab" aria-label="Show editor" data-i18n-aria-label="workspace.showEditor" aria-selected="true" data-workspace="editor"><span data-icon="code"></span><span class="workspace-label" data-i18n="workspace.editor">Editor</span></button>
-      <button type="button" role="tab" aria-label="Show preview" data-i18n-aria-label="workspace.showPreview" aria-selected="false" data-workspace="preview"><span data-icon="file"></span><span class="workspace-label" data-i18n="workspace.preview">Preview</span></button>
+      <button class="on" type="button" role="tab" aria-label="Show editor" title="Show editor" data-i18n-title="workspace.showEditor" data-i18n-aria-label="workspace.showEditor" aria-selected="true" data-workspace="editor"><span data-icon="code"></span><span class="workspace-label" data-i18n="workspace.editor">Editor</span></button>
+      <button type="button" role="tab" aria-label="Show preview" title="Show preview" data-i18n-title="workspace.showPreview" data-i18n-aria-label="workspace.showPreview" aria-selected="false" data-workspace="preview"><span data-icon="file"></span><span class="workspace-label" data-i18n="workspace.preview">Preview</span></button>
     </div>
     <div class="workflow-actions" aria-label="Document workflow" data-i18n-aria-label="toolbar.workflow">
       <button class="workflow-btn" id="btnSave" type="button" title="Save (Ctrl/Cmd+S)" aria-label="Save the document" data-i18n-title="toolbar.saveTitle" data-i18n-aria-label="toolbar.saveAria" aria-keyshortcuts="Control+S Meta+S"><span class="ic" data-icon="device-floppy"></span><span class="workflow-label" data-i18n="toolbar.save">Save</span></button>
       <button class="workflow-btn workflow-snapshot" id="btnSnapshot" type="button" title="Snapshot" aria-label="Create a snapshot in the file history" data-i18n-title="toolbar.snapshotTitle" data-i18n-aria-label="toolbar.snapshotAria"><span class="ic" data-icon="camera"></span><span class="workflow-label" data-i18n="toolbar.snapshot">Snapshot</span></button>
       <button class="workflow-compile" id="btnCompile" type="button" title="Compile (Ctrl/Cmd+Enter)" aria-label="Compile the project" data-i18n-title="toolbar.compileTitle" data-i18n-aria-label="toolbar.compileAria" aria-keyshortcuts="Control+Enter Meta+Enter"><span class="ic" data-icon="player-play"></span><span class="workflow-label" data-i18n="toolbar.compile">Compile</span></button>
       <button class="workflow-btn workflow-output" id="dlBtn" type="button" title="Download output" aria-label="Download the compiled output" data-i18n-title="toolbar.outputTitle" data-i18n-aria-label="toolbar.outputAria"><span class="ic" data-icon="download"></span><span class="dl-label workflow-label" data-i18n="toolbar.output">Output</span></button>
-      <button class="workflow-btn workflow-builds" id="btnBuilds" type="button" title="Compilation history" aria-label="Open compilation history" data-i18n-title="toolbar.buildsTitle" data-i18n-aria-label="toolbar.buildsAria"><span class="ic" data-icon="history"></span><span class="workflow-label" data-i18n="toolbar.builds">Builds</span></button>
+      <button class="workflow-btn workflow-builds" id="btnBuilds" type="button" title="Compilation history" aria-label="Open compilation history" data-i18n-title="toolbar.buildsTitle" data-i18n-aria-label="toolbar.buildsAria"><span class="ic" data-icon="box"></span><span class="workflow-label" data-i18n="toolbar.builds">Builds</span></button>
     </div>
     <div class="tbar-right">
       <button class="tbtn icononly project-share-trigger" id="btnShareProject" type="button" title="Share project" aria-label="Share project" data-i18n-title="sharing.toolbarTitle" data-i18n-aria-label="sharing.toolbarAria" hidden><span class="ic" data-icon="users"></span></button>
@@ -73,12 +73,12 @@
 
     <!-- sidebar -->
     <aside class="pane side" id="projectSidebar">
-      <div class="side-tabs">
-        <button class="side-tab on" data-side="files"><span data-icon="files"></span><span data-i18n="sidebar.files">Files</span></button>
-        <button class="side-tab" data-side="outline"><span data-icon="list-tree"></span><span data-i18n="sidebar.outline">Outline</span></button>
+      <div class="side-tabs" role="tablist" aria-label="Sidebar panels" data-i18n-aria-label="sidebar.panels">
+        <button class="side-tab on" id="sideTabFiles" type="button" role="tab" aria-selected="true" aria-controls="sidePanelFiles" tabindex="0" data-side="files"><span data-icon="files"></span><span data-i18n="sidebar.files">Files</span></button>
+        <button class="side-tab" id="sideTabOutline" type="button" role="tab" aria-selected="false" aria-controls="sidePanelOutline" tabindex="-1" data-side="outline"><span data-icon="list-tree"></span><span data-i18n="sidebar.outline">Outline</span></button>
       </div>
       <div class="side-scroll">
-        <div data-panel="files">
+        <div id="sidePanelFiles" role="tabpanel" aria-labelledby="sideTabFiles" tabindex="0" data-panel="files">
           <div class="side-head"><span data-i18n="sidebar.project">Project</span>
             <span class="act">
               <button class="iconbtn" id="refreshTreeBtn" type="button" title="Refresh file tree" aria-label="Refresh file tree" data-i18n-title="sidebar.refreshTree" data-i18n-aria-label="sidebar.refreshTree"><span data-icon="refresh"></span></button>
@@ -91,7 +91,7 @@
             <span data-i18n="sidebar.dropImagesRest">in the selected folder, or browse…</span>
           </button>
         </div>
-        <div data-panel="outline" style="display:none">
+        <div id="sidePanelOutline" role="tabpanel" aria-labelledby="sideTabOutline" tabindex="0" data-panel="outline" style="display:none">
           <div class="side-head" data-i18n="sidebar.documentOutline">Document outline</div>
           <div class="outline" id="outline"></div>
         </div>
@@ -133,21 +133,21 @@
     <section class="pane pvpane">
       <div class="pvbar">
         <div class="seg" id="pvSeg">
-          <button data-view="preview" class="on"><span data-icon="file"></span><span class="lbl" data-i18n="preview.preview">Preview</span></button>
-          <button data-view="log"><span data-icon="terminal-2"></span><span class="lbl" data-i18n="preview.log">Log</span></button>
+          <button type="button" data-view="preview" class="on" aria-pressed="true" aria-label="Show preview" title="Show the rendered output" data-i18n-aria-label="workspace.showPreview" data-i18n-title="preview.showPreview"><span data-icon="file"></span><span class="lbl" data-i18n="preview.preview">Preview</span></button>
+          <button type="button" data-view="log" aria-pressed="false" aria-label="Show the compiler log" title="Show the compiler log" data-i18n-aria-label="preview.showLog" data-i18n-title="preview.showLog"><span data-icon="terminal-2"></span><span class="lbl" data-i18n="preview.log">Log</span></button>
         </div>
         <div class="spring"></div>
         <div class="pchip">
-          <button class="pgbtn" id="pgPrev" aria-label="Previous page" data-i18n-aria-label="preview.previousPage"><span data-icon="chevron-left"></span></button>
+          <button class="pgbtn" id="pgPrev" type="button" aria-label="Previous page" title="Previous page" data-i18n-title="preview.previousPage" data-i18n-aria-label="preview.previousPage"><span data-icon="chevron-left"></span></button>
           <span class="val"><span id="pgCur">–</span> / <span id="pgTot">–</span></span>
-          <button class="pgbtn" id="pgNext" aria-label="Next page" data-i18n-aria-label="preview.nextPage"><span data-icon="chevron-right"></span></button>
+          <button class="pgbtn" id="pgNext" type="button" aria-label="Next page" title="Next page" data-i18n-title="preview.nextPage" data-i18n-aria-label="preview.nextPage"><span data-icon="chevron-right"></span></button>
         </div>
         <div class="pchip zoom">
-          <button class="zbtn" id="zOut" aria-label="Zoom out" data-i18n-aria-label="preview.zoomOut"><span data-icon="minus"></span></button>
+          <button class="zbtn" id="zOut" type="button" aria-label="Zoom out" title="Zoom out" data-i18n-title="preview.zoomOut" data-i18n-aria-label="preview.zoomOut"><span data-icon="minus"></span></button>
           <span class="val" id="zVal">100%</span>
-          <button class="zbtn" id="zIn" aria-label="Zoom in" data-i18n-aria-label="preview.zoomIn"><span data-icon="plus"></span></button>
+          <button class="zbtn" id="zIn" type="button" aria-label="Zoom in" title="Zoom in" data-i18n-title="preview.zoomIn" data-i18n-aria-label="preview.zoomIn"><span data-icon="plus"></span></button>
         </div>
-        <button class="mini fit on" id="fitBtn" title="Fit to width" data-i18n-title="preview.fitTitle" data-i18n="preview.fit">Fit</button>
+        <button class="mini fit icononly on" id="fitBtn" type="button" title="Fit to width" aria-label="Fit to width" data-i18n-title="preview.fitTitle" data-i18n-aria-label="preview.fitTitle" aria-pressed="true"><span data-icon="arrow-autofit-width"></span></button>
       </div>
       <!-- Shown only when someone else has compiled a newer output than the one
            on screen; the refresh button lives inside it. -->
@@ -155,7 +155,7 @@
         <span class="ic" data-icon="alert-triangle" aria-hidden="true"></span>
         <span class="pv-newer-text" id="pvNewerText"></span>
         <button class="btn sm cta" type="button" id="pvNewerLoad"><span data-icon="refresh"></span><span data-i18n="preview.newerLoad">Load</span></button>
-        <button class="pv-newer-x" type="button" id="pvNewerDismiss" aria-label="Dismiss" data-i18n-aria-label="preview.newerDismiss"><span data-icon="x"></span></button>
+        <button class="pv-newer-x" type="button" id="pvNewerDismiss" aria-label="Dismiss" title="Dismiss" data-i18n-title="preview.newerDismiss" data-i18n-aria-label="preview.newerDismiss"><span data-icon="x"></span></button>
       </div>
       <div class="pv-stage" id="pvStage">
         <div class="pv-empty" id="pvEmpty">
@@ -189,8 +189,8 @@
       <span class="st" id="stTime" data-i18n="status.neverCompiled">not compiled yet</span>
     </div>
     <div class="sb-actions">
-      <button class="sb-btn" id="btnFormat"><span class="ic" data-icon="align-left-2"></span><span data-i18n="status.format">Format</span></button>
-      <button class="sb-btn" id="btnFind"><span class="ic" data-icon="search"></span><span data-i18n="find.find">Find</span></button>
+      <button class="sb-btn" id="btnFormat" type="button" title="Format" aria-label="Format" data-i18n-title="status.format" data-i18n-aria-label="status.format"><span class="ic" data-icon="align-left-2"></span><span class="sb-btn-label" data-i18n="status.format">Format</span></button>
+      <button class="sb-btn" id="btnFind" type="button" title="Find" aria-label="Find" data-i18n-title="find.find" data-i18n-aria-label="find.find"><span class="ic" data-icon="search"></span><span class="sb-btn-label" data-i18n="find.find">Find</span></button>
       <button class="sb-wrap" id="btnWrap" type="button" role="switch" aria-checked="false" aria-label="Enable word wrap" data-i18n-aria-label="status.wrapEnable" title="Enable word wrap" data-i18n-title="status.wrapEnable"><span class="sb-wrap-label" data-i18n="status.wrap">Wrap</span><span class="sb-switch" aria-hidden="true"></span></button>
       <div class="sb-divider"></div>
       <button class="sb-engine" id="engineBtn" title="Compilation engine" data-i18n-title="status.engineTitle" aria-haspopup="menu" aria-expanded="false" aria-controls="engineMenu"><span data-i18n="status.engine">engine</span> <b id="engineName">pdflatex</b><span class="chev" data-icon="chevron-up"></span></button>
@@ -228,7 +228,7 @@
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="attachTitle">
     <div class="m-head">
       <h3 id="attachTitle" data-i18n="attach.title">Attach file</h3><span class="sub" data-i18n="attach.subtitle">images, PDFs, data…</span>
-      <button class="m-x" data-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
+      <button class="m-x" data-close aria-label="Close" title="Close" data-i18n-title="common.close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
       <div class="field">
@@ -241,7 +241,7 @@
           <img class="thumb" id="attachThumb" alt="">
           <span id="attachName">—</span>
           <span class="meta" id="attachMeta"></span>
-          <button class="rm" id="attachClear" type="button" aria-label="Remove file" data-i18n-aria-label="attach.removeFile"><span data-icon="x"></span></button>
+          <button class="rm" id="attachClear" type="button" aria-label="Remove file" title="Remove file" data-i18n-title="attach.removeFile" data-i18n-aria-label="attach.removeFile"><span data-icon="x"></span></button>
         </div>
       </div>
       <div class="field">
@@ -423,14 +423,14 @@
   </div>
 </div>
 
-<div class="toasts" id="toasts"></div>
+<div class="toasts" id="toasts" role="status" aria-live="polite"></div>
 
 <!-- ===================== FILE TREE MODALS ===================== -->
 <div class="scrim" id="treeNewModal">
   <div class="modal narrow" role="dialog" aria-modal="true" aria-labelledby="treeNewTitle">
     <div class="m-head">
       <h3 id="treeNewTitle" data-i18n="tree.newTitle">New item</h3>
-      <button class="m-x" data-tree-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
+      <button class="m-x" data-tree-close aria-label="Close" title="Close" data-i18n-title="common.close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
       <div class="field">
@@ -461,7 +461,7 @@
   <div class="modal narrow" role="dialog" aria-modal="true" aria-labelledby="treeRenameTitle">
     <div class="m-head">
       <h3 id="treeRenameTitle" data-i18n="tree.renameTitle">Rename</h3>
-      <button class="m-x" data-tree-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
+      <button class="m-x" data-tree-close aria-label="Close" title="Close" data-i18n-title="common.close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
       <div class="field">
@@ -481,7 +481,7 @@
   <div class="modal narrow" role="dialog" aria-modal="true" aria-labelledby="treeDeleteTitle">
     <div class="m-head">
       <h3 id="treeDeleteTitle" data-i18n="tree.deleteTitle">Delete</h3>
-      <button class="m-x" data-tree-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
+      <button class="m-x" data-tree-close aria-label="Close" title="Close" data-i18n-title="common.close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
       <p class="confirm-txt" id="treeDeleteText" data-i18n="tree.deleteGeneric">Do you want to delete this item? This action cannot be undone.</p>
@@ -498,7 +498,7 @@
   <div class="modal narrow" role="dialog" aria-modal="true" aria-labelledby="logoutTitle">
     <div class="m-head">
       <h3 id="logoutTitle" data-i18n="logout.title">Sign out</h3>
-      <button class="m-x" data-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
+      <button class="m-x" data-close aria-label="Close" title="Close" data-i18n-title="common.close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
       <p class="confirm-txt" data-i18n="logout.confirm">Do you want to sign out of Iris? Unsaved editor changes will be lost.</p>
@@ -515,7 +515,7 @@
   <div class="modal narrow" role="dialog" aria-modal="true" aria-labelledby="passwordTitle">
     <div class="m-head">
       <h3 id="passwordTitle" data-i18n="password.title">Change password</h3>
-      <button class="m-x" data-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
+      <button class="m-x" data-close aria-label="Close" title="Close" data-i18n-title="common.close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
       <div class="login-error inline" id="passwordError" role="alert" data-i18n="password.invalid">Invalid password.</div>
@@ -545,7 +545,7 @@
   <div class="modal narrow" role="dialog" aria-modal="true" aria-labelledby="usernameTitle">
     <div class="m-head">
       <h3 id="usernameTitle" data-i18n="account.changeUsername">Change username</h3>
-      <button class="m-x" data-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
+      <button class="m-x" data-close aria-label="Close" title="Close" data-i18n-title="common.close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
       <div class="login-error inline" id="usernameError" role="alert"></div>
@@ -573,7 +573,7 @@
   <div class="modal narrow" role="dialog" aria-modal="true" aria-labelledby="defaultLanguageTitle" aria-describedby="defaultLanguageDescription">
     <div class="m-head">
       <h3 id="defaultLanguageTitle" data-i18n="language.defaultTitle">Default language</h3>
-      <button class="m-x" type="button" data-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
+      <button class="m-x" type="button" data-close aria-label="Close" title="Close" data-i18n-title="common.close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
       <p class="modal-copy" id="defaultLanguageDescription" data-i18n="language.defaultDescription">This language is used on the project home and as the initial language for new projects. Existing projects keep their own language preference.</p>
@@ -597,7 +597,7 @@
   <div class="modal narrow" role="dialog" aria-modal="true" aria-labelledby="projModalTitle">
     <div class="m-head">
       <h3 id="projModalTitle" data-i18n="projects.newTitle">New project</h3>
-      <button class="m-x" data-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
+      <button class="m-x" data-close aria-label="Close" title="Close" data-i18n-title="common.close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
       <div class="login-error inline" id="projModalError" role="alert"></div>
@@ -631,7 +631,7 @@
   <div class="modal narrow" role="dialog" aria-modal="true" aria-labelledby="projDeleteTitle">
     <div class="m-head">
       <h3 id="projDeleteTitle" data-i18n="projects.deleteTitle">Delete project</h3>
-      <button class="m-x" data-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
+      <button class="m-x" data-close aria-label="Close" title="Close" data-i18n-title="common.close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
       <p class="confirm-txt" id="projDeleteText" data-i18n="projects.deleteGeneric">Do you want to delete this project? All its files and bibliographies will be removed. This action cannot be undone.</p>
@@ -648,7 +648,7 @@
   <div class="modal narrow" role="dialog" aria-modal="true" aria-labelledby="projUnsavedTitle">
     <div class="m-head">
       <h3 id="projUnsavedTitle" data-i18n="projects.unsavedTitle">Discard unsaved changes?</h3>
-      <button class="m-x" id="projUnsavedClose" type="button" aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
+      <button class="m-x" id="projUnsavedClose" type="button" aria-label="Close" title="Close" data-i18n-title="common.close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
       <p class="confirm-txt" data-i18n="projects.unsavedConfirm">The project contains unsaved changes. Exit and discard them?</p>
@@ -667,7 +667,7 @@
         <h3 id="projectShareTitle" data-i18n="sharing.title">Share project</h3>
         <p class="sub" id="projectShareSubtitle"></p>
       </div>
-      <button class="m-x" type="button" data-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
+      <button class="m-x" type="button" data-close aria-label="Close" title="Close" data-i18n-title="common.close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
       <div class="login-error inline" id="projectShareError" role="alert" style="display:none"></div>
@@ -708,7 +708,7 @@
         <div class="brand-label"><img class="brand-wordmark" src="iris_text_logo_w.svg" alt="Iris"> <span class="v">Beta 1</span></div>
       </div>
       <div class="picker-user">
-        <button class="tbtn ghost-b admin-only" id="pkAdmin" type="button" title="Server administration" data-i18n-title="admin.open"><span class="ic" data-icon="shield-lock"></span><span data-i18n="admin.adminShort">Admin</span></button>
+        <button class="tbtn ghost-b admin-only" id="pkAdmin" type="button" title="Server administration" aria-label="Server administration" data-i18n-title="admin.open" data-i18n-aria-label="admin.open"><span class="ic" data-icon="shield-lock"></span><span data-i18n="admin.adminShort">Admin</span></button>
         <button class="userchip" id="pkAccount" type="button" title="Account" aria-label="Account" data-i18n-title="common.account" data-i18n-aria-label="common.account" aria-haspopup="menu" aria-expanded="false" aria-controls="userMenu">
           <span class="avatar" id="pkAvatar">–</span>
           <span class="uname" id="pkName">–</span>
@@ -919,7 +919,7 @@
   <form class="modal narrow" id="adminCreateForm" role="dialog" aria-modal="true" aria-labelledby="adminCreateTitle">
     <div class="m-head">
       <h3 id="adminCreateTitle" data-i18n="admin.newUser">New user</h3>
-      <button class="m-x" type="button" data-admin-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
+      <button class="m-x" type="button" data-admin-close aria-label="Close" title="Close" data-i18n-title="common.close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
       <div class="login-error inline" id="adminCreateError" role="alert"></div>
@@ -958,7 +958,7 @@
   <form class="modal narrow" id="adminEditForm" role="dialog" aria-modal="true" aria-labelledby="adminEditTitle">
     <div class="m-head">
       <h3 id="adminEditTitle" data-i18n="admin.editUser">Edit user</h3>
-      <button class="m-x" type="button" data-admin-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
+      <button class="m-x" type="button" data-admin-close aria-label="Close" title="Close" data-i18n-title="common.close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
       <div class="login-error inline" id="adminEditError" role="alert"></div>
@@ -1025,7 +1025,7 @@
   <form class="modal narrow" id="adminResetConfirmForm" role="dialog" aria-modal="true" aria-labelledby="adminResetConfirmTitle">
     <div class="m-head">
       <h3 id="adminResetConfirmTitle" data-i18n="admin.resetConfirmTitle">Reset password?</h3>
-      <button class="m-x" id="adminResetConfirmClose" type="button" aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
+      <button class="m-x" id="adminResetConfirmClose" type="button" aria-label="Close" title="Close" data-i18n-title="common.close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
       <p class="confirm-txt" id="adminResetConfirmText"></p>
@@ -1042,7 +1042,7 @@
   <div class="modal narrow" role="dialog" aria-modal="true" aria-labelledby="adminCredsTitle">
     <div class="m-head">
       <h3 id="adminCredsTitle" data-i18n="admin.credentialsTitle">Temporary password</h3>
-      <button class="m-x" type="button" data-admin-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
+      <button class="m-x" type="button" data-admin-close aria-label="Close" title="Close" data-i18n-title="common.close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
       <p class="confirm-txt" data-i18n="admin.credentialsIntro">Share this one-time password with the user. It is shown only once.</p>
@@ -1050,7 +1050,7 @@
         <div class="admin-creds-row"><span class="label" data-i18n="admin.username">Username</span><code id="adminCredsUser"></code></div>
         <div class="admin-creds-row"><span class="label" data-i18n="admin.password">Password</span><code id="adminCredsPass"></code></div>
       </div>
-      <button class="btn" id="adminCredsCopy"><span class="ic" data-icon="check"></span><span data-i18n="admin.copyPassword">Copy password</span></button>
+      <button class="btn" id="adminCredsCopy" type="button"><span class="ic" data-icon="copy"></span><span data-i18n="admin.copyPassword">Copy password</span></button>
     </div>
     <div class="m-foot">
       <button class="btn cta" type="button" data-admin-close data-i18n="admin.credentialsDone">Done</button>
@@ -1063,7 +1063,7 @@
   <form class="modal narrow" id="adminDeleteUserForm" role="dialog" aria-modal="true" aria-labelledby="adminDeleteUserTitle">
     <div class="m-head">
       <h3 id="adminDeleteUserTitle" data-i18n="admin.deleteUser">Delete account</h3>
-      <button class="m-x" type="button" data-admin-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
+      <button class="m-x" type="button" data-admin-close aria-label="Close" title="Close" data-i18n-title="common.close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
       <p class="confirm-txt" data-i18n="admin.deleteUserWarn">This permanently deletes the account. Revisions and audit entries are kept but attributed to a former user. This cannot be undone.</p>
@@ -1090,7 +1090,7 @@
   <div class="modal narrow" role="dialog" aria-modal="true" aria-labelledby="adminProjectTitle">
     <div class="m-head">
       <h3 id="adminProjectTitle" data-i18n="adminProjects.manageTitle">Manage project</h3>
-      <button class="m-x" type="button" data-admin-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
+      <button class="m-x" type="button" data-admin-close aria-label="Close" title="Close" data-i18n-title="common.close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
       <div class="adminproj-orphan" id="adminProjectOrphan" style="display:none"><span data-icon="alert-triangle"></span><span data-i18n="adminProjects.orphanWarning">This project has no owner. Assign one to restore normal access.</span></div>
@@ -1127,7 +1127,7 @@
   <form class="modal narrow" id="adminProjectDeleteForm" role="dialog" aria-modal="true" aria-labelledby="adminProjectDeleteTitle">
     <div class="m-head">
       <h3 id="adminProjectDeleteTitle" data-i18n="adminProjects.deleteProject">Delete project</h3>
-      <button class="m-x" type="button" data-admin-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
+      <button class="m-x" type="button" data-admin-close aria-label="Close" title="Close" data-i18n-title="common.close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
       <p class="confirm-txt" id="adminProjectDeleteText"></p>
@@ -1147,7 +1147,7 @@
   <form class="modal wide admin-template-modal" id="adminTemplateForm" role="dialog" aria-modal="true" aria-labelledby="adminTemplateModalTitle">
     <div class="m-head">
       <h3 id="adminTemplateModalTitle" data-i18n="adminTemplates.newTitle">New template</h3>
-      <button class="m-x" id="adminTemplateClose" type="button" data-admin-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
+      <button class="m-x" id="adminTemplateClose" type="button" data-admin-close aria-label="Close" title="Close" data-i18n-title="common.close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
       <div class="admin-template-error-row">
@@ -1203,7 +1203,7 @@
   <form class="modal narrow" id="adminTemplateDeleteForm" role="dialog" aria-modal="true" aria-labelledby="adminTemplateDeleteTitle" aria-describedby="adminTemplateDeleteText adminTemplateDeleteError">
     <div class="m-head">
       <h3 id="adminTemplateDeleteTitle" data-i18n="adminTemplates.deleteTitle">Delete template?</h3>
-      <button class="m-x" id="adminTemplateDeleteClose" type="button" aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
+      <button class="m-x" id="adminTemplateDeleteClose" type="button" aria-label="Close" title="Close" data-i18n-title="common.close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
       <p class="confirm-txt" id="adminTemplateDeleteText"></p>
@@ -1226,7 +1226,7 @@
         <span class="sub" id="versionsSubtitle"></span>
       </div>
       <button class="btn sm ver-snapshot" id="versionsSnapshot" type="button" data-i18n-title="versions.snapshotTitle" title="Save a snapshot of every changed file"><span class="ic" data-icon="camera"></span><span data-i18n="versions.snapshot">Snapshot</span></button>
-      <button class="m-x" type="button" data-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
+      <button class="m-x" type="button" data-close aria-label="Close" title="Close" data-i18n-title="common.close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
     </div>
     <div class="ver-grid">
       <div class="ver-list-pane">
@@ -1252,13 +1252,13 @@
 <div class="scrim" id="buildsModal">
   <div class="modal wide builds-modal" role="dialog" aria-modal="true" aria-labelledby="buildsTitle">
     <div class="m-head">
-      <span class="build-head-icon" data-icon="history"></span>
+      <span class="build-head-icon" data-icon="box"></span>
       <div class="build-head-text">
         <h3 id="buildsTitle" data-i18n="builds.title">Compilation history</h3>
         <span class="sub" data-i18n="builds.subtitle">Versioned outputs and compiler diagnostics</span>
       </div>
       <button class="m-x build-refresh" id="buildsRefresh" type="button" aria-label="Refresh compilations" title="Refresh compilations" data-i18n-aria-label="builds.refresh" data-i18n-title="builds.refresh"><span data-icon="refresh"></span></button>
-      <button class="m-x" type="button" data-close aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
+      <button class="m-x" type="button" data-close aria-label="Close" title="Close" data-i18n-title="common.close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
     </div>
     <div class="build-grid">
       <div class="build-list-pane">
@@ -1280,10 +1280,6 @@
 <!-- ===================== LOGIN SCREEN ===================== -->
 <div class="login-screen" id="loginScreen">
   <form class="login-card" id="loginCard" autocomplete="on">
-    <div class="login-brand">
-      <div class="mark"><img src="iris_logo_w.svg" alt=""></div>
-      <div class="brand-label"><img class="brand-wordmark" src="iris_text_logo_w.svg" alt="Iris"> <span class="v">Beta 1</span></div>
-    </div>
     <label class="login-language" for="loginLanguage">
       <span data-icon="language"></span>
       <select id="loginLanguage" data-language-select aria-label="Interface language" data-i18n-aria-label="language.interface">
@@ -1291,6 +1287,10 @@
         <option value="it" data-i18n="language.italian">Italiano</option>
       </select>
     </label>
+    <div class="login-brand">
+      <div class="mark"><img src="iris_logo_w.svg" alt=""></div>
+      <div class="brand-label"><img class="brand-wordmark" src="iris_text_logo_w.svg" alt="Iris"> <span class="v">Beta 1</span></div>
+    </div>
     <h1 class="login-title" data-i18n="auth.title">Sign in to your workspace</h1>
     <p class="login-sub" data-i18n="auth.subtitle">Enter your credentials to continue</p>
 
@@ -1304,7 +1304,7 @@
       <label class="label" for="loginPass" data-i18n="auth.password">Password</label>
       <div class="pwwrap">
         <input class="linput" id="loginPass" name="password" type="password" autocomplete="current-password" placeholder="••••••••" aria-describedby="loginError">
-        <button class="pwtoggle" id="pwToggle" type="button" data-i18n="auth.showPassword">show</button>
+        <button class="pwtoggle" id="pwToggle" type="button" aria-pressed="false" aria-controls="loginPass" aria-label="show" title="show" data-i18n-aria-label="auth.showPassword" data-i18n-title="auth.showPassword"><span data-icon="eye"></span></button>
       </div>
     </div>
 

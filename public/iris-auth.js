@@ -89,6 +89,18 @@
     setTimeout(() => $("loginUser").focus(), 60);
   }
 
+  // The eye states what the click will do; the label and pressed state follow it.
+  function setPasswordToggle(revealed) {
+    const button = $("pwToggle");
+    const label = t(revealed ? "auth.hidePassword" : "auth.showPassword");
+    button.innerHTML = window.IrisIcons.icon(revealed ? "eye-off" : "eye");
+    button.setAttribute("aria-label", label);
+    button.setAttribute("title", label);
+    button.dataset.i18nAriaLabel = revealed ? "auth.hidePassword" : "auth.showPassword";
+    button.dataset.i18nTitle = button.dataset.i18nAriaLabel;
+    button.setAttribute("aria-pressed", revealed ? "true" : "false");
+  }
+
   function showError(msg) {
     const e = $("loginError");
     e.textContent = msg;
@@ -350,7 +362,7 @@
       const p = $("loginPass");
       const reveal = p.type === "password";
       p.type = reveal ? "text" : "password";
-      $("pwToggle").textContent = t(reveal ? "auth.hidePassword" : "auth.showPassword");
+      setPasswordToggle(reveal);
       p.focus();
     });
     document.querySelectorAll("[data-sso]").forEach((b) => b.addEventListener("click", () => ssoLogin()));
@@ -466,7 +478,7 @@
   window.IrisAuth = { showLogin, showApp, refreshSession };
   document.addEventListener("iris:languagechange", () => {
     const reveal = $("loginPass").type === "text";
-    $("pwToggle").textContent = t(reveal ? "auth.hidePassword" : "auth.showPassword");
+    setPasswordToggle(reveal);
     void loadConfig();
   });
   window.IrisI18n.ready.then(boot);

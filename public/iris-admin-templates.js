@@ -182,8 +182,12 @@
       row.appendChild(node("td", "admin-template-size", formatSize(template.size)));
 
       const actionCell = node("td", "admin-col-actions");
-      const edit = node("button", "admin-row-edit", t("adminTemplates.edit"));
+      const edit = node("button", "admin-row-edit");
       edit.type = "button";
+      // Icon through the declarative hydrator: this module never assigns HTML.
+      edit.appendChild(document.createElement("span")).dataset.icon = "edit";
+      edit.appendChild(node("span", null, t("adminTemplates.edit")));
+      window.IrisIcons.hydrate(edit);
       edit.setAttribute("aria-label", t("adminTemplates.editAria", { name: template.title || template.id }));
       edit.addEventListener("click", () => openEdit(template));
       actionCell.appendChild(edit);

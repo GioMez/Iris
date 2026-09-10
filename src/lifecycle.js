@@ -17,10 +17,15 @@ function isMutatingMethod(method) {
   return MUTATING_METHODS.has(String(method || "").toUpperCase());
 }
 
+function isWriteRequest(method, pathname) {
+  return (isMutatingMethod(method) && String(pathname).startsWith("/api/"))
+    || (String(method).toUpperCase() === "GET" && pathname === "/api/auth/sso/callback");
+}
+
 function lifecycleGate({ method, pathname, shuttingDown, maintenance }) {
   if (pathname === HEALTH_PATH) return null;
   if (shuttingDown) return { status: 503, code: "SERVER_SHUTTING_DOWN" };
-  if (maintenance && isMutatingMethod(method) && String(pathname).startsWith("/api/")) {
+  if (maintenance && isWriteRequest(method, pathname)) {
     return { status: 503, code: "MAINTENANCE_MODE" };
   }
   return null;
@@ -32,4 +37,4 @@ function healthStatus({ shuttingDown, maintenance }) {
   return "ok";
 }
 
-module.exports = { isMutatingMethod, lifecycleGate, healthStatus, HEALTH_PATH };
+module.exports = { isMutatingMethod, isWriteRequest, lifecycleGate, healthStatus, HEALTH_PATH };

@@ -131,7 +131,7 @@ test("the project row is touched once per interval, not once per room per flush"
   assert.doesNotMatch(persist, /\b(?:UPDATE|INSERT|DELETE)\b/i, "the flush path must not write to the database directly");
   assert.match(persist, /collabScheduleTouch\(room\.projectId\)/);
   const touch = section("function collabScheduleTouch", "// Consolidates the realtime edits");
-  assert.match(touch, /if \(state\.touchTimer\) return;/);
+  assert.match(touch, /if \(state\.touchTimer \|\| maintenance \|\| shuttingDown\) return;/);
   assert.match(touch, /COLLAB_TOUCH_MS/);
 });
 
@@ -156,13 +156,14 @@ test("realtime revisions are consolidated per project, and attribution survives 
 });
 
 test("shutdown flushes every coalesced timer instead of dropping its work", () => {
-  const shutdown = section("async function collabShutdown", "// The two ways a project comes into existence");
+  const shutdown = section("async function drainCollabWritesNow", "// The two ways a project comes into existence");
   for (const timer of ["touchTimer", "revisionTimer", "presenceTimer"]) {
     assert.match(shutdown, new RegExp(`clearTimeout\\(state\\.${timer}\\)`), `${timer} must be cancelled`);
   }
   // A pending timestamp is written now: deferred work at shutdown is lost work.
-  assert.match(shutdown, /if \(state\.touchPending\) collabTrack\(collabTouchProject\(projectId\)\)/);
-  assert.match(shutdown, /collabTrack\(collabPersist\(room, \{ revision: true \}\)\)/);
+  // The runtime tests cover stable draining, failed touches and late room work.
+  assert.match(shutdown, /await collabTouchProject\(projectId\)/);
+  assert.match(shutdown, /await drainCollabWrites\(\)/);
 });
 
 /* ---- retention ---- */
@@ -226,11 +227,11 @@ test("abandoned directories are only removed once nothing can still claim them",
 
 test("the sweep is resilient: one broken project cannot stop the rest", () => {
   const sweep = section("async function runRetentionSweep", "function startRetentionSweep");
-  assert.match(sweep, /if \(retentionSweepRunning \|\| shuttingDown\) return null/);
+  assert.match(sweep, /if \(retentionSweepRunning \|\| shuttingDown \|\| maintenanceActive\(\)\) return null/);
   assert.match(sweep, /catch \(err\) \{\s*\n\s*console\.error\(`Retention: sweep failed for project \$\{row\.id\}`/);
   assert.match(sweep, /if \(shuttingDown\) break/);
   // Nothing in the sweep is allowed to be the reason a request fails.
-  assert.match(sweep, /finally \{\s*\n\s*retentionSweepRunning = false;/);
+  assert.match(sweep, /\.finally\(\(\) => \{ retentionSweepRunning = false; \}\)/);
 });
 
 test("audit retention is the operator's alone, and deleted in batches", () => {

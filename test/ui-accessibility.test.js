@@ -86,6 +86,18 @@ test("preview controls support PDFs and image artifacts without format-specific 
   assert.match(css, /\.image-preview img\{[^}]*width:100%/);
 });
 
+test("the preview accessible name contains its visible label in both locales", () => {
+  const button = html.match(/<button[^>]*data-view="preview"[^>]*>[\s\S]*?<\/button>/)[0];
+  const nameKey = button.match(/data-i18n-aria-label="([^"]+)"/)[1];
+  const labelKey = button.match(/\sdata-i18n="([^"]+)"/)[1];
+  for (const [locale, catalog] of [["en", JSON.parse(en)], ["it", JSON.parse(it)]]) {
+    const translate = (key) => key.split(".").reduce((value, part) => value[part], catalog);
+    const name = translate(nameKey).toLocaleLowerCase(locale);
+    const label = translate(labelKey).toLocaleLowerCase(locale);
+    assert.ok(name.includes(label), `${locale}: accessible name "${name}" must contain "${label}"`);
+  }
+});
+
 test("all build files download from history instead of appearing in the source tree", () => {
   assert.doesNotMatch(app, /function syncOutputTree\(outputTree\)/);
   assert.doesNotMatch(app, /function removeBuildFromOutputTree\(buildId\)/);

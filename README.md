@@ -476,7 +476,7 @@ already present in the process environment.
 | `COOKIE_SECURE` | `false` | Set `true` when Iris is served over HTTPS. |
 | `TRUST_PROXY` | `false` | Set `true` only behind a reverse proxy that rewrites `X-Forwarded-For`, so audit events record the client address instead of the proxy. |
 | `MAINTENANCE_FILE` | `DATA_DIR/.maintenance` | Path whose presence puts Iris into maintenance mode: writes are refused, reads continue. |
-| `SHUTDOWN_TIMEOUT_MS` | `15000` | How long a graceful shutdown waits for in-flight requests before forcing connections closed. |
+| `SHUTDOWN_TIMEOUT_MS` | `15000` | Deadline for the complete shutdown drain, including background/realtime work, direct compiler children and database-pool closure. |
 
 ### Realtime collaboration
 
@@ -666,21 +666,36 @@ window; it intentionally does not prescribe a dump, snapshot or copy tool.
 
 **Maintenance mode** is a reversible, no-restart window. When the file named by
 `MAINTENANCE_FILE` (default `DATA_DIR/.maintenance`) exists, every request that
-would write is refused with `503`, while reads keep working. Create the file,
-wait for in-flight writes to drain, take the backup, then remove it:
+would write is refused with `503`, including the SSO callback GET, while reads
+keep working. New realtime pushes and background retention work are refused too.
+Already accepted operations finish, and deferred realtime files, revisions and
+project timestamps are flushed. Create the file, wait for that work to drain,
+take the backup, then remove it:
 
 ```sh
 touch "$DATA_DIR/.maintenance"
 # Wait until no write is still in progress:
-while [ "$(curl -sf localhost:3000/api/health | jq .pendingWrites)" != "0" ]; do sleep 1; done
+while ! curl -sf localhost:3000/api/health | jq -e '.status == "maintenance" and .maintenance == true and .pendingWrites == 0' >/dev/null; do sleep 1; done
 # Back up both layers at a mutually consistent point, then reopen writes:
 rm "$DATA_DIR/.maintenance"
 ```
 
 `GET /api/health` needs no authentication and reports
 `{ "status", "maintenance", "pendingWrites" }`, so a script or load balancer can
-observe the state. `pendingWrites` counts write requests still being served; once
-it reaches `0` inside the window, the two layers can be copied consistently.
+observe the state. `pendingWrites` is a conservative count of unfinished durable
+work, not a count of HTTP connections or SQL statements. It includes operations
+whose client disconnected, response cleanup, background tasks and realtime work
+still awaiting its timer or database write. A failed realtime write remains
+pending; inspect the server log if the drain cannot finish. Wait for maintenance
+to be active and this count to reach `0` before copying the two layers.
+
+Open editors pause without discarding unconfirmed changes and resume their
+existing stream when maintenance ends. Presence and reads remain available;
+normal debounce timers resume after the window. The marker is observed on
+admission/health checks and by a one-second poll. This barrier covers the running
+Iris process, not concurrent maintenance scripts, external filesystem changes,
+or another Iris instance. Startup initialization completes before health is
+served; recheck the barrier after a restart.
 
 Direct control through `MAINTENANCE_FILE` is the transitional operator interface.
 When server roles and the administration console are introduced, entering and
@@ -688,10 +703,15 @@ leaving maintenance will become an authenticated, audited action reserved for
 active Iris administrators; backup and restore tooling will remain outside Iris.
 
 **Graceful shutdown** covers a clean stop, which is the safe way to restore.
-On `SIGTERM` or `SIGINT` Iris stops accepting requests, waits up to
-`SHUTDOWN_TIMEOUT_MS` for in-flight requests to finish, closes the database pool
-and exits. Restore both layers while the process is down, then start Iris: it
-reconciles pending migrations and relocations on startup.
+On `SIGTERM` or `SIGINT` Iris stops new work and background timers, refuses queued
+compile/password work, and drains accepted HTTP, realtime and background
+operations before closing the database pool. `SHUTDOWN_TIMEOUT_MS` bounds the
+entire sequence, including pool closure and direct compiler/font-cache children.
+Exit code `0` and `Shutdown complete` indicate a completed drain. A deadline or
+persistence/closure failure instead terminates direct children and connections,
+logs the failure and exits with code `1`; this is not a clean backup barrier.
+Restore both layers while the process is down, then start Iris: it reconciles
+pending migrations and relocations on startup.
 
 A backup taken inside maintenance mode may include the `.maintenance` marker. If
 it does, a restored instance starts in maintenance — a safe default that lets you

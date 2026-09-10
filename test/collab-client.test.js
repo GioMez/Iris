@@ -336,7 +336,7 @@ test("losing write access mid-session switches to read-only in place", () => {
   socket.deliver({ t: "role", fileId: "file-1", role: "viewer" });
   assert.equal(h.collab.status(), "readonly");
   assert.equal(h.collab.role(), "viewer");
-  const roleEvent = h.events.find((event) => event.type === "iris:collabrole");
+  const roleEvent = h.events.filter((event) => event.type === "iris:collabrole").at(-1);
   assert.equal(roleEvent.detail.role, "viewer");
 
   h.typeLocally([{ changes: [1], clientID: "me" }]);
@@ -770,4 +770,57 @@ test("joining the file already open is a no-op", () => {
   h.collab.join("file-1", "tex");
   assert.equal(socket.messagesOfType("open").length, opens);
   assert.equal(h.collab.status(), "live");
+});
+
+test("maintenance cancels the push debounce while reads and presence stay live", () => {
+  const h = harness();
+  h.collab.watchProject("p-1");
+  const socket = joined(h);
+  const snapshots = [], builds = [];
+  h.collab.onStatus((snapshot) => snapshots.push(snapshot));
+  h.collab.onBuild((build) => builds.push(build));
+  h.typeLocally([{ changes: [1], clientID: "me" }]);
+  const pending = h.editor.pending;
+  socket.deliver({ t: "maintenance", active: true });
+  assert.deepEqual(h.scheduledDelays(), [], "pause must cancel the pending push timer");
+  assert.equal(snapshots.at(-1).paused, true);
+  assert.equal(snapshots.at(-1).pending, true);
+  assert.equal(h.collab.active(), true);
+  assert.equal(h.collab.fileId(), "file-1");
+  assert.equal(h.collab.role(), "owner");
+  assert.equal(h.editor.pending, pending);
+  assert.equal(h.editor.loaded.length, 1);
+  h.collab.flush(); h.runTimers();
+  assert.equal(socket.messagesOfType("push").length, 0);
+  h.moveCursor(2); h.runTimers();
+  assert.equal(socket.lastOfType("presence").head, 2);
+  socket.deliver({ t: "peers", fileId: "file-1", peers: [{ id: "peer" }] });
+  socket.deliver({ t: "filepeers", projectId: "p-1", files: FILE_PRESENCE });
+  socket.deliver({ t: "build", projectId: "p-1", buildId: "b-1" });
+  assert.equal(h.collab.peers()[0].id, "peer");
+  assert.deepEqual(h.collab.filePeers(), FILE_PRESENCE);
+  assert.equal(builds.length, 1);
+  socket.deliver({ t: "updates", fileId: "file-1", version: 4, updates: [{ clientID: "peer", changes: [1] }] });
+  assert.equal(h.editor.version, 4);
+  assert.equal(socket.messagesOfType("push").length, 0);
+  assert.equal(h.runTimers(), 0, "no retry loop while paused");
+  socket.deliver({ t: "maintenance", active: false });
+  assert.equal(snapshots.at(-1).paused, false);
+  assert.equal(socket.messagesOfType("push").length, 1);
+});
+
+test("initial active false resets a retained pause after reconnect, ignoring old socket notices", () => {
+  const h = harness();
+  const old = joined(h);
+  const snapshots = [];
+  h.collab.onStatus((snapshot) => snapshots.push(snapshot));
+  old.deliver({ t: "maintenance", active: true });
+  old.fire("close", { code: 1006 });
+  h.runTimers(); h.socket().fire("open");
+  h.socket().deliver({ t: "maintenance", active: false });
+  h.socket().deliver({ t: "opened", fileId: "file-1", version: 3, doc: "hello", role: "owner" });
+  old.deliver({ t: "maintenance", active: true });
+  assert.equal(snapshots.at(-1).paused, false);
+  h.typeLocally([{ changes: [1], clientID: "me" }]); h.runTimers();
+  assert.equal(h.socket().messagesOfType("push").length, 1);
 });

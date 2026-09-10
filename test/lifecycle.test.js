@@ -1,7 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { isMutatingMethod, lifecycleGate, healthStatus, HEALTH_PATH } = require("../src/lifecycle");
+const { isMutatingMethod, isWriteRequest, lifecycleGate, healthStatus, HEALTH_PATH } = require("../src/lifecycle");
 
 const RUNNING = { shuttingDown: false, maintenance: false };
 const MAINTENANCE = { shuttingDown: false, maintenance: true };
@@ -35,6 +35,19 @@ test("maintenance refuses writes but keeps reads and health", () => {
 test("maintenance does not gate non-api mutations", () => {
   // Static assets are GET-only; a stray POST elsewhere is left to normal handling.
   assert.equal(lifecycleGate({ method: "POST", pathname: "/upload", ...MAINTENANCE }), null);
+});
+
+test("SSO callbacks are writes even when a failed GET only records an audit event", () => {
+  assert.deepEqual(lifecycleGate({ method: "GET", pathname: "/api/auth/sso/callback", ...MAINTENANCE }),
+    { status: 503, code: "MAINTENANCE_MODE" });
+  for (const [method, pathname, expected] of [
+    ["GET", "/api/auth/sso/callback", true],
+    ["post", "/api/unknown", true],
+    ["GET", "/api/auth/sso/start", false],
+    ["GET", "/api/project-templates", false],
+    ["GET", "/api/projects", false],
+    ["POST", "/upload", false],
+  ]) assert.equal(isWriteRequest(method, pathname), expected, `${method} ${pathname}`);
 });
 
 test("shutting down refuses everything except health", () => {

@@ -446,6 +446,130 @@ async function until(predicate, label) {
   }
 }
 
+for (const echoFirst of [false, true]) {
+  for (const resumeBeforeAck of [false, true]) {
+    test(`maintenance preserves an accepted in-flight push and unsent typing (echo first: ${echoFirst}, resume before ack: ${resumeBeforeAck})`, () => {
+      const r = room(), b = browser("local"); b.join(r);
+      const socket = b.socket();
+      b.type({ from: 4, insert: " first" }); b.api.flush();
+      const ack = accept(r, b), own = batch(r, 0);
+      b.type({ from: 10, insert: " second" });
+      socket.deliver({ t: "maintenance", active: true });
+      if (echoFirst) socket.deliver(own);
+      if (resumeBeforeAck) socket.deliver({ t: "maintenance", active: false });
+      b.tick(); b.api.flush();
+      assert.equal(socket.of("push").length, 1, "neither notice nor echo is a push ack");
+      socket.deliver(ack);
+      if (!echoFirst) socket.deliver(own);
+      if (!resumeBeforeAck) {
+        b.tick(); b.api.flush();
+        assert.equal(socket.of("push").length, 1, "ack does not bypass maintenance");
+        assert.equal(b.doc(), "abcd first second");
+        assert.equal(b.pending(), 1);
+        assert.equal(b.api.pending(), true);
+        socket.deliver({ t: "maintenance", active: false });
+      }
+      assert.equal(socket.of("push").length, 2);
+      assert.equal(socket.last("push").version, 1);
+      assert.equal(socket.last("push").updates.length, 1, "only unsent typing remains");
+      const next = accept(r, b);
+      socket.deliver(batch(r, 1)); socket.deliver(next);
+      assert.equal(r.text(), "abcd first second");
+      assert.equal(b.api.pending(), false);
+      converged(r, b);
+    });
+  }
+}
+
+for (const refusalAt of ["before pause", "during pause", "after resume"]) {
+  test(`tagged maintenance refusal ${refusalAt} keeps real OT edits and resumes through gap recovery`, () => {
+    const r = room(), b = browser("local"); b.join(r);
+    const socket = b.socket();
+    b.type({ from: 4, insert: " first" }); b.api.flush();
+    b.type({ from: 10, insert: " second" });
+    const refused = { t: "error", code: "MAINTENANCE_MODE", request: "push", fileId: r.fileId };
+    if (refusalAt === "before pause") socket.deliver(refused);
+    assert.equal(socket.of("push").length, 1, "a refusal is not an invitation to retry immediately");
+    socket.deliver({ t: "maintenance", active: true });
+    if (refusalAt === "during pause") socket.deliver(refused);
+    assert.equal(b.doc(), "abcd first second");
+    assert.equal(b.version(), 0);
+    assert.equal(b.pending(), 2);
+    assert.equal(b.api.pending(), true);
+    // Learn a gap while paused; a short pull reply must retain its missing tail.
+    remote(r, { from: 0, insert: "remote " });
+    const short = batch(r, 0);
+    remote(r, { from: r.doc.length, insert: "!" });
+    socket.deliver(batch(r, 1));
+    assert.equal(socket.last("pull").version, 0, "reads remain available during maintenance");
+    b.tick(); b.api.flush();
+    assert.equal(socket.of("push").length, 1);
+    socket.deliver({ t: "maintenance", active: false });
+    socket.deliver(short);
+    assert.equal(socket.last("pull").version, 1);
+    socket.deliver(batch(r, 1));
+    if (refusalAt === "after resume") {
+      assert.equal(socket.of("push").length, 1, "resume must retain the in-flight barrier");
+      socket.deliver(refused);
+    }
+    assert.equal(socket.of("push").length, 2, "resume sends exactly one rebased batch");
+    assert.equal(socket.last("push").version, 2);
+    assert.equal(socket.last("push").updates.length, 2);
+    const ack = accept(r, b);
+    socket.deliver(batch(r, 2)); socket.deliver(ack);
+    assert.equal(r.text(), "remote abcd! first second");
+    converged(r, b);
+  });
+}
+
+test("only a tagged matching push refusal releases the current request", () => {
+  const r = room(), b = browser("local"); b.join(r);
+  const old = b.socket();
+  b.api.disconnect(); b.join(r);
+  b.type({ from: 4, insert: " first" }); b.api.flush();
+  const socket = b.socket();
+  b.type({ from: 10, insert: " second" });
+  socket.deliver({ t: "maintenance", active: true });
+  const refused = { t: "error", code: "MAINTENANCE_MODE", request: "push", fileId: r.fileId };
+  for (const message of [
+    { t: "error", code: "MAINTENANCE_MODE" },
+    { ...refused, request: "pull" }, { ...refused, request: "open" },
+    { ...refused, fileId: "file-2" }, { ...refused, fileId: undefined },
+  ]) socket.deliver(message);
+  old.deliver(refused);
+  old.fire("error"); old.fire("close", { code: 1001 });
+  socket.deliver({ t: "maintenance", active: false });
+  b.tick(); b.api.flush();
+  assert.equal(b.api.status(), "live", "unrelated errors must not disrupt the stream");
+  assert.equal(socket.of("push").length, 1);
+  socket.deliver(refused);
+  assert.equal(socket.of("push").length, 2);
+  const ack = accept(r, b);
+  socket.deliver(batch(r, 0)); socket.deliver(ack);
+  converged(r, b);
+});
+
+test("late maintenance refusal from the old file cannot release a new file's push", () => {
+  const r = room(), b = browser("local"); b.join(r);
+  b.type({ from: 4, insert: " old" }); b.api.flush();
+  const other = new CollabDocument({ fileId: "file-2", content: "two" });
+  b.join(other);
+  b.type({ from: 3, insert: "!" }); b.api.flush();
+  const socket = b.socket();
+  b.type({ from: 4, insert: "?" });
+  socket.deliver({ t: "maintenance", active: true });
+  socket.deliver({ t: "error", code: "MAINTENANCE_MODE", request: "push", fileId: r.fileId });
+  socket.deliver({ t: "maintenance", active: false });
+  b.tick(); b.api.flush();
+  assert.equal(socket.of("push").length, 2);
+  const ack = accept(other, b);
+  socket.deliver(batch(other, 0)); socket.deliver(ack);
+  assert.equal(socket.of("push").length, 3);
+  const next = accept(other, b);
+  socket.deliver(batch(other, 1)); socket.deliver(next);
+  converged(other, b);
+});
+
 test("real WS authority echoes to sender before ack and dependent peer edits converge", {
   skip: !connectionString, timeout: 15000,
 }, async (t) => {

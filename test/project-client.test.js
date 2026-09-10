@@ -124,7 +124,7 @@ function harness(language = "en", realtime = false) {
       IrisCollab: {
         active: () => false, status: () => "offline", leave() {}, join() {}, disconnect() {},
         watchProject() {}, onStatus() {}, onBuild() {}, onFilePeers() {},
-        filePeers: () => [], pending: () => false,
+        filePeers: () => [], pending: () => false, paused: () => false,
       },
     },
   });
@@ -725,6 +725,136 @@ async function openShared(h) {
   await h.open(sharedProject());
   h.socket().fire("open");
   h.socket().deliver({ t: "opened", fileId: mainFileId, version: 0, doc: "original", role: "owner" });
+}
+
+for (const language of ["en", "it"]) {
+  test(`maintenance locks the real editor and preserves pending text, preferences and status (${language})`, options, async () => {
+    const h = harness(language, true);
+    await h.open({ ...sharedProject(), autoSave: true, autoSaveDelay: 25, retention: retentionData() });
+    h.a.wire();
+    const socket = h.socket(); socket.fire("open");
+    socket.deliver({ t: "opened", fileId: mainFileId, version: 0, doc: "original", role: "owner" });
+    h.setRetention("buildKeep", "40");
+    h.edit("original first"); h.window.IrisCollab.flush();
+    h.edit("original first second");
+    const pending = clone(h.editor.collabPending());
+    const snapshot = clone(h.app.serialize());
+    socket.deliver({ t: "maintenance", active: true });
+    assert.equal(h.editor.isReadOnly(), true);
+    h.edit("must not replace retained text");
+    assert.equal(h.editor.value, "original first second");
+    assert.deepEqual(clone(h.editor.collabPending()), pending);
+    assert.equal(h.window.IrisCollab.pending(), true);
+    assert.equal(h.a.state.role, "owner");
+    assert.equal(h.a.state.autoSave, true);
+    assert.equal(h.a.state.autoSaveDelay, 25);
+    assert.deepEqual(clone(h.app.pendingRetention()), { buildKeep: 40 });
+    assert.deepEqual(clone(h.app.serialize()), snapshot, "maintenance must not change the manifest");
+    assert.equal(h.get("stSyncLabel").textContent, h.t("collab.maintenance"));
+    assert.notEqual(h.t("collab.maintenance"), "collab.maintenance");
+    assert.equal(h.get("stSync").hidden, false);
+    assert.equal(h.get("stSync").classList.contains("pending"), true);
+    assert.ok(h.get("stSync").title.includes(h.t("collab.maintenanceHint")));
+    assert.ok(h.get("stSync").title.includes(h.t("collab.pendingTitle")));
+    h.app.setRole("owner");
+    assert.equal(h.editor.isReadOnly(), true, "role refresh cannot unlock maintenance");
+    socket.deliver({ t: "error", code: "MAINTENANCE_MODE", request: "push", fileId: mainFileId });
+    h.window.IrisCollab.flush();
+    assert.equal(socket.of("push").length, 1);
+    socket.deliver({ t: "maintenance", active: false });
+    assert.equal(h.editor.isReadOnly(), false);
+    assert.equal(socket.of("push").length, 2);
+    assert.deepEqual(socket.of("push")[1].updates, pending.updates);
+    assert.equal(h.get("stSyncLabel").textContent, h.t("collab.pending"));
+    const updates = socket.of("push")[1].updates;
+    socket.deliver({ t: "updates", fileId: mainFileId, version: 2, updates });
+    socket.deliver({ t: "pushed", fileId: mainFileId, accepted: true, version: 2 });
+    assert.equal(h.editor.value, "original first second");
+    assert.equal(h.editor.collabVersion(), 2);
+    assert.equal(h.window.IrisCollab.pending(), false);
+    assert.equal(h.get("stSyncLabel").textContent, h.t("collab.live"));
+    assert.equal(h.a.state.autoSave, true);
+    assert.deepEqual(clone(h.app.pendingRetention()), { buildKeep: 40 });
+    assert.equal(h.requests.length, 1, "pause/resume needs no metadata writes or reloads");
+  });
+}
+
+test("maintenance survives file switches and authoritative loads, but reads still update the editor", options, async () => {
+  const h = harness("en", true); await openShared(h);
+  const socket = h.socket();
+  socket.deliver({ t: "maintenance", active: true });
+  h.a.openFile(otherFileId);
+  assert.equal(h.editor.isReadOnly(), true);
+  socket.deliver({ t: "opened", fileId: otherFileId, version: 3, doc: "other", role: "owner" });
+  socket.deliver({ t: "updates", fileId: otherFileId, version: 4, updates: [{ clientID: "remote", changes: ChangeSet.of({ from: 5, insert: "!" }, 5).toJSON() }] });
+  assert.equal(h.editor.value, "other!");
+  assert.equal(h.editor.isReadOnly(), true);
+  socket.deliver({ t: "resync", fileId: otherFileId, version: 5, doc: "accepted" });
+  h.edit("blocked");
+  assert.equal(h.editor.value, "accepted");
+  assert.equal(h.editor.isReadOnly(), true);
+  socket.deliver({ t: "maintenance", active: false });
+  assert.equal(h.editor.isReadOnly(), false);
+  h.edit("accepted edit"); h.window.IrisCollab.flush();
+  assert.equal(socket.of("push").at(-1).version, 5);
+});
+
+for (const reload of ["refresh", "project load"]) {
+  test(`maintenance remains read-only across an accepted ${reload} until active false`, options, async () => {
+    const h = harness("en", true); await openShared(h);
+    const old = h.socket();
+    old.deliver({ t: "maintenance", active: true });
+    old.deliver({ t: "file-closed", fileId: mainFileId });
+    const loading = reload === "refresh" ? h.a.refreshFileTree() : h.projects.openProject("p1");
+    await tick();
+    h.requests.at(-1).reply({ ...sharedProject(), revision: 8 }); await loading;
+    assert.equal(h.editor.isReadOnly(), true, "accepted data clears file unavailability, not global maintenance");
+    if (reload === "project load") h.socket().fire("open");
+    h.socket().deliver({ t: "opened", fileId: mainFileId, version: 4, doc: "accepted", role: "owner" });
+    assert.equal(h.editor.isReadOnly(), true);
+    h.socket().deliver({ t: "maintenance", active: false });
+    assert.equal(h.editor.isReadOnly(), false, "initial active false also clears a retained pause");
+    if (reload === "project load") old.deliver({ t: "maintenance", active: true });
+    assert.equal(h.editor.isReadOnly(), false);
+    h.edit("accepted edit"); h.window.IrisCollab.flush();
+    assert.equal(h.socket().of("push").at(-1).version, 4);
+  });
+}
+
+test("maintenance resume retains a missing-file lock but other files remain writable", options, async () => {
+  const h = harness("en", true); await openShared(h);
+  const socket = h.socket();
+  socket.deliver({ t: "maintenance", active: true });
+  socket.deliver({ t: "file-closed", fileId: mainFileId });
+  socket.deliver({ t: "maintenance", active: false });
+  assert.equal(h.editor.isReadOnly(), true);
+  assert.equal(h.get("stSyncLabel").textContent, h.t("collab.fileUnavailable"));
+  h.a.openFile(otherFileId);
+  socket.deliver({ t: "opened", fileId: otherFileId, version: 0, doc: "other", role: "owner" });
+  assert.equal(h.editor.isReadOnly(), false);
+  h.edit("other edited"); h.window.IrisCollab.flush();
+  assert.equal(socket.of("push").at(-1).fileId, otherFileId);
+  h.a.openFile(mainFileId);
+  assert.equal(h.editor.isReadOnly(), true);
+});
+
+for (const downgrade of ["role event", "opened viewer"]) {
+  test(`maintenance resume checks current permissions after ${downgrade}`, options, async () => {
+    const h = harness("en", true); await openShared(h);
+    const socket = h.socket();
+    socket.deliver({ t: "maintenance", active: true });
+    if (downgrade === "role event") socket.deliver({ t: "role", fileId: mainFileId, role: "viewer" });
+    else {
+      h.a.openFile(otherFileId);
+      socket.deliver({ t: "opened", fileId: otherFileId, version: 0, doc: "other", role: "viewer" });
+    }
+    socket.deliver({ t: "maintenance", active: false });
+    assert.equal(h.editor.isReadOnly(), true);
+    h.edit("blocked"); h.window.IrisCollab.flush();
+    assert.equal(socket.of("push").length, 0);
+    h.a.openFile(mainFileId);
+    assert.equal(h.editor.isReadOnly(), true, "switching cannot bypass the latest viewer permission");
+  });
 }
 
 for (const language of ["en", "it"]) {

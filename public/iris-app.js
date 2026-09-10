@@ -88,6 +88,9 @@
   // read-only workspace: no editing, saving, compiling or tree mutations.
   function isReadOnly() { return state.role === "viewer"; }
   function isFileUnavailable(id = state.activeId) { return state.unavailableFiles.has(id) || state.unavailableFiles.has(canonicalFileId(id)); }
+  function applyEditorGate() {
+    ed().setReadOnly(isReadOnly() || isFileUnavailable() || window.IrisCollab.paused());
+  }
 
   /* ---------------- persistence (delegated to the projects layer) ---------------- */
   let acknowledgedManifest = null;
@@ -230,7 +233,7 @@
   function applyRoleGate() {
     const ro = isReadOnly();
     document.documentElement.classList.toggle("iris-readonly", ro);
-    ed().setReadOnly(ro || isFileUnavailable());
+    applyEditorGate();
     if (ro) { state.autoSave = false; clearTimeout(persistT); }
     updateAutoSaveControls();
     // Settings that can no longer be saved must not keep the project dirty.
@@ -268,7 +271,10 @@
       if (lastPeers.length) renderPresence(lastPeers);
     });
     ed().onPeers(renderPresence);
-    window.IrisCollab.onStatus(renderSyncStatus);
+    window.IrisCollab.onStatus((snapshot) => {
+      applyEditorGate();
+      renderSyncStatus(snapshot);
+    });
     window.IrisCollab.onFilePeers(renderTreePresence);
     window.IrisCollab.onBuild(onRemoteBuild);
     // Losing write access mid-session drops the workspace to read-only in place,
@@ -352,6 +358,7 @@
     connecting: "collab.connecting",
     live: "collab.live",
     readonly: "collab.readonly",
+    maintenance: "collab.maintenance",
     "file-unavailable": "collab.fileUnavailable",
     offline: "collab.offline",
     revoked: "collab.revoked",
@@ -363,7 +370,8 @@
     const chip = $("stSync");
     const label = $("stSyncLabel");
     if (!chip || !label) return;
-    const status = isFileUnavailable() ? "file-unavailable" : (snapshot ? snapshot.status : window.IrisCollab.status());
+    const paused = snapshot ? snapshot.paused : window.IrisCollab.paused();
+    const status = isFileUnavailable() ? "file-unavailable" : (paused ? "maintenance" : (snapshot ? snapshot.status : window.IrisCollab.status()));
     const pending = snapshot ? !!snapshot.pending : window.IrisCollab.pending();
     const key = SYNC_LABEL[status];
     chip.hidden = !key;
@@ -372,11 +380,12 @@
     // on its own claims the document is settled when it is not. While the link
     // is down the more urgent fact is the link, so the label keeps saying so and
     // only the tooltip mentions what is still waiting.
-    const unconfirmed = pending && (status === "live" || status === "offline");
+    const unconfirmed = pending && (status === "live" || status === "offline" || status === "maintenance");
     chip.dataset.sync = status;
     chip.classList.toggle("pending", unconfirmed);
     label.textContent = unconfirmed && status === "live" ? t("collab.pending") : t(key);
     chip.title = t(status === "file-unavailable" ? "collab.fileUnavailableHint" : (unconfirmed ? "collab.pendingTitle" : "collab.title"));
+    if (status === "maintenance") chip.title = t("collab.maintenanceHint") + (unconfirmed ? ` ${t("collab.pendingTitle")}` : "");
   }
 
   /* ---------------- document structure ---------------- */
@@ -878,7 +887,7 @@
       t.title = dirty ? `${f.name} — ${window.IrisI18n.t("tree.dirty")}` : f.name;
       t.tabIndex = 0;
       const closeLabel = window.IrisI18n.t(dirty ? "tree.closeDirtyTab" : "tree.closeTab", { name: f.name });
-      t.innerHTML = `${fileIcon(f.kind)}<span class="tab-name"><span class="dot" aria-hidden="true"></span><span>${esc(f.name)}</span></span><button class="x" type="button" data-x aria-label="${esc(closeLabel)}">${ti("x")}</button>`;
+      t.innerHTML = `${fileIcon(f.kind)}<span class="tab-name"><span class="dot" aria-hidden="true"></span><span>${esc(f.name)}</span></span><button class="x" type="button" data-x aria-label="${esc(closeLabel)}" title="${esc(closeLabel)}">${ti("x")}</button>`;
       t.addEventListener("click", (e) => {
         if (e.target.closest("[data-x]")) { closeTab(id); return; }
         openFile(id);
@@ -913,7 +922,7 @@
     state.activeId = id;
     if (!state.openTabs.includes(id)) state.openTabs.push(id);
     ed().load(f.content || "", f.kind);
-    ed().setReadOnly(isReadOnly() || isFileUnavailable(id));
+    applyEditorGate();
     renderTabs();
     renderOutline();
     // A different document is a different structure, and there is no typing to
@@ -1377,7 +1386,7 @@
     if (!active || active.generated || active.readOnly) active = firstFile();
     if (active && (active.generated || active.readOnly)) active = null;
     state.activeId = active ? active.id : null;
-    ed().setReadOnly(isReadOnly());
+    applyEditorGate();
     if (state.activeId && !state.openTabs.includes(state.activeId)) state.openTabs.unshift(state.activeId);
     if (!folderNodeByPath(state.selectedFolder)) state.selectedFolder = "";
 
@@ -1612,6 +1621,7 @@
     const pct = Math.round((state.fit ? state.effectiveZoom : state.zoom) * 100);
     $("zVal").textContent = pct + "%";
     $("fitBtn").classList.toggle("on", state.fit);
+    $("fitBtn").setAttribute("aria-pressed", state.fit ? "true" : "false");
     const enabled = state.previewKind === "pdf" || state.previewKind === "image";
     $("zIn").disabled = !enabled;
     $("zOut").disabled = !enabled;
@@ -2592,13 +2602,30 @@
     document.addEventListener("click", () => { em.classList.remove("on"); $("engineBtn").setAttribute("aria-expanded", "false"); });
 
     // side tabs
-    document.querySelectorAll(".side-tab").forEach((t) => t.addEventListener("click", () => {
-      document.querySelectorAll(".side-tab").forEach((x) => x.classList.toggle("on", x === t));
-      const which = t.dataset.side;
+    const sideTabs = Array.from(document.querySelectorAll(".side-tab"));
+    const selectSideTab = (tab) => {
+      sideTabs.forEach((x) => {
+        const selected = x === tab;
+        x.classList.toggle("on", selected);
+        x.setAttribute("aria-selected", selected ? "true" : "false");
+        x.tabIndex = selected ? 0 : -1;
+      });
+      const which = tab.dataset.side;
       document.querySelector('[data-panel="files"]').style.display = which === "files" ? "" : "none";
       document.querySelector('[data-panel="outline"]').style.display = which === "outline" ? "" : "none";
       if (which === "outline") renderOutline();
-    }));
+    };
+    sideTabs.forEach((tab, index) => {
+      tab.addEventListener("click", () => selectSideTab(tab));
+      tab.addEventListener("keydown", (event) => {
+        const step = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
+        if (!step) return;
+        event.preventDefault();
+        const next = sideTabs[(index + step + sideTabs.length) % sideTabs.length];
+        selectSideTab(next);
+        next.focus();
+      });
+    });
 
     // preview controls
     $("pvSeg").querySelectorAll("button").forEach((b) => b.addEventListener("click", () => setView(b.dataset.view)));

@@ -10,7 +10,7 @@ const argon2 = require("argon2");
 const { createDatabase } = require("./database");
 const { loadDotEnv } = require("./env");
 const { uuidv7, isUuid, UUID_PATTERN } = require("./ids");
-const { lifecycleGate, healthStatus, isMutatingMethod, HEALTH_PATH } = require("./lifecycle");
+const { lifecycleGate, healthStatus, isWriteRequest, HEALTH_PATH } = require("./lifecycle");
 const { recordAuditEvent } = require("./audit");
 const { normalizeProjectPath, collectProjectFiles, reconcileProjectFiles } = require("./project-files");
 const { createProjectMutations } = require("./project-mutations");
@@ -92,8 +92,7 @@ const TRUST_PROXY = String(process.env.TRUST_PROXY || "false") === "true";
 // operator creates it to open a consistent backup or restore window and removes
 // it to reopen writes. Kept at the DATA_DIR root, a sibling of projects/.
 const MAINTENANCE_FILE = process.env.MAINTENANCE_FILE || path.join(DATA_DIR, ".maintenance");
-// How long a graceful shutdown waits for in-flight requests before forcing the
-// remaining connections closed.
+// Deadline for the entire drain, including realtime persistence and db.end.
 const SHUTDOWN_TIMEOUT_MS = positiveIntEnv("SHUTDOWN_TIMEOUT_MS", 15000);
 const MAX_BODY = Number(process.env.MAX_BODY_MB || 25) * 1024 * 1024;
 const COMPILE_TIMEOUT_MS = Number(process.env.COMPILE_TIMEOUT_MS || 30000);
@@ -194,6 +193,12 @@ let shuttingDown = false;
 let inFlight = 0;
 let inFlightMutations = 0;
 const activeBuilds = new Set();
+const backgroundPending = new Set();
+const activeChildren = new Set();
+let shutdownPromise = null;
+let shutdownForced = false;
+let maintenance = false;
+let maintenancePoll = null;
 
 // The admission controls declared above, instantiated. They are module state
 // rather than per-request objects because a limiter that forgets between
@@ -217,9 +222,38 @@ const RETENTION_SWEEP_MS = positiveIntEnv("RETENTION_SWEEP_MS", 3600000);
 // merely slow, short enough that a crash does not cost a day of disk.
 const RETENTION_ORPHAN_GRACE_MS = positiveIntEnv("RETENTION_ORPHAN_GRACE_MS", 6 * 60 * 60 * 1000);
 
-// Cheap, synchronous check on the mutation path, which is far rarer than reads.
+// Observe on health/admission as well as the small poll: no watcher is needed.
 function maintenanceActive() {
-  return fsSync.existsSync(MAINTENANCE_FILE);
+  const active = fsSync.existsSync(MAINTENANCE_FILE);
+  if (active !== maintenance) {
+    maintenance = active;
+    collabSessions.forEach((session) => collabSend(session.socket, { t: "maintenance", active }));
+    if (active && !shuttingDown) requestCollabDrain();
+    if (!active && !shuttingDown) {
+      // A failed drain retains its flags. Reopening restores ordinary debounce
+      // and retry timers even if no client sends another edit.
+      collabRooms.all().filter(collabRoomDirty).forEach(collabSchedulePersist);
+      for (const [projectId, state] of collabProjects) {
+        if (state.touchPending) collabScheduleTouch(projectId);
+      }
+    }
+  }
+  return active;
+}
+
+function startBackgroundWrite(work) {
+  if (shuttingDown || maintenanceActive()) return Promise.resolve(null);
+  const pending = Promise.resolve().then(work).finally(() => backgroundPending.delete(pending));
+  backgroundPending.add(pending);
+  return pending;
+}
+
+function trackedSpawn(command, args, options) {
+  if (shutdownForced) throw requestError("SERVER_SHUTTING_DOWN", 503);
+  const child = spawn(command, args, options);
+  activeChildren.add(child);
+  child.once("close", () => activeChildren.delete(child));
+  return child;
 }
 
 const MIME = {
@@ -418,6 +452,7 @@ const ARGON2_OPTIONS = {
 async function withPasswordHashSlot(work) {
   let release;
   try {
+    if (shuttingDown) throw new GateRejectedError("AUTH_BUSY");
     release = await passwordHashGate.acquire();
   } catch (err) {
     if (err instanceof GateRejectedError) throw requestError("AUTH_BUSY", 503);
@@ -2260,7 +2295,7 @@ function collabProjectState(projectId) {
 function collabReleaseProject(projectId) {
   const state = collabProjects.get(projectId);
   if (!state) return;
-  if (state.touchTimer || state.revisionTimer || state.presenceTimer) return;
+  if (state.touchTimer || state.revisionTimer || state.presenceTimer || state.touchPending || state.touching) return;
   if (collabRooms.forProject(projectId).length) return;
   collabProjects.delete(projectId);
 }
@@ -2375,6 +2410,19 @@ function collabLeave(session, fileId) {
 
 // Tracks in-flight persistence so shutdown can wait for it.
 const collabPending = new Set();
+const collabStarted = new Set();
+let collabDrainPromise = null;
+
+function collabRoomDirty(room) {
+  return !!room.storageDir && (room.needsPersist() || (!!room.lastAuthor && room.needsRevision()));
+}
+
+// A conservative count of obligations and started work, not a count of SQL calls.
+function collabPendingWrites() {
+  return collabPending.size + collabStarted.size
+    + collabRooms.all().filter(collabRoomDirty).length
+    + Array.from(collabProjects.values()).filter((state) => state.touchPending).length;
+}
 function collabTrack(promise) {
   const tracked = promise
     .catch((err) => console.error("Realtime persistence failed", err))
@@ -2386,13 +2434,15 @@ function collabTrack(promise) {
 // Writes the room's authoritative text to disk, and optionally consolidates the
 // burst of realtime edits into a single revision. Serialized per room so two
 // flushes cannot interleave and write stale text.
-async function collabPersist(room, { revision = false } = {}) {
-  if (room.persisting) {
-    room.persisting = room.persisting.then(() => collabPersistNow(room, revision));
-    return room.persisting;
-  }
-  room.persisting = collabPersistNow(room, revision).finally(() => { room.persisting = null; });
-  return room.persisting;
+function collabPersist(room, { revision = false } = {}) {
+  const pending = (room.persisting || Promise.resolve()).catch(() => {})
+    .then(() => collabPersistNow(room, revision)).finally(() => {
+      collabStarted.delete(pending);
+      if (room.persisting === pending) room.persisting = null;
+    });
+  room.persisting = pending;
+  collabStarted.add(pending);
+  return pending;
 }
 
 async function collabPersistNow(room, revision) {
@@ -2427,19 +2477,30 @@ async function collabPersistNow(room, revision) {
 function collabScheduleTouch(projectId) {
   const state = collabProjectState(projectId);
   state.touchPending = true;
-  if (state.touchTimer) return;
+  if (state.touchTimer || maintenance || shuttingDown) return;
   state.touchTimer = setTimeout(() => {
     state.touchTimer = null;
     collabTrack(collabTouchProject(projectId));
   }, COLLAB_TOUCH_MS);
 }
 
-async function collabTouchProject(projectId) {
+function collabTouchProject(projectId) {
   const state = collabProjects.get(projectId);
-  if (!state || !state.touchPending) return;
+  if (!state) return Promise.resolve();
+  if (state.touching) return state.touching;
+  if (!state.touchPending) return Promise.resolve();
   state.touchPending = false;
-  await db.query("UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = $1", [projectId]);
-  collabReleaseProject(projectId);
+  const pending = db.query("UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = $1", [projectId])
+    .catch((err) => { state.touchPending = true; throw err; })
+    .finally(() => {
+      state.touching = null;
+      collabStarted.delete(pending);
+      if (state.touchPending) collabScheduleTouch(projectId);
+      collabReleaseProject(projectId);
+    });
+  state.touching = pending;
+  collabStarted.add(pending);
+  return pending;
 }
 
 // Consolidates the realtime edits of one project into a single checkpoint.
@@ -2479,6 +2540,7 @@ async function collabCaptureRevisions(projectId, rooms) {
 // because it is the room's own bytes; the revision checkpoint is scheduled per
 // project, because that is the unit the database serializes it at.
 function collabSchedulePersist(room) {
+  if (maintenance || shuttingDown) return;
   const now = Date.now();
   if (!room.flushDeadline) room.flushDeadline = now + COLLAB_FLUSH_MAX_MS;
   clearTimeout(room.flushTimer);
@@ -2493,6 +2555,7 @@ function collabSchedulePersist(room) {
 // a burst of collaborative editing across many files produces one checkpoint
 // once the burst subsides rather than one per file.
 function collabScheduleRevision(projectId) {
+  if (maintenance || shuttingDown) return;
   const state = collabProjectState(projectId);
   clearTimeout(state.revisionTimer);
   state.revisionTimer = setTimeout(() => {
@@ -2737,6 +2800,8 @@ async function collabHandleMessage(session, raw) {
       if (!collabActive(session)) return;
       if (session.rooms.get(fileId) !== entry || collabRooms.get(fileId) !== entry.room) throw new CollabError("COLLAB_NOT_JOINED");
       if (!roleHasCapability(entry.role, "write")) throw new CollabError("COLLAB_READ_ONLY");
+      if (shuttingDown) throw new CollabError("SERVER_SHUTTING_DOWN");
+      if (maintenanceActive()) throw new CollabError("MAINTENANCE_MODE");
       const result = entry.room.receive(Number(message.version), message.updates, { userId: session.user.sub });
       // Every replica, including the sender, sees the same accepted stream before
       // the ack can release another push or a peer can send dependent changes.
@@ -2906,6 +2971,7 @@ async function collabUpgrade(req, socket, head, wss) {
     return finish("401 Unauthorized", "Not authenticated");
   }
   if (socket.destroyed) return;
+  if (shuttingDown || maintenanceActive()) return finish("503 Service Unavailable", "Iris is unavailable");
   if (Date.now() >= user.exp * 1000) return finish("401 Unauthorized", "Session expired");
   if (user.passwordChangeRequired) return finish("403 Forbidden", "Password change required");
   // Counted per account rather than per address, so it holds for someone behind
@@ -2939,8 +3005,8 @@ async function collabUpgrade(req, socket, head, wss) {
         const response = { t: "error", code };
         try {
           const message = JSON.parse(data.toString("utf8"));
-          if (message?.t === "open") {
-            response.request = "open";
+          if (message?.t === "open" || message?.t === "push") {
+            response.request = message.t;
             response.fileId = message.fileId;
           }
         } catch {}
@@ -2950,10 +3016,15 @@ async function collabUpgrade(req, socket, head, wss) {
     ws.on("close", () => collabCloseSession(session));
     ws.on("error", () => {});
     collabSend(ws, { t: "ready", sessionId: session.id, color: peerColor(user.sub) });
+    collabSend(ws, { t: "maintenance", active: false });
   });
 }
 
 function collabAttach(server) {
+  maintenancePoll = setInterval(() => {
+    if (maintenanceActive() && !shuttingDown) requestCollabDrain();
+  }, 1000);
+  maintenancePoll.unref();
   const wss = new WebSocketServer({ noServer: true, maxPayload: COLLAB_MAX_MESSAGE_BYTES });
   server.on("upgrade", (req, socket, head) => {
     let url;
@@ -2984,37 +3055,74 @@ function collabAttach(server) {
   return wss;
 }
 
-// Flushes every room and closes every session, so a restart never loses realtime
-// work that had not yet reached its debounce.
+function requestCollabDrain() {
+  drainCollabWrites({ untilIdle: false }).catch((err) => console.error("Realtime drain failed", err));
+}
+
+function drainCollabWrites({ untilIdle = true } = {}) {
+  if (collabDrainPromise) {
+    // A shared maintenance pass can stop on reopening. Explicit shutdown must
+    // also drain obligations left behind by that earlier pass.
+    return untilIdle ? collabDrainPromise.then(() => drainCollabWrites()) : collabDrainPromise;
+  }
+  if (!collabPendingWrites()) return Promise.resolve();
+  collabDrainPromise = drainCollabWritesNow(untilIdle).finally(() => { collabDrainPromise = null; });
+  return collabDrainPromise;
+}
+
+async function drainCollabWritesNow(untilIdle) {
+  // Reopening rearms ordinary timers. A maintenance drain must leave those
+  // timers alone after every wait, including a queued checkpoint's project gate.
+  const shouldDrain = () => untilIdle || maintenance || shuttingDown;
+  do {
+    if (!shouldDrain()) return;
+    for (const state of collabProjects.values()) {
+      clearTimeout(state.touchTimer);
+      clearTimeout(state.revisionTimer);
+      state.touchTimer = null;
+      state.revisionTimer = null;
+    }
+    for (const room of collabRooms.all()) {
+      clearTimeout(room.flushTimer);
+      room.flushTimer = null;
+    }
+    // Never wait on room.persisting while holding the non-reentrant project gate.
+    const results = await Promise.allSettled([...collabPending, ...collabStarted]);
+    const failed = results.find((result) => result.status === "rejected");
+    if (failed) throw failed.reason;
+    if (shutdownForced) throw new Error("Shutdown deadline exceeded");
+    if (!shouldDrain()) return;
+    const projects = new Set(collabRooms.all().filter(collabRoomDirty).map((room) => room.projectId));
+    for (const projectId of projects) {
+      if (!shouldDrain()) return;
+      const rooms = collabRooms.forProject(projectId);
+      await Promise.all(rooms.filter((room) => room.storageDir && room.needsPersist()).map((room) => collabPersist(room)));
+      if (!shouldDrain()) return;
+      await projectMutations.gate(projectId, () => {
+        if (shouldDrain()) return collabCaptureRevisions(projectId, rooms);
+      });
+    }
+    // Room flushes above can create touches, including after the first timer pass.
+    for (const [projectId, state] of collabProjects) {
+      if (!shouldDrain()) return;
+      clearTimeout(state.touchTimer);
+      state.touchTimer = null;
+      if (state.touchPending || state.touching) await collabTouchProject(projectId);
+    }
+  } while (shouldDrain() && collabPendingWrites());
+}
+
+// Maintenance uses the same durable drain while retaining sessions and presence.
 async function collabShutdown() {
+  clearInterval(maintenancePoll);
   clearInterval(collabHeartbeat);
   Array.from(collabSessions).forEach((session) => collabCloseSession(session, 1001, "server shutting down"));
-  // Every coalesced timer is cancelled and its work done now instead: a pending
-  // tick is deferred work, and deferred work at shutdown is lost work. The
-  // project timestamp is the one thing flushed unconditionally, because its
-  // whole purpose is to survive the process.
-  for (const [projectId, state] of collabProjects) {
-    clearTimeout(state.touchTimer);
-    clearTimeout(state.revisionTimer);
+  for (const state of collabProjects.values()) {
     clearTimeout(state.presenceTimer);
-    state.touchTimer = null;
-    state.revisionTimer = null;
     state.presenceTimer = null;
-    if (state.touchPending) collabTrack(collabTouchProject(projectId));
   }
-  for (const room of collabRooms.all()) {
-    clearTimeout(room.flushTimer);
-    clearTimeout(room.peersTimer);
-    collabTrack(collabPersist(room, { revision: true }));
-  }
-  await Promise.allSettled(Array.from(collabPending));
-  // Final room flushes can schedule a timestamp after the first timer pass.
-  for (const [projectId, state] of collabProjects) {
-    clearTimeout(state.touchTimer);
-    state.touchTimer = null;
-    if (state.touchPending) collabTrack(collabTouchProject(projectId));
-  }
-  await Promise.allSettled(Array.from(collabPending));
+  for (const room of collabRooms.all()) clearTimeout(room.peersTimer);
+  await drainCollabWrites();
 }
 
 // The two ways a project comes into existence, and the only two places the
@@ -3432,7 +3540,7 @@ function refreshFontCache(fontDir) {
     if (!fontDir || !fsSync.existsSync(fontDir)) return resolve("");
     const startedAt = Date.now();
     let log = `$ fc-cache -f ${fontDir}\n`;
-    const child = spawn("fc-cache", ["-f", fontDir], { shell: false });
+    const child = trackedSpawn("fc-cache", ["-f", fontDir], { shell: false });
     const timer = setTimeout(() => child.kill("SIGTERM"), 10000);
     child.stdout.on("data", (chunk) => { log += chunk.toString("utf8"); });
     child.stderr.on("data", (chunk) => { log += chunk.toString("utf8"); });
@@ -3706,7 +3814,7 @@ function runCompileStep({ step, binPath, cwd, fontDir, texmfVar }) {
     let log = `$ ${command} ${args.join(" ")}\n`;
     let timedOut = false;
     let done = false;
-    const child = spawn(command, args, {
+    const child = trackedSpawn(command, args, {
       cwd,
       env: {
         PATH: envPath,
@@ -4189,6 +4297,7 @@ async function compileProject(req, res, user, id) {
   // the compiler process has exited and its output has been published.
   let releaseCompileSlot;
   try {
+    if (shuttingDown) throw new GateRejectedError("COMPILE_SERVER_BUSY");
     releaseCompileSlot = await compileGate.acquire();
   } catch (err) {
     if (err instanceof GateRejectedError) throw requestError("COMPILE_SERVER_BUSY", 503);
@@ -4403,6 +4512,10 @@ async function compileProject(req, res, user, id) {
 const STALLED_BUILD_GRACE_MS = Math.max(COMPILE_TIMEOUT_MS * 4, 5 * 60 * 1000);
 
 async function reconcileStalledBuilds() {
+  return startBackgroundWrite(reconcileStalledBuildsNow);
+}
+
+async function reconcileStalledBuildsNow() {
   const cutoff = new Date(Date.now() - STALLED_BUILD_GRACE_MS);
   const { rows } = await db.query(
     `UPDATE build_outputs SET
@@ -4582,12 +4695,16 @@ let retentionSweepRunning = false;
 async function runRetentionSweep() {
   // One sweep at a time. An instance whose sweep takes longer than the interval
   // should fall behind rather than run two of them over the same rows.
-  if (retentionSweepRunning || shuttingDown) return null;
+  if (retentionSweepRunning || shuttingDown || maintenanceActive()) return null;
   retentionSweepRunning = true;
+  return startBackgroundWrite(runRetentionSweepNow).finally(() => { retentionSweepRunning = false; });
+}
+
+async function runRetentionSweepNow() {
   const now = Date.now();
   const totals = { builds: 0, versions: 0, directories: 0, audit: 0, stalled: 0 };
   try {
-    totals.stalled = await reconcileStalledBuilds();
+    totals.stalled = await reconcileStalledBuildsNow();
     const { rows } = await db.query(
       `SELECT id, storage_path, build_keep, build_days, version_keep, version_days FROM projects`
     );
@@ -4619,8 +4736,6 @@ async function runRetentionSweep() {
     totals.audit = await pruneAuditEvents(now);
   } catch (err) {
     console.error("Retention sweep failed", err.message || err);
-  } finally {
-    retentionSweepRunning = false;
   }
   const reclaimed = totals.builds + totals.versions + totals.directories + totals.audit + totals.stalled;
   if (reclaimed) {
@@ -5710,10 +5825,11 @@ async function serveStatic(req, res, url) {
 }
 
 function healthPayload() {
+  const active = maintenanceActive();
   return {
-    status: healthStatus({ shuttingDown, maintenance: maintenanceActive() }),
-    maintenance: maintenanceActive(),
-    pendingWrites: inFlightMutations,
+    status: healthStatus({ shuttingDown, maintenance: active }),
+    maintenance: active,
+    pendingWrites: inFlightMutations + backgroundPending.size + collabPendingWrites() + (collabDrainPromise ? 1 : 0),
   };
 }
 
@@ -5734,10 +5850,6 @@ async function handle(req, res) {
   // Counted only once the request passes the gate, so refused mutations during a
   // maintenance window do not appear as pending writes the operator waits on.
   let countedWrite = false;
-  res.on("close", () => {
-    inFlight -= 1;
-    if (countedWrite) inFlightMutations -= 1;
-  });
   try {
     if (url.pathname === HEALTH_PATH) return json(res, 200, healthPayload());
 
@@ -5752,7 +5864,7 @@ async function handle(req, res) {
       return text(res, gate.status, gate.code === "MAINTENANCE_MODE" ? "Iris is in maintenance" : "Iris is shutting down");
     }
 
-    if (isMutatingMethod(req.method) && url.pathname.startsWith("/api/")) {
+    if (isWriteRequest(req.method, url.pathname)) {
       countedWrite = true;
       inFlightMutations += 1;
     }
@@ -5763,18 +5875,26 @@ async function handle(req, res) {
   } catch (err) {
     const status = err.status || 500;
     if (status >= 500) console.error(err);
+    if (res.destroyed || res.writableEnded) return;
+    if (res.headersSent) { res.destroy(); return; }
     if (url.pathname.startsWith("/api/")) {
       return errorJson(res, status, err.errorCode || "SERVER_ERROR", err.params || {}, err.headers || {});
     }
     return text(res, status, err.message || "Server error", err.headers || {});
+  } finally {
+    // The operation owns its slot through body/queue waits, audit, compensation
+    // and post-response cleanup. A disconnected client does not cancel its work.
+    inFlight -= 1;
+    if (countedWrite) inFlightMutations -= 1;
   }
 }
 
 function startGracefulShutdown(signal, server) {
-  if (shuttingDown) return;
+  if (shutdownPromise) return shutdownPromise;
   shuttingDown = true;
   console.log(`Received ${signal}; refusing new work and draining in-flight requests`);
   clearInterval(retentionSweepTimer);
+  clearInterval(maintenancePoll);
   // Callers queued for a slot they will now never get are told so, rather than
   // being left holding a request open until the process exits under them.
   compileGate.drain("COMPILE_SERVER_BUSY");
@@ -5782,21 +5902,33 @@ function startGracefulShutdown(signal, server) {
   server.close(() => {});
   if (typeof server.closeIdleConnections === "function") server.closeIdleConnections();
 
-  const deadline = Date.now() + SHUTDOWN_TIMEOUT_MS;
-  const finish = async () => {
-    if (inFlight > 0 && typeof server.closeAllConnections === "function") server.closeAllConnections();
-    // Realtime documents live in memory between debounced writes, so they are
-    // flushed before the process exits.
-    await collabShutdown().catch((err) => console.error("Realtime shutdown failed", err));
-    await db.end().catch(() => {});
+  let timer;
+  const timeout = new Promise((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error("Shutdown deadline exceeded")), SHUTDOWN_TIMEOUT_MS);
+  });
+  const drain = async () => {
+    await collabShutdown();
+    while (inFlight > 0 || backgroundPending.size || collabPendingWrites() || activeChildren.size) {
+      if (shutdownForced) return;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      await drainCollabWrites();
+    }
+    if (!shutdownForced) await db.end();
+  };
+  shutdownPromise = Promise.race([drain(), timeout]).then(() => {
     console.log("Shutdown complete");
     process.exit(0);
-  };
-  const tick = () => {
-    if (inFlight <= 0 || Date.now() >= deadline) return void finish();
-    setTimeout(tick, 100);
-  };
-  tick();
+  }, (err) => {
+    shutdownForced = true;
+    console.error("Shutdown failed; durable state was not fully drained", err);
+    for (const child of activeChildren) {
+      try { child.kill("SIGKILL"); } catch {}
+    }
+    if (typeof server.closeAllConnections === "function") server.closeAllConnections();
+    collabSessions.forEach((session) => session.socket.terminate());
+    process.exit(1);
+  }).finally(() => clearTimeout(timer));
+  return shutdownPromise;
 }
 
 if (require.main === module) initDb()

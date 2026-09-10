@@ -431,6 +431,7 @@
     $("adminCredsPass").textContent = password;
     const copy = $("adminCredsCopy");
     copy.querySelector("span:last-child").textContent = t("admin.copyPassword");
+    copy.querySelector(".ic").innerHTML = window.IrisIcons.icon("copy");
     openDialog("adminCredsModal");
   }
 
@@ -481,10 +482,16 @@
       $(id).addEventListener("change", clear);
     });
     $("adminCredsCopy").addEventListener("click", async () => {
+      const copy = $("adminCredsCopy");
       try {
         await navigator.clipboard.writeText($("adminCredsPass").textContent);
-        $("adminCredsCopy").querySelector("span:last-child").textContent = t("admin.copied");
-      } catch (e) { /* clipboard blocked; the value is selectable */ }
+        copy.querySelector("span:last-child").textContent = t("admin.copied");
+        copy.querySelector(".ic").innerHTML = window.IrisIcons.icon("check");
+      } catch (e) {
+        // The clipboard can be refused outright; say so instead of no-opping.
+        copy.querySelector("span:last-child").textContent = t("admin.copyFailed");
+        copy.querySelector(".ic").innerHTML = window.IrisIcons.icon("alert-circle");
+      }
     });
     document.querySelectorAll("[data-admin-close]").forEach((b) =>
       b.addEventListener("click", (e) => { void closeDialog(e.target.closest(".scrim")); })

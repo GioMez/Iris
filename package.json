@@ -19,7 +19,7 @@
     "@codemirror/state": "6.7.1",
     "@codemirror/view": "6.43.7",
     "argon2": "0.44.0",
-    "pdfjs-dist": "6.1.200",
+    "pdfjs-dist": "6.3.289",
     "pg": "8.22.0",
     "ws": "8.21.1"
   },

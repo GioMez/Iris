@@ -39,6 +39,7 @@
     const notice = document.createElement("div");
     notice.className = "cm-unavailable";
     notice.setAttribute("role", "alert");
+    notice.dataset.i18n = "editor.unavailable";
     notice.textContent = window.IrisI18n ? window.IrisI18n.t("editor.unavailable") : "The editor could not be loaded.";
     editorEl.appendChild(notice);
   }

@@ -45,7 +45,8 @@
     reconnectTimer: 0,
     pushTimer: 0,
     presenceTimer: 0,
-    pushing: false,
+    paused: false,        // server maintenance; independent of room, role and OT state
+    pushing: null,        // outstanding push; resumed tracks a maintenance end before its reply
     pulling: null,       // base version of the outstanding catch-up request
     neededVersion: 0,    // highest authority version seen, even across a gap
     peers: [],
@@ -58,7 +59,7 @@
 
   const ed = () => window.IrisEditor;
   function emit() {
-    const snapshot = { status: state.status, role: state.role, fileId: state.joined, pending: state.pending };
+    const snapshot = { status: state.status, role: state.role, fileId: state.joined, pending: state.pending, paused: state.paused };
     listeners.forEach((fn) => {
       try { fn(snapshot); } catch (err) { console.error("IrisCollab listener failed", err); }
     });
@@ -86,6 +87,22 @@
     if (state.status === status) return;
     state.status = status;
     emit();
+  }
+
+  function setPaused(active) {
+    if (typeof active !== "boolean") return;
+    const changed = state.paused !== active;
+    state.paused = active;
+    if (active) {
+      clearTimeout(state.pushTimer);
+      state.pushTimer = 0;
+    } else if (state.pushing) {
+      // A refusal can arrive after maintenance ended. Remember that end on the
+      // request so its late reply cannot pause the transport again indefinitely.
+      state.pushing.resumed = true;
+    }
+    if (changed) emit();
+    if (!active) pushPending();
   }
 
   // Work this tab has typed that the server has not ordered yet: either a push
@@ -154,7 +171,7 @@
       state.socket = null;
       state.opening = [];
       state.joined = null;
-      state.pushing = false;
+      state.pushing = null;
       state.pulling = null;
       state.neededVersion = 0;
       clearTimeout(state.pushTimer);
@@ -209,6 +226,12 @@
   }
 
   function handle(message) {
+    if (message.t === "maintenance") {
+      // A notice never acknowledges a push, even if its echo arrived already.
+      setPaused(message.active);
+      return;
+    }
+
     if (message.t === "ready") {
       state.sessionId = message.sessionId;
       state.color = message.color;
@@ -227,6 +250,7 @@
       state.pulling = null;
       ed().loadCollab(message.doc, state.desired.kind, { version: message.version });
       setStatus(message.role === "viewer" ? "readonly" : "live");
+      document.dispatchEvent(new CustomEvent("iris:collabrole", { detail: { role: message.role } }));
       // Anything typed before the room opened is now sendable.
       pushPending();
       refreshPending();
@@ -303,7 +327,7 @@
 
     if (message.t === "pushed") {
       if (!isCurrent(message.fileId) || state.joined !== message.fileId || !state.pushing) return;
-      state.pushing = false;
+      state.pushing = null;
       // An ack releases the request, not the edits. Only the contiguous update
       // stream confirms/rebases them; don't resend while that stream is behind.
       state.neededVersion = Math.max(state.neededVersion, message.version);
@@ -337,6 +361,20 @@
     }
 
     if (message.t === "error") {
+      if (message.code === "MAINTENANCE_MODE") {
+        // Only this request's tagged refusal releases its ack barrier. Untagged
+        // notices and late errors for other rooms must not disrupt this stream.
+        if (message.request !== "push" || !isCurrent(message.fileId)
+          || state.joined !== message.fileId || !state.pushing) return;
+        const resumed = state.pushing.resumed;
+        state.pushing = null;
+        // Keep all edits and versions. If the refusal beat the pause notice,
+        // wait for active:false rather than retrying a known-refused write.
+        if (!resumed) setPaused(true);
+        else pushPending();
+        refreshPending();
+        return;
+      }
       // Any failed open completes that request, not just the known file errors.
       // Errors from other operations must not consume an awaited open reply.
       if (message.request === "open") {
@@ -381,10 +419,11 @@
     state.pushTimer = 0;
     if (!state.joined) return;
     if (ed().collabVersion() < state.neededVersion) return pullNow();
-    if (state.pushing || state.role === "viewer") return;
+    if (state.paused || state.pushing || state.role === "viewer") return;
     const pending = ed().collabPending();
     if (!pending || !pending.updates.length) return;
-    state.pushing = send({ t: "push", fileId: state.joined, version: pending.version, updates: pending.updates });
+    state.pushing = send({ t: "push", fileId: state.joined, version: pending.version, updates: pending.updates })
+      ? { resumed: false } : null;
     refreshPending();
   }
 
@@ -394,7 +433,7 @@
     // The edit is unconfirmed from the moment it is typed, not from the moment
     // the debounce lets it leave, so the flag is raised before the early return.
     refreshPending();
-    if (state.pushTimer || state.pushing || !state.joined || state.role === "viewer") return;
+    if (state.paused || state.pushTimer || state.pushing || !state.joined || state.role === "viewer") return;
     state.pushTimer = setTimeout(pushPending, pacing.push);
   }
 
@@ -461,7 +500,7 @@
       state.desired = null;
       state.joined = null;
       state.role = null;
-      state.pushing = false;
+      state.pushing = null;
       state.pulling = null;
       state.neededVersion = 0;
       clearTimeout(state.reconnectTimer);
@@ -491,6 +530,7 @@
     configure: applyPacing,
     pacing() { return { ...pacing }; },
     active() { return !!state.joined; },
+    paused() { return state.paused; },
     status() { return state.status; },
     role() { return state.role; },
     fileId() { return state.joined; },

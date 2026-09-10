@@ -80,7 +80,8 @@ test("realtime text reaches disk on a debounce, on last leave and on shutdown", 
   // completion racing with a replacement room.
   // Shutdown drains what the debounce has not written yet.
   assert.match(server, /await collabShutdown\(\)/);
-  assert.match(server, /await Promise\.allSettled\(Array\.from\(collabPending\)\)/);
+  // Runtime lifecycle tests hold final touches and room persistence across drain.
+  assert.match(server, /await Promise\.allSettled\(\[\.\.\.collabPending, \.\.\.collabStarted\]\)/);
   assert.match(server, /collabAttach\(server\)/);
   // Realtime edits are consolidated, not one revision per keystroke.
   assert.match(server, /reason: "realtime"/);
@@ -395,7 +396,7 @@ test("edits the server has not ordered yet are shown as unconfirmed", () => {
   // Held by this tab, not confirmed by the room: a dropped link does not settle
   // an edit, so the flag follows the room the app wants, not the one it has.
   assert.match(collab, /if \(!state\.desired \|\| state\.role === "viewer"\) return false/);
-  assert.match(collab, /const snapshot = \{ status: state\.status, role: state\.role, fileId: state\.joined, pending: state\.pending \}/);
+  assert.match(collab, /const snapshot = \{ status: state\.status, role: state\.role, fileId: state\.joined, pending: state\.pending, paused: state\.paused \}/);
   // Raised when the edit is typed, cleared when the update comes back.
   const schedule = collab.slice(collab.indexOf("function schedulePush"), collab.indexOf("function sendPresence"));
   assert.match(schedule, /refreshPending\(\)/);
@@ -403,7 +404,7 @@ test("edits the server has not ordered yet are shown as unconfirmed", () => {
   assert.match(updates, /refreshPending\(\)/);
   // "Realtime" on its own would claim the document is settled when it is not.
   const status = app.slice(app.indexOf("function renderSyncStatus"), app.indexOf("/* ---------------- presence"));
-  assert.match(status, /const unconfirmed = pending && \(status === "live" \|\| status === "offline"\)/);
+  assert.match(status, /const unconfirmed = pending && \(status === "live" \|\| status === "offline" \|\| status === "maintenance"\)/);
   assert.match(status, /t\("collab\.pending"\)/);
   assert.match(status, /chip\.classList\.toggle\("pending", unconfirmed\)/);
   assert.match(css, /\.sb-sync\.pending\{/);
