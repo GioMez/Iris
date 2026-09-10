@@ -252,7 +252,13 @@
   // outline and the compiler, but the file is not marked dirty and no autosave is
   // scheduled. Without a session, the ordinary save path is unchanged.
   function wireEditorEvents() {
-    ed().onLoad(applyDiagnosticsToEditor);
+    ed().onLoad(() => {
+      // An authoritative reload may change main-file detection without an edit.
+      const file = findFile(state.activeId);
+      if (file && file.kind !== "img") file.content = ed().getValue();
+      applyDiagnosticsToEditor();
+      renderMainFileMarker();
+    });
     ed().onChange(() => {
       pendingDiagnostic = null;
       const f = findFile(state.activeId);
@@ -268,6 +274,7 @@
       scheduleStructure();
       if (!realtime) schedulePersist();
       updateDiagnosticPositions();
+      renderMainFileMarker();
     });
     ed().onCursor((pos) => {
       lastCursor = pos;
@@ -1327,7 +1334,7 @@
           // History exists only for versionable text sources: generated output
           // and binary assets (images, fonts) are never captured as revisions.
           const canHistory = !n.generated && n.kind !== "img" && n.kind !== "font";
-          el.innerHTML = `<span class="tw"></span>${fileIcon(n.kind)}<span class="nm">${esc(n.name)}</span>` +
+          el.innerHTML = `<span class="tw"><span class="node-main" role="img" hidden>${ti("player-play")}</span></span>${fileIcon(n.kind)}<span class="nm">${esc(n.name)}</span>` +
             (n.generated ? `<span class="tag">gen</span>` : (n.kind === "img" ? `<span class="tag">img</span>` : "")) +
             // Filled by renderTreePresence when somebody else is in this file.
             `<span class="node-peers" role="img" hidden></span>` +
@@ -1360,6 +1367,27 @@
     // The badges belong to nodes that have just been recreated, so they are
     // filled again from the presence the transport is already holding.
     renderTreePresence();
+    renderMainFileMarker();
+  }
+
+  function renderMainFileMarker() {
+    const main = docFileForCompile();
+    const label = main ? t(main.path === state.mainPath ? "tree.mainSource" : "tree.mainSourceAuto", { path: main.path || main.name }) : "";
+    // Like presence, update the existing slots so typing or changing tabs does
+    // not recreate the tree and disturb keyboard focus or folder expansion.
+    $("tree").querySelectorAll(".node[data-id]").forEach((row) => {
+      const marker = row.querySelector(".node-main");
+      if (!marker) return;
+      const selected = !!main && row.dataset.id === main.id;
+      marker.hidden = !selected;
+      if (selected) {
+        marker.title = label;
+        marker.setAttribute("aria-label", label);
+      } else {
+        marker.removeAttribute("title");
+        marker.removeAttribute("aria-label");
+      }
+    });
   }
 
   function applyRefreshedFileTree(data) {
@@ -1734,38 +1762,34 @@
     }));
   }
   // Source files eligible to be the project's main one, in tree order.
-  function mainPathCandidates() {
-    const expected = isLilyPondProject() ? "ly" : "tex";
-    const paths = [];
-    walk(project.nodes, (x) => { if (x.kind === expected && x.path) paths.push(x.path); });
-    return paths;
+  function mainSourceFiles() {
+    const extension = isLilyPondProject() ? /\.ly$/i : /\.tex$/i;
+    const files = [];
+    walk(project.nodes, (file) => {
+      if (!file.generated && !file.readOnly && extension.test(file.path || file.name || "")) files.push(file);
+    });
+    return files;
   }
-  function configuredMainFile() {
+  function mainPathCandidates() {
+    return mainSourceFiles().map((file) => file.path).filter(Boolean);
+  }
+  function configuredMainFile(files = mainSourceFiles()) {
     if (!state.mainPath) return null;
-    const expected = isLilyPondProject() ? "ly" : "tex";
-    let found = null;
-    walk(project.nodes, (x) => { if (!found && x.path === state.mainPath && x.kind === expected) found = x; });
-    return found;
+    return files.find((file) => file.path === state.mainPath) || null;
   }
   function docFileForCompile() {
     // The setting wins over detection: the author has named the file that owns
     // the document, so an open chapter must not take its place.
-    const configured = configuredMainFile();
+    const files = mainSourceFiles();
+    const configured = configuredMainFile(files);
     if (configured) return configured;
-    const f = findFile(state.activeId);
+    const f = files.find((file) => file.id === state.activeId);
     if (isLilyPondProject()) {
-      if (f && f.kind === "ly" && /\\score\b/.test(f.content || "")) return f;
-      let score = null, first = null;
-      walk(project.nodes, (x) => {
-        if (!first && x.kind === "ly") first = x;
-        if (!score && x.kind === "ly" && /\\score\b/.test(x.content || "")) score = x;
-      });
-      return score || first;
+      if (f && /\\score\b/.test(f.content || "")) return f;
+      return files.find((file) => /\\score\b/.test(file.content || "")) || files[0] || null;
     }
-    if (f && f.kind === "tex" && /\\begin\s*\{document\}/.test(f.content)) return f;
-    let main = null;
-    walk(project.nodes, (x) => { if (!main && x.kind === "tex" && /\\documentclass/.test(x.content)) main = x; });
-    return main || f;
+    if (f && /\\begin\s*\{document\}/.test(f.content || "")) return f;
+    return files.find((file) => /\\documentclass/.test(file.content || "")) || f || files[0] || null;
   }
   async function compile() {
     if (isReadOnly()) { toast(t("projects.readOnlyNotice")); return; }
@@ -2685,6 +2709,7 @@
     $("compileMainPath").addEventListener("change", function () {
       state.mainPath = this.value;
       updateMainPathControl();
+      renderMainFileMarker();
       void persistWhenDocumentClean();
     });
     // On `change` rather than `input`: these are number fields, and reacting to

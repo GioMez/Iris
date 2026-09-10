@@ -49,7 +49,7 @@ the Node.js service handles authentication, persistence, and compilation.
 - A project dashboard scoped to the authenticated user.
 - Portable project export and import through ZIP archives.
 - A refreshable file tree with folders, multiple open tabs, uploads, per-file
-  downloads, renaming, and deletion.
+  downloads, renaming, deletion, and an indicator for the main compilation source.
 - A CodeMirror 6 source editor with syntax highlighting, document outline,
   search and replace, formatting, optional word wrapping, and configurable
   autosave.

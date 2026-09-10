@@ -33,8 +33,12 @@ function element() {
   const classes = new Set();
   const listeners = new Map();
   const attributes = new Map();
+  const slots = new Map();
+  let html = "";
   return {
-    children: [], dataset: {}, value: "", textContent: "", innerHTML: "",
+    children: [], dataset: {}, value: "", textContent: "",
+    get innerHTML() { return html; },
+    set innerHTML(value) { html = value; this.children = []; slots.clear(); },
     style: { setProperty() {}, removeProperty() {} },
     classList: {
       add(...names) { names.forEach((name) => classes.add(name)); },
@@ -47,7 +51,15 @@ function element() {
     parentElement: { classList: { add() {}, remove() {} } },
     appendChild(child) { this.children.push(child); return child; },
     replaceChildren(...children) { this.children = children; },
-    querySelector() { return element(); }, querySelectorAll() { return []; },
+    querySelector(selector) {
+      if (selector === ".node-main") {
+        if (!html.includes('class="node-main"')) return null;
+        if (!slots.has(selector)) slots.set(selector, element());
+        return slots.get(selector);
+      }
+      return element();
+    },
+    querySelectorAll(selector) { return selector === ".node[data-id]" ? this.children.filter((child) => child.dataset.id) : []; },
     addEventListener(type, fn) { if (!listeners.has(type)) listeners.set(type, []); listeners.get(type).push(fn); },
     dispatchEvent(event) { (listeners.get(event.type) || []).forEach((fn) => fn.call(this, event)); },
   };
@@ -68,7 +80,8 @@ function harness(language = "en", realtime = false) {
     },
   });
   const translations = JSON.parse(read(`locales/${language}/translation.json`));
-  const t = (key) => key.split(".").reduce((value, part) => value && value[part], translations) || key;
+  const t = (key, params = {}) => String(key.split(".").reduce((value, part) => value && value[part], translations) || key)
+    .replace(/{{(\w+)}}/g, (match, name) => params[name] ?? match);
   const requests = [];
   const timers = [];
   const windowEvents = element();
@@ -77,11 +90,12 @@ function harness(language = "en", realtime = false) {
   document.dispatchEvent = (event) => { events.push(event); dispatch(event); };
   let surface = "picker";
   let change = () => {};
+  let load = () => {};
   let editor = {
     value: "", ready: new Promise(() => {}),
-    load(value) { this.value = value; }, getValue() { return this.value; },
+    load(value) { this.value = value; load(); }, getValue() { return this.value; },
     onChange(fn) { change = fn; }, onCursor() {}, onPeers() {},
-    setReadOnly() {}, setWordWrap() {}, setSharedRegion() {}, setDiagnostics() {}, onLoad() {}, focus() {},
+    setReadOnly() {}, setWordWrap() {}, setSharedRegion() {}, setDiagnostics() {}, onLoad(fn) { load = fn; }, focus() {},
   };
   const sockets = [];
   class Socket {
@@ -103,6 +117,7 @@ function harness(language = "en", realtime = false) {
     clearTimeout(id) { if (timers[id - 1]) timers[id - 1].cleared = true; }, requestAnimationFrame() {},
     CustomEvent: class { constructor(type, init) { this.type = type; this.detail = init && init.detail; } },
     IrisLatex: { outline() { return []; } },
+    IrisLilyPond: { outline() { return []; } },
     fetch(url, init = {}) {
       return new Promise((resolve, reject) => requests.push({
         url, method: init.method || "GET", body: init.body ? JSON.parse(init.body) : undefined,
@@ -228,6 +243,92 @@ function diagnosticBuild(diagnostics, overrides = {}) {
 }
 
 function diagnosticRows(h) { return h.get("diagnosticsList").children; }
+
+function mainMarkerRows(h) {
+  return h.get("tree").children.filter((row) => row.dataset.id && row.querySelector(".node-main")?.hidden === false);
+}
+
+function mainMarkerProject(kind) {
+  const data = projectData();
+  data.projectType = kind === "ly" ? "lilypond" : "latex";
+  data.engine = kind === "ly" ? "lilypond" : "pdflatex";
+  const complete = kind === "ly" ? "\\score { { c1 } }" : "\\documentclass{article}\n\\begin{document}\nText\n\\end{document}";
+  data.project.nodes = [
+    { type: "file", id: "main", name: `main.${kind}`, path: `main.${kind}`, kind, content: complete },
+    { type: "folder", name: "sections", open: true, children: [
+      { type: "file", id: "chapter", name: `intro.${kind}`, path: `sections/intro.${kind}`, kind, content: "fragment" },
+      { type: "file", id: "alternate", name: `alternate.${kind}`, path: `sections/alternate.${kind}`, kind, content: complete },
+    ] },
+  ];
+  data.activeId = "chapter"; data.openTabs = ["chapter"];
+  return data;
+}
+
+for (const kind of ["tex", "ly"]) {
+  test(`${kind} main-file icon distinguishes the configured source from the open fragment`, options, async () => {
+    const h = harness("it");
+    await h.open({ ...mainMarkerProject(kind), mainPath: `main.${kind}` });
+    const marked = mainMarkerRows(h);
+    assert.deepEqual(marked.map((row) => row.dataset.id), ["main"]);
+    const icon = marked[0].querySelector(".node-main");
+    assert.equal(icon.title, `File principale per la compilazione: main.${kind}`);
+    assert.equal(icon.getAttribute("aria-label"), icon.title);
+    h.a.openFile("alternate");
+    assert.deepEqual(mainMarkerRows(h).map((row) => row.dataset.id), ["main"]);
+    assert.equal(h.a.state.dirtyFiles.size, 0, "displaying a marker does not edit the project");
+  });
+
+  test(`${kind} automatic main-file icon follows the compilation target in place`, options, async () => {
+    const h = harness(); await h.open(mainMarkerProject(kind));
+    assert.deepEqual(mainMarkerRows(h).map((row) => row.dataset.id), ["main"]);
+    const originalRows = h.get("tree").children.slice();
+    h.a.openFile("alternate");
+    assert.deepEqual(mainMarkerRows(h).map((row) => row.dataset.id), ["alternate"]);
+    assert.equal(mainMarkerRows(h)[0].querySelector(".node-main").title,
+      `Main file for compilation (automatic): sections/alternate.${kind}`);
+    h.edit("fragment");
+    assert.deepEqual(mainMarkerRows(h).map((row) => row.dataset.id), ["main"]);
+    assert.deepEqual(h.get("tree").children, originalRows, "the tree is not rebuilt while editing");
+  });
+
+  test(`${kind} main-file settings update the marker immediately and missing choices use detection`, options, async () => {
+    const h = harness(); await h.open({ ...mainMarkerProject(kind), mainPath: `missing.${kind}` });
+    assert.deepEqual(mainMarkerRows(h).map((row) => row.dataset.id), ["main"]);
+    h.a.wire();
+    h.get("compileMainPath").value = `sections/alternate.${kind}`;
+    h.get("compileMainPath").dispatchEvent({ type: "change" });
+    assert.deepEqual(mainMarkerRows(h).map((row) => row.dataset.id), ["alternate"]);
+    assert.equal(mainMarkerRows(h)[0].querySelector(".node-main").title,
+      `Main file for compilation: sections/alternate.${kind}`);
+  });
+}
+
+test("an authoritative source reload updates automatic main-file detection without marking edits", options, async () => {
+  const h = harness("en", true); await h.open(mainMarkerProject("tex"));
+  assert.deepEqual(mainMarkerRows(h).map((row) => row.dataset.id), ["main"]);
+  h.editor.loadCollab("\\documentclass{book}\n\\begin{document}\nnew", "tex", { version: 5 });
+  assert.deepEqual(mainMarkerRows(h).map((row) => row.dataset.id), ["chapter"]);
+  assert.equal(h.a.docFileForCompile().id, "chapter");
+  assert.equal(h.a.state.dirtyFiles.size, 0);
+});
+
+test("only real compile sources can receive the main-file marker", options, async () => {
+  const h = harness();
+  const data = projectData(4, "plain TeX without a document class yet");
+  data.project.nodes.push(
+    { type: "file", id: "bib", name: "refs.bib", path: "refs.bib", kind: "bib", content: "references" },
+    { type: "file", id: "text", name: "notes.txt", path: "notes.txt", kind: "tex", content: "\\documentclass{article}" },
+    { type: "file", id: "foreign", name: "score.ly", path: "score.ly", kind: "ly", content: "\\score {}" }
+  );
+  data.activeId = "bib"; data.openTabs = ["bib"];
+  await h.open(data);
+  assert.equal(h.a.docFileForCompile().id, "main");
+  assert.deepEqual(mainMarkerRows(h).map((row) => row.dataset.id), ["main"]);
+  data.project.nodes.shift();
+  await h.app.load(data);
+  assert.equal(h.a.docFileForCompile(), null);
+  assert.deepEqual(mainMarkerRows(h), []);
+});
 
 test("build diagnostics use the compiled revision when edits arrive before the result", options, async () => {
   const h = harness("en", true); await h.open(projectData(4, "first\nbroken\nlast"));

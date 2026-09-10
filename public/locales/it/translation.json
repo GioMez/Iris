@@ -245,6 +245,8 @@
     "fontPreviewAction": "Anteprima"
   },
   "tree": {
+    "mainSource": "File principale per la compilazione: {{path}}",
+    "mainSourceAuto": "File principale per la compilazione (automatico): {{path}}",
     "newTitle": "Nuovo elemento",
     "type": "Tipo",
     "fileTex": "File .tex",

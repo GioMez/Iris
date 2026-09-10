@@ -202,6 +202,9 @@ button{font-family:inherit;color:inherit}
 .node .tw{width:14px;display:inline-flex;justify-content:center;color:var(--txt-mut);font-size:10px;flex:0 0 auto}
 .node .fi{width:16px;display:inline-flex;justify-content:center;flex:0 0 auto}
 .node .tw .ti{width:12px;height:12px;stroke-width:2.2}
+.node-main{display:inline-flex;align-items:center;justify-content:center;color:var(--accent);cursor:help}
+.node-main[hidden]{display:none}
+.node-main .ti{fill:currentColor}
 .node .fi .ti{width:15px;height:15px}
 .node .nm{overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1}
 .node .tag{font-size:10px;color:var(--txt-mut);font-family:var(--font-code);flex:0 0 auto}
