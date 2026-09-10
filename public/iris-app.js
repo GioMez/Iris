@@ -67,6 +67,8 @@
     effectiveZoom: 1,
     pages: [],
     curPage: 1,
+    previewPosition: null,
+    previewPagesReady: false,
     untitledN: 0,
     attachFile: null,
     compiledArtifacts: [],
@@ -1515,6 +1517,45 @@
   }
 
   /* ---------------- PDF preview ---------------- */
+  // Keep a page-relative anchor instead of a pixel offset: recompilation can
+  // change page dimensions. Hidden tabs and provisional image layouts have no
+  // usable geometry and must not overwrite the last reading position.
+  function rememberPreviewPosition() {
+    if (!state.previewPagesReady || state.view !== "preview" || !state.pages.length) return;
+    const stage = $("pvStage");
+    if (!stage.clientWidth || !stage.clientHeight) return;
+    let index = 0;
+    state.pages.forEach((page, i) => { if (page.offsetTop <= stage.scrollTop + 80) index = i; });
+    const page = state.pages[index];
+    if (!page.offsetHeight) return;
+    const padding = parseFloat(getComputedStyle(stage).paddingTop) || 0;
+    const horizontalRange = stage.scrollWidth - stage.clientWidth;
+    state.curPage = index + 1;
+    state.previewPosition = {
+      page: index + 1,
+      offset: (stage.scrollTop + padding - page.offsetTop) / page.offsetHeight,
+      horizontal: horizontalRange > 0 ? stage.scrollLeft / horizontalRange : 0,
+    };
+    $("pgCur").textContent = state.curPage;
+  }
+
+  function restorePreviewPosition() {
+    if (!state.previewPagesReady || !state.pages.length) return;
+    const position = state.previewPosition || { page: 1, offset: 0, horizontal: 0 };
+    const number = Math.max(1, Math.min(position.page, state.pages.length));
+    state.previewPosition = { ...position, page: number };
+    state.curPage = number;
+    $("pgCur").textContent = number;
+    const stage = $("pvStage"), page = state.pages[number - 1];
+    if (state.view !== "preview" || !stage.clientWidth || !stage.clientHeight || !page.offsetHeight) return;
+    const padding = parseFloat(getComputedStyle(stage).paddingTop) || 0;
+    stage.scrollTo({
+      top: Math.max(0, page.offsetTop + position.offset * page.offsetHeight - padding),
+      left: Math.max(0, stage.scrollWidth - stage.clientWidth) * position.horizontal,
+      behavior: "instant",
+    });
+  }
+
   function previewWidth() {
     return Math.max(320, $("pvStage").clientWidth - 52);
   }
@@ -1560,6 +1601,8 @@
     });
     state.effectiveZoom = views.length ? views[0].css.scale / PDF_CSS_UNITS : state.zoom;
 
+    rememberPreviewPosition();
+    state.previewPagesReady = false;
     wrap.innerHTML = "";
     state.pages = views.map(({ css }) => {
       const pageEl = document.createElement("div");
@@ -1571,10 +1614,10 @@
       wrap.appendChild(pageEl);
       return pageEl;
     });
-    state.curPage = Math.min(Math.max(state.curPage, 1), state.pages.length || 1);
+    state.previewPagesReady = true;
     $("pgTot").textContent = state.pages.length || "–";
-    $("pgCur").textContent = state.pages.length ? state.curPage : "–";
     $("pvEmpty").style.display = state.pages.length ? "none" : "";
+    restorePreviewPosition();
     updateZoomLabel();
 
     for (let i = 0; i < views.length; i++) {
@@ -1604,6 +1647,7 @@
 
   function layoutImagePages() {
     if (state.previewKind !== "image" || !state.pages.length) return;
+    rememberPreviewPosition();
     const availableWidth = previewWidth();
     const contentWidth = Math.max(1, availableWidth - 60);
     let firstScale = state.zoom;
@@ -1616,6 +1660,7 @@
       page.style.width = `${Math.max(80, Math.round(naturalWidth * scale + 60))}px`;
     });
     state.effectiveZoom = firstScale;
+    restorePreviewPosition();
     updateZoomLabel();
   }
 
@@ -1734,6 +1779,7 @@
     if (!f) { toast(t("editor.nothingToCompile"), "err"); return; }
     const generation = ++state.compileGeneration;
     state.compiling = true;
+    rememberPreviewPosition();
     setWorkspaceView("preview");
     setView("preview");
     $("compiling").classList.add("on");
@@ -1766,6 +1812,8 @@
         const loadGeneration = ++state.pdfLoadGeneration;
         await releasePdfDocument();
         if (outputGeneration !== state.outputGeneration || loadGeneration !== state.pdfLoadGeneration) return;
+        rememberPreviewPosition();
+        state.previewPagesReady = false;
         clearCompiledArtifacts();
         state.previewKind = "empty";
         updateZoomLabel();
@@ -1782,6 +1830,8 @@
       const loadGeneration = ++state.pdfLoadGeneration;
       await releasePdfDocument();
       if (generation !== state.compileGeneration || outputGeneration !== state.outputGeneration || loadGeneration !== state.pdfLoadGeneration) return;
+      rememberPreviewPosition();
+      state.previewPagesReady = false;
       clearCompiledArtifacts();
       state.previewBuildId = null;
       const ms = ((performance.now() - t0) / 1000).toFixed(1);
@@ -2019,10 +2069,11 @@
     const loadGeneration = ++state.pdfLoadGeneration;
     await releasePdfDocument();
     if (loadGeneration !== state.pdfLoadGeneration) return;
+    rememberPreviewPosition();
+    state.previewPagesReady = false;
     const artifacts = prepareCompiledArtifacts(res);
     state.previewKind = (format === "png" || format === "svg") ? "image" : "static";
     state.pages = [];
-    state.curPage = 1;
     $("pvPages").innerHTML = "";
     if (format === "png" || format === "svg") {
       const imageLoads = [];
@@ -2046,9 +2097,10 @@
       await Promise.all(imageLoads);
       if (loadGeneration !== state.pdfLoadGeneration) return;
       layoutImagePages();
+      state.previewPagesReady = true;
       $("pvEmpty").style.display = "none";
       $("pgTot").textContent = state.pages.length || "–";
-      $("pgCur").textContent = state.pages.length ? "1" : "–";
+      restorePreviewPosition();
     } else {
       $("pvEmpty").innerHTML = `<div class="big success">${ti("circle-check")}</div><span>${esc(t("preview.generated", { count: artifacts.length, format: format.toUpperCase() }))}</span>`;
       $("pvEmpty").style.display = "";
@@ -2071,6 +2123,7 @@
     state.pdfBlobUrl = primary.blobUrl;
     state.pdfName = primary.fileName;
     const pdfjs = await pdfjsReady;
+    if (loadGeneration !== state.pdfLoadGeneration) return;
     const loadingTask = pdfjs.getDocument({ data: bytes });
     state.pdfLoadingTask = loadingTask;
     let doc;
@@ -2086,12 +2139,12 @@
       return;
     }
     state.pdfDocument = doc;
-    state.curPage = 1;
     await layoutPdfPages();
   }
 
   /* ---------------- view toggle ---------------- */
   function setView(v) {
+    if (v !== state.view) rememberPreviewPosition();
     state.view = v;
     $("pvSeg").querySelectorAll("button").forEach((b) => {
       const selected = b.dataset.view === v;
@@ -2101,11 +2154,13 @@
     $("logView").classList.toggle("on", v === "log");
     $("diagnosticsView").hidden = v !== "diagnostics";
     $("pvStage").classList.toggle("hide-pages", v !== "preview");
+    if (v === "preview") restorePreviewPosition();
     if (v === "diagnostics") renderDiagnostics();
   }
 
   function setWorkspaceView(view) {
     const preview = view === "preview";
+    if (!preview) rememberPreviewPosition();
     document.querySelector(".body").classList.toggle("workspace-preview", preview);
     $("workspaceSwitch").querySelectorAll("button").forEach((button) => {
       const selected = button.dataset.workspace === (preview ? "preview" : "editor");
@@ -2113,7 +2168,10 @@
       button.setAttribute("aria-selected", selected ? "true" : "false");
       button.tabIndex = selected ? 0 : -1;
     });
-    if (preview && state.fit) requestPreviewLayout();
+    if (preview) {
+      restorePreviewPosition();
+      if (state.fit) requestPreviewLayout();
+    }
   }
 
   function activateSettingsSection(section, focusTab = false) {
@@ -2465,6 +2523,8 @@
     state.previewKind = "empty";
     state.pages = [];
     state.curPage = 1;
+    state.previewPosition = null;
+    state.previewPagesReady = false;
     $("pvPages").innerHTML = "";
     $("logView").innerHTML = "";
     $("pvEmpty").innerHTML = `<div class="big">${ti("file")}</div><span>${esc(t("preview.empty"))}</span>`;
@@ -2523,6 +2583,8 @@
       const loadGeneration = ++state.pdfLoadGeneration;
       await releasePdfDocument();
       if (outputGeneration !== state.outputGeneration || loadGeneration !== state.pdfLoadGeneration) return false;
+      rememberPreviewPosition();
+      state.previewPagesReady = false;
       clearCompiledArtifacts();
       state.previewKind = "empty";
       state.pages = [];
@@ -2942,15 +3004,13 @@
     $("pgCur").textContent = n;
   }
   function onStageScroll() {
-    if (!state.pages.length) return;
-    const top = $("pvStage").scrollTop + 80;
-    let cur = 1;
-    state.pages.forEach((p, i) => { if (p.offsetTop <= top) cur = i + 1; });
-    if (cur !== state.curPage) { state.curPage = cur; $("pgCur").textContent = cur; }
+    rememberPreviewPosition();
   }
   function previewImage(f) {
+    state.previewPosition = null;
+    state.previewPagesReady = false;
     setView("preview");
-    state.pdfLoadGeneration += 1;
+    const generation = ++state.pdfLoadGeneration;
     void releasePdfDocument();
     state.previewKind = "image";
     $("pvEmpty").style.display = "none";
@@ -2959,8 +3019,11 @@
     const img = document.createElement("img");
     img.alt = f.name || "";
     img.addEventListener("load", () => {
+      if (generation !== state.pdfLoadGeneration) return;
       img.dataset.naturalWidth = String(img.naturalWidth || 0);
       layoutImagePages();
+      state.previewPagesReady = true;
+      restorePreviewPosition();
     }, { once: true });
     img.src = f.data;
     page.appendChild(img);
@@ -3526,6 +3589,8 @@
       setCompileDiagnostics({ diagnostics: [] });
       state.previewBuildId = null;
       state.pages = []; state.curPage = 1;
+      state.previewPosition = null;
+      state.previewPagesReady = false;
       state.untitledN = data.untitledN || 0;
       state.autoSave = data.autoSave === true;
       state.autoSaveDelay = normalizeAutoSaveDelay(data.autoSaveDelay ?? 600);
