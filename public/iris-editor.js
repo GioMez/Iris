@@ -16,6 +16,7 @@
 //   highlightMatches(ranges, activeIndex)   find overlay + scrollbar ruler
 //   setWordWrap / setAutoIndent / setReadOnly (booleans)
 //   setSharedRegion({from, to, color} | null)  band over a contested construct
+//   setDiagnostics(items) / diagnostics()    compiler markers, mapped across edits
 //   focus() / focusTarget() / ownsTarget(node)
 // Events: onChange(fn) after any edit;
 //         onCursor(fn) with { line, column, fromLine, toLine, head, from, to }.
@@ -28,7 +29,7 @@
   const INVISIBLE_SPACES = new RegExp(INVISIBLE_SPACE_CLASS, "g");
   const IS_INVISIBLE_SPACE = new RegExp(INVISIBLE_SPACE_CLASS);
   const codePointLabel = (code) => `U+${code.toString(16).toUpperCase().padStart(4, "0")}`;
-  const handlers = { change: [], cursor: [], sync: [], peers: [] };
+  const handlers = { change: [], cursor: [], sync: [], peers: [], load: [] };
   let impl = null;
 
   function emit(type, payload) {
@@ -71,6 +72,7 @@
       styleSpecs.push({ tag: tokenTable[name], class: tokenClasses[name] });
     });
     const irisHighlight = L.syntaxHighlighting(L.HighlightStyle.define(styleSpecs));
+    const diagnostics = window.IrisDiagnostics.createGutter(S, V);
 
     const streamDefinition = (spec) => L.StreamLanguage.define({
       startState: spec.startState,
@@ -408,6 +410,7 @@
           // theme: the drawn selection came out lavender over a dark editor.
           V.EditorView.darkTheme.of(true),
           V.lineNumbers(),
+          diagnostics.extension,
           V.highlightActiveLineGutter(),
           // Characters that are invisible in the source but break a build: a
           // control code, a bidi mark, or one of the exotic spaces a paste out
@@ -545,6 +548,7 @@
           suppressEvents = false;
         }
         clearRuler();
+        emit("load");
         emitCursor(view);
       },
       // Realtime variant: the document starts from an authoritative version and
@@ -568,8 +572,11 @@
           view.dispatch({ selection: { anchor: Math.min(previous.anchor, max), head: Math.min(previous.head, max) } });
         }
         if (wasFocused) view.focus();
+        emit("load");
         emitCursor(view);
       },
+      setDiagnostics(items) { view.dispatch({ effects: diagnostics.effect.of(items) }); },
+      diagnostics() { return diagnostics.read(view.state); },
       // Replaces the set of participants shown in the document. An empty list
       // clears them, which is what leaving or losing the connection does.
       setPeers(peers) {
@@ -720,6 +727,7 @@
     available: false,
     ready: null,
     onChange(fn) { handlers.change.push(fn); },
+    onLoad(fn) { handlers.load.push(fn); },
     onCursor(fn) { handlers.cursor.push(fn); },
     // Fires when local edits are waiting for the realtime transport to push.
     onSync(fn) { handlers.sync.push(fn); },
@@ -733,10 +741,11 @@
     collabVersion() { return impl ? impl.collabVersion() : 0; },
     collabPending() { return impl ? impl.collabPending() : null; },
     peers() { return impl ? impl.peers() : []; },
+    diagnostics() { return impl ? impl.diagnostics() : []; },
   };
   // Every mutating call is a no-op until the modules resolve, and stays one if
   // they never do, so the rest of the app needs no readiness checks.
-  ["focus", "load", "loadCollab", "applyText", "replaceRange", "select", "setWordWrap", "setAutoIndent", "setReadOnly", "highlightMatches", "collabReceive", "setPeers", "setSharedRegion"].forEach((method) => {
+  ["focus", "load", "loadCollab", "applyText", "replaceRange", "select", "setWordWrap", "setAutoIndent", "setReadOnly", "highlightMatches", "collabReceive", "setPeers", "setSharedRegion", "setDiagnostics"].forEach((method) => {
     api[method] = (...args) => { if (impl) impl[method](...args); };
   });
   // Resolves either way: the app still boots (tree, preview, builds, history)

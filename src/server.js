@@ -38,6 +38,7 @@ const {
   deleteProjectTemplate,
 } = require("./project-templates");
 const { createZip, extractZip } = require("./zip");
+const { parseCompileLog, compileDiagnosticsView } = require("./compile-diagnostics");
 const {
   buildStoragePath,
   publishCompileOutput,
@@ -3521,20 +3522,6 @@ function compileCommand(tool, binPath) {
   return base ? path.join(base, tool) : tool;
 }
 
-function parseCompileLog(log) {
-  const warnings = [];
-  const errors = [];
-  const lines = String(log || "").split(/\r?\n/);
-  lines.forEach((line) => {
-    if (/warning/i.test(line)) warnings.push(line.trim());
-    if (/^! /.test(line) || /:[0-9]+:/.test(line) || /Emergency stop|unable to start|not found|ENOENT/i.test(line)) errors.push(line.trim());
-  });
-  return {
-    warnings: warnings.slice(0, 80),
-    errors: errors.slice(0, 80),
-  };
-}
-
 function refreshFontCache(fontDir) {
   return new Promise((resolve) => {
     if (!fontDir || !fsSync.existsSync(fontDir)) return resolve("");
@@ -3851,7 +3838,7 @@ function runCompileStep({ step, binPath, cwd, fontDir, texmfVar }) {
       const durationMs = Date.now() - startedAt;
       if (timedOut) append(`\nIris: compilation stopped after ${COMPILE_TIMEOUT_MS}ms.\n`);
       else if (signal) append(`\nIris: process terminated by signal ${signal}.\n`);
-      const parsed = parseCompileLog(log);
+      const parsed = parseCompileLog(log, { cwd });
       resolve({ code, signal, timedOut, durationMs, log, ...parsed });
     });
   });
@@ -3860,8 +3847,6 @@ function runCompileStep({ step, binPath, cwd, fontDir, texmfVar }) {
 async function runCompilePipeline({ profile, binPath, cwd, fontDir, texmfVar, preLog }) {
   const startedAt = Date.now();
   let log = preLog || "";
-  let warnings = [];
-  let errors = [];
   let exitCode = 0;
   let signal = null;
   let timedOut = false;
@@ -3870,22 +3855,19 @@ async function runCompilePipeline({ profile, binPath, cwd, fontDir, texmfVar, pr
     log += `\n===== Iris step ${i + 1}/${profile.steps.length}: ${step.tool} =====\n`;
     const res = await runCompileStep({ step, binPath, cwd, fontDir, texmfVar });
     log += res.log;
-    warnings = warnings.concat(res.warnings || []);
-    errors = errors.concat(res.errors || []);
     exitCode = res.code;
     signal = res.signal;
     timedOut = res.timedOut;
     if (res.code !== 0 || res.signal || res.timedOut) break;
   }
-  const parsed = parseCompileLog(log);
+  const parsed = parseCompileLog(log, { cwd });
   return {
     code: exitCode,
     signal,
     timedOut,
     durationMs: Date.now() - startedAt,
     log,
-    warnings: Array.from(new Set(warnings.concat(parsed.warnings))).slice(0, 80),
-    errors: Array.from(new Set(errors.concat(parsed.errors))).slice(0, 80),
+    ...parsed,
   };
 }
 
@@ -3959,8 +3941,7 @@ function buildOutputView(row, diagnostics = false) {
     timedOut: row.timed_out,
     ...(diagnostics ? {
       log: row.log || "",
-      warnings: Array.isArray(row.warnings) ? row.warnings : [],
-      errors: Array.isArray(row.errors) ? row.errors : [],
+      ...compileDiagnosticsView(row),
     } : {}),
   };
 }
@@ -4013,6 +3994,7 @@ async function createBuildOutput({
 }
 
 async function finalizeBuildOutput({ id, status, storagePath, artifacts, result }) {
+  const { diagnostics } = compileDiagnosticsView(result);
   const succeeded = status === "succeeded";
   const size = succeeded ? artifacts.reduce((total, artifact) => total + artifact.size, 0) : 0;
   const contentHash = succeeded ? hashBuildArtifacts(artifacts) : null;
@@ -4037,7 +4019,9 @@ async function finalizeBuildOutput({ id, status, storagePath, artifacts, result 
       [
         id, status, succeeded ? storagePath : null, size, contentHash, succeeded ? artifacts.length : 0,
         result.durationMs ?? null, result.code ?? null, result.signal || null, result.timedOut === true,
-        String(result.log || "").slice(0, COMPILE_LOG_LIMIT), JSON.stringify(result.warnings || []), JSON.stringify(result.errors || []),
+        String(result.log || "").slice(0, COMPILE_LOG_LIMIT),
+        JSON.stringify(diagnostics.filter((d) => d.severity === "warning")),
+        JSON.stringify(diagnostics.filter((d) => d.severity === "error")),
       ]
     );
     if (update.rowCount !== 1) throw new Error(`Build ${id} is no longer running`);
@@ -4371,6 +4355,7 @@ async function compileProject(req, res, user, id) {
     });
     const jobname = path.basename(mainPath).replace(/\.[^.]+$/, "");
     const outputName = `${jobname}.${outputFormat}`;
+    let sourceVersions;
     await authorizedProjectGate(id, user, "compile", async () => {
       const checkpoint = await captureProjectCheckpoint({
         projectId: id,
@@ -4380,6 +4365,7 @@ async function compileProject(req, res, user, id) {
         files: buildFiles,
         strictRead: true,
       });
+      sourceVersions = checkpoint.versions;
       source = await sourceRevisionForBuild(
         stagingDir, mainPath, main.id, checkpoint.versions.get(main.id) || null
       );
@@ -4405,6 +4391,12 @@ async function compileProject(req, res, user, id) {
     await fs.mkdir(texmfVar, { recursive: true });
     const preLog = /^(xelatex|lualatex)$/i.test(engine) ? await refreshFontCache(fontDir) : "";
     result = await runCompilePipeline({ profile: compileProfile, binPath, cwd: stagingDir, fontDir, texmfVar, preLog });
+    const sourcesByPath = new Map(buildFiles.map((file) => [file.path, file]));
+    result.diagnostics = result.diagnostics.map((item) => {
+      const file = sourcesByPath.get(item.file);
+      const revision = file && sourceVersions.get(file.id);
+      return revision ? { ...item, sourceFileId: file.id, sourceRevisionId: revision } : item;
+    });
     const generatedArtifacts = await readCompileArtifacts(stagingOutputDir, jobname, outputFormat);
     const success = result.code === 0 && generatedArtifacts.length > 0;
     const artifacts = success ? versionCompileArtifacts(generatedArtifacts, buildId, uuidv7) : [];
@@ -4456,6 +4448,7 @@ async function compileProject(req, res, user, id) {
       log: result.log,
       warnings: result.warnings,
       errors: result.errors,
+      diagnostics: result.diagnostics,
     });
   } catch (err) {
     if (confirmedSetup) err.params = { ...err.params, savedRevision: confirmedSetup.data.revision };
@@ -5994,4 +5987,6 @@ module.exports = {
   resolveProjectFile,
   readCompileArtifacts,
   runCompilePipeline,
+  parseCompileLog,
+  buildOutputView,
 };

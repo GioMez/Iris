@@ -71,6 +71,7 @@
     attachFile: null,
     compiledArtifacts: [],
     lastCompile: null,
+    diagnostics: [],
     previewBuildId: null,
     compileGeneration: 0,
     compiling: false,
@@ -249,7 +250,9 @@
   // outline and the compiler, but the file is not marked dirty and no autosave is
   // scheduled. Without a session, the ordinary save path is unchanged.
   function wireEditorEvents() {
+    ed().onLoad(applyDiagnosticsToEditor);
     ed().onChange(() => {
+      pendingDiagnostic = null;
       const f = findFile(state.activeId);
       const realtime = isRealtimeFile(state.activeId);
       if (f) {
@@ -262,6 +265,7 @@
       // settles rather than on every keystroke.
       scheduleStructure();
       if (!realtime) schedulePersist();
+      updateDiagnosticPositions();
     });
     ed().onCursor((pos) => {
       lastCursor = pos;
@@ -299,6 +303,8 @@
         if (canonicalFileId(node.id) === fileId) state.unavailableFiles.add(node.id);
       });
       state.editRevision += 1; // Reject a tree/load already in flight before closure.
+      applyDiagnosticsToEditor();
+      renderDiagnostics();
       const f = findFile(state.activeId);
       if (f && canonicalFileId(f.id) === fileId) {
         f.content = ed().getValue();
@@ -913,6 +919,7 @@
   }
 
   function openFile(id) {
+    pendingDiagnostic = null;
     const f = findFile(id);
     if (!f) return;
     if (f.generated || f.readOnly) { toast(t("tree.generatedFile"), "err"); return; }
@@ -1767,7 +1774,7 @@
         state.pages = [];
         $("pgTot").textContent = "–";
         $("pgCur").textContent = "–";
-        setView("log");
+        setView("diagnostics");
       }
     } catch (err) {
       if (generation !== state.compileGeneration) return;
@@ -1782,7 +1789,7 @@
       const res = { success: false, log: t("editor.compileFailedLog", { message }), warnings: [], errors: [err.message || t("editor.compileError")] };
       buildLog(f, res, ms);
       updateCompileStatus(res, ms);
-      setView("log");
+      setView("diagnostics");
       toast(message, "err");
     } finally {
       if (generation === state.compileGeneration) {
@@ -1810,6 +1817,7 @@
   }
   function buildLog(f, res, ms, remember = true) {
     if (remember) state.lastCompile = { f, res, ms, compiledAt: new Date() };
+    if (remember) setCompileDiagnostics(res);
     const cls = res.success ? "ok" : "err";
     const artifacts = Array.isArray(res.artifacts) ? res.artifacts : [];
     const totalSize = artifacts.reduce((sum, artifact) => sum + (artifact.size || 0), 0) || res.pdfSize || 0;
@@ -1827,6 +1835,126 @@
         : "";
       return `<div class="log-l ${rowClass}">${esc(line || " ")}</div>`;
     }).join("");
+  }
+
+  function diagnosticSource(item) {
+    if (!item.file || !item.line || /^(?:[A-Za-z]:|\/)|(?:^|\/)\.\.(?:\/|$)/.test(item.file)) return null;
+    let source = null;
+    walk(project.nodes, (file) => {
+      if (file.path === item.file && file.kind !== "img" && !file.generated && !file.readOnly && !isFileUnavailable(file.id)) source = file;
+    });
+    if (!source) return null;
+    // An inactive file may have stale cached text. Opening it obtains the room's
+    // authoritative document before the pending navigation is finally resolved.
+    if (source.id !== state.activeId) return source;
+    return !item.loading && window.IrisDiagnostics.lineRange(ed().getValue(), item.line) ? source : null;
+  }
+  let diagnosticSources = new Map();
+  let diagnosticDocuments = new Map();
+  let pendingDiagnostic = null;
+  function activateDiagnostic(item) {
+    const source = diagnosticSource(item);
+    if (!source) return;
+    const awaitAuthoritative = source.id !== state.activeId && !!canonicalFileId(source.id) && !state.dirtyFiles.has(source.id);
+    if (source.id !== state.activeId) openFile(source.id);
+    else setWorkspaceView("editor");
+    pendingDiagnostic = { item, fileId: source.id, awaitAuthoritative };
+    selectPendingDiagnostic();
+  }
+  function selectPendingDiagnostic() {
+    if (!pendingDiagnostic || pendingDiagnostic.fileId !== state.activeId) return;
+    const { item } = pendingDiagnostic;
+    if (item.loading) return;
+    const range = window.IrisDiagnostics.lineRange(ed().getValue(), item.line);
+    if (range) { ed().select(range.from, range.to, { align: "top", margin: 3 }); ed().focus(); }
+    if (ed().collaborative() || (range && !pendingDiagnostic.awaitAuthoritative)) pendingDiagnostic = null;
+  }
+  function renderDiagnostics() {
+    window.IrisDiagnostics.renderList($("diagnosticsList"), state.diagnostics, {
+      sourceFor: diagnosticSource, activate: activateDiagnostic, t,
+    });
+    const empty = $("diagnosticsEmpty");
+    empty.hidden = state.diagnostics.length > 0;
+    empty.textContent = !state.lastCompile ? t("diagnostics.notCompiled")
+      : state.lastCompile.res.success ? t("diagnostics.empty") : t("diagnostics.failedWithoutLocation");
+    const errors = state.diagnostics.filter((d) => d.severity === "error").length;
+    const warnings = state.diagnostics.filter((d) => d.severity === "warning").length;
+    $("diagnosticsSummary").textContent = state.lastCompile
+      ? `${t("status.errors", { count: errors })} · ${t("status.warnings", { count: warnings })}` : "";
+  }
+  function applyDiagnosticsToEditor() {
+    const file = findFile(state.activeId);
+    const items = file && !isFileUnavailable(file.id) ? state.diagnostics.filter((item) => item.file === file.path) : [];
+    if (!items.length) { ed().setDiagnostics([]); return; }
+    const versioned = items.find((item) => item.sourceFileId && item.sourceRevisionId);
+    if (versioned) {
+      const key = `${versioned.sourceFileId}:${versioned.sourceRevisionId}`;
+      let source = diagnosticSources.get(key);
+      if (!source) {
+        source = { content: null, failed: false };
+        diagnosticSources.set(key, source);
+        const generation = state.diagnostics;
+        // Reuse the immutable revisions already captured for every compilation.
+        // Fetch once per diagnosed file, lazily when that source is displayed.
+        window.IrisProjects.getFileVersion(versioned.sourceFileId, versioned.sourceRevisionId).then((result) => {
+          source.content = String(result.content || "").replace(/\r\n?/g, "\n");
+        }).catch(() => { source.failed = true; }).finally(() => {
+          if (state.diagnostics === generation && state.activeId === file.id) applyDiagnosticsToEditor();
+        });
+      }
+      items.forEach((item) => { item.loading = source.content == null && !source.failed; });
+      if (source.failed) items.forEach((item) => { item.line = null; });
+      else if (source.content != null) remapDiagnosticLines(items, source.content, ed().getValue(), true);
+    } else {
+      const previous = diagnosticDocuments.get(file.path);
+      if (previous != null) remapDiagnosticLines(items, previous, ed().getValue());
+    }
+    diagnosticDocuments.set(file.path, ed().getValue());
+    ed().setDiagnostics(items.filter((item) => !item.loading));
+    renderDiagnostics();
+    selectPendingDiagnostic();
+  }
+  function remapDiagnosticLines(items, previous, current, fromBuild = false) {
+    if (previous === current) {
+      if (fromBuild) items.forEach((item) => { item.line = item.buildLine; });
+      return;
+    }
+    const lines = new Map();
+    let oldLine = 1, newLine = 1;
+    // The same bounded diff used by file history supplies the position mapping.
+    for (const row of lineDiff(previous, current)) {
+      if (row.type === "same") { lines.set(oldLine++, newLine++); }
+      else if (row.type === "del") oldLine++;
+      else newLine++;
+    }
+    items.forEach((item) => {
+      const line = fromBuild ? item.buildLine : item.line;
+      // Old builds lack revision ids: a position outside a stale cache must
+      // remain pending until opening the file delivers its actual document.
+      item.line = !fromBuild && line >= oldLine ? line : lines.get(line) ?? null;
+    });
+  }
+  function setCompileDiagnostics(res) {
+    const items = Array.isArray(res.diagnostics) ? res.diagnostics
+      : [...(res.errors || []).map((message) => ({ severity: "error", message })),
+        ...(res.warnings || []).map((message) => ({ severity: "warning", message }))];
+    pendingDiagnostic = null;
+    diagnosticSources = new Map();
+    diagnosticDocuments = new Map();
+    state.diagnostics = items.map((item, id) => ({ ...item, id, buildLine: item.line }));
+    applyDiagnosticsToEditor();
+    renderDiagnostics();
+  }
+  function updateDiagnosticPositions() {
+    if (!state.diagnostics.length) return;
+    const file = findFile(state.activeId);
+    if (!file) return;
+    const mapped = new Map(ed().diagnostics().map((d) => [d.id, d.line]));
+    state.diagnostics.forEach((item) => {
+      if (item.file === file.path && item.line && !item.loading) item.line = mapped.get(item.id) ?? null;
+    });
+    diagnosticDocuments.set(file.path, ed().getValue());
+    renderDiagnostics();
   }
   function updateCompileStatus(res, ms, compiledAt = state.lastCompile?.compiledAt || new Date()) {
     const errN = (res.errors || []).length || (res.success ? 0 : 1);
@@ -1971,7 +2099,9 @@
       b.setAttribute("aria-pressed", selected ? "true" : "false");
     });
     $("logView").classList.toggle("on", v === "log");
-    $("pvStage").classList.toggle("hide-pages", v === "log");
+    $("diagnosticsView").hidden = v !== "diagnostics";
+    $("pvStage").classList.toggle("hide-pages", v !== "preview");
+    if (v === "diagnostics") renderDiagnostics();
   }
 
   function setWorkspaceView(view) {
@@ -2331,6 +2461,7 @@
     clearCompiledArtifacts();
     state.previewBuildId = null;
     state.lastCompile = null;
+    setCompileDiagnostics({ diagnostics: [] });
     state.previewKind = "empty";
     state.pages = [];
     state.curPage = 1;
@@ -2375,6 +2506,7 @@
       log: build.log || "",
       warnings: build.warnings || [],
       errors: build.errors || [],
+      diagnostics: build.diagnostics,
     };
     const outputGeneration = ++state.outputGeneration;
     state.previewBuildId = build.id;
@@ -2382,6 +2514,7 @@
     // refresh, or the history dialog — the preview is no longer behind.
     clearNewerBuild();
     state.lastCompile = { f: source, res, ms: seconds, compiledAt };
+    setCompileDiagnostics(res);
     buildLog(source, res, seconds, false);
     updateCompileStatus(res, seconds, compiledAt);
     if (succeeded) {
@@ -2398,7 +2531,7 @@
       $("pvEmpty").style.display = "";
       $("pgTot").textContent = "–";
       $("pgCur").textContent = "–";
-      setView("log");
+      setView("diagnostics");
       updateZoomLabel();
     }
     if (outputGeneration !== state.outputGeneration) return false;
@@ -2638,8 +2771,8 @@
     $("pvStage").addEventListener("scroll", onStageScroll);
     $("pvNewerLoad").addEventListener("click", () => { void loadNewerBuild(); });
     $("pvNewerDismiss").addEventListener("click", clearNewerBuild);
-    $("stErr").addEventListener("click", () => { setWorkspaceView("preview"); setView("log"); });
-    $("stWarn").addEventListener("click", () => { setWorkspaceView("preview"); setView("log"); });
+    $("stErr").addEventListener("click", () => { setWorkspaceView("preview"); setView("diagnostics"); });
+    $("stWarn").addEventListener("click", () => { setWorkspaceView("preview"); setView("diagnostics"); });
 
     // modal close
     document.querySelectorAll("[data-close]").forEach((b) => b.addEventListener("click", () => {
@@ -3390,6 +3523,7 @@
       void releasePdfDocument();
       clearCompiledArtifacts();
       state.lastCompile = null;
+      setCompileDiagnostics({ diagnostics: [] });
       state.previewBuildId = null;
       state.pages = []; state.curPage = 1;
       state.untitledN = data.untitledN || 0;
@@ -3535,6 +3669,7 @@
     if (state.lastCompile) {
       const { f, res, ms, compiledAt } = state.lastCompile;
       buildLog(f, res, ms, false);
+      renderDiagnostics();
       updateCompileStatus(res, ms, compiledAt);
     } else if ($("compiling").classList.contains("on")) {
       $("stState").textContent = t("status.compiling");

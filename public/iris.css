@@ -327,7 +327,7 @@ button{font-family:inherit;color:inherit}
 .pvbar::-webkit-scrollbar{height:0;display:none}
 .pvbar>*{flex:0 0 auto}
 .pvbar .spring{flex:1 1 auto;min-width:6px}
-.seg{display:grid;grid-template-columns:90px 58px;width:156px;height:32px;background:#ffffff08;border:1px solid var(--border);border-radius:8px;padding:2px;gap:2px}
+.seg{display:grid;grid-template-columns:90px 112px 58px;width:270px;height:32px;background:#ffffff08;border:1px solid var(--border);border-radius:8px;padding:2px;gap:2px}
 .seg button{min-width:0;height:26px;padding:0 8px;border:0;background:transparent;color:var(--txt-mut);font-size:12px;border-radius:6px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:6px;white-space:nowrap}
 .seg button .ti{width:14px;height:14px}
 .seg button.on{background:var(--selection-soft);box-shadow:inset 0 0 0 1px var(--selection-line);color:var(--selection);font-weight:600}
@@ -341,9 +341,9 @@ button{font-family:inherit;color:inherit}
 .pvbar .mini.fit.on{background:var(--selection-soft);color:var(--selection);border-color:var(--selection-line)}
 
 /* preview toolbar adapts when the pane is narrow */
-@container (max-width:540px){
+@container (max-width:660px){
   .pvbar{gap:6px}
-  .pvbar .seg{grid-template-columns:30px 30px;width:66px}
+  .pvbar .seg{grid-template-columns:30px 30px 30px;width:100px}
   .pvbar .seg .lbl{display:none}
   .pvbar .seg button{padding:0}
 }
@@ -389,6 +389,25 @@ button{font-family:inherit;color:inherit}
 .log-l.err{color:var(--semantic-danger)}
 .log-l.warn{color:var(--semantic-warning)}
 .log-l.dim{color:var(--txt-mut)}
+
+/* Compiler messages share one surface and one hierarchy for both languages. */
+.diagnostics-view{position:absolute;inset:0;overflow:auto;padding:16px;background:var(--panel)}
+.diagnostics-summary{font-size:12px;color:var(--txt-dim);margin-bottom:12px}
+.diagnostics-empty{color:var(--txt-mut);font-size:13px;line-height:1.6}
+.diagnostics-list{list-style:none;padding:0;margin:0;display:grid;gap:8px}
+.diagnostic-item{display:flex;gap:10px;width:100%;min-height:44px;padding:12px;text-align:left;
+  font:inherit;background:var(--panel-2);border:1px solid var(--border);border-radius:8px;color:var(--txt);cursor:pointer}
+.diagnostic-item:hover:not(:disabled){background:var(--selection-soft);border-color:var(--selection-line)}
+.diagnostic-item:disabled{cursor:default}
+.diagnostic-icon{flex:0 0 16px;display:flex;padding-top:2px}
+.diagnostic-icon .ti{width:16px;height:16px}
+.diagnostic-item.error .diagnostic-icon,.diagnostic-item.error .diagnostic-severity{color:var(--semantic-danger)}
+.diagnostic-item.warning .diagnostic-icon,.diagnostic-item.warning .diagnostic-severity{color:var(--semantic-warning)}
+.diagnostic-body{display:flex;flex-direction:column;gap:4px;min-width:0;overflow-wrap:anywhere}
+.diagnostic-severity{font-size:11px;font-weight:600}
+.diagnostic-location{font-family:var(--font-code);font-size:12px;color:var(--txt-dim)}
+.diagnostic-message{font-size:13px;line-height:1.5;white-space:pre-wrap}
+.diagnostic-hint{font-size:11px;color:var(--txt-mut)}
 
 /* ===================== statusbar ===================== */
 .statusbar{display:flex;align-items:stretch;gap:0;height:34px;background:var(--topbar);border-top:1px solid var(--border);
@@ -446,6 +465,10 @@ button.st{border:0;background:transparent;font:inherit}
 
 /* the lines other participants are working on, and what they have selected */
 .cm-host .cm-iris-peer-gutter{width:4px;padding:0;background:transparent}
+.cm-host .cm-iris-diagnostic-gutter{color:var(--semantic-danger)}
+.cm-host .cm-iris-diagnostic-mark{display:inline-flex;align-items:center;justify-content:center;width:16px;
+  height:var(--editor-line-height);font-size:15px;font-weight:700;cursor:help;color:var(--semantic-danger)}
+.cm-host .cm-iris-diagnostic-mark.warning{color:var(--semantic-warning)}
 .cm-host .cm-iris-peer-mark{width:3px;height:100%;min-height:var(--editor-line-height);border-radius:2px}
 .cm-host .cm-iris-peer-line{background:#ffffff09;background:color-mix(in srgb, var(--peer-color) 9%, transparent)}
 /* Stronger than the caret line: this is text somebody is about to replace, and

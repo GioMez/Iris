@@ -134,6 +134,7 @@
       <div class="pvbar">
         <div class="seg" id="pvSeg">
           <button type="button" data-view="preview" class="on" aria-pressed="true" aria-label="Show preview" title="Show the rendered output" data-i18n-aria-label="workspace.showPreview" data-i18n-title="preview.showPreview"><span data-icon="file"></span><span class="lbl" data-i18n="preview.preview">Preview</span></button>
+          <button type="button" data-view="diagnostics" aria-pressed="false" aria-controls="diagnosticsView" aria-label="Show diagnostics" title="Show diagnostics" data-i18n-aria-label="diagnostics.show" data-i18n-title="diagnostics.show"><span data-icon="alert-triangle"></span><span class="lbl" data-i18n="diagnostics.title">Diagnostics</span></button>
           <button type="button" data-view="log" aria-pressed="false" aria-label="Show the compiler log" title="Show the compiler log" data-i18n-aria-label="preview.showLog" data-i18n-title="preview.showLog"><span data-icon="terminal-2"></span><span class="lbl" data-i18n="preview.log">Log</span></button>
         </div>
         <div class="spring"></div>
@@ -164,6 +165,11 @@
         </div>
         <div class="pv-pages" id="pvPages"></div>
         <div class="logview" id="logView"></div>
+        <section class="diagnostics-view" id="diagnosticsView" aria-label="Compiler diagnostics" data-i18n-aria-label="diagnostics.title" hidden>
+          <div class="diagnostics-summary" id="diagnosticsSummary" role="status" aria-live="polite"></div>
+          <p class="diagnostics-empty" id="diagnosticsEmpty" data-i18n="diagnostics.notCompiled">Compile the project to see diagnostics.</p>
+          <ul class="diagnostics-list" id="diagnosticsList"></ul>
+        </section>
         <div class="compiling" id="compiling">
           <div class="spinner"></div>
           <div id="compileMsg" data-i18n="preview.compiling">Compiling…</div>
@@ -1332,6 +1338,7 @@
 <script src="iris-latex.js"></script>
 <script src="iris-lilypond.js"></script>
 <script src="iris-structure.js"></script>
+<script src="iris-diagnostics.js"></script>
 <script src="iris-editor.js"></script>
 <script src="iris-collab.js"></script>
 <script src="iris-app.js"></script>

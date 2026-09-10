@@ -32,6 +32,7 @@ function retentionData(buildKeep = 20) {
 function element() {
   const classes = new Set();
   const listeners = new Map();
+  const attributes = new Map();
   return {
     children: [], dataset: {}, value: "", textContent: "", innerHTML: "",
     style: { setProperty() {}, removeProperty() {} },
@@ -41,7 +42,9 @@ function element() {
       contains(name) { return classes.has(name); },
       toggle(name, on = !classes.has(name)) { if (on) classes.add(name); else classes.delete(name); return on; },
     },
-    setAttribute() {}, removeAttribute() {}, focus() {}, select() {}, remove() {},
+    setAttribute(key, value) { attributes.set(key, value); }, getAttribute(key) { return attributes.get(key); },
+    removeAttribute(key) { attributes.delete(key); }, focus() {}, select() {}, remove() {},
+    parentElement: { classList: { add() {}, remove() {} } },
     appendChild(child) { this.children.push(child); return child; },
     replaceChildren(...children) { this.children = children; },
     querySelector() { return element(); }, querySelectorAll() { return []; },
@@ -78,7 +81,7 @@ function harness(language = "en", realtime = false) {
     value: "", ready: new Promise(() => {}),
     load(value) { this.value = value; }, getValue() { return this.value; },
     onChange(fn) { change = fn; }, onCursor() {}, onPeers() {},
-    setReadOnly() {}, setWordWrap() {}, setSharedRegion() {}, focus() {},
+    setReadOnly() {}, setWordWrap() {}, setSharedRegion() {}, setDiagnostics() {}, onLoad() {}, focus() {},
   };
   const sockets = [];
   class Socket {
@@ -137,6 +140,7 @@ function harness(language = "en", realtime = false) {
     vm.runInContext(source, context, { filename: name });
   }
   run("iris-net.js");
+  run("iris-diagnostics.js");
   if (realtime) {
     // Run the shipping adapter and real CM extensions; only view rendering is
     // headless. Like EditorView.dispatch, this does not enforce state.readOnly.
@@ -212,6 +216,198 @@ function harness(language = "en", realtime = false) {
     },
   };
 }
+
+function diagnosticBuild(diagnostics, overrides = {}) {
+  return { build: {
+    id: "build-1", status: "failed", mainPath: "main.tex", format: "pdf", durationMs: 100,
+    completedAt: 1000, log: "compiler raw output", diagnostics,
+    errors: diagnostics.filter((d) => d.severity === "error").map((d) => d.message),
+    warnings: diagnostics.filter((d) => d.severity === "warning").map((d) => d.message),
+    ...overrides,
+  }, artifacts: [] };
+}
+
+function diagnosticRows(h) { return h.get("diagnosticsList").children; }
+
+test("build diagnostics use the compiled revision when edits arrive before the result", options, async () => {
+  const h = harness("en", true); await h.open(projectData(4, "first\nbroken\nlast"));
+  h.editor.replaceRange(0, 0, "new\n");
+  const before = h.requests.length;
+  await h.app.showBuildOutput(diagnosticBuild([
+    { severity: "error", file: "main.tex", line: 2, column: null, message: "bad", sourceFileId: "source-id", sourceRevisionId: "revision-id" },
+  ]));
+  await tick();
+  assert.equal(h.requests.length, before + 1, "loads the existing immutable source revision");
+  assert.match(h.requests.at(-1).url, /\/files\/source-id\/versions\/revision-id$/);
+  h.requests.at(-1).reply({ content: "first\nbroken\nlast" });
+  await tick();
+  diagnosticRows(h)[0].children[0].dispatchEvent({ type: "click" });
+  await tick();
+  assert.equal(h.editor.selection().text, "broken");
+  assert.equal(h.editor.selection().from, 10);
+  assert.equal(h.editor.diagnostics()[0].line, 3);
+});
+
+test("a changed authoritative reload remaps diagnostics before navigation", options, async () => {
+  const h = harness("en", true); await h.open(projectData(4, "first\nbroken\nlast"));
+  await h.app.showBuildOutput(diagnosticBuild([
+    { severity: "error", file: "main.tex", line: 2, column: null, message: "bad" },
+  ]));
+  h.editor.loadCollab("new\nfirst\nbroken\nlast", "tex", { version: 2 });
+  await tick();
+  diagnosticRows(h)[0].children[0].dispatchEvent({ type: "click" });
+  assert.equal(h.editor.selection().text, "broken");
+  assert.equal(h.editor.selection().from, 10);
+});
+
+for (const order of ["revision-first", "room-first"]) {
+  test(`inactive versioned diagnostic waits for the authoritative open (${order})`, options, async () => {
+    const h = harness("en", true);
+    const data = projectData();
+    const partId = "019f9910-0000-7000-8000-000000000002";
+    data.project.nodes.push({ type: "file", id: partId, path: "part.tex", name: "part.tex", kind: "tex", content: "first\nbroken\nlast" });
+    await h.open(data);
+    await h.app.showBuildOutput(diagnosticBuild([
+      { severity: "error", file: "part.tex", line: 2, column: null, message: "bad", sourceFileId: partId, sourceRevisionId: "revision-id" },
+    ]));
+    diagnosticRows(h)[0].children[0].dispatchEvent({ type: "click" });
+    await tick();
+    const revision = h.requests.at(-1);
+    const loadRoom = () => h.editor.loadCollab("new\nfirst\nbroken\nlast", "tex", { version: 2 });
+    if (order === "room-first") loadRoom();
+    revision.reply({ content: "first\nbroken\nlast" });
+    await tick();
+    if (order === "revision-first") loadRoom();
+    await tick();
+    assert.equal(h.editor.diagnostics()[0].line, 3);
+    assert.equal(h.editor.selection().text, "broken");
+    assert.equal(h.editor.selection().from, 10);
+  });
+}
+
+test("a diagnostic can open an inactive source whose cached content lacks the reported line", options, async () => {
+  const h = harness("en", true);
+  const data = projectData();
+  data.project.nodes.push({ type: "file", id: "part", path: "part.tex", name: "part.tex", kind: "tex", content: "first" });
+  await h.open(data);
+  await h.app.showBuildOutput(diagnosticBuild([
+    { severity: "error", file: "part.tex", line: 3, column: null, message: "bad" },
+  ]));
+  const button = diagnosticRows(h)[0].children[0];
+  assert.equal(button.disabled, false);
+  button.dispatchEvent({ type: "click" });
+  assert.equal(h.a.state.activeId, "part");
+  h.editor.loadCollab("first\nsecond\nbroken", "tex", { version: 2 });
+  await tick();
+  assert.equal(h.editor.selection().text, "broken");
+});
+
+test("deleting the diagnosed line removes its marker and disables its source link", options, async () => {
+  const h = harness("en", true); await h.open(projectData(4, "first\nbroken\nlast"));
+  await h.app.showBuildOutput(diagnosticBuild([
+    { severity: "error", file: "main.tex", line: 2, column: null, message: "bad" },
+  ]));
+  h.editor.replaceRange(6, 13, "");
+  assert.equal(h.editor.diagnostics().length, 0);
+  assert.equal(diagnosticRows(h)[0].children[0].disabled, true);
+});
+
+test("compiler messages are rendered as inert text and remain readable without a location", options, async () => {
+  const h = harness("it", true); await h.open();
+  const message = '<img src=x onerror="alert(1)">';
+  await h.app.showBuildOutput(diagnosticBuild([{ severity: "error", file: null, line: null, column: null, message }]));
+  const button = diagnosticRows(h)[0].children[0];
+  const body = button.children[1];
+  assert.equal(button.disabled, true);
+  assert.equal(body.children[0].textContent, "Errore");
+  assert.equal(body.children[2].textContent, message);
+  assert.equal(body.children[2].innerHTML, "");
+});
+
+for (const [kind, filePath] of [["tex", "chapters/intro.tex"], ["ly", "parts/voice.ily"]]) {
+  test(`${kind} diagnostic opens the exact nested source and selects its full line`, options, async () => {
+    const h = harness("en", true);
+    const data = projectData();
+    data.project.nodes.push({ type: "folder", name: filePath.split("/")[0], children: [
+      { type: "file", id: "included", path: filePath, name: filePath.split("/")[1], kind, content: "first\nbroken command\nlast" },
+    ] });
+    await h.open(data);
+    await h.app.showBuildOutput(diagnosticBuild([
+      { severity: "error", file: filePath, line: 2, column: 3, message: "Unknown command <x>" },
+    ]));
+    assert.equal(h.a.state.view, "diagnostics", "a failed build opens the diagnostic list");
+    assert.equal(diagnosticRows(h).length, 1);
+    const button = diagnosticRows(h)[0].children[0];
+    assert.equal(button.disabled, false);
+    button.dispatchEvent({ type: "click" });
+    assert.equal(h.a.state.activeId, "included");
+    assert.deepEqual(clone(h.editor.selection()), { from: 6, to: 20, text: "broken command", anchor: 6, head: 20 });
+    assert.equal(h.editor.diagnostics()[0].line, 2);
+    assert.equal(h.a.state.dirtyFiles.size, 0, "navigation must not edit the source");
+  });
+}
+
+test("diagnostic list and gutter follow inserted lines and reset with the build or project", options, async () => {
+  const h = harness("en", true); await h.open(projectData(4, "first\nbroken\nlast"));
+  await h.app.showBuildOutput(diagnosticBuild([
+    { severity: "error", file: "main.tex", line: 2, column: null, message: "Bad command" },
+    { severity: "warning", file: "main.tex", line: 2, column: null, message: "Undefined reference" },
+  ]));
+  h.editor.replaceRange(0, 0, "new\n");
+  assert.deepEqual(clone(h.editor.diagnostics().map((d) => d.line)), [3, 3]);
+  diagnosticRows(h)[0].children[0].dispatchEvent({ type: "click" });
+  assert.equal(h.editor.selection().text, "broken");
+  assert.equal(h.editor.selection().from, 10);
+  await h.app.showBuildOutput(diagnosticBuild([], { id: "build-2" }));
+  assert.equal(h.editor.diagnostics().length, 0);
+  assert.equal(diagnosticRows(h).length, 0);
+  await h.app.showBuildOutput(diagnosticBuild([
+    { severity: "error", file: "main.tex", line: 1, column: null, message: "bad" },
+  ]));
+  await h.app.clearBuildOutput();
+  assert.equal(h.editor.diagnostics().length, 0);
+  assert.equal(diagnosticRows(h).length, 0);
+  await h.app.showBuildOutput(diagnosticBuild([
+    { severity: "error", file: "main.tex", line: 1, column: null, message: "bad" },
+  ]));
+  await h.app.load(projectData(5, "new project"));
+  assert.equal(h.editor.diagnostics().length, 0);
+  assert.equal(diagnosticRows(h).length, 0);
+});
+
+test("missing, external and unlocated diagnostics cannot jump to a same-named file", options, async () => {
+  const h = harness("en", true); await h.open();
+  await h.app.showBuildOutput(diagnosticBuild([
+    { severity: "error", file: "/external/main.tex", line: 1, column: null, message: "external error" },
+    { severity: "error", file: "../main.tex", line: 1, column: null, message: "outside error" },
+    { severity: "error", file: "deleted/main.tex", line: 1, column: null, message: "missing source" },
+    { severity: "warning", file: null, line: null, column: null, message: "rerun needed" },
+    { severity: "error", file: "main.tex", line: 100, column: null, message: "removed line" },
+  ]));
+  assert.equal(diagnosticRows(h).length, 5);
+  assert.ok(diagnosticRows(h).every((row) => row.children[0].disabled));
+  assert.equal(h.editor.diagnostics().length, 0);
+});
+
+test("returning to a source and collaborative reloads restore its markers", options, async () => {
+  const h = harness("en", true);
+  const data = projectData(4, "first\nbroken\nlast");
+  data.project.nodes.push({ type: "file", id: "other", path: "other.tex", name: "other.tex", kind: "tex", content: "other" });
+  await h.open(data);
+  await h.app.showBuildOutput(diagnosticBuild([
+    { severity: "error", file: "main.tex", line: 2, column: null, message: "bad" },
+  ]));
+  h.a.openFile("other");
+  assert.equal(h.editor.diagnostics().length, 0);
+  h.a.openFile("main");
+  assert.equal(h.editor.diagnostics()[0].line, 2);
+  h.editor.loadCollab("first\nbroken\nlast", "tex", { version: 2 });
+  assert.equal(h.editor.diagnostics()[0].line, 2);
+  h.editor.collabReceive([{ changes: ChangeSet.of({ from: 0, insert: "peer\n" }, 17).toJSON(), clientID: "peer" }]);
+  assert.equal(h.editor.diagnostics()[0].line, 3);
+  diagnosticRows(h)[0].children[0].dispatchEvent({ type: "click" });
+  assert.equal(h.editor.selection().text, "broken");
+});
 
 test("saves capture the current tree at queue start and acknowledge only included edits", options, async () => {
   const h = harness(); await h.open(); h.edit("first");

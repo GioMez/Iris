@@ -92,6 +92,18 @@
     "replaced_one": "{{count}} occurrence replaced",
     "replaced_other": "{{count}} occurrences replaced"
   },
+  "diagnostics": {
+    "title": "Diagnostics",
+    "show": "Show diagnostics",
+    "error": "Error",
+    "warning": "Warning",
+    "noLocation": "No source location",
+    "loadingSource": "Locating the compiled source…",
+    "sourceUnavailable": "This source location is unavailable in the current project.",
+    "notCompiled": "Compile the project to see diagnostics.",
+    "empty": "No errors or warnings in this build.",
+    "failedWithoutLocation": "Compilation failed without a diagnostic message. Check the Log tab for details."
+  },
   "preview": {
     "preview": "Preview",
     "log": "Log",

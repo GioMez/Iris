@@ -92,6 +92,18 @@
     "replaced_one": "{{count}} occorrenza sostituita",
     "replaced_other": "{{count}} occorrenze sostituite"
   },
+  "diagnostics": {
+    "title": "Diagnostiche",
+    "show": "Mostra diagnostiche",
+    "error": "Errore",
+    "warning": "Avviso",
+    "noLocation": "Posizione nel sorgente non indicata",
+    "loadingSource": "Ricerca della posizione nel sorgente compilato…",
+    "sourceUnavailable": "Questa posizione nel sorgente non è disponibile nel progetto attuale.",
+    "notCompiled": "Compila il progetto per vedere le diagnostiche.",
+    "empty": "Nessun errore o avviso in questa compilazione.",
+    "failedWithoutLocation": "Compilazione fallita senza un messaggio diagnostico. Consulta la scheda Log per i dettagli."
+  },
   "preview": {
     "preview": "Anteprima",
     "log": "Log",

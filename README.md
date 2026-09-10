@@ -67,6 +67,8 @@ the Node.js service handles authentication, persistence, and compilation.
 - Server-side LilyPond compilation to PDF, PNG, SVG, PS, or EPS.
 - An integrated PDF.js viewer, zoomable image preview, compiler log, warnings,
   errors, build duration, and downloadable artifacts.
+- Clickable LaTeX and LilyPond diagnostics with source-line navigation and editor
+  gutter messages, including diagnostics from saved builds.
 - Project-local font uploads, including XeLaTeX and LuaLaTeX font discovery.
 - Local password authentication and optional OAuth 2.0/OpenID Connect SSO.
 - Localized interface with English as the default and Italian included.

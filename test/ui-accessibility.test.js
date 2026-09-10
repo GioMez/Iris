@@ -77,10 +77,10 @@ test("save, compile and output form one ordered workflow", () => {
 test("preview controls support PDFs and image artifacts without format-specific branding", () => {
   assert.doesNotMatch(html, /data-icon="file-type-pdf"/);
   assert.doesNotMatch(app, /ti\("file-type-pdf"\)/);
-  // 90 + 58 columns, one 2px gap, 2px padding and a 1px border either side, all
+  // Three columns, two 2px gaps, 2px padding and a 1px border either side, all
   // inside the box: the control keeps a fixed width so the bar cannot reflow.
-  assert.match(css, /\.seg\{[^}]*grid-template-columns:90px 58px;[^}]*width:156px;[^}]*height:32px/);
-  assert.match(css, /@container \(max-width:540px\)\{[\s\S]*\.pvbar \.seg\{grid-template-columns:30px 30px;width:66px\}/);
+  assert.match(css, /\.seg\{[^}]*grid-template-columns:90px 112px 58px;[^}]*width:270px;[^}]*height:32px/);
+  assert.match(css, /@container \(max-width:660px\)\{[\s\S]*\.pvbar \.seg\{grid-template-columns:30px 30px 30px;width:100px\}/);
   assert.match(app, /function layoutImagePages\(\)/);
   assert.match(app, /function requestPreviewLayout\(\)/);
   assert.match(css, /\.image-preview img\{[^}]*width:100%/);
