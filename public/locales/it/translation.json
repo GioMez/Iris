@@ -1,5 +1,30 @@
 {
   "bibliography": {
+    "add": "Aggiungi",
+    "edit": "Modifica",
+    "remove": "Rimuovi",
+    "undo": "Annulla modifica",
+    "select": "Seleziona reference {{number}}",
+    "form": {
+      "add": "Aggiungi reference",
+      "edit": "Modifica reference",
+      "remove": "Rimuovi reference",
+      "more": "Altri campi",
+      "nativeName": "Nome nativo del campo",
+      "addField": "Aggiungi campo",
+      "fieldHint": "Usa i nomi nativi per campi personalizzati o altre occorrenze. Date e numeri restano testo.",
+      "removeField": "Rimuovi {{field}}",
+      "occurrence": "{{field}}, occorrenza {{number}}",
+      "sourceOnly": "Espressione complessa: modifica nel sorgente",
+      "removeEntry": "Rimuovere {{key}}?\n{{title}}",
+      "renameWarning": "Cambiare questo identificativo non aggiorna citazioni o riferimenti incrociati. Aggiornali nel sorgente se necessario.",
+      "removeWarning": "Rimuovere questa reference non elimina citazioni o riferimenti incrociati, che potrebbero puntare a una voce mancante. Puoi annullare la rimozione dalla tabella.",
+      "conflict": "La reference o il contesto di modifica sono cambiati, oppure la scrittura non e' disponibile. La bozza resta aperta. Chiudi e riapri la reference per controllare il sorgente corrente.",
+      "pending": "L'analisi del sorgente corrente e' ancora in corso. La bozza resta aperta; riprova Applica al termine dell'analisi.",
+      "discard": "Scartare queste modifiche? La bozza non ha modificato il sorgente.",
+      "keep": "Continua a modificare",
+      "discardConfirm": "Scarta modifiche"
+    },
     "views": "Viste della bibliografia",
     "table": "Tabella",
     "text": "Testo",
@@ -45,6 +70,20 @@
       "url": "URL", "abstract": "Abstract", "keywords": "Parole chiave", "notes": "Note"
     },
     "diagnostics": {
+      "bibliographyEdit": {
+        "invalidSource": "Il sorgente corrente non e' modificabile come bibliografia. Correggine prima la sintassi nel sorgente.",
+        "invalidOperation": "Questa bozza non puo' essere applicata. Controlla i campi e riprova.",
+        "targetConflict": "La reference e' cambiata mentre il dialog era aperto. La bozza viene conservata.",
+        "fieldConflict": "Un'occorrenza del campo e' cambiata. Chiudi e riapri la reference per controllarla.",
+        "invalidType": "Inserisci un tipo di reference valido, non una direttiva riservata.",
+        "invalidKey": "La chiave di citazione contiene caratteri non rappresentabili in sicurezza.",
+        "duplicateKey": "La chiave di citazione {{key}} e' gia' in uso.",
+        "invalidField": "Controlla il nome nativo del campo e il valore. TY ed ER sono riservati in RIS.",
+        "readOnlyField": "Le espressioni complesse si possono modificare solo nel sorgente.",
+        "unsafeValue": "Il valore contiene parentesi graffe sbilanciate e non puo' essere applicato in sicurezza. Correggilo qui o modifica il sorgente.",
+        "invalidText": "Il valore contiene NUL o Unicode non valido e non puo' essere salvato senza perdita di dati. Correggilo prima di applicare.",
+        "intentMismatch": "Il sorgente risultante non corrisponderebbe alla bozza. Nessuna modifica applicata."
+      },
       "bibtex": {
         "syntax": "Atteso: {{expected}}.",
         "unrecognized": "Testo non riconosciuto fuori da una voce o direttiva bibliografica.",
@@ -67,6 +106,7 @@
     }
   },
   "common": {
+    "apply": "Applica",
     "account": "Account",
     "cancel": "Annulla",
     "close": "Chiudi",

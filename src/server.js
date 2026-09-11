@@ -38,7 +38,7 @@ const {
   deleteProjectTemplate,
 } = require("./project-templates");
 const { createZip, extractZip } = require("./zip");
-const { parseCompileLog, compileDiagnosticsView } = require("./compile-diagnostics");
+const { parseCompileLog, compileDiagnosticsView, selectCompileDiagnostics } = require("./compile-diagnostics");
 const { normalizeCustomCommands } = require("../public/iris-completion");
 const Bibliography = require("../public/iris-bibliography");
 const {
@@ -3860,8 +3860,9 @@ function runCompileStep({ step, binPath, cwd, fontDir, texmfVar }) {
     const outputDir = path.join(cwd, "output");
     const projectSearchPath = kpathseaSearchPath(cwd, outputDir);
     const startedAt = Date.now();
-    let log = `$ ${command} ${args.join(" ")}\n`;
+    let log = "";
     let timedOut = false;
+    let truncated = false;
     let done = false;
     const child = trackedSpawn(command, args, {
       cwd,
@@ -3883,9 +3884,12 @@ function runCompileStep({ step, binPath, cwd, fontDir, texmfVar }) {
       shell: false,
     });
     const append = (chunk) => {
-      if (log.length >= COMPILE_LOG_LIMIT) return;
-      log += chunk.toString("utf8").slice(0, COMPILE_LOG_LIMIT - log.length);
+      const text = chunk.toString("utf8");
+      const remaining = Math.max(0, COMPILE_LOG_LIMIT - log.length);
+      if (text.length > remaining) truncated = true;
+      log += text.slice(0, remaining);
     };
+    append(`$ ${command} ${args.join(" ")}\n`);
     const timer = setTimeout(() => {
       timedOut = true;
       child.kill("SIGTERM");
@@ -3900,8 +3904,8 @@ function runCompileStep({ step, binPath, cwd, fontDir, texmfVar }) {
       const durationMs = Date.now() - startedAt;
       if (timedOut) append(`\nIris: compilation stopped after ${COMPILE_TIMEOUT_MS}ms.\n`);
       else if (signal) append(`\nIris: process terminated by signal ${signal}.\n`);
-      const parsed = parseCompileLog(log, { cwd });
-      resolve({ code, signal, timedOut, durationMs, log, ...parsed });
+      const parsed = parseCompileLog(log, { cwd, bounded: false });
+      resolve({ code, signal, timedOut, truncated, durationMs, log, ...parsed });
     });
   });
 }
@@ -3912,17 +3916,22 @@ async function runCompilePipeline({ profile, binPath, cwd, fontDir, texmfVar, pr
   let exitCode = 0;
   let signal = null;
   let timedOut = false;
+  const steps = [];
   for (let i = 0; i < profile.steps.length; i++) {
     const step = profile.steps[i];
     log += `\n===== Iris step ${i + 1}/${profile.steps.length}: ${step.tool} =====\n`;
     const res = await runCompileStep({ step, binPath, cwd, fontDir, texmfVar });
+    // Arguments are the complete normalized execution profile, including source
+    // and options. Do not infer comparability from only the main file or tool.
+    const comparisonKey = LATEX_ENGINES.has(step.tool) ? JSON.stringify([step.tool, step.args]) : null;
+    steps.push({ ...step, comparisonKey, ...res });
     log += res.log;
     exitCode = res.code;
     signal = res.signal;
     timedOut = res.timedOut;
     if (res.code !== 0 || res.signal || res.timedOut) break;
   }
-  const parsed = parseCompileLog(log, { cwd });
+  const parsed = selectCompileDiagnostics(steps, { cwd, preLog });
   return {
     code: exitCode,
     signal,
@@ -4076,7 +4085,8 @@ async function finalizeBuildOutput({ id, status, storagePath, artifacts, result 
       `UPDATE build_outputs SET
          completed_at = CURRENT_TIMESTAMP, status = $2, storage_path = $3, size = $4,
          content_hash = $5, artifact_count = $6, duration_ms = $7, exit_code = $8,
-         signal = $9, timed_out = $10, log = $11, warnings = $12::jsonb, errors = $13::jsonb
+         signal = $9, timed_out = $10, log = $11, warnings = $12::jsonb, errors = $13::jsonb,
+         diagnostics_version = 1
        WHERE id = $1 AND status = 'running'`,
       [
         id, status, succeeded ? storagePath : null, size, contentHash, succeeded ? artifacts.length : 0,
@@ -4131,7 +4141,7 @@ async function listBuildOutputs(req, res, user, projectId, url) {
 async function getBuildOutput(req, res, user, projectId, buildId) {
   const project = await authorizeProject(projectId, user, "read");
   const { rows } = await db.query(
-    `SELECT ${BUILD_OUTPUT_FIELDS}, log, warnings, errors FROM build_outputs
+    `SELECT ${BUILD_OUTPUT_FIELDS}, log, warnings, errors, diagnostics_version FROM build_outputs
      WHERE id = $1 AND project_id = $2`,
     [buildId, projectId]
   );
@@ -4524,7 +4534,11 @@ async function compileProject(req, res, user, id) {
       const failedResult = {
         ...result,
         log: `${result.log || ""}\n${message}\n`,
-        errors: Array.from(new Set([...(result.errors || []), message])).slice(0, 80),
+        diagnostics: [
+          // Keep the terminal cause even when compiler errors fill the cap.
+          ...parseCompileLog(message).diagnostics,
+          ...compileDiagnosticsView(result).diagnostics,
+        ],
       };
       await finalizeBuildOutput({
         id: buildId,

@@ -29,6 +29,7 @@ const ALL_MIGRATIONS = [
   "014_external_users.sql",
   "015_project_revision.sql",
   "015_retention.sql",
+  "016_build_diagnostics_version.sql",
 ];
 const silentLogger = { log() {}, warn() {}, error() {} };
 

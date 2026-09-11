@@ -93,10 +93,16 @@
   // read-only workspace: no editing, saving, compiling or tree mutations.
   function isReadOnly() { return state.role === "viewer"; }
   function isFileUnavailable(id = state.activeId) { return state.unavailableFiles.has(id) || state.unavailableFiles.has(canonicalFileId(id)); }
+  function canWriteBibliography() {
+    const file = findFile(state.activeId);
+    return !!file && !bibliographyImagePreview && !file.sourceError && !file.generated && !file.readOnly &&
+      !isReadOnly() && !isFileUnavailable() && !window.IrisCollab.paused();
+  }
   function applyEditorGate() {
     ed().setReadOnly(isReadOnly() || isFileUnavailable() || !!findFile(state.activeId)?.sourceError || window.IrisCollab.paused());
     const locked = isReadOnly() || window.IrisCollab.paused();
     ["completionTex", "completionLy", "completionApply"].forEach((id) => { $(id).disabled = locked; });
+    bibliographyView?.refreshAvailability();
   }
 
   /* ---------------- persistence (delegated to the projects layer) ---------------- */
@@ -186,11 +192,12 @@
 
   /* ---------------- editor (see iris-editor.js for the adapter) ---------------- */
   const ed = () => window.IrisEditor;
-  let bibliographyView = null, bibliographyDocumentKey = null;
+  let bibliographyView = null, bibliographyForm = null, bibliographyDocumentKey = null;
   let bibliographyImagePreview = false;
   const bibliographyHints = new Map();
   function bibliographyKey(id) { return JSON.stringify([loadedProjectId, id]); }
   function deactivateBibliography() {
+    bibliographyForm?.invalidateContext();
     bibliographyDocumentKey = null;
     bibliographyView?.deactivate();
   }
@@ -205,10 +212,10 @@
     const text = ed().snapshot().text;
     if (text.includes("\0") || /^data:[^\r\n]*;base64,/.test(text)) { deactivateBibliography(); return; }
     const key = bibliographyKey(canonicalFileId(file.id) || file.id);
-    const kind = editorKind(file), hint = window.IrisBibliography.candidate(text) ||
-      (["bib", "ris"].includes(kind) ? kind : bibliographyHints.get(key)) || null;
+    const kind = editorKind(file), hint = bibliographyHints.get(key) || window.IrisBibliography.candidate(text) ||
+      (["bib", "ris"].includes(kind) ? kind : null);
     if (!hint && bibliographyDocumentKey !== key) { deactivateBibliography(); return; }
-    if (hint) bibliographyHints.set(key, hint);
+    if (bibliographyDocumentKey !== key) bibliographyForm?.invalidateContext();
     bibliographyDocumentKey = key;
     bibliographyView.activate({ documentKey: key, hint, editing });
   }
@@ -294,7 +301,19 @@
   // outline and the compiler, but the file is not marked dirty and no autosave is
   // scheduled. Without a session, the ordinary save path is unchanged.
   function wireEditorEvents() {
-    bibliographyView = window.IrisBibliographyView.create({ root: $("bibliographyPanel"), editor: ed(), t, onSource: showSource, actions: null });
+    bibliographyView = window.IrisBibliographyView.create({ root: $("bibliographyPanel"), editor: ed(), t, onSource: showSource,
+      onFormat: (key, format) => bibliographyHints.set(key, format),
+      actions: { canWrite: canWriteBibliography, add: () => bibliographyForm.openAdd(),
+        edit: (index) => bibliographyForm.openEdit(index), remove: (index) => bibliographyForm.openRemove(index) } });
+    bibliographyForm = window.IrisBibliographyForm.create({ root: $("bibliographyModal"), editor: ed(), t, onSource: showSource,
+      // The live tree keeps its local ID through canonical assignment. A parser
+      // result or server ID is not the identity of an open editor/form session.
+      getDocumentKey: () => bibliographyDocumentKey && window.IrisMotion.activeSurface() === "app" ? bibliographyKey(state.activeId) : null,
+      getContext() {
+        const canWrite = canWriteBibliography();
+        const context = bibliographyView.context();
+        return context ? { ...context, canWrite } : null;
+      } });
     ed().onLoad(() => {
       // An authoritative reload may change main-file detection without an edit.
       const file = findFile(state.activeId);
@@ -983,6 +1002,7 @@
     const f = findFile(id);
     if (!f) return;
     if (f.generated || f.readOnly) { toast(t("tree.generatedFile"), "err"); return; }
+    bibliographyForm?.invalidateContext();
     closeResponsiveSidebar();
     bibliographyImagePreview = f.kind === "img";
     if (bibliographyImagePreview) { deactivateBibliography(); setWorkspaceView("preview"); previewImage(f); markTree(id); return; }

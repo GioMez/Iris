@@ -68,6 +68,10 @@
   }
 
   function focusActiveSurface() {
+    if (activeSurface === "app" && window.IrisApp?.focusDocument) {
+      window.IrisApp.focusDocument();
+      return;
+    }
     const targets = {
       app: window.IrisEditor ? window.IrisEditor.focusTarget() : null,
       picker: document.getElementById("projectPickerTitle"),
@@ -127,6 +131,10 @@
     const dialog = elementOf(target);
     if (!dialog) return Promise.resolve(false);
     if (dialog.classList.contains("forced") && !options.force) return Promise.resolve(false);
+    const event = new CustomEvent("iris:before-dialog-close", {
+      cancelable: !options.force, detail: { force: !!options.force },
+    });
+    if (!dialog.dispatchEvent(event) && !options.force) return Promise.resolve(false);
     const immediate = !!options.immediate || reducedMotion();
     if (immediate) {
       dialogTokens.set(dialog, (dialogTokens.get(dialog) || 0) + 1);

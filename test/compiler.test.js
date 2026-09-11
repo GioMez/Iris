@@ -412,3 +412,99 @@ fs.writeFileSync(output + ".pdf", "%PDF-1.4 fake");
   assert.match(result.log, /--pdf --output=output\/main main\.ly/);
   assert.equal(await fs.readFile(path.join(cwd, "output", "main.pdf"), "utf8"), "%PDF-1.4 fake");
 });
+
+async function multipassFixture(t, observations) {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "iris-multipass-test-"));
+  t.after(() => fs.rm(cwd, { recursive: true, force: true }));
+  const binPath = path.join(cwd, "bin");
+  await fs.mkdir(binPath);
+  await fs.mkdir(path.join(cwd, "output"));
+  for (const tool of ["pdflatex", "xelatex", "lualatex", "xetex", "bibtex", "biber"]) {
+    await fs.writeFile(path.join(binPath, tool), `#!${process.execPath}
+const fs = require("node:fs");
+const index = Number(fs.existsSync("step-count") ? fs.readFileSync("step-count", "utf8") : 0);
+fs.writeFileSync("step-count", String(index + 1));
+const observation = ${JSON.stringify(observations)}[index];
+if (!observation) throw new Error("Unexpected compile step");
+console.log(observation.log || "");
+if (observation.flood) console.log("x".repeat(2 * 1024 * 1024));
+if (observation.signal) process.kill(process.pid, observation.signal);
+process.exitCode = observation.code || 0;
+`, { mode: 0o755 });
+  }
+  return { cwd, binPath, fontDir: "", texmfVar: "", preLog: "" };
+}
+
+for (const engine of ["pdflatex", "xelatex", "lualatex", "xetex"]) {
+  for (const mode of ["bibtex", "biber"]) {
+    for (const [truncated, unresolved] of [[false, false], [false, true], [true, false], [true, true]]) {
+      test(`${engine}/${mode} actual multipass with ${truncated ? "truncated" : "complete"} first capture selects ${unresolved ? "final included-source warnings" : "a clean final pass"} without losing trace`, async (t) => {
+        const first = Array.from({ length: 100 }, (_, i) => `LaTeX Warning: Citation 'transient-${i}' undefined on input line 7.`).join("\n");
+        const final = unresolved ? "(./main.tex\n(./chapters/intro.tex\nLaTeX Warning: Citation 'missing' undefined on input line 9.\n)\nPackage hyperref Warning: Token not allowed on input line 12.\n)" : "Output written on main.pdf";
+        const auxiliary = unresolved ? (mode === "bibtex" ? "Warning--empty journal in persistent-key" : "[123] Utils.pm:399> WARN - empty journal in persistent-key") : "Bibliography processed";
+        const f = await multipassFixture(t, [{ log: first, flood: truncated }, { log: auxiliary }, { log: "LaTeX Warning: Rerun to get cross-references right." }, { log: final }]);
+        const result = await runCompilePipeline({ ...f, profile: normalizeCompileProfile({ mode }, engine, "main.tex") });
+        assert.equal(result.code, 0);
+        assert.deepEqual(result.errors, []);
+        assert.match(result.log, /transient-99/);
+        assert.match(result.log, /Iris step 4\/4/);
+        assert.equal(result.warnings.length, unresolved ? 3 : 0);
+        assert.ok(result.warnings.every((message) => !/transient|Rerun/.test(message)));
+        if (unresolved) {
+          assert.ok(result.warnings.some((message) => message.includes("persistent-key")));
+          assert.deepEqual(result.diagnostics.slice(1).map(({ file, line }) => ({ file, line })), [
+            { file: "chapters/intro.tex", line: 9 }, { file: "main.tex", line: 12 },
+          ]);
+        } else assert.deepEqual(result.diagnostics, []);
+      });
+    }
+  }
+}
+
+test("custom jobs with different sources, arguments or engines cannot clear each other's warnings", async (t) => {
+  const f = await multipassFixture(t, [
+    { log: "warning: main job" }, { log: "warning: other source" }, { log: "warning: draft job" },
+    { log: "warning: other engine" }, { log: "clean main job" },
+  ]);
+  const profile = normalizeCompileProfile({ mode: "custom", steps: [
+    { tool: "pdflatex", args: ["main.tex"] }, { tool: "pdflatex", args: ["other.tex"] },
+    { tool: "pdflatex", args: ["-draftmode", "main.tex"] }, { tool: "xelatex", args: ["main.tex"] },
+    { tool: "pdflatex", args: ["main.tex"] },
+  ] }, "pdflatex", "main.tex");
+  const result = await runCompilePipeline({ ...f, profile, preLog: "Iris: font setup failed" });
+  assert.deepEqual(result.warnings, ["warning: other source", "warning: draft job", "warning: other engine"]);
+  assert.deepEqual(result.errors, ["Iris: font setup failed"]);
+});
+
+for (const mode of ["bibtex", "biber"]) {
+  test(`${mode} intermediate failure is structured and never selects unexecuted TeX passes`, async (t) => {
+    const f = await multipassFixture(t, [
+      { log: "warning: still unresolved" }, { log: "unrecognized auxiliary failure", code: 2 },
+    ]);
+    const result = await runCompilePipeline({ ...f, profile: normalizeCompileProfile({ mode }, "pdflatex", "main.tex") });
+    assert.equal(result.code, 2);
+    assert.deepEqual(result.warnings, ["warning: still unresolved"]);
+    assert.equal(result.errors.length, 1);
+    assert.match(result.errors[0], new RegExp(`${mode}.*2`));
+    assert.equal(result.diagnostics.at(-1).file, null);
+    assert.equal(result.diagnostics.at(-1).line, null);
+    assert.doesNotMatch(result.log, /Iris step 3/);
+    assert.equal(await fs.readFile(path.join(f.cwd, "step-count"), "utf8"), "2");
+  });
+}
+
+for (const observation of [{ signal: "SIGTERM" }, { flood: true }, { flood: true, code: 2 }]) {
+  test(`incomplete final TeX capture preserves previous observations (${JSON.stringify(observation)})`, async (t) => {
+    const f = await multipassFixture(t, [{ log: "warning: previous" }, { log: "warning: observed", ...observation }]);
+    const profile = normalizeCompileProfile({ mode: "custom", steps: [
+      { tool: "pdflatex", args: ["main.tex"] }, { tool: "pdflatex", args: ["main.tex"] },
+    ] }, "pdflatex", "main.tex");
+    const result = await runCompilePipeline({ ...f, profile });
+    assert.deepEqual(result.warnings, ["warning: previous", "warning: observed"]);
+    if (observation.signal || observation.code) {
+      assert.equal(result.errors.length, 1);
+      assert.equal(result.diagnostics.at(-1).line, null);
+    }
+    if (observation.flood) assert.ok(result.log.length < 1024 * 1024 + 1024);
+  });
+}

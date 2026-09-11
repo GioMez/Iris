@@ -16,10 +16,10 @@ function diagnostic(severity, message, file = null, line = null, column = null) 
   return { severity, file, line, column, message: message.trim() };
 }
 
-function diagnosticResult(items) {
+function diagnosticResult(items, bounded = true) {
   const seen = new Set();
   const counts = { error: 0, warning: 0 };
-  const diagnostics = items.filter((item) => {
+  const diagnostics = !bounded ? items : items.filter((item) => {
     const key = JSON.stringify([item.severity, item.file, item.line, item.column, item.message]);
     if (seen.has(key) || counts[item.severity] >= 80) return false;
     seen.add(key);
@@ -33,7 +33,7 @@ function diagnosticResult(items) {
   };
 }
 
-function parseCompileLog(log, { cwd = "" } = {}) {
+function parseCompileLog(log, { cwd = "", bounded = true } = {}) {
   const lines = String(log || "").replace(/\x1b\[[0-9;]*m/g, "").split(/\r?\n/);
   const items = [];
   const stack = [];
@@ -42,7 +42,8 @@ function parseCompileLog(log, { cwd = "" } = {}) {
     return null;
   };
   for (let i = 0; i < lines.length; i++) {
-    const text = lines[i].trim();
+    // Biber's .blg prefix names its Perl module, not a project source location.
+    const text = lines[i].trim().replace(/^\[\d+\]\s+\S+\.pm:\d+>\s+(?=(?:WARN|ERROR|FATAL)\s*-)/, "");
     if (/^===== Iris step /.test(text)) { stack.length = 0; continue; }
     if (text.startsWith("$ ")) continue;
     const located = text.match(/^(.+?):(\d+):(?:(\d+):)?\s*(.*)$/);
@@ -78,7 +79,7 @@ function parseCompileLog(log, { cwd = "" } = {}) {
       items.push(diagnostic("warning", message, currentFile(), line ? Number(line[1]) : null));
       continue;
     }
-    if (/^(?:(?:fatal |programming )?error:|ERROR\s*-|Emergency stop|Iris: .*?(?:unable to start|failed|stopped after|terminated by signal))/i.test(text)) {
+    if (/^(?:(?:fatal |programming )?error:|(?:ERROR|FATAL)\s*-|Emergency stop|Iris: .*?(?:unable to start|failed|stopped after|terminated by signal))/i.test(text)) {
       items.push(diagnostic("error", text));
       continue;
     }
@@ -92,18 +93,19 @@ function parseCompileLog(log, { cwd = "" } = {}) {
       else stack.push(sourcePath(token[1] || token[2], cwd));
     }
   }
-  return diagnosticResult(items);
+  return diagnosticResult(items, bounded);
 }
 
 // The existing JSONB warning/error arrays store structured entries for new
 // builds. Old builds still contain strings; recover their locations from the
 // log, and preserve setup/publication failures even when absent from that log.
 function compileDiagnosticsView(result) {
+  if (Array.isArray(result.diagnostics)) return diagnosticResult(result.diagnostics);
   const warnings = Array.isArray(result.warnings) ? result.warnings : [];
   const errors = Array.isArray(result.errors) ? result.errors : [];
   const stored = [...warnings, ...errors].filter((item) => item && typeof item === "object");
-  const items = Array.isArray(result.diagnostics) ? result.diagnostics.slice()
-    : stored.length ? stored.slice() : parseCompileLog(result.log).diagnostics;
+  if (result.diagnostics_version === 1) return diagnosticResult(stored);
+  const items = stored.length ? stored.slice() : parseCompileLog(result.log).diagnostics;
   for (const [severity, values] of [["warning", warnings], ["error", errors]]) {
     for (const value of values) {
       if (typeof value !== "string") continue;
@@ -119,4 +121,25 @@ function compileDiagnosticsView(result) {
   return diagnosticResult(items);
 }
 
-module.exports = { parseCompileLog, compileDiagnosticsView };
+function selectCompileDiagnostics(steps, { cwd = "", preLog = "" } = {}) {
+  const successful = (step) => step.code === 0 && !step.signal && !step.timedOut;
+  const latest = new Map();
+  steps.forEach((step, index) => {
+    if (step.comparisonKey != null && successful(step) && !step.truncated) latest.set(step.comparisonKey, index);
+  });
+  const items = parseCompileLog(preLog, { cwd, bounded: false }).diagnostics;
+  steps.forEach((step, index) => {
+    // A later complete pass supersedes earlier successful captures, even if
+    // truncated. Failed/interrupted steps and independent auxiliaries stay.
+    if (step.comparisonKey != null && successful(step) && latest.get(step.comparisonKey) > index) return;
+    for (const item of step.diagnostics) items.push(item);
+    if ((step.code !== 0 || step.signal || step.timedOut) && !step.diagnostics.some((d) => d.severity === "error")) {
+      const outcome = [step.timedOut ? "timeout" : "", step.signal ? `signal ${step.signal}` : "",
+        step.code != null ? `exit code ${step.code}` : ""].filter(Boolean).join(", ") || "unknown exit status";
+      items.push(diagnostic("error", `Iris: ${step.tool} failed (${outcome}).`));
+    }
+  });
+  return diagnosticResult(items);
+}
+
+module.exports = { parseCompileLog, compileDiagnosticsView, selectCompileDiagnostics };

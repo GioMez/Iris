@@ -107,9 +107,625 @@ async function screenshot(t, page, name) {
   if (!artifacts) return;
   await fs.mkdir(artifacts, { recursive: true });
   const file = path.join(artifacts, name);
-  await page.screenshot({ path: file, fullPage: true });
+  await page.screenshot({ path: file, fullPage: true, animations: "disabled" });
   t.diagnostic(`Screenshot: ${file}`);
 }
+
+async function selectReference(page, index = 0) {
+  const radio = page.locator(`:is(#bibliographyRows, #bibliographyCards) [data-entry-index="${index}"] input[type="radio"]:visible`);
+  assert.equal(await radio.count(), 1, "each visible reference has one native selection control");
+  await radio.check();
+}
+
+test("form: empty bibliography offers add only, shared dialog cancels cleanly and validates inline", options, async (t) => {
+  const page = await pageFor(t, project(""));
+  await settled(page);
+  assert.equal(await page.locator("#bibliographyAdd, #bibliographyEdit, #bibliographyRemove").count(), 3);
+  assert.equal(await page.locator("#bibliographyEdit").isDisabled(), true);
+  assert.equal(await page.locator("#bibliographyRemove").isDisabled(), true);
+  assert.equal(await page.locator('#bibliographyPanel input[type="radio"]').count(), 0);
+  const before = await page.evaluate(() => ({ snapshot: IrisEditor.snapshot(), saved: IrisApp.serialize(), dirty: IrisApp.hasUnsavedChanges() }));
+  await page.locator("#bibliographyAdd").click();
+  assert.equal(await page.getByRole("dialog", { name: "Add reference", exact: true }).isVisible(), true);
+  assert.equal(await page.evaluate(() => document.activeElement.id), "bibliographyFormType");
+  await page.locator("#bibliographyFormCancel").click();
+  await page.locator("#bibliographyModal").waitFor({ state: "hidden" });
+  assert.equal(await page.evaluate(() => document.activeElement.id), "bibliographyAdd");
+  assert.deepEqual(await page.evaluate(() => ({ snapshot: IrisEditor.snapshot(), saved: IrisApp.serialize(), dirty: IrisApp.hasUnsavedChanges() })), before);
+  await page.locator("#bibliographyAdd").click();
+  await page.locator("#bibliographyFormType").fill("comment");
+  await page.locator("#bibliographyFormApply").click();
+  assert.equal(await page.locator("#bibliographyFormError").isVisible(), true, JSON.stringify(await page.evaluate(() => ({
+    text: document.querySelector("#bibliographyFormError").textContent, hidden: document.querySelector("#bibliographyFormError").hidden,
+    type: document.querySelector("#bibliographyFormType").value, focus: document.activeElement.id,
+  }))));
+  assert.match(await page.locator("#bibliographyFormError").textContent(), /type/i);
+  assert.equal(await page.locator("#bibliographyFormType").getAttribute("aria-invalid"), "true");
+  assert.equal(await page.evaluate(() => IrisEditor.getValue()), "");
+});
+
+for (const format of ["bib", "ris"]) for (const kind of ["add", "edit"]) for (const language of ["en", "it"]) {
+  test(`guided UTF-8 browser: ${language} ${format} ${kind} retains rejected drafts and permits correction`, options, async (t) => {
+    const source = format === "bib" ? "@book{a,title={Old}}\r\n" : "TY  - BOOK\r\nTI  - Old\r\nER  -\r\n";
+    const page = await pageFor(t, project(source, `refs.${format}`));
+    await page.evaluate(async ({ source, format, language }) => {
+      await IrisI18n.setLanguage(language);
+      IrisEditor.loadCollab(source, format, { version: 0 });
+      if (language === "it") IrisEditor.applyChanges([{ from: 0, to: 0, insert: "% pending\r\n" }], IrisEditor.snapshot());
+    }, { source, format, language });
+    await settled(page);
+    if (kind === "edit") await selectReference(page);
+    await page.locator(kind === "add" ? "#bibliographyAdd" : "#bibliographyEdit").click();
+    const input = page.locator(`[data-native-name="${format === "bib" ? "title" : "TI"}"] textarea`);
+    const before = await page.evaluate(() => ({ snapshot: IrisEditor.snapshot(), pending: IrisEditor.collabPending(),
+      version: IrisEditor.collabVersion(), dirty: IrisApp.hasUnsavedChanges(), saved: IrisApp.serialize() }));
+    for (const bad of [0, 0xD800, 0xDC00]) {
+      // Create the exact code units inside the browser, not through UTF-8 transport.
+      await input.evaluate((input, code) => {
+        input.value = "Draft" + String.fromCharCode(code);
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      }, bad);
+      await page.locator("#bibliographyFormApply").click();
+      assert.equal(await page.locator("#bibliographyFormError").isVisible(), true);
+      assert.equal(await input.evaluate((input) => input.value.charCodeAt(5)), bad, "draft was not repaired or discarded");
+      const feedback = await page.locator("#bibliographyFormError").textContent();
+      const translated = await page.evaluate(() => IrisI18n.t("bibliography.diagnostics.bibliographyEdit.invalidText"));
+      assert.equal(feedback, translated);
+      assert.match(feedback, /NUL|Unicode/);
+      assert.doesNotMatch(feedback, /bibliography\./);
+      assert.deepEqual(await page.evaluate(() => ({ snapshot: IrisEditor.snapshot(), pending: IrisEditor.collabPending(),
+        version: IrisEditor.collabVersion(), dirty: IrisApp.hasUnsavedChanges(), saved: IrisApp.serialize() })), before);
+    }
+    const corrected = "Normal 0007 \u{1F600} \uFFFD";
+    await input.fill(corrected);
+    await page.locator("#bibliographyFormApply").click();
+    await page.locator("#bibliographyModal").waitFor({ state: "hidden" });
+    const next = await page.evaluate(() => {
+      const text = IrisEditor.getValue();
+      return { text, decoded: IrisBibliography.decodeUtf8(new TextEncoder().encode(text)),
+        revision: IrisEditor.snapshot().revision, pending: IrisEditor.collabPending() };
+    });
+    assert.equal(next.decoded, next.text);
+    assert.equal(require("../public/iris-bibliography.js").decodeUtf8(Buffer.from(next.text)), next.text);
+    assert.ok(next.text.includes(corrected));
+    assert.equal(next.revision, before.snapshot.revision + 1);
+    assert.equal(next.pending.updates.length, (before.pending?.updates.length || 0) + 1);
+    await settled(page);
+    await page.locator("#bibliographyUndo").click();
+    assert.equal(await page.evaluate(() => IrisEditor.getValue()), before.snapshot.text);
+  });
+}
+
+test("form: scalar edits are atomic, preserve unknown and complex data, warn on key rename and undo from table", options, async (t) => {
+  const source = '% retained\r\n@string{pub="Press"}\r\n@article{a,Title="A",journal={J},journaltitle={Alias},year=0007,date={2026-09-10},publisher=pub # "!",x_note={untouched},author={First},author={Second}}\r\n@book{b,title={B},crossref={a}}';
+  const page = await pageFor(t, project(source));
+  await settled(page);
+  await selectReference(page);
+  await page.locator("#bibliographyEdit").click();
+  assert.equal(await page.getByRole("dialog", { name: "Edit reference", exact: true }).isVisible(), true);
+  const field = (name) => page.locator(`[data-native-name="${name}"] textarea`);
+  assert.deepEqual(await field("author").allTextContents(), ["First", "Second"]);
+  assert.equal(await field("publisher").getAttribute("readonly"), "");
+  await page.locator("#bibliographyFormMore summary").click();
+  assert.equal(await field("x_note").inputValue(), "untouched");
+  assert.ok((await page.locator("#bibliographyFormFields label").allTextContents()).includes("Journal (journal)"));
+  await field("Title").fill("Changed");
+  await field("year").fill("0008");
+  await field("date").fill("2026/09/11");
+  await page.locator("#bibliographyFormKey").fill("renamed");
+  assert.equal(await page.locator("#bibliographyFormWarning").isVisible(), true);
+  const before = await page.evaluate(() => IrisEditor.snapshot());
+  await page.locator("#bibliographyFormApply").click();
+  await page.locator("#bibliographyModal").waitFor({ state: "hidden" });
+  const expected = source.replace('@article{a,Title="A"', '@article{renamed,Title="Changed"').replace('year=0007', 'year=0008').replace('date={2026-09-10}', 'date={2026/09/11}');
+  assert.equal(await page.evaluate(() => IrisEditor.getValue()), expected);
+  assert.equal((await page.evaluate(() => IrisEditor.snapshot())).revision, before.revision + 1);
+  await settled(page);
+  await noOverflow(page);
+  await page.locator("#bibliographyUndo").click();
+  assert.equal(await page.evaluate(() => IrisEditor.getValue()), source);
+  await settled(page);
+  await selectReference(page);
+  await page.locator("#bibliographyEdit").click();
+  const unchanged = await page.evaluate(() => IrisEditor.snapshot());
+  await page.locator("#bibliographyFormApply").click();
+  await page.locator("#bibliographyModal").waitFor({ state: "hidden" });
+  assert.deepEqual(await page.evaluate(() => IrisEditor.snapshot()), unchanged);
+});
+
+test("form: removal requires confirmation of the selected parsed entry, not its sorted position", options, async (t) => {
+  const source = '@book{a,title={Alpha}}\n@book{b,title={Zulu}}';
+  const page = await pageFor(t, project(source));
+  await settled(page);
+  await page.locator("#bibliographySort").selectOption({ label: "Title: descending" });
+  await selectReference(page, 1);
+  await page.locator("#bibliographyRemove").click();
+  assert.match(await page.locator("#bibliographyFormRemoval").textContent(), /Zulu/);
+  assert.match(await page.locator("#bibliographyFormRemoval").textContent(), /b/);
+  assert.match(await page.locator("#bibliographyFormWarning").textContent(), /citations|cross/i);
+  assert.equal(await page.evaluate(() => IrisEditor.getValue()), source);
+  await page.locator("#bibliographyFormCancel").click();
+  await page.locator("#bibliographyModal").waitFor({ state: "hidden" });
+  assert.equal(await page.evaluate(() => document.activeElement.id), "bibliographyRemove");
+  await page.locator("#bibliographyRemove").click();
+  await page.locator("#bibliographyFormApply").click();
+  await page.locator("#bibliographyModal").waitFor({ state: "hidden" });
+  assert.equal(await page.evaluate(() => IrisEditor.getValue()), '@book{a,title={Alpha}}\n');
+  await settled(page);
+  assert.equal(await page.locator("#bibliographyEdit").isDisabled(), true);
+  await page.locator("#bibliographyUndo").click();
+  assert.equal(await page.evaluate(() => IrisEditor.getValue()), source);
+});
+
+test("form: ordinary Motion close is cancellable, Escape and source navigation confirm discard, forced close never applies", options, async (t) => {
+  const source = '@book{a,title={A}}';
+  const page = await pageFor(t, project(source));
+  await settled(page);
+  await page.locator("#btnAttach").click();
+  assert.equal(await page.evaluate(() => IrisMotion.closeDialog("attachModal")), true, "dialogs without listeners still close");
+  await selectReference(page);
+  await page.locator("#bibliographyEdit").click();
+  await page.locator('[data-native-name="title"] textarea').fill("draft");
+  assert.equal(await page.evaluate(() => IrisMotion.closeDialog("bibliographyModal", { immediate: true })), false);
+  assert.equal(await page.locator("#bibliographyModal").isVisible(), true);
+  assert.equal(await page.locator("#bibliographyFormDiscard").isVisible(), true);
+  await page.locator("#bibliographyFormKeep").click();
+  await page.keyboard.press("Escape");
+  assert.equal(await page.locator("#bibliographyFormDiscard").isVisible(), true);
+  await page.locator("#bibliographyFormKeep").click();
+  await page.locator("#bibliographyFormSource").click();
+  assert.equal(await page.locator("#bibliographyTextPanel").isVisible(), false);
+  await page.locator("#bibliographyFormDiscardConfirm").click();
+  await page.locator("#bibliographyModal").waitFor({ state: "hidden" });
+  assert.equal(await page.locator("#bibliographyTextPanel").isVisible(), true);
+  assert.equal(await page.evaluate(() => document.activeElement === IrisEditor.focusTarget()), true);
+  assert.equal(await page.evaluate(() => IrisEditor.getValue()), source);
+  await page.locator("#bibliographyTableTab").click();
+  await page.locator("#bibliographyEdit").click();
+  await page.locator('[data-native-name="title"] textarea').fill("must not apply");
+  assert.equal(await page.evaluate(() => IrisMotion.closeDialog("bibliographyModal", { force: true })), true);
+  await page.locator("#bibliographyFormApply").evaluate((button) => button.click());
+  assert.equal(await page.evaluate(() => IrisEditor.getValue()), source);
+  await noOverflow(page);
+});
+
+for (const [name, viewport] of [["desktop", { width: 1440, height: 900 }], ["mobile", { width: 390, height: 844 }]]) {
+  test(`form: ${name} add/edit keyboard, RIS repeats, native aliases and type changes retain all data`, options, async (t) => {
+    const source = "TY  - BOOK\r\nTI  - A\r\nT1  - Alias\r\nAU  - First\r\nAU  - Second\r\nPY  - 0007/09\r\nKW  - one\r\nKW  - two\r\nZZ  - unknown\r\nER  -\r\n";
+    const page = await pageFor(t, project(source, "refs.ris"), viewport);
+    await settled(page);
+    assert.equal(await page.locator("#bibliographyAdd").count(), 1);
+    await page.locator("#bibliographyAdd").focus();
+    await page.keyboard.press("Enter");
+    assert.equal(await page.evaluate(() => document.activeElement.id), "bibliographyFormType");
+    assert.equal(await page.locator('#bibliographyFormFields [data-native-name="A1"]').count(), 0, "unused author aliases are not redundant main fields");
+    assert.equal(await page.locator('#bibliographyFormFields [data-native-name="T1"]').count(), 0);
+    await screenshot(t, page, `task-10-add-${name}.png`);
+    await page.locator('[data-native-name="TI"] textarea').fill("New");
+    await page.locator("#bibliographyFormApply").focus();
+    await page.keyboard.press("Tab");
+    assert.equal(await page.evaluate(() => document.activeElement.id), "bibliographyFormClose");
+    await page.keyboard.press("Shift+Tab");
+    assert.equal(await page.evaluate(() => document.activeElement.id), "bibliographyFormApply");
+    await page.keyboard.press("Enter");
+    await page.locator("#bibliographyModal").waitFor({ state: "hidden" });
+    assert.equal(await page.evaluate(() => IrisEditor.getValue()), source + "TY  - JOUR\r\nTI  - New\r\nER  -\r\n");
+    await settled(page);
+    await selectReference(page);
+    await page.locator("#bibliographyEdit").click();
+    await page.locator("#bibliographyFormType").fill("ELEC");
+    await page.locator("#bibliographyFormType").press("Tab");
+    await page.locator("#bibliographyFormMore summary").click();
+    assert.equal(await page.locator('[data-native-name="ZZ"] textarea').inputValue(), "unknown");
+    assert.deepEqual(await page.locator('[data-native-name="KW"] textarea').allTextContents(), ["one", "two"]);
+    await page.locator('[data-native-name="AU"] textarea').nth(1).fill("Second changed");
+    await page.locator('[data-native-name="PY"] textarea').fill("0008/10");
+    await page.locator("#bibliographyFormNativeName").fill("AU");
+    await page.locator("#bibliographyFormAddField").click();
+    await page.locator('[data-native-name="AU"] textarea').last().fill("Third");
+    await page.locator("#bibliographyFormNativeName").fill("XY");
+    await page.locator("#bibliographyFormAddField").click();
+    await page.locator('[data-native-name="XY"] textarea').fill("custom new");
+    await page.locator("#bibliographyFormType").focus();
+    await screenshot(t, page, `task-10-edit-${name}.png`);
+    await noOverflow(page);
+    const fields = await page.locator("#bibliographyFormFields").evaluate((node) => getComputedStyle(node).gridTemplateColumns.split(" ").length);
+    assert.equal(fields, name === "mobile" ? 1 : 2);
+    await page.locator("#bibliographyFormApply").click();
+    await page.locator("#bibliographyModal").waitFor({ state: "hidden" });
+    assert.equal(await page.evaluate(() => IrisEditor.getValue()), source.replace("TY  - BOOK", "TY  - ELEC").replace("AU  - Second", "AU  - Second changed").replace("PY  - 0007/09", "PY  - 0008/10").replace("ER  -", "AU  - Third\r\nXY  - custom new\r\nER  -") + "TY  - JOUR\r\nTI  - New\r\nER  -\r\n");
+  });
+}
+
+for (const change of ["outside", "overlap", "identical overlap", "identical load", "permission", "maintenance"]) {
+  test(`form: ${change} during a live draft never retargets or loses the draft`, options, async (t) => {
+    const source = '@book{same,title={A}}\n@book{same,title={A}}';
+    const page = await pageFor(t, project(source));
+    await page.evaluate((text) => IrisEditor.loadCollab(text, "bib", { version: 0 }), source);
+    await settled(page);
+    await selectReference(page, 1);
+    await page.locator("#bibliographyEdit").click();
+    await page.locator('[data-native-name="title"] textarea').fill("draft");
+    await page.evaluate(async (change) => {
+      const { EditorView } = await import("@codemirror/view");
+      const view = EditorView.findFromDOM(document.querySelector(".cm-content"));
+      if (change === "permission") document.dispatchEvent(new CustomEvent("iris:collabrole", { detail: { role: "viewer" } }));
+      else if (change === "maintenance") {
+        window.IrisCollab.paused = () => true;
+        document.dispatchEvent(new CustomEvent("iris:collabrole", { detail: { role: "owner" } }));
+      } else if (change === "identical load") IrisEditor.loadCollab(IrisEditor.getValue(), "bib", { version: 0 });
+      else if (change === "outside") view.dispatch({ changes: { from: 0, insert: "% peer\n" } });
+      else { const from = IrisEditor.getValue().lastIndexOf("A"); view.dispatch({ changes: { from, to: from + 1, insert: change === "overlap" ? "B" : "A" } }); }
+      // Apply before the async parser refresh: this must not destroy the draft.
+      document.querySelector("#bibliographyFormApply").click();
+    }, change);
+    if (!["permission", "maintenance"].includes(change)) await settled(page);
+    if (change === "outside") {
+      assert.equal(await page.locator('[data-native-name="title"] textarea').inputValue(), "draft");
+      await page.locator("#bibliographyFormApply").click();
+      await page.locator("#bibliographyModal").waitFor({ state: "hidden" });
+      assert.equal(await page.evaluate(() => IrisEditor.getValue()), '% peer\n@book{same,title={A}}\n@book{same,title={draft}}');
+    } else {
+      await page.locator("#bibliographyFormApply").click();
+      assert.equal(await page.locator("#bibliographyModal").isVisible(), true);
+      assert.equal(await page.locator('[data-native-name="title"] textarea').inputValue(), "draft");
+      assert.equal(await page.locator("#bibliographyFormError").isVisible(), true);
+      assert.equal(await page.evaluate(() => IrisEditor.getValue()), change === "overlap" ? '@book{same,title={A}}\n@book{same,title={B}}' : source);
+      if (["permission", "maintenance"].includes(change)) {
+        assert.equal(await page.locator("#bibliographyUndo").isDisabled(), true);
+        assert.equal(await page.locator("#bibliographyAdd").isDisabled(), true);
+      }
+    }
+  });
+}
+
+test("form: keyless no-op and unused placeholders do not create fields, dirty cancel keeps its focus", options, async (t) => {
+  const page = await pageFor(t, project('@book{,title={A}}'));
+  await settled(page);
+  await selectReference(page);
+  await page.locator("#bibliographyEdit").click();
+  const before = await page.evaluate(() => IrisEditor.snapshot());
+  await page.locator("#bibliographyFormApply").click();
+  assert.equal(await page.locator("#bibliographyFormError").textContent(), "", "empty UI key represents the parser's null key");
+  await page.locator("#bibliographyModal").waitFor({ state: "hidden" });
+  assert.deepEqual(await page.evaluate(() => IrisEditor.snapshot()), before);
+  await page.locator("#bibliographyAdd").click();
+  await page.locator("#bibliographyFormType").fill("book");
+  await page.locator("#bibliographyFormType").fill("article");
+  await page.locator('[data-native-name="title"] textarea').fill("new");
+  await page.locator("#bibliographyFormCancel").click();
+  assert.equal(await page.locator("#bibliographyFormDiscard").isVisible(), true);
+  await page.locator("#bibliographyFormKeep").click();
+  assert.equal(await page.evaluate(() => document.activeElement.id), "bibliographyFormCancel");
+  await page.locator("#bibliographyFormApply").click();
+  await page.locator("#bibliographyModal").waitFor({ state: "hidden" });
+  assert.equal(await page.evaluate(() => IrisEditor.getValue()), '@book{,title={A}}\n@article{,\n  title = {new}\n}\n');
+});
+
+test("form: candidate syntax errors keep source selection unchanged and new columns respect exclusions", options, async (t) => {
+  const page = await pageFor(t, project('@book{k}\n@book{b,title={Other}}'));
+  await settled(page);
+  await page.locator("#bibliographyColumnsLabel").click();
+  await page.locator('#bibliographyColumns input[data-column-id="bib:title"]').uncheck();
+  await selectReference(page);
+  await page.locator("#bibliographyEdit").click();
+  const selection = await page.evaluate(() => IrisEditor.selection());
+  await page.locator("#bibliographyFormKey").fill("%hidden");
+  await page.locator("#bibliographyFormApply").click();
+  assert.equal(await page.locator("#bibliographyFormError").isVisible(), true);
+  assert.deepEqual(await page.evaluate(() => IrisEditor.selection()), selection);
+  assert.equal(await page.locator("#bibliographyTextPanel").isVisible(), false);
+  await page.locator("#bibliographyFormKey").fill("k");
+  await page.locator("#bibliographyFormNativeName").fill("x_new");
+  await page.locator("#bibliographyFormAddField").click();
+  await page.locator('[data-native-name="x_new"] textarea').fill("new value");
+  await page.locator("#bibliographyFormApply").click();
+  await page.locator("#bibliographyModal").waitFor({ state: "hidden" });
+  await settled(page);
+  assert.equal(await page.locator('#bibliographyColumns input[data-column-id="bib:title"]').isChecked(), false);
+  assert.equal(await page.locator('#bibliographyColumns input[data-column-id="bib:x_new"]').isChecked(), true);
+  assert.equal(await page.locator('#bibliographyHead [data-sort-id="bib:x_new"]').count(), 1);
+});
+
+for (const transition of ["cancel", "force", "file", "image", "project", "sourceError"]) {
+  test(`form: ${transition} disposes its live bookmark and cannot apply into another context`, options, async (t) => {
+    const data = project('@book{a,title={A}}');
+    data.openTabs.push("other");
+    data.project.nodes.push({ id: "other", type: "file", name: "other.bib", path: "other.bib", kind: "bib", content: '@book{a,title={Other}}' });
+    data.project.nodes.push({ id: "image", type: "file", name: "image.png", path: "image.png", kind: "img", data: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII=" });
+    const page = await pageFor(t, data);
+    await settled(page);
+    await page.evaluate(() => {
+      const track = IrisEditor.trackRange;
+      window.formBookmarks = [];
+      IrisEditor.trackRange = (...args) => { const bookmark = track(...args); formBookmarks.push(bookmark); return bookmark; };
+    });
+    await selectReference(page);
+    await page.locator("#bibliographyEdit").click();
+    assert.deepEqual(await page.evaluate(() => formBookmarks.map((b) => b.read())), [{ from: 0, to: 18 }]);
+    if (transition !== "cancel") await page.locator('[data-native-name="title"] textarea').fill("draft");
+    if (transition === "cancel") await page.locator("#bibliographyFormCancel").click();
+    else if (transition === "force") await page.evaluate(() => IrisMotion.closeAllDialogs());
+    else if (transition === "file") await page.getByRole("tab", { name: /other\.bib/, includeHidden: true }).evaluate((node) => node.click());
+    else if (transition === "image") await page.locator('.node[data-id="image"]').evaluate((node) => node.click());
+    else {
+      const replacement = project('@book{a,title={Replacement}}', "refs.bib", { id: transition === "project" ? "replacement" : data.id });
+      if (transition === "sourceError") { delete replacement.project.nodes[0].content; replacement.project.nodes[0].sourceError = "BIBLIOGRAPHY_INVALID_ENCODING"; }
+      await page.evaluate((data) => IrisApp.load(data), replacement);
+    }
+    await page.locator("#bibliographyModal").waitFor({ state: "hidden" });
+    assert.deepEqual(await page.evaluate(() => formBookmarks.map((b) => b.read())), [null]);
+    const before = await page.evaluate(() => IrisEditor.snapshot());
+    await page.locator("#bibliographyFormApply").evaluate((button) => button.click());
+    assert.deepEqual(await page.evaluate(() => IrisEditor.snapshot()), before);
+  });
+}
+
+for (const trigger of ["save acknowledgement", "Apply"]) for (const overlap of [false, true]) {
+  test(`form round1: canonical ${trigger} preserves ${overlap ? "a conflicted" : "a mapped"} same-file draft`, options, async (t) => {
+    const source = '@book{same,title={A}}\n@book{same,title={A}}';
+    const data = project(source), canonical = "11111111-1111-4111-8111-111111111111";
+    const page = await pageFor(t, data);
+    let releaseSave;
+    if (trigger === "save acknowledgement") {
+      const gate = new Promise((resolve) => { releaseSave = resolve; });
+      t.after(() => releaseSave());
+      await page.route(`**/api/projects/${data.id}`, async (route) => {
+        if (route.request().method() === "GET") return route.fulfill({ json: data });
+        const saved = route.request().postDataJSON().data;
+        saved.project.nodes[0].id = canonical;
+        await gate;
+        return route.fulfill({ json: { data: saved, revision: 2, project: { id: data.id, revision: 2 } } });
+      });
+      await page.evaluate((id) => IrisProjects.openProject(id), data.id);
+      const request = page.waitForRequest((req) => req.method() === "PUT");
+      await page.evaluate(() => { window.pendingSave = IrisProjects.persistCurrent(); });
+      await request;
+    }
+    await settled(page);
+    await selectReference(page, 1);
+    await page.locator("#bibliographyEdit").click();
+    const title = page.locator('[data-native-name="title"] textarea');
+    await title.fill("draft");
+    // Leave an invalid key so even a reentrant Apply must retain the dialog.
+    await page.locator("#bibliographyFormKey").fill("not a key");
+    await title.focus();
+    await page.evaluate((overlap) => {
+      if (overlap) { const from = IrisEditor.getValue().lastIndexOf("A"); IrisEditor.replaceRange(from, from + 1, "A"); }
+      else IrisEditor.replaceRange(0, 0, "% outside\n");
+    }, overlap);
+    await settled(page);
+    const before = await page.evaluate(() => IrisEditor.snapshot());
+    if (trigger === "save acknowledgement") {
+      releaseSave();
+      assert.equal(await page.evaluate(() => pendingSave), true);
+    } else {
+      await page.evaluate((canonical) => {
+        IrisProjects.currentProjectId = () => "bibliography-test";
+        IrisProjects.resolveFileId = (path) => path === "refs.bib" ? canonical : null;
+      }, canonical);
+      await page.locator("#bibliographyFormApply").click();
+    }
+    assert.equal(await page.locator("#bibliographyModal").isVisible(), true, "canonical assignment is not permission to discard");
+    assert.equal(await title.inputValue(), "draft");
+    assert.equal(await page.locator("#bibliographyFormKey").inputValue(), "not a key");
+    assert.deepEqual(await page.evaluate(() => IrisEditor.snapshot()), before);
+    if (trigger === "save acknowledgement") assert.equal(await title.evaluate((node) => node === document.activeElement), true);
+    await page.locator("#bibliographyFormKey").fill("same");
+    await page.locator("#bibliographyFormApply").click();
+    if (overlap) {
+      assert.equal(await page.locator("#bibliographyFormError").isVisible(), true);
+      assert.equal(await title.inputValue(), "draft");
+      assert.deepEqual(await page.evaluate(() => IrisEditor.snapshot()), before, "a rekey cannot revive an invalid bookmark");
+    } else {
+      await page.locator("#bibliographyModal").waitFor({ state: "hidden" });
+      assert.equal(await page.evaluate(() => IrisEditor.getValue()), '% outside\n@book{same,title={A}}\n@book{same,title={draft}}');
+    }
+  });
+}
+
+for (const state of ["clean", "dirty", "conflicted"]) {
+  test(`form round1: reduced-motion Show source navigates during pending analysis with a ${state} draft`, options, async (t) => {
+    const dirty = state !== "clean";
+    const source = '@book{a,title={A}}';
+    const page = await pageFor(t, project(source));
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await settled(page);
+    await selectReference(page);
+    await page.locator("#bibliographyEdit").click();
+    if (dirty) {
+      await page.locator('[data-native-name="title"] textarea').fill("discard me");
+      await page.locator("#bibliographyFormSource").click();
+      assert.equal(await page.locator("#bibliographyFormDiscard").isVisible(), true);
+    }
+    const pending = await page.evaluate((state) => {
+      if (state === "conflicted") { const from = IrisEditor.getValue().indexOf("A"); IrisEditor.replaceRange(from, from + 1, "B"); }
+      else IrisEditor.replaceRange(0, 0, "% peer\n");
+      const pending = document.querySelector("#bibliographyResults").getAttribute("aria-busy");
+      document.querySelector(state !== "clean" ? "#bibliographyFormDiscardConfirm" : "#bibliographyFormSource").click();
+      return pending;
+    }, state);
+    assert.equal(pending, "true");
+    await page.locator("#bibliographyModal").waitFor({ state: "hidden" });
+    assert.equal(await page.locator("#bibliographyTextPanel").isVisible(), true, "source access must not wait for the table projection");
+    assert.equal(await page.evaluate(() => document.activeElement === IrisEditor.focusTarget()), true);
+    assert.equal(await page.evaluate(() => IrisEditor.getValue()), state === "conflicted" ? '@book{a,title={B}}' : "% peer\n" + source);
+    await settled(page);
+    assert.equal(await page.locator("#bibliographyTextPanel").isVisible(), true);
+  });
+}
+
+for (const destination of ["file", "image", "logout"]) {
+  test(`form round1: ${destination} during source close cancels the old navigation`, options, async (t) => {
+    const data = project('@book{a,title={A}}');
+    data.openTabs.push("other");
+    data.project.nodes.push({ id: "other", type: "file", name: "other.bib", path: "other.bib", kind: "bib", content: '@book{a,title={A}}' });
+    data.project.nodes.push({ id: "image", type: "file", name: "image.png", path: "image.png", kind: "img", data: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII=" });
+    const page = await pageFor(t, data);
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await settled(page);
+    await selectReference(page);
+    await page.locator("#bibliographyEdit").click();
+    await page.locator('[data-native-name="title"] textarea').fill("discard");
+    await page.locator("#bibliographyFormSource").click();
+    await page.evaluate((destination) => {
+      IrisEditor.replaceRange(0, 0, "% peer\n");
+      window.beforeLeavingSelection = IrisEditor.selection();
+      document.querySelector("#bibliographyFormDiscardConfirm").click();
+      if (destination === "logout") IrisAuth.showLogin();
+      else document.querySelector(`.node[data-id="${destination === "file" ? "other" : "image"}"]`).click();
+    }, destination);
+    await page.locator("#bibliographyModal").waitFor({ state: "hidden" });
+    if (destination === "file") {
+      await settled(page);
+      assert.equal(await page.locator("#bibliographyTablePanel").isVisible(), true);
+      assert.equal(await page.evaluate(() => IrisEditor.getValue()), '@book{a,title={A}}');
+    } else if (destination === "image") {
+      assert.equal(await page.locator(".image-preview").isVisible(), true);
+      assert.equal(await page.locator("#bibliographyPanel").isVisible(), false);
+    } else {
+      assert.equal(await page.locator("#loginScreen").isVisible(), true);
+      assert.deepEqual(await page.evaluate(() => IrisEditor.selection()), await page.evaluate(() => beforeLeavingSelection));
+    }
+  });
+}
+
+test("form round1: same-role and transport status updates retain the actual focused selection control", options, async (t) => {
+  const page = await pageFor(t, project('@book{a,title={A}}'));
+  await settled(page);
+  await selectReference(page);
+  const radio = page.locator('#bibliographyPanel input[type="radio"]:visible');
+  await radio.focus();
+  await radio.evaluate((node) => { window.selectedRadio = node; });
+  const before = await page.evaluate(() => IrisEditor.snapshot());
+  for (const event of ["role", "status"]) {
+    await page.evaluate((event) => {
+      if (event === "role") document.dispatchEvent(new CustomEvent("iris:collabrole", { detail: { role: "owner" } }));
+      else IrisCollab.disconnect();
+    }, event);
+    assert.equal(await page.evaluate(() => selectedRadio.isConnected && selectedRadio === document.activeElement && selectedRadio.checked), true, event);
+    assert.equal(await page.locator("#bibliographyEdit").isDisabled(), false);
+  }
+  assert.deepEqual(await page.evaluate(() => IrisEditor.snapshot()), before);
+});
+
+for (const language of ["en", "it"]) {
+  test(`form round1: ${language} ordered occurrences have distinct native field and removal names`, options, async (t) => {
+    const source = "TY  - BOOK\r\nAU  - First\r\nTI  - Title\r\nAU  - Second\r\nZZ  - One\r\nZZ  - Two\r\nER  -\r\n";
+    const page = await pageFor(t, project(source, "refs.ris", { language }));
+    await settled(page);
+    await selectReference(page);
+    await page.locator("#bibliographyEdit").click();
+    const authors = language === "en" ? "Authors (AU), occurrence" : "Autori (AU), occorrenza";
+    const second = page.getByRole("textbox", { name: `${authors} 2`, exact: true });
+    assert.equal(await second.count(), 1, "the accessible name identifies the native occurrence");
+    assert.equal(await page.getByRole("textbox", { name: `${authors} 1`, exact: true }).inputValue(), "First");
+    assert.equal(await second.inputValue(), "Second");
+    await second.fill("Second changed");
+    await page.getByRole("checkbox", { name: `${language === "en" ? "Remove" : "Rimuovi"} ${authors} 1`, exact: true }).check();
+    await page.locator("#bibliographyFormMore summary").click();
+    assert.equal(await page.getByRole("textbox", { name: `ZZ, ${language === "en" ? "occurrence" : "occorrenza"} 2`, exact: true }).inputValue(), "Two");
+    await page.locator("#bibliographyFormApply").click();
+    await page.locator("#bibliographyModal").waitFor({ state: "hidden" });
+    assert.equal(await page.evaluate(() => IrisEditor.getValue()), "TY  - BOOK\r\nTI  - Title\r\nAU  - Second changed\r\nZZ  - One\r\nZZ  - Two\r\nER  -\r\n");
+  });
+}
+
+for (const format of ["bib", "ris"]) {
+  test(`form round1: unchanged ${format} multiline CRLF values submit without a transaction after a native input roundtrip`, options, async (t) => {
+    const source = format === "bib" ? '@book{a,title={First\r\nSecond},x_keep={untouched}}\r\n' : "TY  - BOOK\r\nTI  - First\r\n      Second\r\nZZ  - untouched\r\nER  -\r\n";
+    const page = await pageFor(t, project(source, `refs.${format}`));
+    await settled(page);
+    await selectReference(page);
+    await page.locator("#bibliographyEdit").click();
+    const before = await page.evaluate(() => ({ snapshot: IrisEditor.snapshot(), pending: IrisEditor.collabPending(), dirty: IrisApp.hasUnsavedChanges() }));
+    const input = page.locator(`[data-native-name="${format === "bib" ? "title" : "TI"}"] textarea`);
+    const displayed = await input.inputValue();
+    await input.focus();
+    await page.keyboard.press("ControlOrMeta+End");
+    await page.keyboard.type("!");
+    await page.keyboard.press("Backspace");
+    assert.equal(await input.inputValue(), displayed);
+    await page.locator("#bibliographyFormApply").click();
+    await page.locator("#bibliographyModal").waitFor({ state: "hidden" });
+    assert.deepEqual(await page.evaluate(() => ({ snapshot: IrisEditor.snapshot(), pending: IrisEditor.collabPending(), dirty: IrisApp.hasUnsavedChanges() })), before);
+  });
+}
+
+test("form: live peer changes rebase the draft and one table undo retains the peer's text", options, async (t) => {
+  const source = '@book{a,title={A}}\r\n@book{b,title={B}}';
+  const page = await pageFor(t, project(source));
+  await page.evaluate((text) => IrisEditor.loadCollab(text, "bib", { version: 0 }), source);
+  await settled(page);
+  const room = new CollabDocument({ fileId: "refs", projectId: "bibliography-test", content: source });
+  await selectReference(page, 1);
+  await page.locator("#bibliographyEdit").click();
+  await page.locator('[data-native-name="title"] textarea').fill("Draft");
+  const peer = [{ clientID: "peer", changes: ChangeSet.of({ from: 0, insert: Text.of(["% peer\r", ""]) }, source.length).toJSON() }];
+  room.receive(0, peer);
+  await page.evaluate((updates) => IrisEditor.collabReceive(updates), peer);
+  await settled(page);
+  await page.locator("#bibliographyFormApply").click();
+  await page.locator("#bibliographyModal").waitFor({ state: "hidden" });
+  let pending = await page.evaluate(() => IrisEditor.collabPending());
+  assert.equal(pending.updates.length, 1);
+  let accepted = room.receive(pending.version, pending.updates);
+  assert.equal(accepted.accepted, true);
+  await page.evaluate((updates) => IrisEditor.collabReceive(updates), accepted.updates);
+  assert.equal(room.text(), '% peer\r\n@book{a,title={A}}\r\n@book{b,title={Draft}}');
+  await settled(page);
+  await page.locator("#bibliographyUndo").click();
+  pending = await page.evaluate(() => IrisEditor.collabPending());
+  accepted = room.receive(pending.version, pending.updates);
+  assert.equal(accepted.accepted, true);
+  await page.evaluate((updates) => IrisEditor.collabReceive(updates), accepted.updates);
+  assert.equal(await page.evaluate(() => IrisEditor.getValue()), "% peer\r\n" + source);
+  assert.equal(room.text(), "% peer\r\n" + source);
+});
+
+test("form: current snapshot guard rejects a peer edit between build and atomic apply without retry", options, async (t) => {
+  const source = '@book{a,title={A}}';
+  const page = await pageFor(t, project(source));
+  await settled(page);
+  await selectReference(page);
+  await page.locator("#bibliographyEdit").click();
+  await page.locator('[data-native-name="title"] textarea').fill("Draft");
+  await page.evaluate(() => {
+    const build = IrisBibliographyEdit.buildChanges;
+    IrisBibliographyEdit.buildChanges = (...args) => {
+      const result = build(...args);
+      IrisBibliographyEdit.buildChanges = build;
+      IrisEditor.replaceRange(0, 0, "% intervening\n");
+      return result;
+    };
+  });
+  await page.locator("#bibliographyFormApply").click();
+  assert.equal(await page.locator("#bibliographyFormError").isVisible(), true);
+  assert.equal(await page.locator('[data-native-name="title"] textarea').inputValue(), "Draft");
+  assert.equal(await page.evaluate(() => IrisEditor.getValue()), "% intervening\n" + source);
+  await settled(page);
+  await page.locator("#bibliographyFormApply").click();
+  await page.locator("#bibliographyModal").waitFor({ state: "hidden" });
+  assert.equal(await page.evaluate(() => IrisEditor.getValue()), '% intervening\n@book{a,title={Draft}}');
+});
+
+test("form: scalar removal preserves repeated native order and Italian labels, reduced-motion close can be vetoed", options, async (t) => {
+  const source = '@book{a,title={A},author={First},author={Second},x_custom={Keep}}';
+  const page = await pageFor(t, project(source, "refs.bib", { language: "it" }));
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await settled(page);
+  await selectReference(page);
+  await page.locator("#bibliographyEdit").click();
+  assert.equal(await page.getByRole("dialog", { name: "Modifica reference" }).isVisible(), true);
+  await page.locator('[data-native-name="author"] input[type="checkbox"]').first().check();
+  await page.locator('[data-native-name="title"] textarea').fill("");
+  assert.equal(await page.evaluate(() => IrisMotion.closeDialog("bibliographyModal")), false);
+  await page.locator("#bibliographyFormKeep").click();
+  await page.locator("#bibliographyFormApply").click();
+  await page.locator("#bibliographyModal").waitFor({ state: "hidden" });
+  assert.equal(await page.evaluate(() => IrisEditor.getValue()), '@book{a,title={},author={Second},x_custom={Keep}}');
+  await noOverflow(page);
+});
 
 test("all populated columns are visible and individually hideable", options, async (t) => {
   const source = "@article{a,title={A},journal={J}}\n@book{b,title={B},x_note={kept}}";
@@ -462,6 +1078,56 @@ for (const format of ["bib", "ris"]) {
     await page.keyboard.press("ControlOrMeta+z");
     assert.equal(await page.evaluate(() => IrisEditor.getValue()), retained);
     await noOverflow(page);
+  });
+}
+
+for (const format of ["bib", "ris"]) for (const trivia of [false, true]) {
+  test(`format memory browser: ${format} removal and reopen ignores conflicting extension (${trivia ? "remnants" : "empty"})`, options, async (t) => {
+    const extension = format === "bib" ? "ris" : "bib";
+    const record = format === "bib" ? "@book{a,title={A}}" : "TY  - BOOK\r\nTI  - A\r\nER  -";
+    const prefix = trivia ? "% retained\r\n% astral\u{1F600}\r" : "", suffix = trivia ? "\r\n% end\n" : "";
+    const source = prefix + record + suffix, retained = prefix + suffix;
+    const data = project(source, `refs.${extension}`);
+    data.openTabs.push("other");
+    data.project.nodes.push({ type: "file", id: "other", name: "other.tex", path: "other.tex", kind: "tex", content: "ordinary" });
+    const page = await pageFor(t, data);
+    await settled(page);
+    await selectReference(page);
+    await page.locator("#bibliographyEdit").click();
+    assert.equal(await page.locator("#bibliographyFormType").inputValue(), format === "bib" ? "book" : "BOOK");
+    await page.locator("#bibliographyFormCancel").click();
+    await page.locator("#bibliographyModal").waitFor({ state: "hidden" });
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await settled(page); await selectReference(page);
+      await page.locator("#bibliographyRemove").click();
+      await page.locator("#bibliographyFormApply").click();
+      await page.locator("#bibliographyModal").waitFor({ state: "hidden" });
+      assert.equal(await page.evaluate(() => IrisEditor.getValue()), retained);
+      await settled(page);
+      if (attempt === 0) {
+        await page.locator("#bibliographyUndo").click();
+        assert.equal(await page.evaluate(() => IrisEditor.getValue()), source);
+      }
+    }
+    await page.getByRole("tab", { name: /other\.tex/ }).click();
+    await page.getByRole("tab", { name: new RegExp(`refs\\.${extension}`) }).click();
+    await settled(page);
+    assert.equal(await page.evaluate(() => IrisEditor.getValue()), retained);
+    const before = await page.evaluate(() => ({ snapshot: IrisEditor.snapshot(), saved: IrisApp.serialize(), dirty: IrisApp.hasUnsavedChanges() }));
+    await page.locator("#bibliographyAdd").click();
+    assert.equal(await page.locator("#bibliographyFormType").inputValue(), format === "bib" ? "article" : "JOUR");
+    assert.deepEqual(await page.evaluate(() => ({ snapshot: IrisEditor.snapshot(), saved: IrisApp.serialize(), dirty: IrisApp.hasUnsavedChanges() })), before);
+    await page.locator(`[data-native-name="${format === "bib" ? "title" : "TI"}"] textarea`).fill("New");
+    await page.locator("#bibliographyFormApply").click();
+    await page.locator("#bibliographyModal").waitFor({ state: "hidden" });
+    const saved = await page.evaluate(() => IrisApp.serialize());
+    const newline = /\r\n|\r|\n/.exec(retained)?.[0] || "\n";
+    const added = format === "bib" ? ["@article{,", "  title = {New}", "}", ""].join(newline) : ["TY  - JOUR", "TI  - New", "ER  -", ""].join(newline);
+    assert.equal(saved.project.nodes[0].content, retained + added);
+    assert.equal(saved.project.nodes[0].kind, extension);
+    assert.deepEqual(Object.keys(saved.project.nodes[0]).sort(), Object.keys(before.saved.project.nodes[0]).sort());
+    await settled(page); await page.locator("#bibliographyUndo").click();
+    assert.equal(await page.evaluate(() => IrisEditor.getValue()), retained);
   });
 }
 

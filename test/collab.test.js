@@ -7,6 +7,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { EditorState, ChangeSet } = require("@codemirror/state");
 const { collab, getSyncedVersion, sendableUpdates, receiveUpdates } = require("@codemirror/collab");
+const { history, isolateHistory, undo } = require("@codemirror/commands");
 const { CollabDocument, CollabRooms, CollabError, PEER_COLORS, peerColor, normalizePresence } = require("../src/collab");
 
 function makeRoom(content, options = {}) {
@@ -278,6 +279,33 @@ test("bibliographic authority retains raw CRLF and UTF-16 coordinates on seed an
   assert.equal(room.text(), "TY  - BOOK\r\nTI  - \u{1f600}\r\nER  - \r\n");
   assert.equal(room.doc.line(2).from, 12);
   assert.equal(room.since(0), null);
+});
+
+test("a multi-range bibliography ChangeSet rebases as one update and one undo preserves peer text", { timeout: 2000 }, () => {
+  const source = "@book{a,\r\n title={A\u{1f600}B},year={2000}\r\n}\r\n";
+  const room = makeRoom(source, { path: "refs.bib" });
+  const [a, b] = ["a", "b"].map((id) => ({ id, state: EditorState.create({ doc: source,
+    extensions: [EditorState.lineSeparator.of("\n"), history(), collab({ startVersion: 0, clientID: id })],
+  }) }));
+  const title = source.indexOf("B", source.indexOf("\u{1f600}")), year = source.indexOf("2000");
+  const changes = a.state.changes([{ from: title, to: title + 1, insert: "C\r\n \u{1f680}D" },
+    { from: year, to: year + 4, insert: "2026" }]);
+  a.state = a.state.update({ changes, userEvent: "input.bibliography", annotations: isolateHistory.of("full") }).state;
+  assert.equal(sendableUpdates(a.state).length, 1);
+  type(b, { from: 0, insert: "% peer\r\n" });
+  assert.equal(push(b, room).accepted, true); pull(b, room);
+  assert.equal(push(a, room).accepted, false); pull(a, room);
+  assert.equal(sendableUpdates(a.state).length, 1);
+  assert.equal(push(a, room).accepted, true); pull(a, room); pull(b, room);
+  const changed = "% peer\r\n@book{a,\r\n title={A\u{1f600}C\r\n \u{1f680}D},year={2026}\r\n}\r\n";
+  assert.equal(room.version, 2); assert.equal(room.text(), changed);
+  for (const client of [a, b]) assert.equal(client.state.doc.toString(), changed);
+  const target = { get state() { return a.state; }, dispatch(tr) { a.state = tr.state; } };
+  assert.equal(undo(target), true); assert.equal(sendableUpdates(a.state).length, 1);
+  assert.equal(push(a, room).accepted, true); pull(a, room); pull(b, room);
+  assert.equal(room.version, 3); assert.equal(room.text(), "% peer\r\n" + source);
+  for (const client of [a, b]) assert.equal(client.state.doc.toString(), "% peer\r\n" + source);
+  assert.equal(undo(target), false);
 });
 
 test("persistence and revision bookkeeping follow the accepted version", () => {

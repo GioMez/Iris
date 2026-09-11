@@ -1,14 +1,13 @@
-/* Iris - read-only bibliography view over the authoritative editor snapshot. */
+/* Iris - bibliography view over the authoritative editor snapshot. */
 (function () {
   const core = window.IrisBibliography;
 
-  function create({ root, editor, t, onSource, actions = null }) {
-    // Phase 1 deliberately has no mutation controls, even for writable sources.
+  function create({ root, editor, t, onSource, onFormat, actions = null }) {
     const doc = root.ownerDocument, ui = {};
     for (const name of ["Tabs", "TableTab", "TextTab", "TablePanel", "Status", "Source", "Retry",
       "Query", "QueryLabel", "Sort", "SortLabel", "ColumnPicker", "ColumnsLabel", "Columns", "ShowAll",
       "Diagnostics", "DiagnosticsLabel", "DiagnosticsDisclosure", "Table", "Head", "Rows", "Cards", "State",
-      "Total", "Previous", "Next", "Caption", "Results"]) ui[name] = root.querySelector(`#bibliography${name}`);
+      "Total", "Previous", "Next", "Caption", "Results", "Add", "Edit", "Remove", "Undo"]) ui[name] = root.querySelector(`#bibliography${name}`);
     const sourcePanel = doc.getElementById("bibliographyTextPanel");
     const exclusions = new Map(), checks = new Map(), sortTriggers = new Map(), listeners = [];
     let hiddenColumns = new Set(), projection = { columns: [], rows: [] };
@@ -16,6 +15,7 @@
     let documentKey = null, hint = null, parsed = null, snapshot = null, scheduledRevision = null;
     let mode = "table", modeChosen = false, settled = false, query = "", sort = null, page = 0;
     let worker = null, busy = false, timer = null, latestRequestId = 0, failed = false, disposed = false;
+    let selected = null, selections = [];
 
     function listen(node, event, fn) {
       node.addEventListener(event, fn);
@@ -38,6 +38,21 @@
     function context() {
       if (!documentKey || !parsed || snapshot.revision !== editor.snapshot().revision) return null;
       return { documentKey, parsed, snapshot };
+    }
+    function syncActions() {
+      const writable = !!actions?.canWrite();
+      ui.Add.disabled = !writable || !tableAvailable() || !context();
+      ui.Edit.disabled = ui.Remove.disabled = ui.Add.disabled || selected === null;
+      ui.Undo.disabled = !writable;
+      for (const { input, index } of selections) input.checked = index === selected;
+    }
+    function selectionControl(index, layout) {
+      const wrapper = element("label", undefined, "bibliography-select"), input = element("input");
+      input.type = "radio"; input.name = `bibliography-selection-${layout}`;
+      input.addEventListener("change", () => { if (context()) { selected = index; syncActions(); } });
+      wrapper.appendChild(input); wrapper.appendChild(element("span", t("bibliography.select", { number: index + 1 })));
+      selections.push({ input, index });
+      return wrapper;
     }
     function syncMode() {
       root.hidden = !documentKey;
@@ -150,7 +165,7 @@
       }
       for (const [name, key] of Object.entries({ TableTab: "table", TextTab: "text", QueryLabel: "searchAll",
         SortLabel: "sort", ColumnsLabel: "columns", ShowAll: "showAll", Source: "showSource", Retry: "retry",
-        Previous: "previous", Next: "next", Caption: "references" })) ui[name].textContent = t(`bibliography.${key}`);
+        Previous: "previous", Next: "next", Caption: "references", Add: "add", Edit: "edit", Remove: "remove", Undo: "undo" })) ui[name].textContent = t(`bibliography.${key}`);
       ui.Tabs.setAttribute("aria-label", t("bibliography.views"));
       ui.Query.value = query;
       const pending = !parsed && !failed;
@@ -178,6 +193,7 @@
         : !columns.length ? t("bibliography.allHidden") : !rows.length ? t("bibliography.noResults") : "";
       ui.State.hidden = !ui.State.textContent;
       ui.Head.replaceChildren(); ui.Rows.replaceChildren(); ui.Cards.replaceChildren(); sortTriggers.clear();
+      selections = [];
       ui.Table.hidden = !columns.length || !rows.length;
       if (columns.length && rows.length) {
         const header = element("tr");
@@ -204,12 +220,15 @@
             const dd = element("dd"); dd.appendChild(valueNode(value, label(column))); list.appendChild(dd);
           }
           const go = () => { if (context()) { const entry = parsed.entries[row.entryIndex]; onSource({ from: entry.from, to: entry.to }); } };
-          const cell = element("td"); cell.appendChild(button(t("bibliography.showSource"), go)); tr.appendChild(cell);
+          const cell = element("td");
+          if (actions) { cell.appendChild(selectionControl(row.entryIndex, "table")); card.appendChild(selectionControl(row.entryIndex, "cards")); }
+          cell.appendChild(button(t("bibliography.showSource"), go)); tr.appendChild(cell);
           card.appendChild(button(t("bibliography.showSource"), go));
           ui.Rows.appendChild(tr); ui.Cards.appendChild(card);
         }
       }
       syncMode();
+      syncActions();
     }
     function stop() {
       clearTimeout(timer); timer = null; latestRequestId++;
@@ -247,7 +266,9 @@
             const entryIndex = low - 1, entry = parsed.entries[entryIndex];
             return { ...diagnostic, entryIndex: entry && diagnostic.to <= entry.to ? entryIndex : -1 };
           });
-          if (parsed.format) { hint = parsed.format; editor.setLanguage(hint); }
+          if (parsed.format) editor.setLanguage(parsed.format);
+          // Tentative syntax can guide highlighting, but not remembered format.
+          if (tableAvailable()) { hint = parsed.format; onFormat?.(documentKey, hint); }
           const revealSource = !settled && !modeChosen && !tableAvailable();
           const moveFocus = revealSource && (doc.activeElement === ui.TableTab || ui.TablePanel.contains(doc.activeElement));
           if (revealSource) { mode = "text"; ui.DiagnosticsDisclosure.open = true; }
@@ -268,7 +289,7 @@
       if (!documentKey || disposed) return;
       const current = editor.snapshot();
       if (current.revision === scheduledRevision) { render(); return; }
-      stop(); parsed = null; snapshot = null; failed = false; scheduledRevision = current.revision;
+      stop(); parsed = null; snapshot = null; failed = false; scheduledRevision = current.revision; selected = null;
       // Invalidate rows now, but do no complete parsing in the input callback.
       render();
       timer = setTimeout(dispatch, 150);
@@ -276,7 +297,7 @@
     function activate(next) {
       if (disposed) return;
       if (documentKey === next.documentKey) { refresh(); return; }
-      stop(); documentKey = next.documentKey; hint = next.hint;
+      stop(); documentKey = next.documentKey; hint = next.hint; selected = null;
       if (!exclusions.has(documentKey)) exclusions.set(documentKey, new Set());
       hiddenColumns = exclusions.get(documentKey);
       parsed = null; snapshot = null; failed = false; scheduledRevision = null;
@@ -293,22 +314,23 @@
       render();
     }
     function showAllColumns() { hiddenColumns.clear(); render(); }
-    function setQuery(text) { query = String(text); page = 0; render(); }
+    function setQuery(text) { query = String(text); page = 0; selected = null; render(); }
     function setSort(next) {
       sort = next && projection.columns.some((column) => column.id === next.id && !hiddenColumns.has(column.id))
         ? { id: next.id, descending: !!next.descending } : null;
-      page = 0; render();
+      page = 0; selected = null; render();
     }
-    function setPage(index) { page = Number.isFinite(index) ? Math.max(0, Math.floor(index)) : 0; render(); }
+    function setPage(index) { page = Number.isFinite(index) ? Math.max(0, Math.floor(index)) : 0; selected = null; render(); }
     function rekey(oldKey, newKey) {
       if (oldKey === newKey) return;
       if (exclusions.has(oldKey)) { exclusions.set(newKey, exclusions.get(oldKey)); exclusions.delete(oldKey); }
       if (documentKey !== oldKey) return;
-      stop(); documentKey = newKey;
+      stop(); documentKey = newKey; selected = null;
       if (!parsed || snapshot.revision !== editor.snapshot().revision) { parsed = null; render(); dispatch(); }
+      else render();
     }
     function deactivate() {
-      stop(); documentKey = null; parsed = null; snapshot = null; scheduledRevision = null;
+      stop(); documentKey = null; parsed = null; snapshot = null; scheduledRevision = null; selected = null;
       projection = { columns: [], rows: [] }; ui.Rows.replaceChildren(); ui.Cards.replaceChildren();
       syncMode(); editor.requestMeasure();
     }
@@ -327,7 +349,11 @@
     listen(ui.ShowAll, "click", showAllColumns);
     listen(ui.Previous, "click", () => setPage(page - 1));
     listen(ui.Next, "click", () => setPage(page + 1));
-    return { activate, refresh, setMode, focus, setColumnVisible, showAllColumns, setQuery, setSort, setPage, rekey, deactivate, context,
+    listen(ui.Add, "click", () => { if (!ui.Add.disabled) actions.add(); });
+    listen(ui.Edit, "click", () => { if (!ui.Edit.disabled && context()) actions.edit(selected); });
+    listen(ui.Remove, "click", () => { if (!ui.Remove.disabled && context()) actions.remove(selected); });
+    listen(ui.Undo, "click", () => { if (actions?.canWrite()) editor.undo(); });
+    return { activate, refresh, refreshAvailability: syncActions, setMode, focus, setColumnVisible, showAllColumns, setQuery, setSort, setPage, rekey, deactivate, context,
       dispose() { deactivate(); disposed = true; if (worker) worker.terminate(); worker = null; listeners.forEach((remove) => remove()); exclusions.clear(); } };
   }
   window.IrisBibliographyView = { create };

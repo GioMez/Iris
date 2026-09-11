@@ -7,6 +7,9 @@
 //   load(content, kind)        fresh document, no change event ("ly"|"tex"|"bib"|"ris"|null)
 //   getValue()                 current document text
 //   snapshot()                 { revision, text }, monotone across edits/reloads
+//   trackRange(from, to)        disposable bookmark; read() returns a copy or null
+//   applyChanges(changes, expected) guarded, single-history bibliography edit
+//   undo()                     boolean; refuses read-only documents
 //   setLanguage(kind)          reconfigure syntax without replacing the document
 //   requestMeasure()           remeasure after a pane visibility/size change
 //   applyText(text)            whole-document edit (formatter), applied granularly
@@ -25,6 +28,9 @@
 //         onCursor(fn) with { line, column, fromLine, toLine, head, from, to }.
 (function () {
   /** @typedef {{revision: number, text: string}} Snapshot */
+  /** @typedef {{from: number, to: number}} Span */
+  /** @typedef {Span & {insert: string}} Change */
+  /** @typedef {{read(): Span | null, dispose(): void}} Bookmark */
   const LINE_H = 21;
   // Spaces that read as an ordinary gap and are not one. CodeMirror wants a
   // global regex to scan lines with; the membership test needs a separate
@@ -174,6 +180,7 @@
     const languageCompartment = new S.Compartment();
     const wrapCompartment = new S.Compartment();
     const readOnlyCompartment = new S.Compartment();
+    const bookmarks = new Set();
     let suppressEvents = false;
     // Identifies this tab's edits in the shared update stream for the lifetime of
     // the page, so the server and the other clients can tell them apart.
@@ -472,7 +479,20 @@
     let rulerRanges = [];
 
     const listener = V.EditorView.updateListener.of((update) => {
-      if (update.docChanged) revision++;
+      if (update.docChanged) {
+        // Invalidate in old coordinates, then map every survivor before any
+        // public callback can read a range alongside the new snapshot.
+        update.changes.iterChangedRanges((from, to) => {
+          for (const range of bookmarks) {
+            if (from < range.to && to > range.from) bookmarks.delete(range);
+          }
+        }, true);
+        for (const range of bookmarks) {
+          range.from = update.changes.mapPos(range.from, 1);
+          range.to = update.changes.mapPos(range.to, -1);
+        }
+        revision++;
+      }
       if (rulerRanges.length && (update.docChanged || update.geometryChanged)) {
         if (update.docChanged) {
           rulerRanges = rulerRanges.map((range) => ({
@@ -515,6 +535,7 @@
     // is null for a document edited on its own, which is what keeps the ordinary
     // save path in charge when realtime is not available for a file.
     function makeState(content, collabVersion = null) {
+      bookmarks.clear();
       collaborative = collabVersion != null;
       // A fresh document or a resync invalidates every recorded change: nothing
       // a peer reported against the old text can be replayed onto this one.
@@ -681,6 +702,40 @@
       getValue() { return view.state.doc.toString(); },
       /** @returns {Snapshot} */
       snapshot() { return { revision, text: view.state.doc.toString() }; },
+      /** @returns {Bookmark} Nonempty, half-open UTF-16 range; invalid input is inert. */
+      trackRange(from, to) {
+        const range = { from, to };
+        if (Number.isInteger(from) && Number.isInteger(to) && from >= 0 && to > from && to <= view.state.doc.length) bookmarks.add(range);
+        return {
+          read() { return bookmarks.has(range) ? { ...range } : null; },
+          dispose() { bookmarks.delete(range); },
+        };
+      },
+      /**
+       * @param {Change[]} changes
+       * @param {Snapshot} expected
+       * @returns {"applied"|"unchanged"|"stale"|"readonly"|"invalid"} */
+      applyChanges(changes, expected) {
+        const state = view.state;
+        if (state.readOnly) return "readonly";
+        if (!expected || expected.revision !== revision || expected.text !== state.doc.toString()) return "stale";
+        if (!Array.isArray(changes)) return "invalid";
+        const sorted = [];
+        for (const change of changes) {
+          if (!change || !Number.isInteger(change.from) || !Number.isInteger(change.to) ||
+              change.from < 0 || change.to < change.from || change.to > state.doc.length || typeof change.insert !== "string") return "invalid";
+          sorted.push({ from: change.from, to: change.to, insert: change.insert });
+        }
+        sorted.sort((a, b) => a.from - b.from || a.to - b.to);
+        for (let i = 1; i < sorted.length; i++) if (sorted[i].from < sorted[i - 1].to) return "invalid";
+        // Use this state's line separator for both no-op detection and dispatch.
+        // ChangeSet.of's default would normalize raw bibliographic CRLF strings.
+        const batch = state.changes(sorted);
+        if (batch.apply(state.doc).eq(state.doc)) return "unchanged";
+        view.dispatch({ changes: batch, userEvent: "input.bibliography", annotations: C.isolateHistory.of("full") });
+        return "applied";
+      },
+      undo() { return !view.state.readOnly && C.undo(view); },
       setLanguage(kind) {
         if (flags.kind !== kind) A.closeCompletion(view);
         flags.kind = kind;
@@ -900,6 +955,9 @@
     ownsTarget(node) { return impl ? impl.ownsTarget(node) : false; },
     getValue() { return impl ? impl.getValue() : ""; },
     snapshot() { return impl ? impl.snapshot() : { revision, text: "" }; },
+    trackRange(from, to) { return impl ? impl.trackRange(from, to) : { read() { return null; }, dispose() {} }; },
+    applyChanges(changes, expected) { return impl ? impl.applyChanges(changes, expected) : "invalid"; },
+    undo() { return impl ? impl.undo() : false; },
     selection() { return impl ? impl.selection() : { from: 0, to: 0, text: "", anchor: 0, head: 0 }; },
     collaborative() { return impl ? impl.collaborative() : false; },
     collabVersion() { return impl ? impl.collabVersion() : 0; },
@@ -910,7 +968,7 @@
   // Every mutating call is a no-op until the modules resolve, and stays one if
   // they never do, so the rest of the app needs no readiness checks.
   ["focus", "load", "loadCollab", "applyText", "replaceRange", "select", "setWordWrap", "setAutoIndent", "setReadOnly", "highlightMatches", "collabReceive", "setPeers", "setSharedRegion", "setDiagnostics", "setCompletionContext", "setLanguage", "requestMeasure"].forEach((method) => {
-    api[method] = (...args) => { if (impl) impl[method](...args); };
+    api[method] = (...args) => { if (impl) return impl[method](...args); };
   });
   // Resolves either way: the app still boots (tree, preview, builds, history)
   // when the editor itself is unavailable.

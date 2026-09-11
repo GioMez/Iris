@@ -25,10 +25,10 @@ LaTeX documents and LilyPond scores. It combines a project-oriented source
 editor, server-side compilation, output preview, and authenticated storage in a
 single web application.
 
-> **Release status:** Beta 1 (`1.0.0-beta.1`)
+> **Release status:** Beta 2 (`1.0.0-beta2`)
 
 > **Beta software and stability:** Iris is provided **as is**, without warranty,
-> as described in the [GNU GPL v3](LICENSE). Beta 1 is the first public
+> as described in the [GNU GPL v3](LICENSE). This is a
 > prerelease, not a promise that the next release will be stable: the beta
 > series will continue for as many releases as needed. Until a stable release,
 > breaking changes may affect configuration, deployment, data formats, APIs,
@@ -98,7 +98,7 @@ Each language accepts up to 200 commands, with at most 80 characters per name.
 Apply the lists and save the project to share them with collaborators; these
 settings also travel with project ZIP exports and imports.
 
-## Bibliography reading
+## Bibliography editor
 
 Open a UTF-8 BibTeX/BibLaTeX (`.bib`) or RIS (`.ris`) source to read its references
 in **Table** view. Iris also recognizes bibliography content in ordinary text
@@ -116,12 +116,46 @@ each page contains up to 100 references, with previous/next controls and totals.
 Narrow editor panels use cards instead of a horizontally scrolling table. Long
 values have keyboard-accessible disclosures with selectable full text.
 
+Use **Add**, including in an empty bibliography of a known format, or
+select one reference to **Edit** or **Remove** it. The shared add/edit form shows
+the entry type, BibTeX citation key, main fields, and an **Other fields** section.
+Labels include native field names and occurrence numbers for repeated fields.
+You can add fields by native name, including custom fields and repeated RIS tags,
+or remove individual editable occurrences. Changing type retains existing fields;
+dates and numbers stay text so you can keep leading zeros and punctuation.
+Complex BibTeX expressions, including macros and concatenations, remain read-only
+in the form with access to **Text** for source editing.
+
+Form input stays in a draft until **Apply** validates the resulting document and
+updates the current CodeMirror buffer in one undoable transaction. Apply does not
+confirm a server save: changes use the existing collaboration and project
+save/autosave flow, with no separate bibliography store. An unchanged Apply,
+including an unchanged multiline CRLF value, creates no transaction or dirty
+state. Edits preserve untouched source, comments, field order and delimiters;
+additions append a reference, and removal leaves comments outside its range.
+**Undo** works from the table and retains concurrent peer edits. Removal requires
+confirmation; changing a key/ID or removing a reference does not rewrite citations
+or cross-references.
+
+Cancel, Escape, ordinary dialog close, and source navigation ask before discarding
+a changed draft. Edits outside the selected reference shift its tracked range.
+Overlapping edits, replacement, reload/resync, or revoked write permission block
+Apply and retain the draft with a conflict message; Iris does not search for a
+matching key to retarget it. Pending analysis keeps the draft until you can retry
+Apply. A save acknowledgement assigning a canonical ID to the same open file
+preserves the draft and its mapped or conflicted state. Changing file/project,
+leaving the app, or losing the source context closes the draft so it cannot apply
+elsewhere. Add/edit/remove and undo follow current source permissions, including
+viewer, maintenance, unavailable and read-only/generated-file restrictions.
+
 Validation checks complete syntax, not whether a citation is academically correct
 or accepted by a particular BibTeX/Biber style. Missing metadata, duplicates, and
 unknown macros can produce warnings without blocking the table. Iris retains
 native/custom fields, repeated RIS tags, directives, and raw expressions; it does
 not expand macros, execute LaTeX or HTML, fetch reference URLs, or convert formats.
-Edit references in **Text**; the reading view has no reference forms or CRUD controls.
+The form blocks invalid syntax and newly introduced duplicate BibTeX keys, while
+allowing unrelated edits to entries with pre-existing duplicate keys. Iris does
+not look up DOI or academic metadata.
 
 A local Worker validates the buffer after an edit debounce. Initial recognition
 while typing or pasting keeps the source visible and focused. An incomplete or
@@ -682,6 +716,29 @@ in document history, the build retains its raw source content hash while
 `source_revision_id` remains empty. Composite foreign keys prevent a build from
 referencing a source file or revision belonging to another project.
 
+Multipass TeX builds keep the output of all executed steps in the log trace, but
+select active diagnostics from the last complete successful pass with the same
+engine and full normalized argument list. Different sources, engines or options
+do not clear each other's warnings. A later complete successful pass also
+supersedes earlier successful captures that were truncated. A truncated final
+capture cannot clear prior observations. Auxiliary diagnostics (including BibTeX
+and Biber), setup/publication errors, and observations from failed or interrupted
+passes remain active. Final warnings retain their included-source
+locations and revision references, whether bibliographic or not. The server
+deduplicates and caps the selected diagnostics at 80 per severity; transient
+first-pass warnings do not consume the final pass's allowance. A terminal
+setup/publication cause takes priority within the error cap.
+
+Migration `016_build_diagnostics_version.sql` adds nullable
+`build_outputs.diagnostics_version`. Newly finalized builds use version `1`:
+their structured JSONB warning/error arrays are authoritative even when empty,
+so reopening a clean build does not recreate warnings from its trace. Existing
+rows keep `NULL` and the legacy log/string-array recovery behavior; Iris does
+not reinterpret or backfill them. Capture remains subject to `COMPILE_LOG_LIMIT`
+per step and stored trace (1 MiB by default). A truncated capture cannot prove
+that an earlier warning was resolved, and legacy recovery cannot recover output
+beyond that limit.
+
 The build detail also scans the immutable build directory and exposes every
 safely addressable regular generated file, including MIDI and LaTeX
 bibliography/auxiliary products.
@@ -1137,7 +1194,10 @@ IRIS_TEST_BROWSER=1 npm run test:bibliography:browser
 This explicit opt-in starts the existing server fixture on an ephemeral loopback
 HTTP port, with an isolated database schema and temporary storage. The fixture
 does not load `.env`. Tests open the shipped app, CodeMirror modules and Worker;
-they supply in-memory API responses and close page WebSockets. Cleanup closes
+they supply in-memory authenticated-session/project API responses, enter the
+visible app workspace, and close page WebSockets. These UI tests do not exercise
+real HTTP project persistence or a WebSocket transport; separate PostgreSQL and
+collaboration suites cover those paths. Cleanup closes
 the browser/server, drops the schema, and removes fixture storage. An optional
 `IRIS_TEST_BASE_URL=http://127.0.0.1:PORT` uses an already-running disposable test
 server instead; the harness does not stop that server. Only loopback HTTP URLs
@@ -1146,13 +1206,24 @@ are accepted. Neither mode should target a normal user instance.
 Set `IRIS_TEST_ARTIFACT_DIR` to an ignored local directory to capture desktop,
 390x844 mobile, and narrow-split screenshots. Tests cover columns, full-file
 filtering and pagination, native controls/focus, source selection/scroll/undo,
-raw-text OT, first recognition, and 10,000 references. Paste tests dispatch native
+raw-text OT, first recognition, and 10,000 references. Form cases cover both
+formats, add/edit/remove, native/repeated fields, draft discard, mapped peer edits,
+conflicts, permissions, same-file canonical acknowledgement, and CRLF no-ops.
+Paste tests dispatch native
 `ClipboardEvent`/`DataTransfer` objects through CodeMirror's DOM boundary; they
 do not read or overwrite the OS clipboard and do not verify OS clipboard integration.
 Without either opt-in, the browser tests skip in `npm test`; that is not a passed
-browser gate. Enable `IRIS_TEST_BROWSER=1` for the full suite to run both gates
-together. Use a process deadline of at least 180 seconds for the standalone gate;
-each test and browser startup also has a timeout.
+browser gate. With the database environment configured, run both gates together:
+
+```sh
+IRIS_TEST_BROWSER=1 npm test -- --test-timeout=30000 --test-concurrency=4
+```
+
+Use a bounded process-group deadline (240 seconds for the full suite or standalone
+browser gate) in addition to the 30-second test timeout. Browser coverage uses
+Chrome desktop and mobile viewport emulation, not a physical phone or a screen
+reader. Compiler fixtures exercise multipass diagnostics and PostgreSQL history
+round-trips with controlled executables, not a real TeX distribution.
 
 Database migrations live in `db/migrations/` and are applied atomically at
 startup. Applied filenames and SHA-256 checksums are recorded in

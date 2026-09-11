@@ -12,9 +12,9 @@ const { CollabDocument } = require("../src/collab");
 const cmView = (() => {
   const filename = require.resolve("@codemirror/view");
   const exports = {};
-  const paste = vm.compileFunction(fs.readFileSync(filename, "utf8") + "\nreturn handlers.paste;",
+  const { paste, viewPlugin } = vm.compileFunction(fs.readFileSync(filename, "utf8") + "\nreturn { paste: handlers.paste, viewPlugin };",
     ["exports", "require"], { filename })(exports, createRequire(filename));
-  return { exports, paste };
+  return { exports, paste, viewPlugin };
 })();
 
 const read = (name) => fs.readFileSync(path.join(__dirname, "../public", name), "utf8");
@@ -75,7 +75,7 @@ function element() {
     querySelectorAll(selector) { return selector === ".node[data-id]" ? this.children.filter((child) => child.dataset.id) : []; },
     addEventListener(type, fn) { if (!listeners.has(type)) listeners.set(type, []); listeners.get(type).push(fn); },
     removeEventListener(type, fn) { listeners.set(type, (listeners.get(type) || []).filter((item) => item !== fn)); },
-    dispatchEvent(event) { (listeners.get(event.type) || []).forEach((fn) => fn.call(this, event)); },
+    dispatchEvent(event) { (listeners.get(event.type) || []).forEach((fn) => fn.call(this, event)); return !event.defaultPrevented; },
   };
 }
 
@@ -110,7 +110,7 @@ function harness(language = "en", realtime = false) {
   const windowEvents = element();
   const events = [];
   const dispatch = document.dispatchEvent;
-  document.dispatchEvent = (event) => { events.push(event); dispatch(event); };
+  document.dispatchEvent = (event) => { events.push(event); return dispatch(event); };
   let surface = "picker";
   let change = () => {};
   let load = () => {};
@@ -160,7 +160,10 @@ function harness(language = "en", realtime = false) {
     },
     setTimeout(fn, delay) { timers.push({ fn, delay }); return timers.length; },
     clearTimeout(id) { if (timers[id - 1]) timers[id - 1].cleared = true; }, requestAnimationFrame() {},
-    CustomEvent: class { constructor(type, init) { this.type = type; this.detail = init && init.detail; } },
+    CustomEvent: class {
+      constructor(type, init = {}) { this.type = type; this.detail = init.detail; this.cancelable = !!init.cancelable; this.defaultPrevented = false; }
+      preventDefault() { if (this.cancelable) this.defaultPrevented = true; }
+    },
     IrisLatex: { outline() { return []; } },
     IrisLilyPond: { outline() { return []; } },
     fetch(url, init = {}) {
@@ -181,7 +184,8 @@ function harness(language = "en", realtime = false) {
       },
       IrisMotion: {
         activeSurface: () => surface, setActiveSurface(value) { surface = value; },
-        openDialog(id) { get(id).classList.add("on"); }, closeDialog: async (id) => get(id).classList.remove("on"),
+        openDialog(id) { (typeof id === "string" ? get(id) : id).classList.add("on"); },
+        closeDialog: async (id) => (typeof id === "string" ? get(id) : id).classList.remove("on"),
         openProject() {}, closeProject: async () => {}, resetProject() {},
       },
       IrisCollab: {
@@ -207,6 +211,9 @@ function harness(language = "en", realtime = false) {
   // the nodes the real controller appends; layout and native behavior gate at Task 7.
   get("bibliographyPanel").querySelector = (selector) => get(selector.slice(1));
   get("bibliographyPanel").ownerDocument = document;
+  get("bibliographyModal").querySelector = (selector) => get(selector.startsWith("#") ? selector.slice(1) : "bibliographyForm");
+  get("bibliographyModal").ownerDocument = document;
+  for (const name of ["iris-bibliography-edit.js", "iris-bibliography-form.js"]) vm.runInContext(read(name), context, { filename: name });
   vm.runInContext(read("iris-bibliography-view.js"), context, { filename: "iris-bibliography-view.js" });
   if (realtime) {
     // Run the shipping adapter and real CM extensions; only view rendering is
@@ -223,6 +230,7 @@ function harness(language = "en", realtime = false) {
         this.observer = { flush() {} };
         this.measures = 0;
         this.loads = 0;
+        this.transactions = [];
         view = this;
       }
       setState(state) { this.state = state; this.loads++; }
@@ -230,6 +238,7 @@ function harness(language = "en", realtime = false) {
         const startState = this.state;
         const tr = specs.length === 1 && specs[0].state ? specs[0] : startState.update(...specs);
         this.state = tr.state;
+        this.transactions.push(tr);
         for (const listener of this.state.facet(viewModule.EditorView.updateListener)) {
           listener({ startState, state: this.state, view: this, transactions: [tr], changes: tr.changes, docChanged: tr.docChanged, selectionSet: !!tr.selection });
         }
@@ -280,8 +289,12 @@ function harness(language = "en", realtime = false) {
         view.dispatch(view.state.replaceSelection(text), { userEvent: "input.type" });
       }
     };
-    editor.undo = () => context.editorModules["@codemirror/commands"].undo(view);
-    editor.paste = (text) => cmView.paste(view, { clipboardData: { getData: () => text } });
+    editor.paste = (text) => {
+      const event = { clipboardData: { getData: () => text } };
+      // Run installed pre-paste hooks before CM converts the clipboard string.
+      if (view.state.facet(cmView.viewPlugin).some(({ plugin }) => plugin.domEventHandlers?.paste?.(event, view))) return true;
+      return cmView.paste(view, event);
+    };
     editor.view = () => view;
     editor.complete = () => completionConfig.override.map((source) =>
       source(new autocomplete.CompletionContext(view.state, view.state.selection.main.head, true)));
@@ -295,7 +308,7 @@ function harness(language = "en", realtime = false) {
     editor.carets = () => view.state.selection.ranges.map((range) => range.from);
     run("iris-collab.js");
   }
-  run("iris-app.js", "window.appTest = { state, findFile, wire, wireEditorEvents, openFile, syncRealtimeSession, canonicalFileId, refreshFileTree, saveProject, openFileHistory, snapshotProject, confirmRestore, verState, openTreeRename, confirmTreeRename, folderNodeByPath, docFileForCompile, openExternal, openExternalPicker, pickAttach, doUpload, openNewItem, confirmNewItem, findOpen, findSelect, activateDiagnostic, get bibliography() { return bibliographyView; } };\n");
+  run("iris-app.js", "window.appTest = { state, findFile, wire, wireEditorEvents, openFile, syncRealtimeSession, canonicalFileId, refreshFileTree, saveProject, openFileHistory, snapshotProject, confirmRestore, verState, openTreeRename, confirmTreeRename, folderNodeByPath, docFileForCompile, openExternal, openExternalPicker, pickAttach, doUpload, openNewItem, confirmNewItem, findOpen, findSelect, activateDiagnostic, compile, skipArtifactRendering() { renderCompiledOutput = async () => {}; }, get bibliography() { return bibliographyView; } };\n");
   run("iris-projects.js", "window.projectsTest = { renameProject, cache, metaOf, finishDiscardDecision };\n");
   context.window.appTest.wireEditorEvents();
   return {
@@ -356,6 +369,37 @@ function flushBibliography(h) {
   assert.ok(timer, "edits must schedule a 150 ms quiet-period parse");
   timer.ran = true; timer.fn(); parseBibliography(h);
 }
+
+test("bibliography action selection uses parsed indices and resets on page, query, revision and canonical changes", options, async () => {
+  const text = Array.from({ length: 102 }, (_, i) => `@book{k${i},title={Title ${i}}}`).join("\n");
+  const h = harness("en", true); await h.open(bibliographyData(text)); parseBibliography(h);
+  const view = h.a.bibliography;
+  const selectFirst = () => descendants(bibRows(h)[0]).find((node) => node.type === "radio").dispatchEvent({ type: "change" });
+  view.setSort({ id: "bib:title", descending: true }); selectFirst();
+  h.get("bibliographyEdit").dispatchEvent({ type: "click" });
+  assert.equal(h.get("bibliographyFormKey").value, "k99");
+  h.a.openFile("main"); flushBibliography(h);
+  selectFirst(); view.setPage(1); assert.equal(h.get("bibliographyEdit").disabled, true);
+  selectFirst(); view.setQuery("Title"); assert.equal(h.get("bibliographyRemove").disabled, true);
+  selectFirst(); h.editor.replaceRange(0, 0, "% outside\n"); assert.equal(h.get("bibliographyEdit").disabled, true);
+  flushBibliography(h); assert.equal(h.get("bibliographyEdit").disabled, true);
+  selectFirst(); view.rekey(view.context().documentKey, "canonical-test"); assert.equal(h.get("bibliographyEdit").disabled, true);
+});
+
+test("bibliography table undo and actions use the current maintenance and role gate", options, async () => {
+  const h = harness("en", true); await h.open(bibliographyData()); parseBibliography(h);
+  h.editor.replaceRange(0, 0, "% edit\n"); flushBibliography(h);
+  for (const paused of [true, false]) {
+    h.window.IrisCollab.paused = () => paused;
+    h.document.dispatchEvent({ type: "iris:collabrole", detail: { role: "owner" } });
+    assert.equal(h.get("bibliographyAdd").disabled, paused);
+    assert.equal(h.get("bibliographyUndo").disabled, paused);
+  }
+  h.document.dispatchEvent({ type: "iris:collabrole", detail: { role: "viewer" } });
+  const before = h.editor.snapshot(); h.get("bibliographyUndo").dispatchEvent({ type: "click" });
+  assert.deepEqual(h.editor.snapshot(), before);
+  assert.equal(h.get("bibliographyUndo").disabled, true);
+});
 
 for (const input of ["typing", "paste"]) {
   test(`bibliography first recognition by ${input} keeps source visible and debounces validation`, options, async () => {
@@ -711,6 +755,29 @@ test("bibliography remembers a content-recognized format when an emptied generic
   assert.equal(h.a.bibliography.context().parsed.format, "ris");
 });
 
+for (const format of ["bib", "ris"]) for (const settleInvalid of [false, true]) {
+  test(`format memory: ${format} ignores ${settleInvalid ? "parsed" : "pending"} contradictory bad input`, options, async () => {
+    const extension = format === "bib" ? "ris" : "bib";
+    const source = format === "bib" ? "@book{a,title={A}}" : "TY  - BOOK\r\nTI  - A\r\nER  -";
+    const h = harness("en", true), data = bibliographyData(source, extension);
+    data.project.nodes.push({ type: "file", id: "other", kind: "tex", path: "other.tex", name: "other.tex", content: "Plain text" });
+    await h.open(data); parseBibliography(h);
+    assert.equal(h.a.bibliography.context().parsed.format, format);
+    h.edit(format === "bib" ? "TY  - BOOK\r\nTI  - unfinished" : "@book{unfinished");
+    if (settleInvalid) {
+      flushBibliography(h);
+      assert.equal(h.a.bibliography.context().parsed.status, "invalid");
+    }
+    const retained = "% retained\r\n% bare\r% end\n";
+    h.edit(retained); flushBibliography(h);
+    assert.equal(h.a.bibliography.context().parsed.format, format, "invalid content cannot replace the controller hint");
+    h.a.openFile("other"); h.a.openFile("main"); parseBibliography(h);
+    assert.equal(h.a.bibliography.context().parsed.format, format, "confirmed memory precedes the contradictory extension on reopen");
+    assert.equal(h.editor.getValue(), retained);
+    assert.equal(h.app.serialize().project.nodes[0].kind, extension);
+  });
+}
+
 for (const format of ["bib", "ris"]) for (const transition of ["file", "reload", "refresh", "rejoin"]) {
   test(`remembered ${format} policy precedes generic ${transition} state creation`, options, async () => {
     const source = format === "bib" ? "@book{a,title={A}}\r\n" : "TY  - BOOK\r\nTI  - A\r\nER  -\r\n";
@@ -875,6 +942,183 @@ for (const [text, kind, status, stateKey] of [[" \r\n", "ris", "empty", "empty"]
     }
   });
 }
+
+test("a form update is one undoable transaction and rejects stale snapshots", options, async () => {
+  const h = harness("en", true); await h.editor.ready;
+  const ed = h.editor, text = "@book{a,title={Old},year={2000}}";
+  ed.load(text, "bib");
+  const expected = ed.snapshot(), before = ed.view().transactions.length, observed = [];
+  ed.onChange((payload) => observed.push({ payload, snapshot: clone(ed.snapshot()) }));
+  const title = text.indexOf("Old"), year = text.indexOf("2000");
+  assert.equal(ed.applyChanges?.([
+    { from: title, to: title + 3, insert: "New" },
+    { from: year, to: year + 4, insert: "2026" },
+  ], expected), "applied");
+  assert.equal(ed.getValue(), "@book{a,title={New},year={2026}}");
+  assert.equal(ed.view().transactions.length, before + 1);
+  const tr = ed.view().transactions.at(-1);
+  assert.equal(tr.isUserEvent("input.bibliography"), true);
+  assert.equal(tr.annotation(require("@codemirror/commands").isolateHistory), "full");
+  assert.deepEqual(observed, [{ payload: undefined, snapshot: { revision: expected.revision + 1, text: ed.getValue() } }]);
+  assert.equal(ed.applyChanges([{ from: 0, to: 0, insert: "!" }], expected), "stale");
+  assert.equal(ed.view().transactions.length, before + 1);
+  assert.equal(ed.undo(), true);
+  assert.equal(ed.getValue(), text);
+  assert.equal(ed.undo(), false);
+});
+
+test("form history is isolated from adjacent typing and public undo obeys current readonly", options, async () => {
+  const ed = harness("en", true).editor; await ed.ready;
+  ed.load("@book{a,title={Old}}", "bib");
+  ed.select(15); ed.typeText("A");
+  const expected = ed.snapshot();
+  assert.equal(ed.applyChanges([{ from: 15, to: 19, insert: "New" }], expected), "applied");
+  ed.select(18); ed.typeText("B");
+  ed.setReadOnly(true);
+  const locked = ed.snapshot(), before = ed.view().transactions.length;
+  assert.equal(ed.undo(), false);
+  assert.deepEqual(ed.snapshot(), locked);
+  assert.equal(ed.view().transactions.length, before);
+  ed.setReadOnly(false);
+  assert.equal(ed.undo(), true); assert.equal(ed.getValue(), "@book{a,title={New}}");
+  assert.equal(ed.undo(), true); assert.equal(ed.getValue(), expected.text);
+  assert.equal(ed.undo(), true); assert.equal(ed.getValue(), "@book{a,title={Old}}");
+});
+
+test("form guards reject malformed batches and mismatched snapshots without any dispatch", options, async () => {
+  const ed = harness("en", true).editor; await ed.ready;
+  ed.loadCollab("@book{a,title={Old}}", "bib", { version: 0 });
+  const expected = ed.snapshot(), before = ed.view().transactions.length;
+  const valid = { from: 15, to: 18, insert: "New" };
+  for (const changes of [null, {}, [null], [[]], [0], [{ ...valid, from: -1 }], [{ ...valid, to: 100 }],
+    [{ ...valid, from: 15.5 }], [{ ...valid, to: NaN }], [{ ...valid, from: Infinity }],
+    [{ ...valid, from: "14" }], [{ ...valid, to: 13 }], [{ from: 14, insert: "New" }],
+    [{ from: 14, to: 17 }], [{ ...valid, insert: 42 }],
+    [valid, { from: 15, to: 16, insert: "x" }], [valid, { from: 16, to: 16, insert: "x" }]]) {
+    assert.equal(ed.applyChanges(changes, expected), "invalid", JSON.stringify(changes));
+  }
+  for (const snapshot of [null, {}, { ...expected, revision: expected.revision + 1 }, { ...expected, text: "x".repeat(expected.text.length) }]) {
+    assert.equal(ed.applyChanges([valid], snapshot), "stale");
+  }
+  ed.setReadOnly(true);
+  const locked = ed.view().transactions.length;
+  assert.equal(ed.applyChanges(null, null), "readonly", "permission wins even over stale or malformed input");
+  assert.equal(ed.view().transactions.length, locked);
+  ed.setReadOnly(false);
+  assert.equal(ed.view().transactions.length, before + 2);
+  assert.deepEqual(ed.snapshot(), expected); assert.equal(ed.collabPending(), null);
+  assert.equal(ed.undo(), false);
+  const changes = Object.freeze([Object.freeze({ from: 18, to: 18, insert: "!" }), Object.freeze(valid)]);
+  assert.equal(ed.applyChanges(changes, expected), "applied", "nonoverlapping input need not be sorted or mutable");
+  assert.equal(ed.getValue(), "@book{a,title={New!}}");
+});
+
+test("form net no-ops leave revision, bookmarks, events, history and OT untouched", options, async () => {
+  const ed = harness("en", true).editor; await ed.ready;
+  const text = "@book{a,\r\n title={A\u{1f600}B}\r\n}\r\n";
+  ed.loadCollab(text, "bib", { version: 0 });
+  const expected = ed.snapshot(), mark = ed.trackRange(0, text.length), before = ed.view().transactions.length;
+  const events = []; ed.onChange((payload) => events.push(payload)); ed.onSync(() => events.push("sync"));
+  for (const changes of [[], [{ from: 0, to: text.length, insert: text }], [{ from: 0, to: 0, insert: "" }],
+    [{ from: 0, to: 1, insert: "" }, { from: 1, to: 1, insert: "@" }]]) {
+    assert.equal(ed.applyChanges(changes, expected), "unchanged");
+  }
+  assert.equal(ed.view().transactions.length, before); assert.deepEqual(ed.snapshot(), expected);
+  assert.deepEqual(clone(mark.read()), { from: 0, to: text.length }); assert.deepEqual(events, []);
+  assert.equal(ed.collabPending(), null); assert.equal(ed.undo(), false);
+});
+
+test("form batches interpret strings with the current state's newline policy, including first paste", options, async () => {
+  const ed = harness("en", true).editor; await ed.ready;
+  const raw = "@book{a,\r\n title={A\u{1f600}B}\r\n}\r\n";
+  for (const route of ["load", "paste", "resync", "ordinary"]) {
+    ed.load(route === "load" || route === "resync" ? raw : "", "tex");
+    if (route === "paste") { ed.paste(raw); assert.equal(ed.getValue(), raw); }
+    if (route === "resync") ed.loadCollab("no header\r\nA\u{1f600}B\r\n", "tex", { version: 5 });
+    if (route === "ordinary") ed.load("ordinary\nA\u{1f600}B\n", "tex");
+    ed.setLanguage(null);
+    const expected = ed.snapshot(), pos = expected.text.indexOf("B");
+    assert.equal(ed.applyChanges([{ from: pos, to: pos + 1, insert: "C\r\n\u{1f680}\rD" }], expected), "applied", route);
+    const insert = route === "ordinary" ? "C\n\u{1f680}\nD" : "C\r\n\u{1f680}\rD";
+    assert.equal(ed.getValue(), expected.text.slice(0, pos) + insert + expected.text.slice(pos + 1), route);
+    assert.equal(ed.undo(), true); assert.equal(ed.getValue(), expected.text);
+  }
+  ed.load("ordinary\ntext", "tex");
+  const before = ed.view().transactions.length;
+  assert.equal(ed.applyChanges([{ from: 0, to: 13, insert: "ordinary\r\ntext" }], ed.snapshot()), "unchanged");
+  assert.equal(ed.view().transactions.length, before, "no-op detection uses the same newline interpretation as dispatch");
+});
+
+test("bookmarks map all ranges before callbacks and return copies, never same-key matches", options, async () => {
+  const ed = harness("en", true).editor; await ed.ready;
+  const entry = "@book{a,title={Old}}", text = entry + "\n" + entry;
+  ed.load(text, "bib");
+  const first = ed.trackRange(0, entry.length), second = ed.trackRange(entry.length + 1, text.length);
+  const disposed = ed.trackRange(0, entry.length); disposed.dispose(); disposed.dispose();
+  const copy = second.read(); copy.from = 0; copy.to = 0;
+  const seen = [];
+  ed.onChange((payload) => seen.push({ payload, first: clone(first.read()), second: clone(second.read()), disposed: disposed.read(), revision: ed.snapshot().revision }));
+  const revision = ed.snapshot().revision;
+  assert.equal(ed.applyChanges([{ from: 0, to: 0, insert: "% before\r\n" },
+    { from: entry.length, to: entry.length, insert: "\n% between" },
+    { from: text.length, to: text.length, insert: "\r\n% after" }], ed.snapshot()), "applied");
+  assert.deepEqual(seen, [{ payload: undefined, first: { from: 10, to: 30 }, second: { from: 41, to: 61 }, disposed: null, revision: revision + 1 }]);
+  ed.replaceRange(25, 28, "New");
+  assert.equal(first.read(), null, "same-size replacement invalidates the edited occurrence");
+  assert.deepEqual(clone(second.read()), { from: 41, to: 61 });
+  assert.equal(seen.at(-1).first, null, "invalidation precedes public change callbacks");
+  assert.equal(ed.undo(), true); assert.equal(first.read(), null, "undo cannot revive a conflicted draft");
+  assert.deepEqual(clone(second.read()), { from: 41, to: 61 });
+  second.dispose(); assert.equal(second.read(), null);
+});
+
+test("bookmarks invalidate on inside insertion, overlap, removal and equal-text replacement", options, async () => {
+  const ed = harness("en", true).editor; await ed.ready;
+  const entry = "@book{a,title={Old}}", text = "xx" + entry + "yy\n" + entry;
+  for (const changes of [
+    { from: 3, to: 3, insert: "x" }, { from: 1, to: 3, insert: "x" },
+    { from: 21, to: 23, insert: "x" }, { from: 2, to: 22, insert: "" },
+    { from: 2, to: 22, insert: entry },
+  ]) {
+    ed.load(text, "bib"); const mark = ed.trackRange(2, 22);
+    ed.replaceRange(changes.from, changes.to, changes.insert);
+    assert.equal(mark.read(), null, JSON.stringify(changes));
+  }
+  for (const [from, to] of [[-1, 1], [0, 1000], [2, 1], [1, 1], [0.5, 2], [0, NaN], ["0", 2]]) {
+    const mark = ed.trackRange(from, to); assert.equal(mark.read(), null); mark.dispose();
+  }
+});
+
+test("bookmarks and snapshots invalidate before load callbacks even on identical load and resync", options, async () => {
+  const ed = harness("en", true).editor; await ed.ready;
+  const text = "@book{a,title={Old}}";
+  ed.load(text, "bib");
+  let mark;
+  const loads = [], changes = [];
+  ed.onLoad((payload) => loads.push({ payload, range: mark.read(), snapshot: clone(ed.snapshot()) }));
+  ed.onChange((payload) => changes.push(payload));
+  for (const route of ["load", "join", "resync", "file"]) {
+    mark = ed.trackRange(0, text.length);
+    const before = ed.snapshot();
+    if (route === "join" || route === "resync") ed.loadCollab(text, "bib", { version: 7 });
+    else ed.load(text, route === "file" ? "txt" : "bib");
+    assert.equal(mark.read(), null, route);
+    assert.deepEqual(loads.at(-1), { payload: undefined, range: null, snapshot: { revision: before.revision + 1, text } });
+    assert.equal(ed.applyChanges([{ from: 0, to: 0, insert: "!" }], before), "stale", route);
+  }
+  assert.equal(loads.length, 4); assert.deepEqual(changes, []);
+});
+
+test("form apply checks permission revoked after the snapshot through the real project role path", options, async () => {
+  const h = harness("en", true); await h.open(bibliographyData());
+  const ed = h.editor, expected = ed.snapshot(), saved = clone(h.app.capturePersistence().data);
+  h.document.dispatchEvent({ type: "iris:collabrole", detail: { role: "viewer" } });
+  const before = ed.view().transactions.length;
+  assert.equal(ed.applyChanges([{ from: 0, to: 0, insert: "!" }], expected), "readonly");
+  assert.equal(ed.undo(), false); assert.deepEqual(ed.snapshot(), expected);
+  assert.equal(ed.view().transactions.length, before);
+  assert.deepEqual(clone(h.app.capturePersistence().data), saved); assert.equal(h.app.hasUnsavedChanges(), false);
+});
 
 test("bibliography lexer changes preserve text, history, selection and revision", options, async () => {
   const h = harness("en", true); await h.editor.ready;
@@ -1056,6 +1300,52 @@ for (const [kind, source] of [
   });
 }
 
+for (const [kind, entry] of [
+  ["bib", "@book{a,\r\n title={A\u{1f600}B},year={2000}\r\n}\r\n"],
+  ["ris", "TY  - BOOK\r\nTI  - A\u{1f600}B\r\nPY  - 2000\r\nER  -\r\n"],
+]) for (const side of ["before", "after"]) {
+  test(`form ${kind} multi-range update and undo rebase around a peer comment ${side} duplicate entries`, options, async () => {
+    const a = harness("en", true).editor, b = harness("en", true).editor;
+    await Promise.all([a.ready, b.ready]);
+    const source = entry + entry, comment = "% peer\r\n";
+    const room = new CollabDocument({ fileId: "f", projectId: "p", path: `refs.${kind}`, content: source });
+    for (const ed of [a, b]) ed.loadCollab(source, kind, { version: 0 });
+    const target = b.trackRange(0, entry.length), duplicate = b.trackRange(entry.length, source.length);
+    const seen = []; b.onChange(() => seen.push({ target: clone(target.read()), duplicate: clone(duplicate.read()) }));
+    const pos = source.indexOf("B", source.indexOf("\u{1f600}")), year = source.indexOf("2000");
+    assert.equal(a.applyChanges([{ from: pos, to: pos + 1, insert: "C\r\n  \u{1f680}D" },
+      { from: year, to: year + 4, insert: "2026" }], a.snapshot()), "applied");
+    const multi = a.collabPending(); assert.equal(multi.updates.length, 1);
+    const spans = [];
+    ChangeSet.fromJSON(multi.updates[0].changes).iterChanges((from, to, _fromB, _toB, insert) => spans.push({ from, to, insert: insert.toString() }));
+    assert.deepEqual(spans, [{ from: pos, to: pos + 1, insert: "C\r\n  \u{1f680}D" }, { from: year, to: year + 4, insert: "2026" }]);
+    const at = side === "before" ? 0 : source.length, shift = side === "before" ? comment.length : 0;
+    b.replaceRange(at, at, comment);
+    assert.deepEqual(seen.at(-1), { target: { from: shift, to: shift + entry.length }, duplicate: { from: shift + entry.length, to: shift + source.length } });
+    const peer = b.collabPending(); assert.equal(room.receive(peer.version, peer.updates).accepted, true);
+    b.collabReceive(room.since(0));
+    assert.equal(room.receive(multi.version, multi.updates).accepted, false);
+    a.collabReceive(room.since(a.collabVersion()));
+    const rebased = a.collabPending(); assert.equal(rebased.updates.length, 1);
+    assert.equal(room.receive(rebased.version, rebased.updates).accepted, true);
+    for (const ed of [a, b]) ed.collabReceive(room.since(ed.collabVersion()));
+    const changed = entry.replace("\u{1f600}B", "\u{1f600}C\r\n  \u{1f680}D").replace("2000", "2026") + entry;
+    const want = side === "before" ? comment + changed : changed + comment;
+    assert.equal(room.version, 2); assert.equal(room.text(), want);
+    for (const ed of [a, b]) { assert.equal(ed.getValue(), want); assert.equal(ed.collabPending(), null); }
+    assert.deepEqual(seen.at(-1), { target: null, duplicate: { from: shift + changed.length - entry.length, to: shift + changed.length } });
+    assert.equal(a.undo(), true);
+    const undo = a.collabPending(); assert.equal(undo.updates.length, 1);
+    assert.equal(room.receive(undo.version, undo.updates).accepted, true);
+    const restored = side === "before" ? comment + source : source + comment;
+    for (const ed of [a, b]) { ed.collabReceive(room.since(ed.collabVersion())); assert.equal(ed.getValue(), restored); }
+    assert.equal(room.version, 3); assert.equal(room.text(), restored);
+    assert.deepEqual(seen.at(-1), { target: null, duplicate: { from: shift + entry.length, to: shift + source.length } });
+    assert.equal(a.undo(), false);
+    target.dispose(); duplicate.dispose();
+  });
+}
+
 test("RIS has no TeX indentation, comment, completion or brace behavior", options, async () => {
   const h = harness("en", true); await h.editor.ready;
   const ed = h.editor;
@@ -1158,6 +1448,11 @@ for (const kind of ["bib", "ris"]) {
     h.socket().fire("open");
     assert.equal(h.editor.isReadOnly(), true);
     assert.equal(h.editor.getValue(), h.t("api.BIBLIOGRAPHY_INVALID_ENCODING"));
+    const expected = h.editor.snapshot(), before = h.editor.view().transactions.length;
+    assert.equal(h.editor.applyChanges([{ from: 0, to: 0, insert: "blocked" }], expected), "readonly");
+    assert.equal(h.editor.undo(), false);
+    assert.deepEqual(h.editor.snapshot(), expected);
+    assert.equal(h.editor.view().transactions.length, before);
     assert.equal(h.a.findFile(id).content, undefined);
     assert.equal(h.a.findFile(id).readOnly, undefined);
     assert.equal(h.socket().of("open").length, 0);
@@ -1766,6 +2061,41 @@ test("diagnostic list and gutter follow inserted lines and reset with the build 
   await h.app.load(projectData(5, "new project"));
   assert.equal(h.editor.diagnostics().length, 0);
   assert.equal(diagnosticRows(h).length, 0);
+});
+
+test("clean live diagnostics and reopened history clear list, gutter and counters but retain the multipass trace", options, async () => {
+  const h = harness("en", true); await h.open(projectData(4, "first\n\\cite{resolved}\nlast"));
+  // PDF rasterization is outside this regression; the app, diagnostics renderer,
+  // compile response handling and CodeMirror diagnostic state all remain real.
+  h.a.skipArtifactRendering();
+  await h.app.showBuildOutput(diagnosticBuild([
+    { severity: "warning", file: "main.tex", line: 2, column: null, message: "Citation 'resolved' undefined" },
+    { severity: "error", file: "main.tex", line: 2, column: null, message: "Previous failure" },
+  ]));
+  assert.equal(diagnosticRows(h).length, 2);
+  assert.equal(h.editor.diagnostics().length, 2);
+  assert.equal(h.get("stWarn").style.display, "");
+  assert.equal(h.get("stErr").style.display, "");
+  const log = "===== Iris step 1/4: pdflatex =====\nLaTeX Warning: Citation 'resolved' undefined on input line 2.\n===== Iris step 4/4: pdflatex =====\nOutput written on main.pdf";
+  const artifacts = [{ name: "main.pdf", mimeType: "application/pdf", size: 12 }];
+  const pending = h.a.compile(); await tick();
+  const request = h.requests.at(-1);
+  assert.equal(request.url, "/api/projects/p1/compile");
+  h.ack(request, 5, { success: true, buildId: "clean-build", diagnostics: [], warnings: [], errors: [], log, artifacts });
+  await pending;
+  const assertEmpty = () => {
+    assert.equal(diagnosticRows(h).length, 0);
+    assert.equal(h.editor.diagnostics().length, 0);
+    assert.equal(h.get("diagnosticsEmpty").hidden, false);
+    assert.match(h.get("diagnosticsSummary").textContent, /0 errors.*0 warnings/);
+    assert.equal(h.get("stWarn").style.display, "none");
+    assert.equal(h.get("stErr").style.display, "none");
+    assert.match(h.get("logView").innerHTML, /Citation.*resolved.*undefined/);
+    assert.match(h.get("logView").innerHTML, /Iris step 4\/4/);
+  };
+  assertEmpty();
+  await h.app.showBuildOutput({ ...diagnosticBuild([], { id: "clean-build", status: "succeeded", log }), artifacts });
+  assertEmpty();
 });
 
 test("missing, external and unlocated diagnostics cannot jump to a same-named file", options, async () => {

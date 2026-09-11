@@ -319,6 +319,9 @@ button{font-family:inherit;color:inherit}
 .bibliography-card dt{font-weight:500;color:var(--txt-mut);margin-top:10px}
 .bibliography-card dd{margin:4px 0 0}
 .bibliography-pagination{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:10px 12px;border-top:1px solid var(--border)}
+.bibliography-actions{display:flex;flex-wrap:wrap;gap:8px;padding:10px 12px;border-bottom:1px solid var(--border)}
+.bibliography-select{display:flex;align-items:center;gap:8px;min-height:36px;cursor:pointer;margin-bottom:6px;color:var(--txt-dim)}
+.bibliography-select input{accent-color:var(--accent)}
 #bibliographyTotal{flex:1 1 160px;color:var(--txt-dim)}
 @container bibliography (max-width:700px){
   .bibliography-table-scroll{display:none}
@@ -587,6 +590,34 @@ button.st{border:0;background:transparent;font:inherit}
 .scrim.is-closing>.modal{pointer-events:none;animation:dialog-pop-out .16s ease-in both}
 .modal{width:min(540px,96vw);max-height:90vh;background:var(--panel);border:1px solid var(--border);border-radius:14px;box-shadow:var(--shadow);display:flex;flex-direction:column;overflow:hidden}
 .modal.wide{width:min(680px,96vw)}
+.bibliography-form [hidden]{display:none!important}
+#bibliographyFormError{display:flex}
+.bibliography-form .m-body{min-height:0}
+.bibliography-form .m-head,.bibliography-form .m-foot{flex:0 0 auto}
+.bibliography-form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 18px}
+.bibliography-form .field{min-width:0;margin-bottom:0}
+.bibliography-form .input{width:100%;min-width:0}
+.bibliography-form textarea{resize:vertical;min-height:64px;max-height:240px;font:inherit}
+.bibliography-form textarea[readonly]{color:var(--txt-mut);background:var(--panel-2)}
+.bibliography-form [aria-invalid="true"]{border-color:var(--semantic-danger)}
+.bibliography-form .label{overflow-wrap:anywhere}
+#bibliographyFormFields{margin-top:18px}
+#bibliographyFormMore{margin:18px 0}
+#bibliographyFormMore summary{cursor:pointer;color:var(--txt-dim);padding:10px 0;min-height:36px}
+.bibliography-field-remove{display:flex;align-items:flex-start;gap:6px;font-size:11px;color:var(--txt-mut);margin-top:6px;overflow-wrap:anywhere}
+.bibliography-field-remove input{accent-color:var(--accent)}
+.bibliography-field-add{display:flex;align-items:flex-end;gap:10px;margin-top:18px}
+.bibliography-field-add .field{flex:1}
+#bibliographyFormWarning{color:var(--semantic-warning);margin:0 0 16px;line-height:1.5}
+#bibliographyFormRemoval{white-space:pre-wrap;overflow-wrap:anywhere}
+#bibliographyFormDiscard{border:1px solid var(--semantic-warning);border-radius:8px;padding:12px;margin-top:16px}
+#bibliographyFormDiscard p{margin:0 0 12px}
+#bibliographyFormSource{margin-right:auto}
+@media(max-width:600px){
+  .bibliography-form-grid{grid-template-columns:minmax(0,1fr)}
+  .bibliography-form .m-foot{flex-wrap:wrap;padding:12px}
+  .bibliography-form .m-body{padding:14px}
+}
 @keyframes pop{from{transform:translateY(8px) scale(.98)}to{transform:none}}
 @keyframes dialog-pop-in{from{opacity:0;transform:translateY(10px) scale(.965)}to{opacity:1;transform:none}}
 @keyframes dialog-pop-out{from{opacity:1;transform:none}to{opacity:0;transform:translateY(4px) scale(.96)}}

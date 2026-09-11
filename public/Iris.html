@@ -37,7 +37,7 @@
     <button class="tbtn icononly" id="btnSidebar" title="Show/hide sidebar" aria-label="Show or hide the sidebar" data-i18n-title="toolbar.toggleSidebarTitle" data-i18n-aria-label="toolbar.toggleSidebarAria" aria-controls="projectSidebar" aria-expanded="true"><span class="ic" data-icon="layout-sidebar-left-collapse"></span></button>
     <div class="logo">
       <div class="mark"><img src="iris_logo_w.svg" alt=""></div>
-      <div class="brand-label"><img class="brand-wordmark" src="iris_text_logo_w.svg" alt="Iris"> <span class="v">Beta 1</span></div>
+      <div class="brand-label"><img class="brand-wordmark" src="iris_text_logo_w.svg" alt="Iris"> <span class="v">Beta 2</span></div>
     </div>
     <div class="tbar-scroll">
       <div class="tsep"></div>
@@ -121,6 +121,12 @@
           </details>
         </div>
         <div id="bibliographyTablePanel" role="tabpanel" aria-labelledby="bibliographyTableTab" tabindex="0">
+          <div class="bibliography-actions">
+            <button class="btn sm" id="bibliographyAdd" type="button" data-i18n="bibliography.add" disabled>Add</button>
+            <button class="btn sm" id="bibliographyEdit" type="button" data-i18n="bibliography.edit" disabled>Edit</button>
+            <button class="btn sm" id="bibliographyRemove" type="button" data-i18n="bibliography.remove" disabled>Remove</button>
+            <button class="btn sm" id="bibliographyUndo" type="button" data-i18n="bibliography.undo" disabled>Undo</button>
+          </div>
           <div class="bibliography-tools">
             <div class="bibliography-search">
               <label for="bibliographyQuery" id="bibliographyQueryLabel" data-i18n="bibliography.searchAll">Search all fields, including hidden columns</label>
@@ -662,6 +668,57 @@
 </div>
 
 <!-- ===================== PROJECT MODALS ===================== -->
+<div class="scrim" id="bibliographyModal">
+  <form class="modal wide bibliography-form" role="dialog" aria-modal="true" aria-labelledby="bibliographyFormTitle" novalidate>
+    <div class="m-head">
+      <h3 id="bibliographyFormTitle"></h3>
+      <button class="m-x" id="bibliographyFormClose" type="button" aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
+    </div>
+    <div class="m-body">
+      <div id="bibliographyFormError" role="alert" class="login-error inline" tabindex="-1" hidden></div>
+      <p id="bibliographyFormWarning" class="hint" hidden></p>
+      <p id="bibliographyFormRemoval" class="confirm-txt" hidden></p>
+      <div id="bibliographyFormEditing">
+        <div class="bibliography-form-grid">
+          <div class="field">
+            <label class="label" for="bibliographyFormType" data-i18n="bibliography.fields.type">Type</label>
+            <input class="input" id="bibliographyFormType" type="text" list="bibliographyFormTypes" autocomplete="off" spellcheck="false" aria-describedby="bibliographyFormError">
+            <datalist id="bibliographyFormTypes"></datalist>
+          </div>
+          <div class="field" id="bibliographyFormKeyRow">
+            <label class="label" for="bibliographyFormKey" data-i18n="bibliography.fields.key">Citation key</label>
+            <input class="input" id="bibliographyFormKey" type="text" autocomplete="off" spellcheck="false" aria-describedby="bibliographyFormWarning bibliographyFormError">
+          </div>
+        </div>
+        <div class="bibliography-form-grid" id="bibliographyFormFields"></div>
+        <details id="bibliographyFormMore">
+          <summary data-i18n="bibliography.form.more">Other fields</summary>
+          <div class="bibliography-form-grid" id="bibliographyFormOtherFields"></div>
+        </details>
+        <div class="bibliography-field-add">
+          <div class="field">
+            <label class="label" for="bibliographyFormNativeName" data-i18n="bibliography.form.nativeName">Native field name</label>
+            <input class="input" id="bibliographyFormNativeName" type="text" list="bibliographyFormNames" autocomplete="off" spellcheck="false">
+            <datalist id="bibliographyFormNames"></datalist>
+          </div>
+          <button class="btn sm" id="bibliographyFormAddField" type="button" data-i18n="bibliography.form.addField">Add field</button>
+        </div>
+        <p class="hint" data-i18n="bibliography.form.fieldHint">Use native names for custom fields or another occurrence. Dates and numbers remain text.</p>
+      </div>
+      <div id="bibliographyFormDiscard" role="alert" hidden>
+        <p data-i18n="bibliography.form.discard">Discard these changes?</p>
+        <button class="btn" id="bibliographyFormKeep" type="button" data-i18n="bibliography.form.keep">Keep editing</button>
+        <button class="btn danger" id="bibliographyFormDiscardConfirm" type="button" data-i18n="bibliography.form.discardConfirm">Discard changes</button>
+      </div>
+    </div>
+    <div class="m-foot">
+      <button class="btn" id="bibliographyFormSource" type="button" data-i18n="bibliography.showSource">Show source</button>
+      <button class="btn" id="bibliographyFormCancel" type="button" data-i18n="common.cancel">Cancel</button>
+      <button class="btn cta" id="bibliographyFormApply" type="submit" data-i18n="common.apply">Apply</button>
+    </div>
+  </form>
+</div>
+
 <div class="scrim" id="projModal">
   <div class="modal narrow" role="dialog" aria-modal="true" aria-labelledby="projModalTitle">
     <div class="m-head">
@@ -774,7 +831,7 @@
     <header class="picker-top">
       <div class="login-brand">
         <div class="mark"><img src="iris_logo_w.svg" alt=""></div>
-        <div class="brand-label"><img class="brand-wordmark" src="iris_text_logo_w.svg" alt="Iris"> <span class="v">Beta 1</span></div>
+        <div class="brand-label"><img class="brand-wordmark" src="iris_text_logo_w.svg" alt="Iris"> <span class="v">Beta 2</span></div>
       </div>
       <div class="picker-user">
         <button class="tbtn ghost-b admin-only" id="pkAdmin" type="button" title="Server administration" aria-label="Server administration" data-i18n-title="admin.open" data-i18n-aria-label="admin.open"><span class="ic" data-icon="shield-lock"></span><span data-i18n="admin.adminShort">Admin</span></button>
@@ -817,7 +874,7 @@
     <header class="picker-top">
       <div class="login-brand">
         <div class="mark"><img src="iris_logo_w.svg" alt=""></div>
-        <div class="brand-label"><img class="brand-wordmark" src="iris_text_logo_w.svg" alt="Iris"> <span class="v">Beta 1</span></div>
+        <div class="brand-label"><img class="brand-wordmark" src="iris_text_logo_w.svg" alt="Iris"> <span class="v">Beta 2</span></div>
       </div>
       <div class="picker-user admin-header-actions">
         <div class="admin-switch" id="adminSwitch" role="tablist" aria-label="Admin sections" data-i18n-aria-label="admin.sectionsAria">
@@ -1358,7 +1415,7 @@
     </label>
     <div class="login-brand">
       <div class="mark"><img src="iris_logo_w.svg" alt=""></div>
-      <div class="brand-label"><img class="brand-wordmark" src="iris_text_logo_w.svg" alt="Iris"> <span class="v">Beta 1</span></div>
+      <div class="brand-label"><img class="brand-wordmark" src="iris_text_logo_w.svg" alt="Iris"> <span class="v">Beta 2</span></div>
     </div>
     <h1 class="login-title" data-i18n="auth.title">Sign in to your workspace</h1>
     <p class="login-sub" data-i18n="auth.subtitle">Enter your credentials to continue</p>
@@ -1406,6 +1463,8 @@
 <script src="iris-bibtex.js"></script>
 <script src="iris-ris.js"></script>
 <script src="iris-bibliography.js"></script>
+<script src="iris-bibliography-edit.js"></script>
+<script src="iris-bibliography-form.js"></script>
 <script src="iris-bibliography-view.js"></script>
 <script src="iris-editor.js"></script>
 <script src="iris-collab.js"></script>

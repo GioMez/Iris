@@ -14,7 +14,7 @@ const server = fs.readFileSync(path.join(root, "src/server.js"), "utf8");
 const uiScripts = [
   "iris-projects.js", "iris-builds.js", "iris-admin.js", "iris-admin-projects.js",
   "iris-admin-templates.js", "iris-auth.js", "iris-lilypond.js", "iris-diagnostics.js",
-  "iris-bibliography-view.js",
+  "iris-bibliography-view.js", "iris-bibliography-form.js",
 ]
   .map((file) => fs.readFileSync(path.join(publicDir, file), "utf8"));
 uiScripts.unshift(app);
@@ -137,5 +137,16 @@ test("bibliography descriptors, native parser diagnostics and view states have b
   }
   for (const key of labels) {
     assert.ok(english[key], `Missing English ${key}`); assert.ok(italian[key], `Missing Italian ${key}`);
+  }
+});
+
+test("bibliography edit errors and form actions are translated in both locales", () => {
+  for (const suffix of ["add", "edit", "remove", "undo", "select", "form.add", "form.edit", "form.remove",
+    "form.conflict", "form.pending", "form.discard", "form.renameWarning", "form.removeWarning", "form.occurrence",
+    ...["invalidSource", "invalidOperation", "targetConflict", "fieldConflict", "invalidType", "invalidKey",
+      "duplicateKey", "invalidField", "readOnlyField", "unsafeValue", "intentMismatch"].map((code) => `diagnostics.bibliographyEdit.${code}`)]) {
+    const key = `bibliography.${suffix}`;
+    assert.ok(english[key], `Missing English ${key}`);
+    assert.ok(italian[key], `Missing Italian ${key}`);
   }
 });

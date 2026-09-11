@@ -192,6 +192,17 @@ test("bibliography tabs relate to mounted panels and columns use a native disclo
   assert.match(css, /\.bibliography-table-scroll\{[^}]*overflow:auto/);
 });
 
+test("bibliography form mounts labelled native dialog controls and a discard decision", () => {
+  assert.match(html, /id="bibliographyModal"/);
+  assert.match(html, /role="dialog"[^>]*aria-modal="true"[^>]*aria-labelledby="bibliographyFormTitle"/);
+  for (const id of ["bibliographyFormType", "bibliographyFormKey", "bibliographyFormNativeName"]) {
+    assert.match(html, new RegExp(`<label[^>]*for="${id}"`));
+  }
+  assert.match(html, /id="bibliographyFormError"[^>]*role="alert"/);
+  assert.match(html, /<details[^>]*id="bibliographyFormMore"/);
+  assert.match(html, /id="bibliographyFormDiscard"[^>]*role="alert"/);
+});
+
 test("file tree supports server refresh and font uploads sync immediately", () => {
   assert.match(html, /id="refreshTreeBtn"[^>]*data-i18n-title="sidebar\.refreshTree"/);
   assert.match(app, /function refreshFileTree\(\)/);

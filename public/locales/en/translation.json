@@ -1,5 +1,30 @@
 {
   "bibliography": {
+    "add": "Add",
+    "edit": "Edit",
+    "remove": "Remove",
+    "undo": "Undo",
+    "select": "Select reference {{number}}",
+    "form": {
+      "add": "Add reference",
+      "edit": "Edit reference",
+      "remove": "Remove reference",
+      "more": "Other fields",
+      "nativeName": "Native field name",
+      "addField": "Add field",
+      "fieldHint": "Use native names for custom fields or another occurrence. Dates and numbers remain text.",
+      "removeField": "Remove {{field}}",
+      "occurrence": "{{field}}, occurrence {{number}}",
+      "sourceOnly": "Complex expression: edit in source",
+      "removeEntry": "Remove {{key}}?\n{{title}}",
+      "renameWarning": "Changing this identifier does not update citations or cross-references. Update them in the source if needed.",
+      "removeWarning": "Removing this reference does not remove citations or cross-references. They may point to a missing entry. You can undo this removal in the table.",
+      "conflict": "This reference or its editing context has changed, or write access is unavailable. Your draft is retained. Close and reopen the reference to review the current source.",
+      "pending": "The current source is still being analyzed. Your draft is retained; try Apply again when analysis finishes.",
+      "discard": "Discard these changes? The source has not been modified by this draft.",
+      "keep": "Keep editing",
+      "discardConfirm": "Discard changes"
+    },
     "views": "Bibliography views",
     "table": "Table",
     "text": "Text",
@@ -45,6 +70,20 @@
       "url": "URL", "abstract": "Abstract", "keywords": "Keywords", "notes": "Notes"
     },
     "diagnostics": {
+      "bibliographyEdit": {
+        "invalidSource": "The current source cannot be edited as a bibliography. Correct its syntax in the source first.",
+        "invalidOperation": "This draft cannot be applied. Review the fields and try again.",
+        "targetConflict": "The reference changed while this dialog was open. Your draft is retained.",
+        "fieldConflict": "A field occurrence changed. Close and reopen the reference to review it.",
+        "invalidType": "Enter a valid reference type, not a reserved directive.",
+        "invalidKey": "The citation key contains characters that cannot be represented safely.",
+        "duplicateKey": "The citation key {{key}} is already in use.",
+        "invalidField": "Check the native field name and value. RIS TY and ER are reserved.",
+        "readOnlyField": "Complex expressions can only be changed in the source.",
+        "unsafeValue": "This value has unbalanced braces and cannot be applied safely. Correct it here or edit the source.",
+        "invalidText": "This value contains NUL or invalid Unicode and cannot be saved without loss. Correct it before applying.",
+        "intentMismatch": "The resulting source would not match this draft. No changes were applied."
+      },
       "bibtex": {
         "syntax": "Expected {{expected}}.",
         "unrecognized": "Unrecognized text outside a bibliography entry or directive.",
@@ -67,6 +106,7 @@
     }
   },
   "common": {
+    "apply": "Apply",
     "account": "Account",
     "cancel": "Cancel",
     "close": "Close",
