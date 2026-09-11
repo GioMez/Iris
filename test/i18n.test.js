@@ -14,6 +14,7 @@ const server = fs.readFileSync(path.join(root, "src/server.js"), "utf8");
 const uiScripts = [
   "iris-projects.js", "iris-builds.js", "iris-admin.js", "iris-admin-projects.js",
   "iris-admin-templates.js", "iris-auth.js", "iris-lilypond.js", "iris-diagnostics.js",
+  "iris-bibliography-view.js",
 ]
   .map((file) => fs.readFileSync(path.join(publicDir, file), "utf8"));
 uiScripts.unshift(app);
@@ -121,4 +122,20 @@ test("default and project language preferences remain separate", () => {
 test("stale locale loads can be discarded before they change the interface", () => {
   assert.match(runtime, /typeof options\.isCurrent === "function" && !options\.isCurrent\(\)/);
   assert.match(app, /isCurrent: \(\) => generation === state\.projectLoadGeneration/);
+});
+
+test("bibliography descriptors, native parser diagnostics and view states have both locales", () => {
+  const core = require("../public/iris-bibliography.js");
+  const labels = new Set(["bibliography.fields.key", "bibliography.fields.type"]);
+  for (const [format, types] of [["bib", ["article", "book", "inproceedings", "thesis", "report", "online"]],
+    ["ris", ["JOUR", "BOOK", "EDBOOK", "CHAP", "CONF", "THES", "RPRT", "ELEC"]]]) {
+    for (const type of types) for (const field of core.fieldsForType(format, type)) if (field.labelKey) labels.add(field.labelKey);
+  }
+  for (const code of ["bibtex.syntax", "bibtex.unrecognized", "bibtex.undefinedMacro", "bibtex.duplicateField",
+    "bibtex.missingKey", "bibtex.duplicateKey", "bibtex.missingMetadata", "ris.syntax", "ris.unrecognized", "ris.missingMetadata"]) {
+    labels.add(`bibliography.diagnostics.${code}`);
+  }
+  for (const key of labels) {
+    assert.ok(english[key], `Missing English ${key}`); assert.ok(italian[key], `Missing Italian ${key}`);
+  }
 });

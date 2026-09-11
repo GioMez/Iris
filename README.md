@@ -98,6 +98,41 @@ Each language accepts up to 200 commands, with at most 80 characters per name.
 Apply the lists and save the project to share them with collaborators; these
 settings also travel with project ZIP exports and imports.
 
+## Bibliography reading
+
+Open a UTF-8 BibTeX/BibLaTeX (`.bib`) or RIS (`.ris`) source to read its references
+in **Table** view. Iris also recognizes bibliography content in ordinary text
+files. **Text** reveals the same CodeMirror document for editing; switching views
+does not rewrite the file, discard undo history, or send collaboration updates.
+Each reference has a **Show source** action that selects its exact source range.
+
+Iris initially shows every populated field, including custom fields and fields
+outside the usual entry-type metadata. Use **Columns** to hide individual fields
+and **Show all** to recover them, even after hiding everything. Column choices
+last for the project/file in this browser session and do not enter project saves.
+Search includes hidden fields, and the column choices cover the entire file even
+while searching or changing pages. Iris sorts and searches before pagination:
+each page contains up to 100 references, with previous/next controls and totals.
+Narrow editor panels use cards instead of a horizontally scrolling table. Long
+values have keyboard-accessible disclosures with selectable full text.
+
+Validation checks complete syntax, not whether a citation is academically correct
+or accepted by a particular BibTeX/Biber style. Missing metadata, duplicates, and
+unknown macros can produce warnings without blocking the table. Iris retains
+native/custom fields, repeated RIS tags, directives, and raw expressions; it does
+not expand macros, execute LaTeX or HTML, fetch reference URLs, or convert formats.
+Edit references in **Text**; the reading view has no reference forms or CRUD controls.
+
+A local Worker validates the buffer after an edit debounce. Initial recognition
+while typing or pasting keeps the source visible and focused. An incomplete or
+malformed file has diagnostics and no partial table. Empty files, files containing
+only directives/comments, unrecognized text, and Worker failures have separate
+states; a Worker failure offers retry. Corrections enable Table without switching
+away from the source. Invalid UTF-8 or NUL-containing bibliography files show a
+read-only explanation outside parsing and saving, preserving their original bytes.
+Bibliography editing retains CRLF, bare CR, and UTF-16 coordinates used by realtime
+collaboration; Enter inserts LF without normalizing the rest of the document.
+
 ## Localization
 
 The browser interface loads i18next v4-compatible JSON catalogs from
@@ -1078,8 +1113,46 @@ For a production deployment, also:
 Run the test suite with:
 
 ```sh
-npm test
+npm test -- --test-timeout=30000
 ```
+
+Set `DB_PASSWORD` and `IRIS_SECRET` to non-default test-only values for tests that
+import the server, and `TEST_DATABASE_URL` to a disposable PostgreSQL database to
+run the database cases rather than skip them. Do not point tests at user storage
+or a production database. Apply a process deadline in addition to the per-test
+timeout (for example, 240 seconds for the full suite).
+
+### Bibliography browser gate
+
+The browser gate uses the exact development dependency `playwright-core` 1.63.0
+with installed Chrome. It does not download a browser. Set
+`IRIS_BROWSER_EXECUTABLE` if Chrome is not available through its installed channel.
+
+With the test database environment above, run:
+
+```sh
+IRIS_TEST_BROWSER=1 npm run test:bibliography:browser
+```
+
+This explicit opt-in starts the existing server fixture on an ephemeral loopback
+HTTP port, with an isolated database schema and temporary storage. The fixture
+does not load `.env`. Tests open the shipped app, CodeMirror modules and Worker;
+they supply in-memory API responses and close page WebSockets. Cleanup closes
+the browser/server, drops the schema, and removes fixture storage. An optional
+`IRIS_TEST_BASE_URL=http://127.0.0.1:PORT` uses an already-running disposable test
+server instead; the harness does not stop that server. Only loopback HTTP URLs
+are accepted. Neither mode should target a normal user instance.
+
+Set `IRIS_TEST_ARTIFACT_DIR` to an ignored local directory to capture desktop,
+390x844 mobile, and narrow-split screenshots. Tests cover columns, full-file
+filtering and pagination, native controls/focus, source selection/scroll/undo,
+raw-text OT, first recognition, and 10,000 references. Paste tests dispatch native
+`ClipboardEvent`/`DataTransfer` objects through CodeMirror's DOM boundary; they
+do not read or overwrite the OS clipboard and do not verify OS clipboard integration.
+Without either opt-in, the browser tests skip in `npm test`; that is not a passed
+browser gate. Enable `IRIS_TEST_BROWSER=1` for the full suite to run both gates
+together. Use a process deadline of at least 180 seconds for the standalone gate;
+each test and browser startup also has a timeout.
 
 Database migrations live in `db/migrations/` and are applied atomically at
 startup. Applied filenames and SHA-256 checksums are recorded in

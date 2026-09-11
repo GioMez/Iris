@@ -22,6 +22,7 @@
   // The active project's file tree. Populated by IrisApp.load() when the user
   // opens a project from the chooser screen (see iris-projects.js).
   let project = { name: "", nodes: [] };
+  let loadedProjectId = null;
 
   /* ---------------- state ---------------- */
   const state = {
@@ -93,7 +94,7 @@
   function isReadOnly() { return state.role === "viewer"; }
   function isFileUnavailable(id = state.activeId) { return state.unavailableFiles.has(id) || state.unavailableFiles.has(canonicalFileId(id)); }
   function applyEditorGate() {
-    ed().setReadOnly(isReadOnly() || isFileUnavailable() || window.IrisCollab.paused());
+    ed().setReadOnly(isReadOnly() || isFileUnavailable() || !!findFile(state.activeId)?.sourceError || window.IrisCollab.paused());
     const locked = isReadOnly() || window.IrisCollab.paused();
     ["completionTex", "completionLy", "completionApply"].forEach((id) => { $(id).disabled = locked; });
   }
@@ -144,6 +145,7 @@
     });
     renderTabs();
     if (!hasUnsavedChanges()) clearTimeout(persistT);
+    walk(project.nodes, (file) => canonicalFileId(file.id));
     syncRealtimeSession();
     return true;
   }
@@ -184,6 +186,43 @@
 
   /* ---------------- editor (see iris-editor.js for the adapter) ---------------- */
   const ed = () => window.IrisEditor;
+  let bibliographyView = null, bibliographyDocumentKey = null;
+  let bibliographyImagePreview = false;
+  const bibliographyHints = new Map();
+  function bibliographyKey(id) { return JSON.stringify([loadedProjectId, id]); }
+  function deactivateBibliography() {
+    bibliographyDocumentKey = null;
+    bibliographyView?.deactivate();
+  }
+  function refreshBibliography(editing = false) {
+    if (!bibliographyView) return;
+    const file = findFile(state.activeId);
+    const name = file?.path || file?.name || "";
+    if (bibliographyImagePreview || !file || file.sourceError || file.generated || file.readOnly ||
+      file.encoding === "base64" || file.data != null ||
+      (!["tex", "ly", "bib", "ris", "txt", "text"].includes(editorKind(file)) && !isTextUploadName(name) && file.encoding !== "utf8") ||
+      /\.(sty|cls|bst|bbx|cbx|lbx)$/i.test(name)) { deactivateBibliography(); return; }
+    const text = ed().snapshot().text;
+    if (text.includes("\0") || /^data:[^\r\n]*;base64,/.test(text)) { deactivateBibliography(); return; }
+    const key = bibliographyKey(canonicalFileId(file.id) || file.id);
+    const kind = editorKind(file), hint = window.IrisBibliography.candidate(text) ||
+      (["bib", "ris"].includes(kind) ? kind : bibliographyHints.get(key)) || null;
+    if (!hint && bibliographyDocumentKey !== key) { deactivateBibliography(); return; }
+    if (hint) bibliographyHints.set(key, hint);
+    bibliographyDocumentKey = key;
+    bibliographyView.activate({ documentKey: key, hint, editing });
+  }
+  function showSource(span = null, options, focus = true) {
+    setWorkspaceView("editor");
+    if (bibliographyImagePreview) { bibliographyImagePreview = false; refreshBibliography(); }
+    bibliographyView?.setMode("text");
+    if (span) ed().select(span.from, span.to, options);
+    if (focus) ed().focus();
+  }
+  function focusDocument() {
+    if (bibliographyImagePreview) return;
+    if (!bibliographyView?.focus()) ed().focus();
+  }
   function fileIcon(kind) {
     const icons = {
       tex: ["file-code-2", "tex"],
@@ -255,10 +294,12 @@
   // outline and the compiler, but the file is not marked dirty and no autosave is
   // scheduled. Without a session, the ordinary save path is unchanged.
   function wireEditorEvents() {
+    bibliographyView = window.IrisBibliographyView.create({ root: $("bibliographyPanel"), editor: ed(), t, onSource: showSource, actions: null });
     ed().onLoad(() => {
       // An authoritative reload may change main-file detection without an edit.
       const file = findFile(state.activeId);
-      if (file && file.kind !== "img") file.content = ed().getValue();
+      if (file && !file.sourceError && file.kind !== "img") file.content = ed().getValue();
+      refreshBibliography();
       updateCompletionContext();
       applyDiagnosticsToEditor();
       renderMainFileMarker();
@@ -266,6 +307,8 @@
     ed().onChange(() => {
       pendingDiagnostic = null;
       const f = findFile(state.activeId);
+      if (f?.sourceError) return;
+      refreshBibliography(true);
       const realtime = isRealtimeFile(state.activeId);
       if (f) {
         f.content = ed().getValue();
@@ -347,11 +390,15 @@
     if (isCanonicalFileId(id)) return id;
     if (state.canonicalFileIds.has(id)) return state.canonicalFileIds.get(id);
     const node = findFile(id);
-    const resolved = node && window.IrisProjects && window.IrisProjects.resolveFileId
+    const resolved = node && window.IrisProjects && window.IrisProjects.currentProjectId() === loadedProjectId && window.IrisProjects.resolveFileId
       ? window.IrisProjects.resolveFileId(node.path)
       : null;
     if (!isCanonicalFileId(resolved)) return null;
     state.canonicalFileIds.set(id, resolved);
+    const oldKey = bibliographyKey(id), newKey = bibliographyKey(resolved);
+    if (bibliographyHints.has(oldKey)) { bibliographyHints.set(newKey, bibliographyHints.get(oldKey)); bibliographyHints.delete(oldKey); }
+    bibliographyView?.rekey(oldKey, newKey);
+    if (bibliographyDocumentKey === oldKey) bibliographyDocumentKey = newKey;
     return resolved;
   }
   // Joins the room for the open file, or leaves realtime behind for a file that
@@ -360,7 +407,7 @@
     const node = findFile(state.activeId);
     // Joining loads server text; a save acknowledgement must not replace edits
     // made after its snapshot was captured.
-    if (!node || node.kind === "img" || node.generated || node.readOnly || isFileUnavailable(node.id) || state.dirtyFiles.has(node.id)) {
+    if (!node || node.sourceError || node.kind === "img" || node.generated || node.readOnly || isFileUnavailable(node.id) || state.dirtyFiles.has(node.id)) {
       window.IrisCollab.leave();
       renderSyncStatus();
       return;
@@ -371,7 +418,7 @@
       renderSyncStatus();
       return;
     }
-    window.IrisCollab.join(fileId, editorKind(node));
+    window.IrisCollab.join(fileId, editorLoadKind(node));
   }
   const SYNC_LABEL = {
     connecting: "collab.connecting",
@@ -937,11 +984,13 @@
     if (!f) return;
     if (f.generated || f.readOnly) { toast(t("tree.generatedFile"), "err"); return; }
     closeResponsiveSidebar();
-    if (f.kind === "img") { setWorkspaceView("preview"); previewImage(f); markTree(id); return; }
+    bibliographyImagePreview = f.kind === "img";
+    if (bibliographyImagePreview) { deactivateBibliography(); setWorkspaceView("preview"); previewImage(f); markTree(id); return; }
     setWorkspaceView("editor");
     state.activeId = id;
     if (!state.openTabs.includes(id)) state.openTabs.push(id);
-    ed().load(f.content || "", editorKind(f));
+    // The error surface is not source text and must never enter the file model.
+    ed().load(f.sourceError ? t(`api.${f.sourceError}`) : (f.content || ""), f.sourceError ? null : editorLoadKind(f));
     applyEditorGate();
     renderTabs();
     renderOutline();
@@ -952,7 +1001,7 @@
     // Joining replaces the document just loaded with the authoritative one; the
     // local content stands in until the server answers.
     syncRealtimeSession();
-    ed().focus();
+    focusDocument();
   }
 
   /* ---------------- file tree ---------------- */
@@ -968,6 +1017,7 @@
   function inferKind(name, prev) {
     if (prev === "img") return "img";
     if (/\.bib$/i.test(name)) return "bib";
+    if (/\.ris$/i.test(name)) return "ris";
     if (/\.(ly|ily)$/i.test(name)) return "ly";
     if (/\.(tex|txt|sty|cls|ltx)$/i.test(name)) return "tex";
     return prev || "tex";
@@ -976,6 +1026,11 @@
   // even when the storage manifest describes them as generic text files.
   function editorKind(file) {
     return inferKind(file.path || file.name || "", file.kind);
+  }
+  function editorLoadKind(file) {
+    // A remembered bibliography needs its raw-line policy before state creation,
+    // even after the user removed its header. This never changes the stored kind.
+    return bibliographyHints.get(bibliographyKey(canonicalFileId(file.id) || file.id)) || editorKind(file);
   }
   function hasSiblingNamed(parent, node, name) {
     return parent.some((x) => x !== node && x.name.toLowerCase() === name.toLowerCase());
@@ -1182,7 +1237,7 @@
     const id = "untitled_" + state.untitledN;
     const filePath = joinPath(dest.path, name);
     const kind = inferKind(name, isLilyPondProject() ? "ly" : "tex");
-    dest.nodes.push({ type: "file", id, name, kind, path: filePath, content: kind === "ly" ? NEWLY : newDocumentTemplate() });
+    dest.nodes.push({ type: "file", id, name, kind, path: filePath, content: kind === "bib" || kind === "ris" ? "" : (kind === "ly" ? NEWLY : newDocumentTemplate()) });
     closeNewItem();
     renderTree();
     openFile(id);
@@ -1249,6 +1304,7 @@
     renderTabs();
     renderOutline();
     refreshFontSettingsUi();
+    refreshBibliography();
     void persist();
     toast(t("tree.renamed", { name }));
   }
@@ -1465,6 +1521,7 @@
     if (!active || active.generated || active.readOnly) active = firstFile();
     if (active && (active.generated || active.readOnly)) active = null;
     state.activeId = active ? active.id : null;
+    bibliographyImagePreview = active?.kind === "img";
     applyEditorGate();
     if (state.activeId && !state.openTabs.includes(state.activeId)) state.openTabs.unshift(state.activeId);
     if (!folderNodeByPath(state.selectedFolder)) state.selectedFolder = "";
@@ -1474,10 +1531,11 @@
     if (!active) {
       clearEditorSelection();
     } else if (active.kind === "img") {
+      deactivateBibliography();
       previewImage(active);
       markTree(active.id);
     } else {
-      ed().load(active.content || "", editorKind(active));
+      ed().load(active.sourceError ? t(`api.${active.sourceError}`) : (active.content || ""), active.sourceError ? null : editorLoadKind(active));
       renderOutline();
       markTree(active.id);
       // Reloading the document leaves any realtime session behind, so it is
@@ -1582,8 +1640,7 @@
     const idx = Number.isInteger(item.offset) ? item.offset : value.indexOf("{" + item.title + "}");
     if (idx < 0) return;
     const start = Number.isInteger(item.offset) ? idx : value.lastIndexOf("\\", idx);
-    ed().focus();
-    ed().select(start, start, { align: "top", margin: 2 });
+    showSource({ from: start, to: start }, { align: "top", margin: 2 });
   }
 
   /* ---------------- PDF preview ---------------- */
@@ -1773,8 +1830,13 @@
   // disk — which may be newer, written by a collaborator. This is what stops two
   // people with the same project open from overwriting each other's files.
   function snapshotNodes(nodes) {
-    return (nodes || []).map((node) => {
+    return (nodes || []).map(({ sourceError, ...node }) => {
       if (node.type === "folder") return { ...node, children: snapshotNodes(node.children) };
+      if (sourceError) {
+        delete node.content;
+        delete node.data;
+        return node;
+      }
       const writable = !isFileUnavailable(node.id) && (state.dirtyFiles.has(node.id) || isRealtimeFile(node.id));
       if (writable || node.kind === "img" || node.data != null) return node;
       const { content, ...rest } = node;
@@ -1783,7 +1845,7 @@
   }
   function projectSnapshot() {
     const f = findFile(state.activeId);
-    if (f && (f.kind === "tex" || f.kind === "ly" || f.kind === "bib")) f.content = ed().getValue();
+    if (f && !f.sourceError && ["tex", "ly", "bib", "ris"].includes(editorKind(f))) f.content = ed().getValue();
     return JSON.parse(JSON.stringify({
       revision: state.projectRevision,
       project: { name: project.name, nodes: snapshotNodes(project.nodes) },
@@ -1928,6 +1990,11 @@
   // deleted, left, or replaced), which is also when the realtime session must go.
   function cancelPendingProjectLoad() {
     state.projectLoadGeneration += 1;
+    // A queued replacement can be refused. Keep the current view until load is
+    // accepted; close/logout clear currentId synchronously after this callback.
+    Promise.resolve().then(() => {
+      if (window.IrisProjects?.currentProjectId() !== loadedProjectId) deactivateBibliography();
+    });
     window.IrisCollab.disconnect();
     clearNewerBuild();
     renderSyncStatus();
@@ -1983,7 +2050,7 @@
     const { item } = pendingDiagnostic;
     if (item.loading) return;
     const range = window.IrisDiagnostics.lineRange(ed().getValue(), item.line);
-    if (range) { ed().select(range.from, range.to, { align: "top", margin: 3 }); ed().focus(); }
+    if (range) showSource(range, { align: "top", margin: 3 });
     if (ed().collaborative() || (range && !pendingDiagnostic.awaitAuthoritative)) pendingDiagnostic = null;
   }
   function renderDiagnostics() {
@@ -2400,6 +2467,7 @@
   function attachKind(name, isImg) {
     if (isImg) return "img";
     if (/\.bib$/i.test(name)) return "bib";
+    if (/\.ris$/i.test(name)) return "ris";
     if (/\.ly$/i.test(name)) return "ly";
     if (/\.(tex|txt)$/i.test(name)) return "tex";
     return "file";
@@ -2408,11 +2476,11 @@
   // a data URL because the dialog can preview it and the name can still change,
   // so the decision is made here, on the name the file is uploaded under.
   function isTextUploadName(name) {
-    return /\.(tex|ly|ily|bib|bst|bbx|cbx|lbx|txt|sty|cls|md|csv|dat|scm|lua|json|ya?ml|log|aux|bbl|blg|idx|ilg|ind|out|toc|xml|bcf|fls|fdb_latexmk)$/i.test(String(name || ""));
+    return /\.(tex|ly|ily|bib|ris|bst|bbx|cbx|lbx|txt|sty|cls|md|csv|dat|scm|lua|json|ya?ml|log|aux|bbl|blg|idx|ilg|ind|out|toc|xml|bcf|fls|fdb_latexmk)$/i.test(String(name || ""));
   }
-  // Bytes that are not valid UTF-8 keep the binary path: the editor could not
-  // represent them and decoding would replace them with U+FFFD for good.
-  function decodeTextUpload(dataUrl) {
+  // Invalid bibliography bytes throw; other formats return null and retain
+  // their binary fallback instead of decoding bytes to replacement text.
+  function decodeTextUpload(dataUrl, name) {
     const value = String(dataUrl || "");
     const comma = value.indexOf(",");
     if (comma < 0) return null;
@@ -2420,11 +2488,18 @@
     if (!/;\s*base64\s*$/i.test(value.slice(0, comma))) {
       try { return decodeURIComponent(payload); } catch { return null; }
     }
+    let bibliography = /\.(bib|ris)$/i.test(name || "");
     try {
       const binary = atob(payload);
       const bytes = Uint8Array.from(binary, (ch) => ch.charCodeAt(0));
+      const probe = new TextDecoder("utf-8", { ignoreBOM: true }).decode(bytes);
+      bibliography ||= !/\.(sty|cls|bst|bbx|cbx|lbx)$/i.test(name || "") && !!window.IrisBibliography.candidate(probe);
+      if (bibliography) return window.IrisBibliography.decodeUtf8(bytes);
       return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-    } catch { return null; }
+    } catch {
+      if (bibliography) throw new Error("BIBLIOGRAPHY_INVALID_ENCODING");
+      return null;
+    }
   }
   function uploadNameWithExtension(name, originalName) {
     const cleaned = (name || originalName || "").trim();
@@ -2442,7 +2517,13 @@
     const folder = folderChildrenByPath(dest);
     const kind = attachKind(name, af.isImg);
     const id = "file_" + Date.now();
-    const text = af.isImg || !isTextUploadName(name) ? null : decodeTextUpload(af.data);
+    let text;
+    try { text = af.isImg || !isTextUploadName(name) ? null : decodeTextUpload(af.data, name); }
+    catch { toast(t("api.BIBLIOGRAPHY_INVALID_ENCODING"), "err"); return; }
+    if ((kind === "bib" || kind === "ris") && text == null) {
+      toast(t("api.BIBLIOGRAPHY_INVALID_ENCODING"), "err");
+      return;
+    }
     if (text != null) {
       // A text source is attached as text and never as a data URL: it stays
       // editable, joins the version history, and every later save writes its
@@ -2683,18 +2764,36 @@
   }
   function openExternal(file) {
     const reader = new FileReader();
+    const kind = inferKind(file.name, isLilyPondProject() ? "ly" : "tex");
+    const bibliography = kind === "bib" || kind === "ris";
+    const style = /\.(sty|cls|bst|bbx|cbx|lbx)$/i.test(file.name);
+    let bytes;
     reader.onload = () => {
+      let content = reader.result;
+      if (typeof content !== "string") {
+        bytes = new Uint8Array(content);
+        content = new TextDecoder("utf-8", { ignoreBOM: true }).decode(bytes);
+        if (!bibliography && (style || !window.IrisBibliography.candidate(content))) {
+          reader.readAsText(file);
+          return;
+        }
+      }
+      // FileReader can recognize another BOM in its ordinary-text fallback.
+      // That result is also only a probe if it exposes a bibliography header.
+      if (bibliography || (!style && window.IrisBibliography.candidate(content))) {
+        try { content = window.IrisBibliography.decodeUtf8(bytes); }
+        catch { toast(t("api.BIBLIOGRAPHY_INVALID_ENCODING"), "err"); return; }
+      }
       const id = "open_" + Date.now();
-      const kind = inferKind(file.name, isLilyPondProject() ? "ly" : "tex");
-      project.nodes.push({ type: "file", id, name: file.name, kind, path: file.name, content: reader.result });
+      project.nodes.push({ type: "file", id, name: file.name, kind, path: file.name, content });
       renderTree(); openFile(id); markFileDirty(id); schedulePersist(); toast(t("editor.opened", { name: file.name }));
     };
-    reader.readAsText(file);
+    reader.readAsArrayBuffer(file);
   }
   function openExternalPicker() {
     const input = document.createElement("input");
     input.type = "file";
-    input.accept = ".tex,.ly,.ily,.bib,.txt";
+    input.accept = ".tex,.ly,.ily,.bib,.ris,.txt";
     input.onchange = () => input.files[0] && openExternal(input.files[0]);
     input.click();
   }
@@ -3203,6 +3302,7 @@
   /* ---------------- find / replace ---------------- */
   const fState = { matches: [], idx: 0, caseSensitive: false };
   function findOpen(focusReplace) {
+    showSource();
     $("findBar").classList.add("on");
     const sel = ed().selection().text;
     if (sel && !sel.includes("\n")) $("findInput").value = sel;
@@ -3249,7 +3349,7 @@
   function findSelect() {
     const n = fState.matches.length; if (!n) return;
     const q = $("findInput").value, start = fState.matches[fState.idx];
-    ed().select(start, start + q.length);
+    showSource({ from: start, to: start + q.length }, undefined, false);
     updateFindCount();
     findHighlight();
   }
@@ -3515,7 +3615,7 @@
         // restored text to every participant, this tab included, so replacing the
         // document here would drop it out of the session.
         if (node.id === state.activeId && !isRealtimeFile(node.id)) {
-          ed().load(out.content, editorKind(node));
+          ed().load(out.content, editorLoadKind(node));
           renderOutline();
         }
       }
@@ -3630,6 +3730,9 @@
         toast(t("tree.refreshChanged"), "err");
         return false;
       }
+      deactivateBibliography();
+      bibliographyImagePreview = false;
+      loadedProjectId = data.id || `local:${generation}`;
       state.projectLanguage = projectLanguage;
       project = (data.project && data.project.nodes) ? data.project : { name: data.name || "", nodes: [] };
       state.projectType = inferProjectType(data);
@@ -3713,7 +3816,7 @@
     serialize() {
       return projectSnapshot();
     },
-    hasUnsavedChanges, capturePersistence, acknowledgePersistence,
+    hasUnsavedChanges, capturePersistence, acknowledgePersistence, focusDocument,
     waitForPersistence,
     persistChanges() { return persist(); },
     setName(name, revision, previousName = project.name) {
@@ -3758,6 +3861,7 @@
 
   /* ---------------- boot ---------------- */
   function refreshLocalizedUi() {
+    bibliographyView?.refresh();
     updateProjectTypeUi();
     renderCursorStatus();
     setWordWrap(state.wordWrap);

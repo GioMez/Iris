@@ -267,6 +267,19 @@ test("resetting a document forces connected clients to resync", () => {
   assert.equal(a.state.doc.toString(), "restored");
 });
 
+test("bibliographic authority retains raw CRLF and UTF-16 coordinates on seed and reset", { timeout: 2000 }, () => {
+  const source = "@book{a,\r\n title={A\u{1f600}B}\r\n}\r\n";
+  const room = makeRoom(source, { path: "refs.bib" });
+  assert.equal(room.text(), source);
+  assert.equal(room.doc.length, source.length);
+  assert.equal(room.doc.line(2).from, 10);
+  assert.equal(room.doc.sliceString(21, 22), "B");
+  room.reset("TY  - BOOK\r\nTI  - \u{1f600}\r\nER  - \r\n");
+  assert.equal(room.text(), "TY  - BOOK\r\nTI  - \u{1f600}\r\nER  - \r\n");
+  assert.equal(room.doc.line(2).from, 12);
+  assert.equal(room.since(0), null);
+});
+
 test("persistence and revision bookkeeping follow the accepted version", () => {
   const room = makeRoom("a");
   assert.equal(room.needsPersist(), false);

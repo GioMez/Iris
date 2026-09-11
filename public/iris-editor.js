@@ -4,8 +4,11 @@
 // and served from /vendor/codemirror.
 //
 // Contract:
-//   load(content, kind)        fresh document, no change event ("ly"|"tex"|null)
+//   load(content, kind)        fresh document, no change event ("ly"|"tex"|"bib"|"ris"|null)
 //   getValue()                 current document text
+//   snapshot()                 { revision, text }, monotone across edits/reloads
+//   setLanguage(kind)          reconfigure syntax without replacing the document
+//   requestMeasure()           remeasure after a pane visibility/size change
 //   applyText(text)            whole-document edit (formatter), applied granularly
 //   replaceRange(from, to, s)  ranged edit (find & replace)
 //   selection()                { from, to, text, anchor, head }
@@ -21,6 +24,7 @@
 // Events: onChange(fn) after any edit;
 //         onCursor(fn) with { line, column, fromLine, toLine, head, from, to }.
 (function () {
+  /** @typedef {{revision: number, text: string}} Snapshot */
   const LINE_H = 21;
   // Spaces that read as an ordinary gap and are not one. CodeMirror wants a
   // global regex to scan lines with; the membership test needs a separate
@@ -31,6 +35,7 @@
   const codePointLabel = (code) => `U+${code.toString(16).toUpperCase().padStart(4, "0")}`;
   const handlers = { change: [], cursor: [], sync: [], peers: [], load: [] };
   let impl = null;
+  let revision = 0;
 
   function emit(type, payload) {
     handlers[type].forEach((fn) => {
@@ -65,7 +70,8 @@
 
     // Custom tags mapped straight onto the existing t-* token classes so the
     // stylesheet keeps a single source of truth for the syntax palette.
-    const tokenClasses = { cmd: "t-cmd", env: "t-env", brace: "t-brace", math: "t-math", comment: "t-comment", special: "t-special" };
+    const tokenClasses = { cmd: "t-cmd", env: "t-env", brace: "t-brace", math: "t-math", comment: "t-comment", special: "t-special",
+      entryType: "t-cmd", key: "t-env", field: "t-special", value: "t-math" };
     const tokenTable = {};
     const styleSpecs = [];
     Object.keys(tokenClasses).forEach((name) => {
@@ -76,18 +82,22 @@
     const diagnostics = window.IrisDiagnostics.createGutter(S, V);
 
     const streamDefinition = (spec) => L.StreamLanguage.define({
-      startState: spec.startState,
-      copyState: spec.copyState,
-      token: spec.token,
       languageData: { commentTokens: { line: "%" } },
+      ...spec,
       tokenTable,
     });
     const languages = {
       tex: streamDefinition(window.IrisLatex.stream),
       ly: streamDefinition(window.IrisLilyPond.stream),
+      bib: streamDefinition(window.IrisBibtex.stream),
+      ris: streamDefinition(window.IrisRis.stream),
     };
 
     const flags = { wordWrap: false, autoIndent: true, readOnly: false, kind: null };
+    // A document policy, not a language preference. A resync retains it even
+    // when editing has removed the header that originally identified a .txt.
+    let rawLines = false;
+    const lineSeparatorCompartment = new S.Compartment();
     let completionContext = {};
     let completionTitle = "";
     const completionPhrases = new S.Compartment();
@@ -202,7 +212,7 @@
         const lineTo = nextLine < 0 ? value.length : nextLine;
         const block = flags.kind === "tex" || flags.kind === "ly" ? language.blockAtEnter(value, range.from) : null;
         const lead = flags.autoIndent ? line.text.match(/^[\t ]*/)[0] : "";
-        let insert = flags.autoIndent ? language.indentOnEnter(value, range.from, block) : "\n";
+        let insert = flags.autoIndent && flags.kind !== "ris" ? language.indentOnEnter(value, range.from, block) : "\n";
         const caret = range.from + insert.length;
         let to = range.to;
         if (range.empty && block) {
@@ -462,6 +472,7 @@
     let rulerRanges = [];
 
     const listener = V.EditorView.updateListener.of((update) => {
+      if (update.docChanged) revision++;
       if (rulerRanges.length && (update.docChanged || update.geometryChanged)) {
         if (update.docChanged) {
           rulerRanges = rulerRanges.map((range) => ({
@@ -511,6 +522,25 @@
       return S.EditorState.create({
         doc: content,
         extensions: [
+          // The authority splits on LF. Retained CRs keep raw UTF-16 offsets in
+          // agreement for initial text, string edits and CodeMirror's paste path.
+          lineSeparatorCompartment.of(rawLines ? S.EditorState.lineSeparator.of("\n") : []),
+          V.EditorView.domEventHandlers({
+            paste(event, view) {
+              if (!rawLines && !view.state.readOnly && event.clipboardData) {
+                const text = event.clipboardData.getData("text/plain") || event.clipboardData.getData("text/uri-list");
+                const { from, to } = view.state.selection.main;
+                const next = view.state.sliceDoc(0, from) + text + view.state.sliceDoc(to);
+                if (window.IrisBibliography.candidate(next)) {
+                  // Recognize before CM converts the paste string to Text, not
+                  // after onChange has already lost its CRs. Keep CM's handler.
+                  rawLines = true;
+                  view.dispatch({ effects: lineSeparatorCompartment.reconfigure(S.EditorState.lineSeparator.of("\n")) });
+                }
+              }
+              return false;
+            },
+          }),
           // Without this CodeMirror resolves its own defaults as a light
           // theme: the drawn selection came out lavender over a dark editor.
           V.EditorView.darkTheme.of(true),
@@ -559,7 +589,7 @@
           bracketInput,
           braceMarkers,
           V.keymap.of(editorKeymap),
-          languageCompartment.of(flags.kind === "ly" ? languages.ly : languages.tex),
+          languageCompartment.of(languages[flags.kind] || []),
           irisHighlight,
           L.indentUnit.of("  "),
           wrapCompartment.of(flags.wordWrap ? V.EditorView.lineWrapping : []),
@@ -649,11 +679,22 @@
       focusTarget() { return view.contentDOM; },
       ownsTarget(node) { return host.contains(node); },
       getValue() { return view.state.doc.toString(); },
+      /** @returns {Snapshot} */
+      snapshot() { return { revision, text: view.state.doc.toString() }; },
+      setLanguage(kind) {
+        if (flags.kind !== kind) A.closeCompletion(view);
+        flags.kind = kind;
+        view.dispatch({ effects: languageCompartment.reconfigure(languages[kind] || []) });
+      },
+      requestMeasure() { view.requestMeasure(); },
       load(content, kind) {
-        flags.kind = kind || null;
+        const candidate = window.IrisBibliography.candidate(content || "", kind);
+        rawLines = !!candidate;
+        flags.kind = candidate || kind || null;
         suppressEvents = true;
         try {
           view.setState(makeState(content || ""));
+          revision++;
         } finally {
           suppressEvents = false;
         }
@@ -665,12 +706,15 @@
       // its edits flow through the OT update stream. Used on join and whenever
       // the server sends a full resync.
       loadCollab(content, kind, { version }) {
-        flags.kind = kind || null;
+        const candidate = window.IrisBibliography.candidate(content || "", kind);
+        rawLines = rawLines || !!candidate;
+        flags.kind = candidate || kind || null;
         const wasFocused = view.hasFocus;
         const previous = view.state.selection.main;
         suppressEvents = true;
         try {
           view.setState(makeState(content || "", Number(version) || 0));
+          revision++;
         } finally {
           suppressEvents = false;
         }
@@ -855,6 +899,7 @@
     focusTarget() { return impl ? impl.focusTarget() : null; },
     ownsTarget(node) { return impl ? impl.ownsTarget(node) : false; },
     getValue() { return impl ? impl.getValue() : ""; },
+    snapshot() { return impl ? impl.snapshot() : { revision, text: "" }; },
     selection() { return impl ? impl.selection() : { from: 0, to: 0, text: "", anchor: 0, head: 0 }; },
     collaborative() { return impl ? impl.collaborative() : false; },
     collabVersion() { return impl ? impl.collabVersion() : 0; },
@@ -864,7 +909,7 @@
   };
   // Every mutating call is a no-op until the modules resolve, and stays one if
   // they never do, so the rest of the app needs no readiness checks.
-  ["focus", "load", "loadCollab", "applyText", "replaceRange", "select", "setWordWrap", "setAutoIndent", "setReadOnly", "highlightMatches", "collabReceive", "setPeers", "setSharedRegion", "setDiagnostics", "setCompletionContext"].forEach((method) => {
+  ["focus", "load", "loadCollab", "applyText", "replaceRange", "select", "setWordWrap", "setAutoIndent", "setReadOnly", "highlightMatches", "collabReceive", "setPeers", "setSharedRegion", "setDiagnostics", "setCompletionContext", "setLanguage", "requestMeasure"].forEach((method) => {
     api[method] = (...args) => { if (impl) impl[method](...args); };
   });
   // Resolves either way: the app still boots (tree, preview, builds, history)

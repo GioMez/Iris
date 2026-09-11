@@ -96,5 +96,8 @@ test("the editor adapter loads after the syntax modules and before the app", () 
   // The adapter reads window.IrisLatex/IrisLilyPond when it builds the languages.
   assert.ok(position("iris-latex.js") < position("iris-editor.js"));
   assert.ok(position("iris-lilypond.js") < position("iris-editor.js"));
+  for (const module of ["iris-bibtex.js", "iris-ris.js", "iris-bibliography.js"]) {
+    assert.ok(position(module) < position("iris-editor.js"));
+  }
   assert.ok(position("iris-editor.js") < position("iris-app.js"));
 });

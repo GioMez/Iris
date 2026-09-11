@@ -1,4 +1,71 @@
 {
+  "bibliography": {
+    "views": "Bibliography views",
+    "table": "Table",
+    "text": "Text",
+    "references": "References",
+    "reference": "Reference {{number}}",
+    "searchAll": "Search all fields, including hidden columns",
+    "sort": "Sort",
+    "sourceOrder": "Source order",
+    "sortAscending": "{{field}}: ascending",
+    "sortDescending": "{{field}}: descending",
+    "columns": "Columns",
+    "showAll": "Show all",
+    "showSource": "Show source",
+    "retry": "Retry analysis",
+    "analyzing": "Analyzing bibliography...",
+    "parseFailed": "Bibliography analysis is unavailable. The source is still accessible; this is not a file validation error.",
+    "invalid": "The bibliography has a syntax error. Correct it in the source to enable the table.",
+    "unrecognized": "This content is not a recognized bibliography. Read or edit it as text.",
+    "empty": "Empty bibliography.",
+    "noReferences": "No references. Bibliography comments or directives are preserved in the source.",
+    "noResults": "No search results.",
+    "allHidden": "All columns are hidden. Use Columns or Show all to restore them.",
+    "noValue": "No value",
+    "fullValue": "Read full value: {{field}}",
+    "total": "{{from}}-{{to}} of {{results}}; {{references}} in the file",
+    "resultCount_one": "{{count}} result",
+    "resultCount_other": "{{count}} results",
+    "referenceCount_one": "{{count}} reference",
+    "referenceCount_other": "{{count}} references",
+    "previous": "Previous page",
+    "next": "Next page",
+    "diagnosticCount": "Diagnostics on this page: {{count}} of {{total}} in the file",
+    "error": "Syntax error",
+    "warning": "Warning",
+    "fields": {
+      "key": "Citation key", "id": "Reference ID", "type": "Type", "authors": "Authors", "editors": "Editors",
+      "title": "Title", "year": "Year", "yearDate": "Year/date", "date": "Date", "journal": "Journal",
+      "volume": "Volume", "number": "Number", "issue": "Issue", "pages": "Pages", "endPage": "End page",
+      "articleId": "Article identifier", "bookTitle": "Book/proceedings title", "publisher": "Publisher",
+      "location": "Place", "edition": "Edition", "series": "Series", "isbn": "ISBN", "issn": "ISSN",
+      "institution": "Institution", "workType": "Thesis/report type", "eventTitle": "Event", "eventDate": "Event date",
+      "eventLocation": "Event venue", "organization": "Organization", "accessDate": "Access date", "doi": "DOI",
+      "url": "URL", "abstract": "Abstract", "keywords": "Keywords", "notes": "Notes"
+    },
+    "diagnostics": {
+      "bibtex": {
+        "syntax": "Expected {{expected}}.",
+        "unrecognized": "Unrecognized text outside a bibliography entry or directive.",
+        "undefinedMacro": "Unresolved string macro: {{name}}. Its source expression is preserved.",
+        "duplicateField": "Repeated field: {{name}}. All occurrences are preserved.",
+        "missingKey": "Missing citation key.",
+        "duplicateKey": "Repeated citation key: {{key}}.",
+        "missingMetadata": "Missing metadata: {{fields}}. This warning does not invalidate the reference."
+      },
+      "ris": {
+        "syntax": "Expected {{expected}}.",
+        "unrecognized": "Unrecognized text outside a RIS record.",
+        "missingMetadata": "Missing metadata: {{fields}}. This warning does not invalidate the reference."
+      }
+    },
+    "expected": {
+      "value": "a value", "field-name": "a field name", "entry-type": "an entry type",
+      "tag": "a RIS tag (two characters, two spaces and a hyphen)", "record-type": "a record type",
+      "empty-ER": "an ER terminator with no value", "{ or (": "{ or (", ", or }": ", or }", ", or )": ", or )"
+    }
+  },
   "common": {
     "account": "Account",
     "cancel": "Cancel",
@@ -765,6 +832,7 @@
     "unitMegabytes": "{{value}} MiB"
   },
   "api": {
+    "BIBLIOGRAPHY_INVALID_ENCODING": "This bibliography is not valid UTF-8 text. Its original bytes are preserved; convert a copy to UTF-8 before editing.",
     "CUSTOM_COMMANDS_INVALID": "Invalid custom commands for {{language}} at line {{line}}. Use command names only, at most 200 per language and 80 characters per name.",
     "AUTH_REQUIRED_FIELDS": "Enter your username and password.",
     "AUTH_SSO_ACCOUNT": "This account uses SSO. Sign in with the SSO button.",

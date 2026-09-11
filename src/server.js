@@ -40,6 +40,7 @@ const {
 const { createZip, extractZip } = require("./zip");
 const { parseCompileLog, compileDiagnosticsView } = require("./compile-diagnostics");
 const { normalizeCustomCommands } = require("../public/iris-completion");
+const Bibliography = require("../public/iris-bibliography");
 const {
   buildStoragePath,
   publishCompileOutput,
@@ -990,7 +991,7 @@ function dataUrlMime(value) {
 
 function mimeForProjectFile(filePath) {
   const ext = path.extname(filePath).toLowerCase();
-  if ([".tex", ".ly", ".ily", ".bib", ".bst", ".bbx", ".cbx", ".lbx", ".txt", ".sty", ".cls", ".md", ".log", ".aux", ".bbl", ".blg", ".idx", ".ilg", ".ind", ".out", ".toc", ".bcf", ".fls", ".fdb_latexmk"].includes(ext)) return "text/plain; charset=utf-8";
+  if ([".tex", ".ly", ".ily", ".bib", ".ris", ".bst", ".bbx", ".cbx", ".lbx", ".txt", ".sty", ".cls", ".md", ".log", ".aux", ".bbl", ".blg", ".idx", ".ilg", ".ind", ".out", ".toc", ".bcf", ".fls", ".fdb_latexmk"].includes(ext)) return "text/plain; charset=utf-8";
   if (ext === ".xml") return "application/xml; charset=utf-8";
   if (ext === ".png") return "image/png";
   if (ext === ".jpg" || ext === ".jpeg") return "image/jpeg";
@@ -1070,6 +1071,7 @@ function fileKindForPath(filePath) {
   if (/\.tex$/i.test(filePath)) return "tex";
   if (/\.ly$/i.test(filePath)) return "ly";
   if (/\.bib$/i.test(filePath)) return "bib";
+  if (/\.ris$/i.test(filePath)) return "ris";
   if (/\.(png|jpe?g|gif|webp|svg)$/i.test(filePath)) return "img";
   if (/\.(pdf|ps|eps|aux|bbl|bcf|blg|idx|ilg|ind|log|out|toc|run\.xml|fls|fdb_latexmk)$/i.test(filePath)) return "artifact";
   return "file";
@@ -1079,7 +1081,16 @@ function fileKindForPath(filePath) {
 // like any other source: a project that carries its own style keeps it editable
 // and versioned instead of stored as an opaque payload.
 function fileIsTextPath(filePath) {
-  return /\.(tex|ly|ily|bib|bst|bbx|cbx|lbx|txt|sty|cls|md|csv|dat|scm|lua|json|ya?ml|log|aux|bbl|blg|idx|ilg|ind|out|toc|xml|bcf|fls|fdb_latexmk)$/i.test(filePath || "");
+  return /\.(tex|ly|ily|bib|ris|bst|bbx|cbx|lbx|txt|sty|cls|md|csv|dat|scm|lua|json|ya?ml|log|aux|bbl|blg|idx|ilg|ind|out|toc|xml|bcf|fls|fdb_latexmk)$/i.test(filePath || "");
+}
+
+function decodeProjectText(bytes, filePath) {
+  const probe = bytes.toString("utf8");
+  if (/\.(bib|ris)$/i.test(filePath) || (!/\.(sty|cls|bst|bbx|cbx|lbx)$/i.test(filePath) && Bibliography.candidate(probe))) {
+    try { return Bibliography.decodeUtf8(bytes); }
+    catch { throw requestError("BIBLIOGRAPHY_INVALID_ENCODING", 422, { path: filePath }); }
+  }
+  return probe;
 }
 
 function generatedIdFor(relPath) {
@@ -1120,6 +1131,7 @@ function stripFilePayloads(data) {
         }
         delete node.content;
         delete node.data;
+        delete node.sourceError;
       }
     });
   };
@@ -1210,8 +1222,18 @@ async function hydrateProjectPayloads(storagePath, data) {
         const buffer = await fs.readFile(path.join(storagePath, rel)).catch(() => null);
         if (buffer) node.data = `data:${mimeForProjectFile(rel)};base64,${buffer.toString("base64")}`;
       } else if (node.content == null) {
-        const content = await fs.readFile(path.join(storagePath, rel), "utf8").catch(() => null);
-        if (content != null) node.content = content;
+        const bytes = await fs.readFile(path.join(storagePath, rel)).catch(() => null);
+        if (bytes != null) {
+          try {
+            node.content = decodeProjectText(bytes, rel);
+            delete node.sourceError;
+          } catch (err) {
+            if (err.errorCode !== "BIBLIOGRAPHY_INVALID_ENCODING") throw err;
+            delete node.content;
+            node.sourceError = err.errorCode;
+            node.data = `data:${mimeForProjectFile(rel)};base64,${bytes.toString("base64")}`;
+          }
+        }
       }
     }
   };
@@ -1284,7 +1306,12 @@ async function buildFsNode(storagePath, relPath, entry, generated, textHint = fa
   if (!generated) {
     if (textHint || fileIsTextPath(relPath)) {
       node.encoding = "utf8";
-      node.content = await fs.readFile(abs, "utf8").catch((err) => { if (strictRead) throw err; return ""; });
+      const bytes = await fs.readFile(abs).catch((err) => { if (strictRead) throw err; return Buffer.alloc(0); });
+      try { node.content = decodeProjectText(bytes, relPath); }
+      catch (err) {
+        if (err.errorCode !== "BIBLIOGRAPHY_INVALID_ENCODING") throw err;
+        node.sourceError = err.errorCode;
+      }
     }
     else {
       const buf = await fs.readFile(abs).catch((err) => { if (strictRead) throw err; return null; });
@@ -1351,7 +1378,7 @@ async function syncNodesWithFilesystem(storagePath, data, strictRead = false) {
       } else {
         const textHint = node.encoding === "utf8" || (node.content != null && !fileIsBinaryNode(node));
         const hydrated = await buildFsNode(storagePath, rel, entry, false, textHint, strictRead);
-        synced.push({
+        const merged = {
           ...hydrated,
           ...node,
           kind: hydrated.kind,
@@ -1362,7 +1389,10 @@ async function syncNodesWithFilesystem(storagePath, data, strictRead = false) {
           // come from the file rather than from what the client believed.
           encoding: hydrated.encoding,
           binary: hydrated.binary,
-        });
+          sourceError: hydrated.sourceError,
+        };
+        if (merged.sourceError) delete merged.content;
+        synced.push(merged);
       }
     }
 
@@ -1407,6 +1437,9 @@ async function readProjectFile(storagePath, { strictRead = false } = {}) {
       }
       const rel = nodeRelPath(node, node.name, parentPath);
       const abs = path.join(storagePath, rel);
+      // The filesystem reconciliation below reads bibliography bytes fatally.
+      // Do not first hydrate these sources with a replacement-text decoder.
+      if (/\.(bib|ris)$/i.test(rel)) continue;
       if (fileIsBinaryNode(node)) {
         const buf = await fs.readFile(abs).catch((err) => { if (strictRead && err.code !== "ENOENT") throw err; return null; });
         if (buf) {
@@ -1418,8 +1451,15 @@ async function readProjectFile(storagePath, { strictRead = false } = {}) {
           data.assets[rel] = node.data;
         }
       } else {
-        const content = await fs.readFile(abs, "utf8").catch((err) => { if (strictRead && err.code !== "ENOENT") throw err; return null; });
-        if (content != null) node.content = content;
+        const bytes = await fs.readFile(abs).catch((err) => { if (strictRead && err.code !== "ENOENT") throw err; return null; });
+        if (bytes != null) {
+          try { node.content = decodeProjectText(bytes, rel); }
+          catch (err) {
+            if (err.errorCode !== "BIBLIOGRAPHY_INVALID_ENCODING") throw err;
+            delete node.content;
+            node.sourceError = err.errorCode;
+          }
+        }
         else if (!legacy) node.content = "";
       }
     }
@@ -2003,8 +2043,10 @@ async function snapshotFileIfChanged({ storageDir, file, user, reason, authorita
     if (strictRead || (authoritative && err.code !== "ENOENT")) throw err;
     return null;
   });
-  if (!isVersionableText(buffer, file.kind)) return null;
-  const content = buffer.toString("utf8");
+  const versionable = isVersionableText(buffer, file.kind);
+  if (!buffer || (!versionable && !fileIsTextPath(file.path))) return null;
+  const content = decodeProjectText(buffer, file.path);
+  if (!versionable) return null;
   // A compile revision must reproduce the input bytes, not replacement text.
   if (strictRead && !Buffer.from(content, "utf8").equals(buffer)) return null;
   const previous = await latestVersion(file.id, queryable);
@@ -2344,6 +2386,14 @@ async function collabJoin(session, fileId) {
   if (!project) throw new CollabError("COLLAB_FILE_NOT_FOUND");
   if (file.kind === "img" || file.kind === "font") throw new CollabError("COLLAB_NOT_TEXT");
 
+  const readSource = async (filePath) => {
+    const bytes = await fs.readFile(path.join(project.storageDir, filePath));
+    try { return decodeProjectText(bytes, filePath); }
+    catch (err) {
+      if (err.errorCode === "BIBLIOGRAPHY_INVALID_ENCODING") throw new CollabError(err.errorCode);
+      throw err;
+    }
+  };
   let existing;
   let content;
   let roomGeneration;
@@ -2355,7 +2405,7 @@ async function collabJoin(session, fileId) {
       if (!current) throw new CollabError("COLLAB_FILE_NOT_FOUND");
       roomGeneration = collabRooms.generation;
       existing = collabRooms.get(fileId);
-      content = existing ? null : await fs.readFile(path.join(project.storageDir, current.path), "utf8");
+      content = existing ? null : await readSource(current.path);
       return current;
     });
     let generation;
@@ -2374,7 +2424,7 @@ async function collabJoin(session, fileId) {
       if (!collabActive(session) || generation !== collabAccessGeneration || roomGeneration !== collabRooms.generation ||
           current.revision !== snapshot.revision || current.path !== snapshot.path) return null;
       // Content-only restores do not advance the browser tree revision.
-      if (!existing) content = await fs.readFile(path.join(project.storageDir, current.path), "utf8");
+      if (!existing) content = await readSource(current.path);
       if (!collabActive(session) || generation !== collabAccessGeneration || roomGeneration !== collabRooms.generation) return null;
       const room = collabRooms.open({ fileId, projectId: file.project_id, path: current.path, content: existing ? existing.text() : content });
       room.storageDir = project.storageDir;

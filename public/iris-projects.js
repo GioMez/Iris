@@ -338,7 +338,10 @@
         syncShareTrigger(data.role);
         window.IrisMotion.setActiveSurface("app");
         window.IrisMotion.openProject();
-        setTimeout(() => window.IrisEditor.focus(), 0);
+        const focused = document.activeElement;
+        setTimeout(() => {
+          if (isCurrent() && currentId === id && document.activeElement === focused) window.IrisApp.focusDocument();
+        }, 0);
         if (window.IrisBuilds) void window.IrisBuilds.loadLatest(id);
       } catch (err) {
         if (!isCurrent()) return false;

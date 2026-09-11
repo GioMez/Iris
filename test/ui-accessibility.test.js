@@ -178,6 +178,20 @@ test("file history preview and changes are tabs of the content panel", () => {
   assert.match(css, /\.ver-viewswitch button\.on\{[^}]*border-bottom-color:var\(--accent\)/);
 });
 
+test("bibliography tabs relate to mounted panels and columns use a native disclosure", () => {
+  assert.match(html, /id="bibliographyTabs"[^>]*role="tablist"/);
+  for (const [name, selected] of [["Table", "true"], ["Text", "false"]]) {
+    assert.match(html, new RegExp(`id="bibliography${name}Tab"[^>]*role="tab"[^>]*aria-controls="bibliography${name}Panel"[^>]*aria-selected="${selected}"`));
+  }
+  assert.match(html, /id="bibliographyTablePanel"[^>]*role="tabpanel"[^>]*aria-labelledby="bibliographyTableTab"/);
+  assert.match(html, /<details[^>]*id="bibliographyColumnPicker"[\s\S]*?<summary[^>]*id="bibliographyColumnsLabel"/);
+  assert.match(html, /<label[^>]*for="bibliographyQuery"/);
+  assert.match(html, /<table[^>]*id="bibliographyTable"/);
+  assert.match(css, /container-type:inline-size/);
+  assert.match(css, /@container bibliography \(max-width:700px\)/);
+  assert.match(css, /\.bibliography-table-scroll\{[^}]*overflow:auto/);
+});
+
 test("file tree supports server refresh and font uploads sync immediately", () => {
   assert.match(html, /id="refreshTreeBtn"[^>]*data-i18n-title="sidebar\.refreshTree"/);
   assert.match(app, /function refreshFileTree\(\)/);

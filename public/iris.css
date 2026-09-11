@@ -272,6 +272,59 @@ button{font-family:inherit;color:inherit}
 .mini.icononly{width:32px;padding:0;justify-content:center}
 
 .editor{position:relative;flex:1;min-height:0;overflow:hidden;display:flex}
+.editor[hidden],.bibliography-panel[hidden],.bibliography-panel [hidden]{display:none!important}
+.bibliography-panel{display:flex;flex-direction:column;flex:1;min-height:0;min-width:0;overflow:hidden;container-name:bibliography;container-type:inline-size;font-size:13px}
+.bibliography-panel.is-text{flex:0 1 auto;max-height:45%}
+.bibliography-panel .ver-viewswitch{border-top:0}
+.bibliography-panel [aria-disabled="true"]{color:var(--txt-mut)}
+.bibliography-notice{padding:8px 12px;border-bottom:1px solid var(--border);overflow:auto;flex:0 1 auto;max-height:30vh}
+.bibliography-notice p{margin:0 0 8px;white-space:pre-wrap}
+.bibliography-notice details{margin-top:8px}
+.bibliography-notice ul{padding-left:20px;margin:8px 0}
+.bibliography-diagnostic .btn{height:auto;white-space:normal;text-align:left;overflow-wrap:anywhere}
+.bibliography-diagnostic{margin:5px 0}
+.bibliography-diagnostic.warning{color:var(--semantic-warning)}
+.bibliography-diagnostic.error{color:var(--semantic-danger)}
+.bibliography-panel summary{cursor:pointer;padding:8px 0;min-height:36px}
+#bibliographyTablePanel{display:flex;flex-direction:column;min-height:0;flex:1}
+.bibliography-tools{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;padding:12px;border-bottom:1px solid var(--border);flex:0 1 auto;overflow:auto;max-height:40%}
+.bibliography-tools>div{min-width:0;flex:1 1 170px}
+.bibliography-tools label{display:block;margin-bottom:5px;color:var(--txt-dim)}
+.bibliography-tools .input,.bibliography-tools .select{width:100%;min-width:0}
+#bibliographyColumnPicker{flex:1 0 100%}
+#bibliographyColumns{display:flex;flex-wrap:wrap;gap:4px 18px;margin-bottom:8px}
+#bibliographyColumns label{display:inline-flex;align-items:center;gap:8px;min-height:36px;cursor:pointer;overflow-wrap:anywhere}
+#bibliographyColumns input{width:16px;height:16px;flex:0 0 auto;accent-color:var(--accent)}
+.bibliography-results{flex:1;min-height:0;overflow:auto}
+#bibliographyState{padding:16px;color:var(--txt-mut)}
+.bibliography-table-scroll{overflow:auto;max-width:100%;height:100%}
+#bibliographyTable{border-collapse:collapse;font-size:12px;width:100%}
+#bibliographyTable caption{text-align:left;padding:12px;color:var(--txt-dim)}
+#bibliographyTable th,#bibliographyTable td{padding:10px 12px;border-bottom:1px solid var(--border);vertical-align:top;text-align:left;min-width:150px;max-width:360px}
+#bibliographyTable th{position:sticky;top:0;background:var(--panel-2);z-index:1}
+#bibliographyTable th[aria-sort="ascending"]::after{content:" \2191";color:var(--accent)}
+#bibliographyTable th[aria-sort="descending"]::after{content:" \2193";color:var(--accent)}
+.bibliography-value{white-space:pre-wrap;overflow-wrap:anywhere}
+.bibliography-missing{color:var(--txt-mut);font-style:italic}
+.bibliography-full-value{min-width:180px}
+.bibliography-full-value summary{color:var(--accent)}
+.bibliography-value-preview{white-space:pre-wrap;overflow-wrap:anywhere;color:var(--txt)}
+.bibliography-full-label{display:block;margin-top:6px}
+.bibliography-full-value[open] .bibliography-value-preview{display:none}
+.bibliography-full-value[open]{min-width:260px}
+.bibliography-cards{display:none;padding:12px}
+.bibliography-card{padding:14px;margin-bottom:12px;border:1px solid var(--border);border-radius:8px;background:var(--panel)}
+.bibliography-card h3{font-size:13px;margin:0 0 12px;color:var(--txt-dim)}
+.bibliography-card dl{margin:0 0 12px}
+.bibliography-card dt{font-weight:500;color:var(--txt-mut);margin-top:10px}
+.bibliography-card dd{margin:4px 0 0}
+.bibliography-pagination{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:10px 12px;border-top:1px solid var(--border)}
+#bibliographyTotal{flex:1 1 160px;color:var(--txt-dim)}
+@container bibliography (max-width:700px){
+  .bibliography-table-scroll{display:none}
+  .bibliography-cards{display:block}
+  .bibliography-full-value,.bibliography-full-value[open]{min-width:0}
+}
 .cm-unavailable{flex:1;display:grid;place-items:center;padding:24px;text-align:center;
   background:var(--editor-bg);color:var(--semantic-danger);font-size:13px;line-height:1.55}
 

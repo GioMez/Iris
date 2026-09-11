@@ -1,4 +1,71 @@
 {
+  "bibliography": {
+    "views": "Viste della bibliografia",
+    "table": "Tabella",
+    "text": "Testo",
+    "references": "Reference",
+    "reference": "Reference {{number}}",
+    "searchAll": "Cerca in tutti i campi, incluse le colonne nascoste",
+    "sort": "Ordinamento",
+    "sourceOrder": "Ordine del sorgente",
+    "sortAscending": "{{field}}: crescente",
+    "sortDescending": "{{field}}: decrescente",
+    "columns": "Colonne",
+    "showAll": "Mostra tutte",
+    "showSource": "Mostra sorgente",
+    "retry": "Riprova analisi",
+    "analyzing": "Analisi in corso...",
+    "parseFailed": "Analisi della bibliografia non disponibile. Il sorgente resta accessibile; non si tratta di un errore di validazione del file.",
+    "invalid": "La bibliografia contiene un errore di sintassi. Correggilo nel sorgente per abilitare la tabella.",
+    "unrecognized": "Il contenuto non e' una bibliografia riconosciuta. Puoi leggerlo o modificarlo come testo.",
+    "empty": "Bibliografia vuota.",
+    "noReferences": "Nessuna reference. Commenti o direttive bibliografiche sono conservati nel sorgente.",
+    "noResults": "Nessun risultato della ricerca.",
+    "allHidden": "Tutte le colonne sono nascoste. Usa Colonne o Mostra tutte per ripristinarle.",
+    "noValue": "Nessun valore",
+    "fullValue": "Leggi il valore completo: {{field}}",
+    "total": "{{from}}-{{to}} di {{results}}; {{references}} nel file",
+    "resultCount_one": "{{count}} risultato",
+    "resultCount_other": "{{count}} risultati",
+    "referenceCount_one": "{{count}} reference",
+    "referenceCount_other": "{{count}} reference",
+    "previous": "Pagina precedente",
+    "next": "Pagina successiva",
+    "diagnosticCount": "Diagnostica in questa pagina: {{count}} di {{total}} nel file",
+    "error": "Errore di sintassi",
+    "warning": "Avviso",
+    "fields": {
+      "key": "Chiave di citazione", "id": "ID della reference", "type": "Tipo", "authors": "Autori", "editors": "Curatori",
+      "title": "Titolo", "year": "Anno", "yearDate": "Anno/data", "date": "Data", "journal": "Rivista",
+      "volume": "Volume", "number": "Numero", "issue": "Fascicolo", "pages": "Pagine", "endPage": "Pagina finale",
+      "articleId": "Identificativo articolo", "bookTitle": "Titolo del libro o degli atti", "publisher": "Editore",
+      "location": "Luogo", "edition": "Edizione", "series": "Collana", "isbn": "ISBN", "issn": "ISSN",
+      "institution": "Istituzione", "workType": "Tipo di tesi o rapporto", "eventTitle": "Evento", "eventDate": "Data evento",
+      "eventLocation": "Sede evento", "organization": "Organizzazione", "accessDate": "Data di consultazione", "doi": "DOI",
+      "url": "URL", "abstract": "Abstract", "keywords": "Parole chiave", "notes": "Note"
+    },
+    "diagnostics": {
+      "bibtex": {
+        "syntax": "Atteso: {{expected}}.",
+        "unrecognized": "Testo non riconosciuto fuori da una voce o direttiva bibliografica.",
+        "undefinedMacro": "Macro di stringa non risolta: {{name}}. L'espressione sorgente resta invariata.",
+        "duplicateField": "Campo ripetuto: {{name}}. Tutte le occorrenze sono conservate.",
+        "missingKey": "Chiave di citazione mancante.",
+        "duplicateKey": "Chiave di citazione ripetuta: {{key}}.",
+        "missingMetadata": "Metadati mancanti: {{fields}}. Questo avviso non invalida la reference."
+      },
+      "ris": {
+        "syntax": "Atteso: {{expected}}.",
+        "unrecognized": "Testo non riconosciuto fuori da un record RIS.",
+        "missingMetadata": "Metadati mancanti: {{fields}}. Questo avviso non invalida la reference."
+      }
+    },
+    "expected": {
+      "value": "un valore", "field-name": "un nome di campo", "entry-type": "un tipo di voce",
+      "tag": "un tag RIS (due caratteri, due spazi e un trattino)", "record-type": "un tipo di record",
+      "empty-ER": "un terminatore ER senza valore", "{ or (": "{ oppure (", ", or }": ", oppure }", ", or )": ", oppure )"
+    }
+  },
   "common": {
     "account": "Account",
     "cancel": "Annulla",
@@ -765,6 +832,7 @@
     "unitMegabytes": "{{value}} MiB"
   },
   "api": {
+    "BIBLIOGRAPHY_INVALID_ENCODING": "Questa bibliografia non contiene testo UTF-8 valido. I byte originali sono conservati; converti una copia in UTF-8 prima di modificarla.",
     "CUSTOM_COMMANDS_INVALID": "Comandi personalizzati non validi per {{language}}, riga {{line}}. Inserisci solo nomi di comando, massimo 200 per linguaggio e 80 caratteri per nome.",
     "AUTH_REQUIRED_FIELDS": "Inserisci nome utente e password.",
     "AUTH_SSO_ACCOUNT": "Questo account usa SSO. Accedi con il pulsante SSO.",
