@@ -591,6 +591,50 @@ already present in the process environment.
 | `MAINTENANCE_FILE` | `DATA_DIR/.maintenance` | Path whose presence puts Iris into maintenance mode: writes are refused, reads continue. |
 | `SHUTDOWN_TIMEOUT_MS` | `15000` | Deadline for the complete shutdown drain, including background/realtime work, direct compiler children and database-pool closure. |
 
+### Admission control
+
+Iris applies token-bucket rate limits and bounded FIFO work queues in each backend
+process. Buckets refill continuously up to the configured burst allowance.
+
+| Variables | Defaults | Scope |
+| --- | --- | --- |
+| `AUTH_RATE_LIMIT` / `AUTH_RATE_WINDOW_MS` | `10` / `60000` ms | Local login attempts per source IP, before reading the body. |
+| `AUTH_ACCOUNT_RATE_LIMIT` / `AUTH_ACCOUNT_RATE_WINDOW_MS` | `12` / `900000` ms | Local login attempts per normalized submitted identifier, across source IPs. |
+| `AUTH_FAILURE_PENALTY` | `4` | Total token charge for a failed login, including its initial admission token. |
+| `PASSWORD_HASH_CONCURRENCY` / `PASSWORD_HASH_QUEUE` | `2` / `24` | Active Argon2 operations / waiting operations, shared by login, password changes, admin password operations and seeding. |
+| `COMPILE_RATE_LIMIT` / `COMPILE_RATE_WINDOW_MS` | `30` / `300000` ms | Compile attempts per user/project pair, after project authorization. |
+| `COMPILE_CONCURRENCY` / `COMPILE_QUEUE` | `2` / `8` | Active compilations / waiting compilations across users and projects. |
+| `API_RATE_LIMIT` / `API_RATE_WINDOW_MS` | `600` / `60000` ms | General authenticated API requests per user, across sessions. |
+
+These settings accept positive integers (`>=1`); zero, negative, fractional or
+invalid values fall back to the defaults. In particular, zero does not disable a
+queue. Restart Iris after changing them.
+
+For login, Iris trims and lowercases the submitted identifier and retains a
+fixed-size SHA-256-derived limiter key. Long invalid identifiers therefore do not
+enlarge individual retained keys. Username and email submissions for the same
+user have separate budgets; casing and surrounding whitespace share a budget.
+A successful login clears its IP and submitted-identifier debt. Forwarded client
+IPs apply only with `TRUST_PROXY=true`.
+
+Exhausted rate budgets return **429** (`AUTH_RATE_LIMITED`, `COMPILE_RATE_LIMITED`
+or `API_RATE_LIMITED`) with positive, rounded-up seconds in `Retry-After` and
+`params.retryAfter`. Full password or compile queues return **503** (`AUTH_BUSY`
+or `COMPILE_SERVER_BUSY`) without a retry-duration estimate. A busy compile
+refusal still spends its rate-admission token.
+
+A waiting compile creates no save, staging tree, checkpoint or build row until
+it gets a slot; Iris rechecks project permission at that point. The slot covers
+the entire pipeline, publication and audit, then releases before staging cleanup.
+Accepted HTTP work remains counted in `pendingWrites` through that cleanup.
+Password operations release their slots when hashing/verification finishes.
+Handled failures release capacity for queued or later work; shutdown refuses
+queued work and drains admitted operations.
+
+These limits apply to one process and reset on restart; multiple instances do
+not share their budgets or queues. They bound admission, not total resident memory
+(RSS), and do not constitute a load benchmark or an OS-level memory cap.
+
 ### Realtime collaboration
 
 | Variable | Default | Purpose |

@@ -44,13 +44,11 @@ test("login is throttled before it touches the database or the hasher", () => {
   // The address limit precedes even reading the body: pulling up to MAX_BODY
   // from a caller already over its allowance is work done for someone refused.
   assert.ok(ipLimit < login.indexOf("await readBody(req)"), "the address limit must precede reading the body");
-  // Keyed on what was submitted, not on a resolved account: an attacker must not
-  // be able to tell a throttled unknown account from a throttled real one.
-  assert.match(login, /enforceRateLimit\(authAccountLimiter, `login:\$\{login\}`/);
+  // admission-control.test.js exercises submitted-identifier normalization,
+  // bounded key retention and debt reset through real HTTP/PG/Argon2 behavior.
   // A failure costs more than a success, and a success clears the debt.
   assert.match(login, /authIpLimiter\.penalize\(`login:\$\{ip\}`, Date\.now\(\), AUTH_FAILURE_PENALTY - 1\)/);
   assert.match(login, /authIpLimiter\.reset\(`login:\$\{ip\}`\)/);
-  assert.match(login, /authAccountLimiter\.reset\(`login:\$\{login\}`\)/);
 });
 
 test("compilation is bounded in both rate and simultaneity", () => {

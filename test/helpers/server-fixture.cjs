@@ -143,10 +143,11 @@ async function serverFixture(t, env = {}) {
   const localRequire = (name) => {
     if (name === "./env") return { loadDotEnv() {} };
     if (name === "node:child_process") return { ...childProcess, spawn(command, args, options) {
-      const replacement = hooks.spawn?.(command, args);
+      const replacement = hooks.spawn?.(command, args, options);
       const child = childProcess.spawn(replacement?.command || command, replacement?.args || args, options);
       children.add(child);
       child.once("close", () => children.delete(child));
+      hooks.afterSpawn?.(child, command, args, options);
       return child;
     } };
     if (name === "node:fs") return {
@@ -169,7 +170,14 @@ async function serverFixture(t, env = {}) {
     ]));
     if (name === "argon2") return {
       ...argon2,
+      async hash(...args) {
+        await hook("beforeHash", ...args);
+        const result = await argon2.hash(...args);
+        await hook("afterHash", ...args);
+        return result;
+      },
       async verify(...args) {
+        await hook("beforeVerify", ...args);
         const result = await argon2.verify(...args);
         await hook("afterVerify", ...args);
         return result;
@@ -183,6 +191,7 @@ async function serverFixture(t, env = {}) {
     collabSessions, collabHandleMessage, collabJoin, collabRecheckProject, collabShutdown, collabPersistNow,
     startGracefulShutdown, startRetentionSweep, healthPayload, projectMutations, collabProjects,
     collabPersist, collabTouchProject, compileGate, passwordHashGate, runCompileStep, refreshFontCache,
+    authAccountLimiter,
     runtimeSettled: () => !inFlight && !backgroundPending.size && !collabStarted.size && !collabPending.size && !collabDrainPromise,
     stopRuntimeTimers: () => {
       shuttingDown = true;

@@ -5685,7 +5685,9 @@ async function handleApi(req, res, url) {
     // a resolved user id is deliberate: an attacker must not be able to tell a
     // throttled unknown account from a throttled real one, and an unknown
     // account has no id to key on anyway.
-    enforceRateLimit(authAccountLimiter, `login:${login}`, "AUTH_RATE_LIMITED");
+    // Bound retained key size even when an invalid submitted identifier is long.
+    const loginKey = `login:${crypto.createHash("sha256").update(login).digest("hex")}`;
+    enforceRateLimit(authAccountLimiter, loginKey, "AUTH_RATE_LIMITED");
     const { rows } = await db.query(
       "SELECT id, username, email, display_name, system_role, status, auth_source, session_version, password_hash, password_change_required, oidc_linked_at FROM users WHERE LOWER(username) = LOWER($1) OR LOWER(email) = LOWER($2) LIMIT 1",
       [login, login]
@@ -5696,7 +5698,7 @@ async function handleApi(req, res, url) {
     // guessing run runs out of budget while a person who mistyped does not.
     const failedLogin = async (reason) => {
       authIpLimiter.penalize(`login:${ip}`, Date.now(), AUTH_FAILURE_PENALTY - 1);
-      authAccountLimiter.penalize(`login:${login}`, Date.now(), AUTH_FAILURE_PENALTY - 1);
+      authAccountLimiter.penalize(loginKey, Date.now(), AUTH_FAILURE_PENALTY - 1);
       return audit({
         action: "auth.login_failed",
         outcome: "failure",
@@ -5741,7 +5743,7 @@ async function handleApi(req, res, url) {
     // attacker, and leaving them throttled would punish the two typos that
     // preceded the correct attempt.
     authIpLimiter.reset(`login:${ip}`);
-    authAccountLimiter.reset(`login:${login}`);
+    authAccountLimiter.reset(loginKey);
     await db.query("UPDATE users SET last_login_at = CURRENT_TIMESTAMP WHERE id = $1", [user.id]);
     await audit({
       action: "auth.login_succeeded",
