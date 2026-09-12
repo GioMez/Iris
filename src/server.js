@@ -13,7 +13,7 @@ const { uuidv7, isUuid, UUID_PATTERN } = require("./ids");
 const { lifecycleGate, healthStatus, isWriteRequest, isMutatingMethod, HEALTH_PATH } = require("./lifecycle");
 const { parseAppBaseUrl, requestAuthority, requestOrigin, isRequestOriginAllowed, isJsonMediaAllowed } = require("./request-security");
 const { recordAuditEvent } = require("./audit");
-const { normalizeProjectPath, collectProjectFiles, reconcileProjectFiles } = require("./project-files");
+const { normalizeProjectPath, collectProjectFiles, reconcileProjectFiles, remapImportedFileIds } = require("./project-files");
 const { createProjectMutations } = require("./project-mutations");
 const { hashContent, isVersionableText, contentChanged } = require("./versions");
 const { CollabRooms, CollabError, peerColor, normalizePresence } = require("./collab");
@@ -3498,6 +3498,7 @@ function parseProjectArchive(body) {
 function normalizeImportedProject(data, name, now) {
   if (!data || typeof data !== "object" || Array.isArray(data)) throw invalidProjectArchive();
   delete data.irisArchive;
+  delete data.id;
   data.project = data.project && typeof data.project === "object" && Array.isArray(data.project.nodes)
     ? data.project
     : { nodes: [] };
@@ -3551,6 +3552,7 @@ async function importProjectArchive(req, res, user, url) {
     await writeProjectManifest(storagePath, data);
     try {
       data = normalizeImportedProject(await readProjectFile(storagePath), name, now);
+      remapImportedFileIds(data);
     } catch {
       throw invalidProjectArchive();
     }

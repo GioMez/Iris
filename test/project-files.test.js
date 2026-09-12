@@ -1,11 +1,14 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { normalizeProjectPath, collectProjectFiles, reconcileProjectFiles } = require("../src/project-files");
+const { normalizeProjectPath, collectProjectFiles, reconcileProjectFiles, remapImportedFileIds } = require("../src/project-files");
 const { isUuid } = require("../src/ids");
 
 const UUID_A = "019f99b9-61cf-7fee-963f-8f7dee086983";
 const UUID_B = "019f99bb-6923-7322-a37d-c8f46b5e5cc9";
+const UUID_C = "019f99bb-6923-7322-a37d-c8f46b5e5cca";
+const UUID_D = "019f99bb-6923-7322-a37d-c8f46b5e5ccb";
+const UUID_E = "019f99bb-6923-7322-a37d-c8f46b5e5ccc";
 
 // Deterministic id generator so the plan is assertable.
 function counter(prefix = "gen") {
@@ -147,4 +150,101 @@ test("a kind change on a matched file is recorded", () => {
   const live = [{ id: "gen-1", client_ref: "file_1", path: "notes.txt", kind: "text" }];
   const plan = reconcileProjectFiles(live, [{ nodeId: "file_1", path: "notes.txt", kind: "tex" }], { generateId: counter() });
   assert.deepEqual(plan.updates, [{ id: "gen-1", fromPath: "notes.txt", path: "notes.txt", kind: "tex" }]);
+});
+
+function idSequence(...ids) {
+  return () => {
+    assert.ok(ids.length, "unexpected extra identity allocation");
+    return ids.shift();
+  };
+}
+
+test("import remaps nested text, binary and font identities without changing path-based data", () => {
+  const data = {
+    project: { name: "Copy", nodes: [
+      { type: "file", id: UUID_A, name: "main.tex", path: "main.tex", content: "source\r\n" },
+      { type: "folder", id: "folder", name: "fonts", open: true, children: [
+        { type: "file", id: "font_upload", name: "Custom.otf", path: "fonts/Custom.otf", binary: true, data: "data:font/otf;base64,AAE=" },
+      ] },
+      { type: "file", name: "bytes.bin", binary: true, data: "data:application/octet-stream;base64,AP8=" },
+      { type: "file", id: "generated", name: "main.pdf", generated: true },
+      { type: "file", id: "readonly", name: "main.log", readOnly: true },
+    ] },
+    activeId: "font_upload", openTabs: [UUID_A, "font_upload", UUID_A, "gone", "generated", "readonly", "folder"],
+    assets: { "fonts/Custom.otf": "data:font/otf;base64,AAE=" },
+    fonts: [{ path: "fonts/Custom.otf", family: "Custom", enabled: false }],
+    mainPath: "main.tex", customCommands: { tex: ["\\mine"], ly: [] }, settings: { tabSize: 4 },
+  };
+  const expected = structuredClone(data);
+  expected.project.nodes[0].id = UUID_C;
+  expected.project.nodes[1].children[0].id = UUID_D;
+  expected.project.nodes[2].id = UUID_E;
+  expected.activeId = UUID_D;
+  expected.openTabs = [UUID_C, UUID_D];
+  assert.equal(remapImportedFileIds(data, { generateId: idSequence(UUID_C, UUID_D, UUID_E) }), data);
+  assert.deepEqual(data, expected);
+});
+
+test("import reserves all original canonical IDs before allocation and retries new-ID collisions", () => {
+  const data = { project: { nodes: [
+    { id: UUID_A, name: "one.tex" }, { id: UUID_B, name: "two.tex" },
+  ] }, activeId: UUID_B, openTabs: [UUID_B, UUID_A] };
+  remapImportedFileIds(data, { generateId: idSequence(UUID_B, UUID_A, UUID_C, UUID_C, UUID_A, UUID_D) });
+  assert.deepEqual(data.project.nodes.map((node) => node.id), [UUID_C, UUID_D]);
+  assert.equal(data.activeId, UUID_D);
+  assert.deepEqual(data.openTabs, [UUID_D, UUID_C]);
+});
+
+test("import defaults to fresh canonical UUIDv7 identities for each copy", () => {
+  const original = { project: { nodes: [{ id: UUID_A, name: "main.tex" }, { name: "new.txt" }] } };
+  const copies = [structuredClone(original), structuredClone(original)];
+  copies.forEach((data) => remapImportedFileIds(data));
+  const ids = copies.flatMap((data) => data.project.nodes.map((node) => node.id));
+  assert.equal(new Set([UUID_A, ...ids]).size, 5);
+  for (const id of ids) { assert.ok(isUuid(id)); assert.equal(id[14], "7"); }
+});
+
+for (const duplicate of [UUID_A, "file_current"]) {
+  test(`import drops ambiguous navigation for duplicate source ID ${duplicate}`, () => {
+    const data = { project: { nodes: [
+      { id: duplicate, name: "one.tex" },
+      { type: "folder", name: "nested", children: [{ id: duplicate, name: "two.tex" }] },
+      { id: "unique", name: "three.tex" },
+    ] }, activeId: duplicate, openTabs: [duplicate, "unique", duplicate, "unique", "missing"] };
+    remapImportedFileIds(data, { generateId: idSequence(UUID_C, UUID_D, UUID_E) });
+    assert.equal(data.project.nodes[0].id, UUID_C);
+    assert.equal(data.project.nodes[1].children[0].id, UUID_D);
+    assert.equal(data.project.nodes[2].id, UUID_E);
+    assert.equal(data.activeId, null);
+    assert.deepEqual(data.openTabs, [UUID_E]);
+  });
+}
+
+test("import accepts missing and null IDs and maps string references without coercion", () => {
+  const data = { project: { nodes: [
+    { name: "missing.tex" }, { id: null, name: "null.tex" }, { id: "__proto__", name: "temporary.tex" },
+  ] }, activeId: "stale", openTabs: [null, undefined, {}, 0, "null", "__proto__", "__proto__"] };
+  remapImportedFileIds(data, { generateId: idSequence(UUID_C, UUID_D, UUID_E) });
+  assert.deepEqual(data.project.nodes.map((node) => node.id), [UUID_C, UUID_D, UUID_E]);
+  assert.equal(data.activeId, null);
+  assert.deepEqual(data.openTabs, [UUID_E]);
+});
+
+for (const invalid of [0, 42, true, {}, []]) {
+  test(`import rejects nonstring file ID ${JSON.stringify(invalid)} before changing identities`, () => {
+    const data = { project: { nodes: [
+      { id: UUID_A, name: "valid.tex" },
+      { type: "folder", name: "nested", children: [{ id: invalid, name: "invalid.tex" }] },
+    ] }, activeId: UUID_A, openTabs: [UUID_A] };
+    const before = structuredClone(data);
+    assert.throws(() => remapImportedFileIds(data), { name: "TypeError", message: "Invalid imported file ID" });
+    assert.deepEqual(data, before);
+  });
+}
+
+test("import drops navigation when no source file survives", () => {
+  const data = { project: { nodes: [] }, activeId: UUID_A, openTabs: [UUID_A] };
+  remapImportedFileIds(data, { generateId: idSequence() });
+  assert.equal(data.activeId, null);
+  assert.deepEqual(data.openTabs, []);
 });

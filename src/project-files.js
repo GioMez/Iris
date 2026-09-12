@@ -42,6 +42,32 @@ function joinPosix(parent, name) {
   return parent ? path.posix.join(parent, clean) : clean;
 }
 
+// Import creates a new identity namespace. Run once, after filesystem discovery,
+// so every surviving source (including newly discovered assets) is remapped.
+// Ordinary saves still use the reconciler's canonical-id/client_ref matching.
+function remapImportedFileIds(data, { generateId = uuidv7 } = {}) {
+  const entries = collectProjectFiles(data.project && data.project.nodes);
+  const usedIds = new Set();
+  for (const { node } of entries) {
+    if (node.id != null && typeof node.id !== "string") throw new TypeError("Invalid imported file ID");
+    if (isUuid(node.id)) usedIds.add(node.id);
+  }
+
+  const remapped = new Map();
+  for (const { node, nodeId } of entries) {
+    let id = generateId();
+    while (usedIds.has(id)) id = generateId();
+    usedIds.add(id);
+    node.id = id;
+    // Repeated source IDs identify no single destination: keep them ambiguous.
+    if (nodeId != null) remapped.set(nodeId, remapped.has(nodeId) ? null : id);
+  }
+  data.activeId = remapped.get(data.activeId) || null;
+  data.openTabs = [...new Set((Array.isArray(data.openTabs) ? data.openTabs : [])
+    .map((id) => remapped.get(id)).filter((id) => id != null))];
+  return data;
+}
+
 // Diffs the incoming files against the live ledger rows and produces the plan to
 // reconcile them. Pure: the id generator is injected so tests are deterministic.
 //
@@ -94,4 +120,4 @@ function reconcileProjectFiles(liveRows, incoming, { generateId = uuidv7 } = {})
   return { resolved, inserts, updates, softDeletes };
 }
 
-module.exports = { normalizeProjectPath, collectProjectFiles, reconcileProjectFiles };
+module.exports = { normalizeProjectPath, collectProjectFiles, reconcileProjectFiles, remapImportedFileIds };

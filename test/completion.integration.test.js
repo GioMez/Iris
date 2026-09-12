@@ -2,7 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { serverFixture } = require("./helpers/server-fixture.cjs");
 const { uuidv7 } = require("../src/ids");
-const { extractZip, createZip } = require("../src/zip");
+const { extractZip } = require("../src/zip");
 
 test("custom command settings are validated, shared, persisted and portable in project archives", {
   skip: !process.env.TEST_DATABASE_URL, timeout: 20000,
@@ -49,16 +49,13 @@ test("custom command settings are validated, shared, persisted and portable in p
   assert.equal(denied.status, 403);
   const archive = await f.request(`/api/projects/${projectId}/archive`, { cookie });
   assert.equal(archive.status, 200);
-  const zip = extractZip(Buffer.from(await archive.arrayBuffer()));
+  const archiveBytes = Buffer.from(await archive.arrayBuffer());
+  const zip = extractZip(archiveBytes);
   const manifest = JSON.parse(zip.files.get(".iris/project.json").toString());
   assert.deepEqual(manifest.customCommands, changed.customCommands);
-  // The imported copy needs fresh source ids: archive identity remapping belongs
-  // to a separate backend task, so this fixture deliberately omits the old id.
-  delete manifest.project.nodes[0].id;
-  zip.files.set(".iris/project.json", Buffer.from(JSON.stringify(manifest)));
   const imported = await fetch(`${f.baseUrl}/api/projects/import?filename=completion.zip`, {
     method: "POST", headers: { cookie, "content-type": "application/zip" },
-    body: createZip([...zip.files].map(([name, data]) => ({ name, data }))), signal: AbortSignal.timeout(10000),
+    body: archiveBytes, signal: AbortSignal.timeout(10000),
   });
   assert.equal(imported.status, 201);
   assert.deepEqual((await imported.json()).data.customCommands, changed.customCommands);
