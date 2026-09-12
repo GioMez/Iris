@@ -28,7 +28,7 @@ const {
   normalizeMemberSearch,
   escapeLikePattern,
 } = require("./project-access");
-const { projectStorageKey, resolveProjectStorageDir, relocateProjectStorage } = require("./project-storage");
+const { projectStorageKey, resolveProjectStorageDir } = require("./project-storage");
 const {
   initializeProjectTemplates,
   discoverProjectTemplates,
@@ -421,9 +421,7 @@ function makeToken(user, authMethod = "local") {
 function verifyToken(token) {
   const payload = verifySignedJson(token);
   if (!payload || !Number.isSafeInteger(payload.sessionVersion) || payload.sessionVersion < 0) return null;
-  // Sessions issued before migration 004 carry a numeric subject. Rejecting them
-  // here turns a stale cookie into a clean re-login instead of a malformed uuid
-  // reaching PostgreSQL.
+  // Reject malformed subjects before they reach PostgreSQL's UUID parser.
   if (!isUuid(payload.sub)) return null;
   return payload;
 }
@@ -722,7 +720,7 @@ async function userFromOAuthProfile(profile, ip = null) {
       `UPDATE users SET oidc_issuer = $1, oidc_subject = $2, auth_source = 'oidc',
          password_hash = NULL, oidc_link_pending = FALSE, oidc_linked_at = CURRENT_TIMESTAMP,
          password_change_required = FALSE, session_version = session_version + 1,
-         session_epoch = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+         updated_at = CURRENT_TIMESTAMP
        WHERE id = $3 AND LOWER(email) = LOWER($4)
          AND oidc_link_pending = TRUE AND status = 'active'
          AND oidc_issuer IS NULL AND oidc_subject IS NULL
@@ -799,9 +797,6 @@ async function initDb() {
   });
   await fs.mkdir(DATA_DIR, { recursive: true });
   await initializeProjectTemplates(TEMPLATE_DIR, path.join(PUBLIC_DIR, "templates"));
-  // Migration 002 rewrote the recorded storage locations: the directories they
-  // now name must hold the project data before the first request is served.
-  await relocateProjectStorage({ db, dataDir: DATA_DIR });
   await seedUsers();
 }
 
@@ -5146,7 +5141,7 @@ async function adminUpdateUser(req, res, actor, targetId) {
     // Profile/role changes keep sessions; disabling revokes them even if the
     // account is re-enabled in the same second.
     if (wantsStatus && nextStatus === "disabled") {
-      sets.push("session_version = session_version + 1", "session_epoch = CURRENT_TIMESTAMP");
+      sets.push("session_version = session_version + 1");
     }
     params.push(targetId);
     try {
@@ -5213,7 +5208,7 @@ async function adminResetPassword(req, res, actor, targetId) {
   // change on next login so the temporary password is genuinely one-time.
   const updated = await db.query(
     `UPDATE users SET password_hash = $1, password_change_required = TRUE,
-       session_version = session_version + 1, session_epoch = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+       session_version = session_version + 1, updated_at = CURRENT_TIMESTAMP
      WHERE id = $2 AND auth_source = 'local' AND session_version = $3`,
     [await hashPassword(password), targetId, rows[0].session_version]
   );
@@ -5235,7 +5230,7 @@ async function adminUnlinkSso(req, res, actor, targetId) {
     `UPDATE users SET auth_source = 'local', oidc_issuer = NULL, oidc_subject = NULL,
        oidc_linked_at = NULL, oidc_link_pending = FALSE, password_hash = $1,
        password_change_required = TRUE, session_version = session_version + 1,
-       session_epoch = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+       updated_at = CURRENT_TIMESTAMP
      WHERE id = $2 AND auth_source = 'oidc' AND session_version = $3 AND oidc_subject = $4`,
     [await hashPassword(password), targetId, rows[0].session_version, rows[0].oidc_subject]
   );
@@ -5779,7 +5774,7 @@ async function handleApi(req, res, url) {
     const passwordHash = await hashPassword(newPassword);
     const updated = await db.query(
       `UPDATE users SET password_hash = $1, password_change_required = FALSE,
-         session_version = session_version + 1, session_epoch = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+         session_version = session_version + 1, updated_at = CURRENT_TIMESTAMP
        WHERE id = $2 AND session_version = $3 AND password_hash = $4 AND status = 'active' AND auth_source = 'local'
        RETURNING id, username, email, display_name, system_role, auth_source, session_version, password_change_required`,
       [passwordHash, user.id, sessionUser.sessionVersion, user.password_hash]

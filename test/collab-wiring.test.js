@@ -19,7 +19,7 @@ const css = read("public/iris.css");
 test("the WebSocket upgrade authenticates before accepting the socket", () => {
   const upgrade = server.slice(server.indexOf("async function collabUpgrade"), server.indexOf("function collabAttach"));
   // requireUser re-reads the account from the database on every call, so a
-  // disabled account or a bumped session epoch cannot open a realtime session.
+  // disabled account or a bumped session version cannot open a realtime session.
   assert.match(upgrade, /await requireUser\(req\)/);
   const authIndex = upgrade.indexOf("requireUser");
   const acceptIndex = upgrade.indexOf("handleUpgrade");
@@ -85,8 +85,7 @@ test("realtime text reaches disk on a debounce, on last leave and on shutdown", 
   assert.match(server, /collabAttach\(server\)/);
   // Realtime edits are consolidated, not one revision per keystroke.
   assert.match(server, /reason: "realtime"/);
-  assert.ok(fs.existsSync(path.join(root, "db/migrations/013_realtime_revisions.sql")));
-  assert.match(read("db/migrations/013_realtime_revisions.sql"), /'realtime'/);
+  assert.match(read("db/schema.sql"), /'realtime'/);
 });
 
 // Save/restore authority and omitted-content persistence are exercised against

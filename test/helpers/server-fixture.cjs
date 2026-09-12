@@ -9,7 +9,7 @@ const { compileFunction } = require("node:vm");
 const { Pool } = require("pg");
 const argon2 = require("argon2");
 const childProcess = require("node:child_process");
-const { runMigrations } = require("../../src/database");
+const { initializeSchema } = require("../../src/database");
 
 const connectionString = process.env.TEST_DATABASE_URL;
 const serverPath = path.resolve(__dirname, "../../src/server.js");
@@ -114,7 +114,7 @@ async function serverFixture(t, env = {}) {
     if (errors.length) throw new AggregateError(errors, "Server fixture cleanup failed");
   });
   await admin.query(`CREATE SCHEMA ${schema}`);
-  await runMigrations(pool);
+  await initializeSchema(pool);
   const injectedDb = {
     async end() {
       await hook("beforeEnd");

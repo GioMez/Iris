@@ -1,8 +1,7 @@
 const fsSync = require("node:fs");
 
-// Minimal .env reader shared by the server and the maintenance scripts, so both
-// resolve database and storage settings the same way. Existing environment
-// variables always win.
+// Minimal .env reader for server configuration. Existing environment variables
+// always win.
 function loadDotEnv(file) {
   if (!fsSync.existsSync(file)) return;
   const lines = fsSync.readFileSync(file, "utf8").split(/\r?\n/);
@@ -20,15 +19,4 @@ function loadDotEnv(file) {
   }
 }
 
-function databaseSettings() {
-  return {
-    host: process.env.DB_HOST || "127.0.0.1",
-    port: Number(process.env.DB_PORT || 5432),
-    user: process.env.DB_USER || "iris",
-    password: process.env.DB_PASSWORD || "",
-    database: process.env.DB_NAME || "iris",
-    connectTimeout: Number(process.env.DB_CONNECT_TIMEOUT_MS || 5000),
-  };
-}
-
-module.exports = { loadDotEnv, databaseSettings };
+module.exports = { loadDotEnv };

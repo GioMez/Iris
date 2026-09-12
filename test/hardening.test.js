@@ -13,7 +13,7 @@ const path = require("node:path");
 const root = path.resolve(__dirname, "..");
 const read = (file) => fs.readFileSync(path.join(root, file), "utf8").replace(/\r\n/g, "\n");
 const server = read("src/server.js");
-const migration = read("db/migrations/015_retention.sql");
+const schema = read("db/schema.sql");
 const section = (from, to) => server.slice(server.indexOf(from), server.indexOf(to));
 
 /* ---- admission control ---- */
@@ -251,16 +251,16 @@ test("retention thresholds are an owner decision, recorded in the trail", () => 
 
 test("the schema keeps null meaning 'follow the instance default'", () => {
   for (const column of ["build_keep", "build_days", "version_keep", "version_days"]) {
-    assert.match(migration, new RegExp(`ADD COLUMN ${column} INTEGER`), `${column} must be nullable`);
-    assert.match(migration, new RegExp(`${column} IS NULL OR`), `${column}'s check must admit null`);
+    assert.match(schema, new RegExp(`${column} INTEGER,`), `${column} must be nullable`);
+    assert.match(schema, new RegExp(`${column} IS NULL OR`), `${column}'s check must admit null`);
   }
   // The floors in the schema mirror the module's, so a value written outside the
   // application still cannot express "keep nothing".
   const { RETENTION_BOUNDS } = require("../src/retention");
-  assert.match(migration, new RegExp(`build_keep >= ${RETENTION_BOUNDS.buildKeep.min}`));
-  assert.match(migration, new RegExp(`version_keep >= ${RETENTION_BOUNDS.versionKeep.min}`));
+  assert.match(schema, new RegExp(`build_keep >= ${RETENTION_BOUNDS.buildKeep.min}`));
+  assert.match(schema, new RegExp(`version_keep >= ${RETENTION_BOUNDS.versionKeep.min}`));
   // The partial indexes the sweep relies on.
-  assert.match(migration, /CREATE INDEX idx_build_outputs_running ON build_outputs \(created_at\) WHERE status = 'running'/);
+  assert.match(schema, /CREATE INDEX idx_build_outputs_running ON build_outputs \(created_at\) WHERE status = 'running'/);
 });
 
 test("the sweep is scheduled, unref'd, and stopped on shutdown", () => {

@@ -74,10 +74,11 @@ test("Compose requires secrets and does not expose default credentials", () => {
   assert.doesNotMatch(compose, /iris-root|-piris/);
 });
 
-test("the PostgreSQL runtime image includes versioned migrations", () => {
+test("the PostgreSQL runtime image includes the current schema and provisioning assets", () => {
   const packageJson = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
   const dockerfile = fs.readFileSync(path.join(root, "Dockerfile"), "utf8");
   assert.ok(packageJson.dependencies.pg);
   assert.match(dockerfile, /npm ci --omit=dev/);
-  assert.match(dockerfile, /COPY db\/migrations \.\/db\/migrations/);
+  assert.match(dockerfile, /COPY db\/schema\.sql \.\/db\/schema\.sql/);
+  assert.match(dockerfile, /COPY db\/init \.\/db\/init/);
 });

@@ -7,8 +7,6 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node src/server.js",
-    "migrate:storage": "node scripts/migrate-project-storage.js",
-    "repair:sources": "node scripts/repair-data-url-sources.js",
     "test": "node --test",
     "test:bibliography:browser": "node --test --test-timeout=30000 test/bibliography.browser.test.js",
     "test:integration": "node --test test/postgresql.integration.test.js"

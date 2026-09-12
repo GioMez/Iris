@@ -251,7 +251,10 @@ docker compose up -d postgres
 
 The non-secret database settings in `.env.example` match the development
 database exposed by the Compose service. The published database port is bound
-to localhost only. Iris applies pending versioned migrations during startup.
+to localhost only. On first startup, Iris initializes an empty application schema
+from `db/schema.sql` and records its current version. See
+[Fresh beta schema and incompatible installations](#fresh-beta-schema-and-incompatible-installations)
+before using a database from another beta release.
 
 Start the application:
 
@@ -281,8 +284,9 @@ CREATE DATABASE iris OWNER iris;
 
 The commands must be run by a PostgreSQL administrator. The configured database
 must already exist and the application user must own it, or otherwise have
-permission to create and alter tables and indexes. Iris does not create the
-database itself.
+permission to create tables and indexes in an empty application schema. Iris does
+not create the database itself. Ordinary restarts require a matching schema
+version and preserve the existing rows.
 
 ## Running with Docker Compose
 
@@ -339,7 +343,7 @@ This is useful when the deployment controls compiler locations centrally.
 
 ### Concurrent saves
 
-Projects expose a server-owned integer `revision`, introduced by migration `015`.
+Projects expose a server-owned integer `revision`, starting at zero.
 Saving a whole-project snapshot requires its `baseRevision`; name-only updates
 use the same precondition without replacing the file tree. Missing or malformed
 preconditions return `428 PROJECT_REVISION_REQUIRED`; stale snapshots return
@@ -350,7 +354,7 @@ Realtime text flushes and checkpoints without a submitted tree do not advance it
 The browser serializes its mutations and retains local edits on conflict. It does
 not fetch a newer revision and blindly replay an older tree. Preserve local work
 before explicitly discarding/reopening a conflicting project. Reload browser tabs
-after upgrading so they use the revision-aware save protocol.
+after deploying a new client build.
 
 Backend mutations are serialized per project through their database transaction
 and filesystem compensation. Required renames fail explicitly rather than
@@ -610,7 +614,7 @@ already present in the process environment.
 | `PORT` | `3000` | HTTP port. |
 | `BIND_ADDRESS` | every interface | Single interface to bind, such as a private or VPN address. Leave empty in containers, where the published port controls exposure. |
 | `IRIS_SECRET` | none | Required secret used to sign sessions and OAuth state. |
-| `DATA_DIR` | `./data/projects` | Root directory for project files. |
+| `DATA_DIR` | `./data` | Root directory for project files, templates and server-managed working directories. |
 | `PUBLIC_DIR` | `./public` | Static frontend directory. |
 | `TEMPLATE_DIR` | `DATA_DIR/templates` | Mutable LaTeX and LilyPond project-template catalog. |
 | `MAX_BODY_MB` | `25` | Maximum request body size in MiB, including JSON and raw ZIP imports. |
@@ -822,14 +826,13 @@ deduplicates and caps the selected diagnostics at 80 per severity; transient
 first-pass warnings do not consume the final pass's allowance. A terminal
 setup/publication cause takes priority within the error cap.
 
-Migration `016_build_diagnostics_version.sql` adds nullable
-`build_outputs.diagnostics_version`. Newly finalized builds use version `1`:
+`build_outputs.diagnostics_version` is nullable. Finalized compiler builds use version `1`:
 their structured JSONB warning/error arrays are authoritative even when empty,
-so reopening a clean build does not recreate warnings from its trace. Existing
-rows keep `NULL` and the legacy log/string-array recovery behavior; Iris does
-not reinterpret or backfill them. Capture remains subject to `COMPILE_LOG_LIMIT`
+so reopening a clean build does not recreate warnings from its trace. Startup
+reconciliation of interrupted builds still writes diagnostics with `NULL` version;
+the build reader supports those log/string-array diagnostics. Capture remains subject to `COMPILE_LOG_LIMIT`
 per step and stored trace (1 MiB by default). A truncated capture cannot prove
-that an earlier warning was resolved, and legacy recovery cannot recover output
+that an earlier warning was resolved, and log recovery cannot recover output
 beyond that limit.
 
 The build detail also scans the immutable build directory and exposes every
@@ -857,12 +860,10 @@ The build endpoints are:
 - `DELETE /api/projects/:id/builds/:buildId` for owner-authorized deletion.
 
 Project members with read access can list, inspect, preview and download builds.
-Only owners can currently delete them; editor deletion can be enabled later by a
-dedicated project setting. Automatic retention and garbage collection remain a
-later hardening task. A `running` row left by a process interruption can be
-deleted after restart; automatic crash reconciliation remains part of hardening.
-Files produced before migration `012` remain directly below `output/` as readable
-legacy output; they are preserved but are not backfilled into the build registry.
+Only owners can currently delete them. The retention sweep prunes surplus, old
+builds while protecting the latest successful output and builds still running.
+Startup reconciliation closes interrupted `running` builds after the configured
+grace period when retention is enabled.
 
 Back up PostgreSQL and `DATA_DIR` together: the database holds accounts,
 ownership and the audit trail, while the filesystem holds the content itself.
@@ -919,51 +920,47 @@ entire sequence, including pool closure and direct compiler/font-cache children.
 Exit code `0` and `Shutdown complete` indicate a completed drain. A deadline or
 persistence/closure failure instead terminates direct children and connections,
 logs the failure and exits with code `1`; this is not a clean backup barrier.
-Restore both layers while the process is down, then start Iris: it reconciles
-pending migrations and relocations on startup.
+Restore both layers while the process is down, then start an Iris build that
+accepts the backup's schema version. Startup validates that version before serving
+requests.
 
 A backup taken inside maintenance mode may include the `.maintenance` marker. If
 it does, a restored instance starts in maintenance — a safe default that lets you
 verify the restore before reopening writes. Remove the marker to resume.
 
-Keep Iris stopped until both persistence layers have been handled. After a
-restore, run `npm run migrate:storage` while the application is still stopped,
-then start Iris and verify that every project listed by the application opens.
+Keep Iris stopped until you have restored both persistence layers. Keep the
+`projects/<lowercase UUID>` layout under the restored `DATA_DIR`, then start Iris
+and verify that each listed project opens. The database stores canonical POSIX
+keys; absolute paths, traversal and other storage-key formats are invalid.
 
-Databases created before this layout stored absolute paths under a per-user
-directory. Migration `002` rewrites those rows and Iris relocates the
-directories on the next startup. To do it during a maintenance window instead,
-run the same step with the server stopped:
+### Fresh beta schema and incompatible installations
 
-```sh
-npm run migrate:storage
-```
+This beta uses one current schema, version **1**. On an empty application schema,
+`initializeSchema(pool)` creates the nine application tables from `db/schema.sql`
+and a single `iris_schema` version marker in one transaction. Concurrent startup
+attempts serialize on the initialization advisory lock. A matching marker permits
+ordinary restarts with the existing accounts, projects, history and build records.
 
-It is safe to repeat. A missing legacy directory remains pending so a temporarily
-unavailable mount can be retried later. Same-filesystem moves are atomic; the
-cross-filesystem fallback compares directory structure, file sizes and SHA-256
-content hashes before removing the source. If an interrupted copy leaves data at
-both locations, the command stops and names the project for manual comparison
-rather than guessing which copy to keep.
+An unmarked nonempty schema, another version, or a malformed marker stops startup
+with `IRIS_SCHEMA_INCOMPATIBLE`. Iris rolls back initialization and leaves existing
+objects and rows untouched. Connection and permission failures retain their own
+database errors.
 
-**Repairing sources stored as a data URL.** A text file attached through the
-upload dialog used to be carried as a data URL, and a media type with parameters
-(`data:text/plain; charset=utf-8;base64,…`) was not decoded on the way back to
-disk, so the file ended up holding the URL instead of its own text. BibTeX reads
-such a `.bib` without complaining and produces an empty bibliography, so the
-symptom is a document that compiles with warnings and no references. Iris no
-longer writes these files, and the command below restores the ones already
-stored:
+For an incompatible beta installation:
 
-```sh
-npm run repair:sources             # reports what it would change
-npm run repair:sources -- --apply  # rewrites those files
-```
+1. Keep a consistent backup of PostgreSQL and `DATA_DIR`. Use the corresponding
+   Iris release to export projects you want to carry forward in the current
+   `.iris/project.json` archive format.
+2. Stop that installation. Provision a fresh empty database and a fresh `DATA_DIR`
+   for this release. If you choose to reuse disposable beta storage, reset both
+   persistence layers yourself after confirming the backup.
+3. Start Iris, sign in with the initial administrator credentials, and import the
+   exported projects. Imports create new project and source-file identities.
 
-Only a file that consists of nothing but a single data URL is rewritten, and only
-when the decoded bytes are valid UTF-8. Generated output and project manifests
-are left alone: the next compilation rebuilds the first, and the next save
-rewrites the second.
+Project archives carry project source/state; retain the full backup for accounts,
+memberships, audit events and database history. Iris does not convert older schema
+versions, relocate old storage layouts or reset an installation on startup.
+Do not insert or change the marker to bypass an incompatibility error.
 
 ## Project sharing
 
@@ -1192,8 +1189,6 @@ Sessions carry the account's integer `session_version`, which is incremented
 atomically on deactivation, password reset or change, and local/SSO conversion.
 Older cookies are rejected even when both operations occur in the same second;
 a successful password change issues a replacement cookie only to that client.
-Migration `014` introduces this check, so users must sign in again after upgrading
-from an earlier schema.
 
 Account revocation through Iris closes existing collaboration sockets immediately.
 WebSockets also validate the account on each message and heartbeat, and expire
@@ -1392,10 +1387,18 @@ Chrome desktop and mobile viewport emulation, not a physical phone or a screen
 reader. Compiler fixtures exercise multipass diagnostics and PostgreSQL history
 round-trips with controlled executables, not a real TeX distribution.
 
-Database migrations live in `db/migrations/` and are applied atomically at
-startup. Applied filenames and SHA-256 checksums are recorded in
-`schema_migrations`; never edit a migration that has already shipped—add the
-next numbered SQL file instead.
+The declarative current schema lives in `db/schema.sql`.
+`src/database.js` exposes `initializeSchema(pool)` and keeps an explicit
+`CURRENT_SCHEMA_VERSION = 1`. Bump this version for future incompatible schema
+changes and update the fresh-schema tests and release notes. SQL comments and
+formatting do not change compatibility. The `iris_schema` marker has a boolean
+singleton primary key/check and an integer version; it is initialization metadata,
+separate from the nine application tables. The initializer owns its transaction
+and advisory lock `49524953` and rejects incompatible state without changing it.
+
+The full database/bootstrap suite needs a disposable test-cluster administrator
+with permission to create databases and roles, including a restricted-role test.
+Ordinary application startup only needs the dedicated application's schema access.
 
 ### Identifiers
 
@@ -1426,7 +1429,7 @@ real test database. The configured user therefore needs `CREATE` permission on
 that database:
 
 ```sh
-TEST_DATABASE_URL=postgresql://iris:password@127.0.0.1:5432/iris \
+TEST_DATABASE_URL=postgresql://iris_test:test-only-password@127.0.0.1:5432/iris_test \
   npm run test:integration
 ```
 
@@ -1435,8 +1438,7 @@ Repository layout:
 ```text
 public/   browser UI and frontend assets
 src/      Node.js HTTP server, API, persistence, and compiler orchestration
-db/       versioned PostgreSQL migrations
-scripts/  maintenance commands run outside the request path
+db/       current PostgreSQL schema and fresh restricted-role provisioning
 test/     Node.js test suite
 data/     local project data, excluded from Git
 ```

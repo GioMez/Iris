@@ -6,7 +6,7 @@ const path = require("node:path");
 const root = path.resolve(__dirname, "..");
 const read = (file) => fs.readFileSync(path.join(root, file), "utf8");
 const server = read("src/server.js");
-const migration = read("db/migrations/014_external_users.sql");
+const schema = read("db/schema.sql");
 const html = read("public/Iris.html");
 const css = read("public/iris.css");
 const projects = read("public/iris-projects.js");
@@ -14,8 +14,8 @@ const admin = read("public/iris-admin.js");
 const adminProjects = read("public/iris-admin-projects.js");
 
 test("the schema admits the external role and the pending status", () => {
-  assert.match(migration, /system_role IN \('admin', 'regular', 'external'\)/);
-  assert.match(migration, /status IN \('active', 'disabled', 'pending'\)/);
+  assert.match(schema, /system_role IN \('admin', 'regular', 'external'\)/);
+  assert.match(schema, /status IN \('active', 'disabled', 'pending'\)/);
 });
 
 test("both ways a project comes into existence are closed to an external account", () => {

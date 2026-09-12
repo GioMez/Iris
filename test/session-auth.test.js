@@ -101,6 +101,8 @@ test("disable-enable revokes same-second cookies but role and profile changes ke
   const f = await serverFixture(t);
   const admin = await createUser(f, "admin", "admin");
   const user = await createUser(f);
+  const now = Math.floor(Date.now() / 1000) * 1000;
+  t.mock.method(Date, "now", () => now);
   const cookie = f.cookieFor(user);
   const patch = (body) => f.request(`/api/admin/users/${user.id}`, { method: "PATCH", cookie: f.cookieFor(admin), body });
   assert.equal((await patch({ role: "admin", name: "Updated" })).status, 200);
@@ -120,13 +122,10 @@ test("disable-enable revokes same-second cookies but role and profile changes ke
   assert.equal((await patch({ status: "active" })).status, 200);
   const row = (await f.pool.query("SELECT * FROM users WHERE id = $1", [user.id])).rows[0];
   assert.equal(row.session_version, 1);
-  // Use the exact legacy epoch second: equality used to resurrect this cookie.
-  const sameSecond = f.cookieFor(user, { iat: Math.floor(row.session_epoch.getTime() / 1000) });
-  assert.equal((await session(f, sameSecond)).status, 401);
+  assert.equal(Date.now(), now, "issuance and revocation occur in the same frozen second");
+  assert.equal((await session(f, cookie)).status, 401);
   const current = await login(f, user);
   assert.equal((await session(f, responseCookie(current))).status, 200);
-  await f.pool.query("UPDATE users SET session_epoch = CURRENT_TIMESTAMP + INTERVAL '1 day' WHERE id = $1", [user.id]);
-  assert.equal((await session(f, responseCookie(current))).status, 200, "epoch is no longer an authority");
 });
 
 test("self password change revokes old sessions and issues a usable replacement", options, async (t) => {

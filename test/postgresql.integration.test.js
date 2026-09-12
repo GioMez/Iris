@@ -1,58 +1,10 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const crypto = require("node:crypto");
-const fs = require("node:fs/promises");
-const os = require("node:os");
-const path = require("node:path");
-const { Pool } = require("pg");
-const { runMigrations } = require("../src/database");
-const { uuidv7, isUuid, uuidTimestamp } = require("../src/ids");
-const { projectStorageKey, relocateProjectStorage } = require("../src/project-storage");
-
-const connectionString = process.env.TEST_DATABASE_URL;
-const MIGRATIONS_DIR = path.resolve(__dirname, "../db/migrations");
-const ALL_MIGRATIONS = [
-  "001_initial.sql",
-  "002_project_storage_relative.sql",
-  "003_audit_events.sql",
-  "004_uuidv7_identifiers.sql",
-  "005_consolidation_invariants.sql",
-  "006_project_files.sql",
-  "007_document_versions.sql",
-  "008_server_administration.sql",
-  "009_project_members.sql",
-  "010_account_hardening.sql",
-  "011_oidc_linked_at.sql",
-  "012_versioned_build_outputs.sql",
-  "013_realtime_revisions.sql",
-  "014_account_session_version.sql",
-  "014_external_users.sql",
-  "015_project_revision.sql",
-  "015_retention.sql",
-  "016_build_diagnostics_version.sql",
-];
-const silentLogger = { log() {}, warn() {}, error() {} };
-
-// Each test owns an isolated schema so a failure never leaves state behind.
-async function isolatedSchema(t) {
-  const schema = `iris_test_${process.pid}_${crypto.randomBytes(4).toString("hex")}`;
-  const timeouts = { connectionTimeoutMillis: 3000, query_timeout: 7000, statement_timeout: 5000, lock_timeout: 3000, idle_in_transaction_session_timeout: 10000 };
-  const admin = new Pool({ connectionString, max: 1, ...timeouts });
-  const pool = new Pool({ connectionString, max: 2, ...timeouts, options: `-c search_path=${schema}` });
-  await admin.query(`CREATE SCHEMA ${schema}`);
-  t.after(async () => {
-    await pool.end();
-    await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
-    await admin.end();
-  });
-  return pool;
-}
-
-async function tempDir(t, prefix) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
-  return dir;
-}
+const { initializeSchema } = require("../src/database");
+const { uuidv7, isUuid } = require("../src/ids");
+const { projectStorageKey } = require("../src/project-storage");
+const { connectionString, isolatedSchema } = require("./helpers/isolated-schema.cjs");
 
 async function insertUser(pool, username, email) {
   const { rows } = await pool.query(
@@ -62,13 +14,16 @@ async function insertUser(pool, username, email) {
   return rows[0].id;
 }
 
-test("PostgreSQL migrations enforce Iris data invariants", { skip: !connectionString }, async (t) => {
+test("the current PostgreSQL schema enforces Iris data invariants", { skip: !connectionString }, async (t) => {
   const pool = await isolatedSchema(t);
-  await runMigrations(pool);
-  await runMigrations(pool);
+  await initializeSchema(pool);
 
-  const migrations = await pool.query("SELECT version FROM schema_migrations ORDER BY version");
-  assert.deepEqual(migrations.rows.map((row) => row.version), ALL_MIGRATIONS);
+  // Keep the current lookup/index guarantees independently of bootstrap history.
+  const indexes = await pool.query("SELECT indexname FROM pg_indexes WHERE schemaname = current_schema()");
+  const names = indexes.rows.map((row) => row.indexname);
+  for (const expected of ["idx_projects_created_by", "idx_audit_events_actor", "uq_users_username_ci"]) {
+    assert.ok(names.includes(expected), `missing index ${expected}: ${names.join(", ")}`);
+  }
 
   const userId = await insertUser(pool, "Mario", "Mario@example.org");
   assert.ok(isUuid(userId), `expected a uuid, got ${userId}`);
@@ -117,6 +72,11 @@ test("PostgreSQL migrations enforce Iris data invariants", { skip: !connectionSt
     ),
     (error) => error.code === "22P02"
   );
+  const orphanId = uuidv7();
+  await assert.rejects(
+    pool.query("INSERT INTO projects (id, created_by, name, storage_path) VALUES ($1, $2, 'Orphan', $3)", [orphanId, uuidv7(), projectStorageKey(orphanId)]),
+    { code: "23503" }
+  );
 
   // Deleting the creator no longer removes the project: created_by is a historical
   // pointer set to NULL, and the project lives on through its memberships.
@@ -128,7 +88,7 @@ test("PostgreSQL migrations enforce Iris data invariants", { skip: !connectionSt
 
 test("the audit trail outlives the accounts it describes", { skip: !connectionString }, async (t) => {
   const pool = await isolatedSchema(t);
-  await runMigrations(pool);
+  await initializeSchema(pool);
   const userId = await insertUser(pool, "lucia", "lucia@example.org");
   const projectId = uuidv7();
 
@@ -193,7 +153,7 @@ test("the audit trail outlives the accounts it describes", { skip: !connectionSt
 
 test("the file-identity ledger enforces its invariants", { skip: !connectionString }, async (t) => {
   const pool = await isolatedSchema(t);
-  await runMigrations(pool);
+  await initializeSchema(pool);
   const userId = await insertUser(pool, "gio", "gio@example.org");
   const projectId = uuidv7();
   await pool.query(
@@ -246,7 +206,7 @@ test("the file-identity ledger enforces its invariants", { skip: !connectionStri
 
 test("project membership is the authority for ownership and cascades correctly", { skip: !connectionString }, async (t) => {
   const pool = await isolatedSchema(t);
-  await runMigrations(pool);
+  await initializeSchema(pool);
   const owner = await insertUser(pool, "owner", "owner@example.org");
   const editor = await insertUser(pool, "editor", "editor@example.org");
   const projectId = uuidv7();
@@ -295,9 +255,9 @@ test("project membership is the authority for ownership and cascades correctly",
 
 test("server administration schema enforces roles, status and OIDC identity", { skip: !connectionString }, async (t) => {
   const pool = await isolatedSchema(t);
-  await runMigrations(pool);
+  await initializeSchema(pool);
 
-  // The role column was renamed and its vocabulary changed.
+  // Only current server roles are admitted.
   await assert.rejects(
     pool.query("INSERT INTO users (id, username, email, display_name, system_role, password_hash) VALUES ($1, 'x', 'x@e.org', 'x', 'user', 'h')", [uuidv7()]),
     (error) => error.code === "23514"
@@ -312,8 +272,7 @@ test("server administration schema enforces roles, status and OIDC identity", { 
     );
   }
 
-  // The vocabularies migration 014 widened: an external account and one waiting
-  // for approval are both storable, while the rejected values above still are not.
+  // An external account waiting for approval is storable.
   await pool.query(
     "INSERT INTO users (id, username, email, display_name, system_role, status, auth_source, oidc_issuer, oidc_subject) VALUES ($1, 'ext', 'ext@e.org', 'ext', 'external', 'pending', 'oidc', 'https://idp', 'sub-ext')",
     [uuidv7()]
@@ -330,12 +289,12 @@ test("server administration schema enforces roles, status and OIDC identity", { 
   // Defaults: a plain insert is an active, regular, local account.
   const id = uuidv7();
   await pool.query("INSERT INTO users (id, username, email, display_name, password_hash) VALUES ($1, 'gio', 'gio@e.org', 'gio', 'h')", [id]);
-  const row = await pool.query("SELECT system_role, status, auth_source, session_epoch FROM users WHERE id = $1", [id]);
+  const row = await pool.query("SELECT system_role, status, auth_source, session_version FROM users WHERE id = $1", [id]);
   assert.deepEqual(
     { role: row.rows[0].system_role, status: row.rows[0].status, source: row.rows[0].auth_source },
     { role: "regular", status: "active", source: "local" }
   );
-  assert.ok(row.rows[0].session_epoch, "session_epoch defaults to now");
+  assert.equal(row.rows[0].session_version, 0);
 
   // The issuer + subject identity is unique when both are present.
   await pool.query(
@@ -359,39 +318,29 @@ test("server administration schema enforces roles, status and OIDC identity", { 
   await pool.query("INSERT INTO users (id, username, email, display_name, password_hash) VALUES ($1, 'e', 'e@e.org', 'e', 'h')", [uuidv7()]);
 });
 
-test("session versions backfill existing accounts and enforce nonnegative integers", { skip: !connectionString }, async (t) => {
+test("session versions default to zero and enforce nonnegative integers", { skip: !connectionString }, async (t) => {
   const pool = await isolatedSchema(t);
-  const staged = await tempDir(t, "iris-migrations-");
-  for (const name of ALL_MIGRATIONS.slice(0, 13)) {
-    await fs.copyFile(path.join(MIGRATIONS_DIR, name), path.join(staged, name));
-  }
-  await runMigrations(pool, staged);
-  const existing = await insertUser(pool, "existing", "existing@example.org");
-  await runMigrations(pool);
+  await initializeSchema(pool);
   const fresh = await insertUser(pool, "fresh", "fresh@example.org");
-  const { rows } = await pool.query("SELECT session_version, session_epoch FROM users ORDER BY username");
-  assert.deepEqual(rows.map((row) => row.session_version), [0, 0]);
-  assert.ok(rows.every((row) => row.session_epoch), "retain the epoch column for existing data");
+  const { rows } = await pool.query("SELECT session_version FROM users");
+  assert.deepEqual(rows, [{ session_version: 0 }]);
   const column = await pool.query(
     "SELECT data_type FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'users' AND column_name = 'session_version'"
   );
   assert.equal(column.rows[0].data_type, "integer");
   for (const [value, code] of [[null, "23502"], [-1, "23514"], ["1.5", "22P02"]]) {
-    await assert.rejects(pool.query("UPDATE users SET session_version = $1 WHERE id = $2", [value, existing]), (error) => error.code === code);
+    await assert.rejects(pool.query("UPDATE users SET session_version = $1 WHERE id = $2", [value, fresh]), (error) => error.code === code);
   }
   await pool.query("UPDATE users SET session_version = session_version + 1 WHERE id = $1", [fresh]);
   assert.equal((await pool.query("SELECT session_version FROM users WHERE id = $1", [fresh])).rows[0].session_version, 1);
 });
 
-test("project revisions backfill and enforce nonnegative integers", { skip: !connectionString, timeout: 20000 }, async (t) => {
+test("project revisions default to zero and enforce nonnegative integers", { skip: !connectionString, timeout: 20000 }, async (t) => {
   const pool = await isolatedSchema(t);
-  const staged = await tempDir(t, "iris-migrations-");
-  for (const name of ALL_MIGRATIONS.slice(0, 14)) await fs.copyFile(path.join(MIGRATIONS_DIR, name), path.join(staged, name));
-  await runMigrations(pool, staged);
+  await initializeSchema(pool);
   const user = await insertUser(pool, "writer", "writer@example.org");
   const id = uuidv7();
-  await pool.query("INSERT INTO projects (id, created_by, name, storage_path) VALUES ($1, $2, 'Existing', $3)", [id, user, projectStorageKey(id)]);
-  await runMigrations(pool);
+  await pool.query("INSERT INTO projects (id, created_by, name, storage_path) VALUES ($1, $2, 'Fresh', $3)", [id, user, projectStorageKey(id)]);
   assert.equal((await pool.query("SELECT revision FROM projects WHERE id = $1", [id])).rows[0].revision, 0);
   for (const [value, code] of [[null, "23502"], [-1, "23514"], ["1.5", "22P02"]]) {
     await assert.rejects(pool.query("UPDATE projects SET revision = $1 WHERE id = $2", [value, id]), (error) => error.code === code);
@@ -400,7 +349,7 @@ test("project revisions backfill and enforce nonnegative integers", { skip: !con
 
 test("document versions form an append-only history keyed to a stable file id", { skip: !connectionString }, async (t) => {
   const pool = await isolatedSchema(t);
-  await runMigrations(pool);
+  await initializeSchema(pool);
   const userId = await insertUser(pool, "gio", "gio@example.org");
   const projectId = uuidv7();
   await pool.query(
@@ -438,7 +387,7 @@ test("document versions form an append-only history keyed to a stable file id", 
   assert.equal(chain.rows[2].parent_version_id, v2, "rollback parents the latest, not the source");
   assert.equal(chain.rows[2].content, "one");
 
-  // Migration 013 admits the consolidated checkpoints realtime editing records.
+  // Realtime editing records consolidated checkpoints in the same history.
   const v4 = await addVersion(v3, "realtime", "one live");
   assert.ok(isUuid(v4));
 
@@ -469,7 +418,7 @@ test("document versions form an append-only history keyed to a stable file id", 
 
 test("versioned build outputs retain provenance and cascade with their project", { skip: !connectionString }, async (t) => {
   const pool = await isolatedSchema(t);
-  await runMigrations(pool);
+  await initializeSchema(pool);
   const userId = await insertUser(pool, "builder", "builder@example.org");
   const projectId = uuidv7();
   await pool.query(
@@ -544,7 +493,7 @@ test("versioned build outputs retain provenance and cascade with their project",
 
 test("admin user deletion: sole-owner detection and membership cascade", { skip: !connectionString }, async (t) => {
   const pool = await isolatedSchema(t);
-  await runMigrations(pool);
+  await initializeSchema(pool);
   const alice = await insertUser(pool, "alice", "alice@example.org");
   const bob = await insertUser(pool, "bob", "bob@example.org");
   const mkProject = async (name) => {
@@ -592,142 +541,13 @@ test("admin user deletion: sole-owner detection and membership cascade", { skip:
   assert.equal(Number(surviving.rows[0].n), 3, "the projects themselves survive (created_by is nulled)");
 });
 
-test("upgrading a pre-002 database relocates project data", { skip: !connectionString }, async (t) => {
-  const pool = await isolatedSchema(t);
-  const staged = await tempDir(t, "iris-migrations-");
-  const dataDir = await tempDir(t, "iris-data-");
-  const legacyId = "0123456789abcdef0123456789abcdef";
-
-  // Start from the schema as it shipped, with an absolute storage path.
-  await fs.copyFile(path.join(MIGRATIONS_DIR, ALL_MIGRATIONS[0]), path.join(staged, ALL_MIGRATIONS[0]));
-  await runMigrations(pool, staged);
-  const { rows } = await pool.query(
-    "INSERT INTO users (username, email, display_name, role, password_hash) VALUES ('gio', 'gio@example.org', 'gio', 'admin', 'hash') RETURNING id"
-  );
-  const legacyDir = path.join(dataDir, String(rows[0].id), `${legacyId}-score`);
-  await fs.mkdir(legacyDir, { recursive: true });
-  await fs.writeFile(path.join(legacyDir, "main.tex"), "\\documentclass{article}");
-  await pool.query(
-    "INSERT INTO projects (id, user_id, name, storage_path) VALUES ($1, $2, $3, $4)",
-    [legacyId, rows[0].id, "Score", legacyDir]
-  );
-
-  await runMigrations(pool, MIGRATIONS_DIR);
-
-  // 002 made the path relative, 004 renamed it after the new uuid: both moves are
-  // pending on disk and both are carried by legacy_storage_path.
-  const migrated = await pool.query("SELECT id, storage_path, legacy_storage_path FROM projects");
-  assert.ok(isUuid(migrated.rows[0].id));
-  assert.equal(migrated.rows[0].storage_path, projectStorageKey(migrated.rows[0].id));
-  assert.equal(migrated.rows[0].legacy_storage_path, legacyDir);
-
-  const summary = await relocateProjectStorage({ db: pool, dataDir, logger: silentLogger });
-  assert.equal(summary.moved, 1);
-  const settled = await pool.query("SELECT legacy_storage_path FROM projects");
-  assert.equal(settled.rows[0].legacy_storage_path, null);
-  assert.equal(
-    await fs.readFile(path.join(dataDir, "projects", migrated.rows[0].id, "main.tex"), "utf8"),
-    "\\documentclass{article}"
-  );
-});
-
-test("migration 004 rewrites every identifier and its references", { skip: !connectionString }, async (t) => {
-  const pool = await isolatedSchema(t);
-  const staged = await tempDir(t, "iris-migrations-");
-  const dataDir = await tempDir(t, "iris-data-");
-  const legacyId = "fedcba9876543210fedcba9876543210";
-
-  // Reach the state right before 004: integer users, CHAR(32) projects.
-  for (const name of ALL_MIGRATIONS.slice(0, 3)) {
-    await fs.copyFile(path.join(MIGRATIONS_DIR, name), path.join(staged, name));
-  }
-  await runMigrations(pool, staged);
-
-  const createdAt = "2024-03-01 09:15:00+01";
-  const { rows: userRows } = await pool.query(
-    `INSERT INTO users (username, email, display_name, role, password_hash, created_at)
-     VALUES ('gio', 'gio@example.org', 'gio', 'admin', 'hash', $1) RETURNING id`,
-    [createdAt]
-  );
-  const oldUserId = userRows[0].id;
-  await pool.query(
-    "INSERT INTO projects (id, user_id, name, storage_path, created_at) VALUES ($1, $2, 'Score', $3, $4)",
-    [legacyId, oldUserId, `projects/${legacyId}`, createdAt]
-  );
-  await fs.mkdir(path.join(dataDir, "projects", legacyId), { recursive: true });
-  await fs.writeFile(path.join(dataDir, "projects", legacyId, "main.ly"), "{ c1 }");
-
-  // Audit rows reference both entities: by foreign key and as text in target_id.
-  await pool.query(
-    `INSERT INTO audit_events (action, actor_id, actor_label, target_type, target_id) VALUES
-       ('project.created', $1, 'gio', 'project', $2),
-       ('user.created', $1, 'gio', 'user', $3),
-       ('auth.login_failed', NULL, 'ghost', 'user', '999')`,
-    [oldUserId, legacyId, String(oldUserId)]
-  );
-
-  await runMigrations(pool, MIGRATIONS_DIR);
-
-  const user = (await pool.query("SELECT id, created_at FROM users")).rows[0];
-  const project = (await pool.query("SELECT id, created_by, storage_path, legacy_storage_path FROM projects")).rows[0];
-
-  assert.ok(isUuid(user.id) && isUuid(project.id), "identifiers became uuids");
-  assert.equal(user.id[14], "7", "user id is version 7");
-  assert.equal(project.id[14], "7", "project id is version 7");
-  // The backfilled id embeds the row's own creation time, so ids stay time-ordered.
-  assert.equal(uuidTimestamp(user.id).getTime(), new Date(user.created_at).getTime());
-
-  assert.equal(project.created_by, user.id, "the foreign key follows the rewrite");
-  assert.equal(project.storage_path, projectStorageKey(project.id));
-  // Migration 009 seeded ownership from the migrated single-owner column.
-  const owner = await pool.query("SELECT role FROM project_members WHERE project_id = $1 AND user_id = $2", [project.id, user.id]);
-  assert.equal(owner.rows[0].role, "owner");
-  assert.equal(project.legacy_storage_path, `projects/${legacyId}`);
-
-  const events = await pool.query("SELECT action, actor_id, target_type, target_id FROM audit_events ORDER BY id");
-  assert.deepEqual(events.rows, [
-    { action: "project.created", actor_id: user.id, target_type: "project", target_id: project.id },
-    { action: "user.created", actor_id: user.id, target_type: "user", target_id: user.id },
-    // Nothing to translate: the referenced account never existed.
-    { action: "auth.login_failed", actor_id: null, target_type: "user", target_id: "999" },
-  ]);
-
-  // The indexes that depended on the rewritten columns must be back.
-  const indexes = await pool.query(
-    "SELECT indexname FROM pg_indexes WHERE schemaname = current_schema() ORDER BY indexname"
-  );
-  const names = indexes.rows.map((row) => row.indexname);
-  for (const expected of ["idx_projects_created_by", "idx_audit_events_actor", "uq_users_username_ci"]) {
-    assert.ok(names.includes(expected), `missing index ${expected}: ${names.join(", ")}`);
-  }
-
-  // Constraints survive the column swap.
-  await assert.rejects(
-    pool.query("INSERT INTO projects (id, created_by, name, storage_path) VALUES ($1, $2, 'x', '/absolute')", [uuidv7(), user.id]),
-    (error) => error.code === "23514"
-  );
-  const orphanProjectId = uuidv7();
-  await assert.rejects(
-    pool.query(
-      "INSERT INTO projects (id, created_by, name, storage_path) VALUES ($1, $2, 'x', $3)",
-      [orphanProjectId, uuidv7(), projectStorageKey(orphanProjectId)]
-    ),
-    (error) => error.code === "23503"
-  );
-
-  // And the pending directory rename completes.
-  const summary = await relocateProjectStorage({ db: pool, dataDir, logger: silentLogger });
-  assert.equal(summary.moved, 1);
-  assert.equal(await fs.readFile(path.join(dataDir, "projects", project.id, "main.ly"), "utf8"), "{ c1 }");
-});
-
 // The retention SQL is the implementation of the K+D rule, so it is verified
 // against a real planner rather than against a reimplementation of itself. Every
 // case below is one the rule has to get right, and each is a way a naive
 // version — count only, or age only — would delete something it must not.
 test("retention prunes only what is both surplus and old", { skip: !connectionString }, async (t) => {
   const pool = await isolatedSchema(t);
-  await runMigrations(pool);
+  await initializeSchema(pool);
   const userId = await insertUser(pool, "gio", "gio@example.org");
   const projectId = uuidv7();
   await pool.query(
@@ -885,10 +705,10 @@ test("retention prunes only what is both surplus and old", { skip: !connectionSt
 
 // The schema's own floors, which hold even for a value written outside the
 // application. The operator's narrower ceiling lives above this layer so it can
-// change without a migration.
+// change without a schema change.
 test("retention columns admit null and refuse a history-shredding value", { skip: !connectionString }, async (t) => {
   const pool = await isolatedSchema(t);
-  await runMigrations(pool);
+  await initializeSchema(pool);
   const userId = await insertUser(pool, "gio", "gio@example.org");
   const projectId = uuidv7();
   // Null on every axis: the project follows the instance default.
