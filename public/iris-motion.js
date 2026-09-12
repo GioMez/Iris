@@ -30,6 +30,8 @@
 
   function syncSurfaceInteractivity() {
     const blockedByDialog = dialogStack.length > 0;
+    // Paint order must agree with focus/inert order, regardless of DOM placement.
+    dialogStack.forEach((dialog, index) => dialog.style.setProperty("--iris-dialog-layer", index));
     Object.entries(topLevelSurfaces()).forEach(([name, element]) => {
       if (!element) return;
       const interactive = !blockedByDialog && name === activeSurface;
@@ -86,6 +88,7 @@
     const index = dialogStack.lastIndexOf(dialog);
     const wasTop = index === dialogStack.length - 1;
     if (index >= 0) dialogStack.splice(index, 1);
+    dialog.style.removeProperty("--iris-dialog-layer");
     dialog.setAttribute("aria-hidden", "true");
     setDialogInteractive(dialog, false);
     const parent = dialogStack[dialogStack.length - 1];
@@ -96,7 +99,9 @@
     syncSurfaceInteractivity();
     if (!restoreFocus || !wasTop) return;
     const opener = dialogOpeners.get(dialog);
-    if (opener && opener.isConnected && !opener.disabled && !opener.hidden && !opener.closest("[inert]") && opener.getClientRects().length > 0) opener.focus();
+    if (opener && opener.isConnected && !opener.disabled && !opener.hidden && !opener.closest("[inert]") &&
+      (!parent || parent.contains(opener)) && opener.getClientRects().length > 0) opener.focus();
+    else if (parent) initialFocusTarget(parent)?.focus();
     else focusActiveSurface();
   }
 

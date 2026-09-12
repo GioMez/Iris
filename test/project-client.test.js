@@ -185,7 +185,11 @@ function harness(language = "en", realtime = false) {
       IrisMotion: {
         activeSurface: () => surface, setActiveSurface(value) { surface = value; },
         openDialog(id) { (typeof id === "string" ? get(id) : id).classList.add("on"); },
-        closeDialog: async (id) => (typeof id === "string" ? get(id) : id).classList.remove("on"),
+        async closeDialog(id, options = {}) {
+          const node = typeof id === "string" ? get(id) : id;
+          node.dispatchEvent(new context.CustomEvent("iris:before-dialog-close", { detail: { force: !!options.force } }));
+          const opened = node.classList.contains("on"); node.classList.remove("on"); return opened;
+        },
         openProject() {}, closeProject: async () => {}, resetProject() {},
       },
       IrisCollab: {
@@ -369,6 +373,124 @@ function flushBibliography(h) {
   assert.ok(timer, "edits must schedule a 150 ms quiet-period parse");
   timer.ran = true; timer.fn(); parseBibliography(h);
 }
+
+for (const [name, format, source, label] of [
+  ["citation key", "bib", "@book{Knuth:1984/a+b,title={Other}}", "Knuth:1984/a+b"],
+  ["BibLaTeX key", "bib", "@online{Web.TeX-2026,title={Other}}", "Web.TeX-2026"],
+  ["first populated BibTeX title", "bib", "@book{,title={ },TITLE={  Mixed {Case} & <b>Title</b>  },title={Later}}", "  Mixed {Case} & <b>Title</b>  "],
+  ["first populated RIS ID", "ris", "TY  - BOOK\nID  -\nTI  - Other\nID  - Ref:A/B+Mixed\nID  - Later\nER  -", "Ref:A/B+Mixed"],
+  ["positional-looking native ID", "ris", "TY  - BOOK\nTI  - Complete\nAU  - Writer\nPY  - 2026\nER  -\nTY  - BOOK\nID  - Reference 1\nER  -", "Reference 1"],
+  ["RIS TI", "ris", "TY  - JOUR\nT2  - Container\nTI  - Primary TI\nER  -", "Primary TI"],
+  ["first populated RIS title", "ris", "TY  - JOUR\nID  -\nTI  -\nT1  - Primary T1\nTI  - Later\nER  -", "Primary T1"],
+  ["contextual RIS BT", "ris", "TY  - BOOK\nT2  - Series\nBT  - Primary BT\nTI  - Later\nER  -", "Primary BT"],
+  ["RIS chapter title not BT", "ris", "TY  - CHAP\nBT  - Container\nT2  - Container\nT1  - Chapter\nER  -", "Chapter"],
+  ["anonymous BibTeX", "bib", "% preceding\n@book{,title={ }}", "Reference without identifier (line 2)"],
+  ["RIS journal is not title", "ris", "% preceding\nTY  - JOUR\nT2  - Journal\nER  -", "Reference without identifier (line 2)"],
+  ["RIS chapter container is not title", "ris", "TY  - CHAP\nBT  - Container\nT2  - Container\nER  -", "Reference without identifier (line 1)"],
+  ["RIS conference container is not title", "ris", "TY  - CONF\nT2  - Container\nER  -", "Reference without identifier (line 1)"],
+]) {
+  test(`bibliography diagnostic labels: ${name}`, options, async () => {
+    const h = harness("en", true); await h.open(bibliographyData(source, format)); parseBibliography(h);
+    assert.equal(h.a.bibliography.context().parsed.status, "valid");
+    const issues = h.get("bibliographyDiagnostics").children;
+    assert.ok(issues.length > 0);
+    for (const issue of issues) assert.ok(issue.children[0].textContent.startsWith(`${label}: Warning: `), issue.children[0].textContent);
+    assert.ok(descendants(h.get("bibliographyDiagnostics")).every((node) => !node.innerHTML), "all native data stays inert");
+    assert.equal(h.get("bibliographyCards").children[0].children[0].textContent, "Reference 1", "card headings stay positional");
+    assert.equal(bibRows(h)[0].getAttribute("aria-label"), "Select reference 1");
+    const columns = h.window.IrisBibliography.project(h.a.bibliography.context().parsed).columns;
+    assert.equal(h.get("bibliographyHead").children[0].children.length, columns.length + 1, "only native columns and source action");
+    assert.equal(h.editor.getValue(), source); assert.equal(h.app.hasUnsavedChanges(), false);
+  });
+}
+
+for (const [name, newline] of [["LF", "\n"], ["CRLF", "\r\n"], ["CR", "\r"], ["mixed", null]]) {
+  test(`bibliography diagnostic labels: raw ${name}, BOM and astral source start lines`, options, async () => {
+    const source = newline === null ? "\uFEFF% \u{1f600}\r\n@book{\r,title={ }\n}\r\n% \u{1f600}\r@book{\n,title={ }}"
+      : ["\uFEFF% \u{1f600}", "@book{", ",title={ }", "}", "% \u{1f600}", "@book{", ",title={ }}"].join(newline);
+    const h = harness("en", true); await h.open(bibliographyData(source)); parseBibliography(h);
+    const issues = h.get("bibliographyDiagnostics").children;
+    assert.equal(issues.length, 8);
+    for (const issue of issues) assert.ok(issue.children[0].textContent.startsWith(
+      `Reference without identifier (line ${issue.dataset.entryIndex === "0" ? 2 : 6}): Warning: `), issue.children[0].textContent);
+    assert.equal(h.editor.getValue(), source);
+  });
+}
+
+for (const format of ["bib", "ris"]) {
+  test(`bibliography diagnostic labels: duplicate ${format} identifiers beyond both pages use exact second span`, options, async () => {
+    const source = Array.from({ length: 102 }, (_, i) => format === "bib"
+      ? `@book{${i === 0 || i === 101 ? "Same:Key" : `k${i}`},title={Title ${i}}}`
+      : `TY  - BOOK\nID  - ${i === 0 || i === 101 ? "Same:ID" : `id${i}`}\nTI  - Title ${i}\nER  -`).join("\n");
+    const h = harness("en", true); await h.open(bibliographyData(source, format)); parseBibliography(h);
+    h.edit(source + "\n% history"); flushBibliography(h);
+    const ed = h.editor, before = ed.snapshot(), saved = clone(h.app.capturePersistence().data), dirty = [...h.a.state.dirtyFiles];
+    const pending = ed.collabPending(), doc = ed.view().state.doc, requests = h.requests.length;
+    const prefix = format === "bib" ? "Same:Key" : "Same:ID";
+    assert.ok(h.get("bibliographyDiagnostics").children[0].children[0].textContent.startsWith(`${prefix} (line 1): Warning:`));
+    h.a.bibliography.setPage(1); h.a.bibliography.setQuery("Title 101");
+    h.get("bibliographyDiagnosticsButton").dispatchEvent({ type: "click" });
+    h.get("bibliographyDiagnosticsNext").dispatchEvent({ type: "click" });
+    h.get("bibliographyDiagnosticsNext").dispatchEvent({ type: "click" });
+    const issue = h.get("bibliographyDiagnostics").children.find((node) => node.dataset.entryIndex === "101");
+    assert.ok(issue.children[0].textContent.startsWith(`${prefix} (line ${format === "bib" ? 102 : 405}): Warning:`));
+    const parsed = h.a.bibliography.context().parsed, entry = parsed.entries[101];
+    const diagnostic = [...parsed.diagnostics, ...h.window.IrisBibliography.metadataWarnings(parsed)].find((item) => item.from >= entry.from && item.to <= entry.to);
+    assert.notEqual(diagnostic.from, entry.from, "navigation is to the diagnostic, not the entry start");
+    issue.children[0].dispatchEvent({ type: "click" }); await tick();
+    assert.equal(ed.selection().from, diagnostic.from); assert.equal(ed.selection().to, diagnostic.to);
+    assert.deepEqual(ed.snapshot(), before); assert.equal(ed.view().state.doc, doc);
+    assert.deepEqual(clone(h.app.capturePersistence().data), saved); assert.deepEqual([...h.a.state.dirtyFiles], dirty);
+    assert.deepEqual(ed.collabPending(), pending); assert.equal(h.requests.length, requests);
+    assert.equal(ed.undo(), true); assert.equal(ed.getValue(), source, "labeling and navigation add no history edit");
+  });
+}
+
+test("bibliography diagnostic labels: repeated title fallback is disambiguated without rewriting content", options, async () => {
+  const h = harness("en", true); await h.open(bibliographyData('@book{,title={Same <i>Title</i>}}\n@book{,title={Same <i>Title</i>}}')); parseBibliography(h);
+  for (const issue of h.get("bibliographyDiagnostics").children) assert.ok(issue.children[0].textContent.startsWith(
+    `Same <i>Title</i> (line ${issue.dataset.entryIndex === "0" ? 1 : 2}): Warning:`));
+});
+
+for (const source of ["@book{a,title={A}}\n@book{broken,", "@string{foo=unknown}", "TY  - BOOK\nTI  - unfinished"]) {
+  test(`bibliography diagnostic labels: file-level issues have no invented identity for ${source.split("\n").at(-1)}`, options, async () => {
+    const h = harness("en", true); await h.open(bibliographyData(source)); parseBibliography(h);
+    const issues = h.get("bibliographyDiagnostics").children;
+    assert.ok(issues.length > 0);
+    for (const issue of issues) {
+      assert.equal(issue.dataset.entryIndex, "-1");
+      assert.match(issue.children[0].textContent, /^(Syntax error|Warning): /);
+    }
+  });
+}
+
+test("bibliography diagnostic labels: accepted native key is not inferred from warning text", options, async () => {
+  const h = harness("en", true); await h.open(bibliographyData("@book{a,title={A},author={Writer},year=2026}\n@book{b,title={B}}"));
+  const result = h.window.IrisBibliography.parse(h.editor.getValue(), "bib");
+  // Test the view's Entry contract independently of the scanner's key grammar.
+  result.entries[1].key = "Reference 1";
+  h.workers.at(-1).deliver(undefined, { result });
+  assert.ok(h.get("bibliographyDiagnostics").children.every((issue) => issue.children[0].textContent.startsWith("Reference 1: Warning:")));
+});
+
+test("bibliography diagnostic labels: locale and source updates reject obsolete Worker labels", options, async () => {
+  const h = harness("en", true); await h.open(bibliographyData("@book{,}"));
+  const oldWorker = h.workers.at(-1), oldRequest = oldWorker.requests.at(-1);
+  parseBibliography(h);
+  assert.ok(h.get("bibliographyDiagnostics").children[0].children[0].textContent.startsWith("Reference without identifier (line 1): Warning:"));
+  const it = JSON.parse(read("locales/it/translation.json"));
+  h.window.IrisI18n.t = (key, params = {}) => String(key.split(".").reduce((v, part) => v?.[part], it) || key)
+    .replace(/{{(\w+)}}/g, (match, name) => params[name] ?? match);
+  h.document.dispatchEvent({ type: "iris:languagechange" });
+  assert.ok(h.get("bibliographyDiagnostics").children[0].children[0].textContent.startsWith("Reference senza identificatore (riga 1): Avviso:"));
+  h.edit("% moved\r@book{,}");
+  assert.equal(h.get("bibliographyDiagnostics").children.length, 0);
+  oldWorker.deliver(oldRequest); assert.equal(h.get("bibliographyDiagnostics").children.length, 0);
+  flushBibliography(h); oldWorker.deliver(oldRequest);
+  assert.ok(h.get("bibliographyDiagnostics").children[0].children[0].textContent.startsWith("Reference senza identificatore (riga 2): Avviso:"));
+  h.edit("@book{New:Key,title={New}}"); flushBibliography(h); oldWorker.deliver(oldRequest);
+  assert.ok(h.get("bibliographyDiagnostics").children.every((issue) => issue.children[0].textContent.startsWith("New:Key: Avviso:")));
+});
 
 test("bibliography action selection uses parsed indices and resets on sort, page, query, revision and context changes", options, async () => {
   const text = Array.from({ length: 102 }, (_, i) => `@book{k${i},title={Title ${i}}}`).join("\n");
@@ -622,7 +744,10 @@ test("bibliography uses the full-file column union, 100-row pages, hidden search
   const h = harness("en", true); await h.open(bibliographyData(text)); parseBibliography(h);
   const controller = h.a.bibliography;
   assert.equal(bibRows(h).length, 100);
-  assert.equal(h.get("bibliographyDiagnostics").children.length, 200, "only the current page's metadata warnings are mounted");
+  h.get("bibliographyDiagnosticsButton").dispatchEvent({ type: "click" });
+  assert.equal(h.get("bibliographyDiagnosticsModal").classList.contains("on"), true);
+  assert.equal(h.get("bibliographyDiagnostics").children.length, 100, "whole-file diagnostics use their own bounded page");
+  h.get("bibliographyDiagnosticsClose").dispatchEvent({ type: "click" });
   assert.ok(h.get("bibliographyTotal").textContent.includes("101"));
   const initialColumns = bibColumns(h);
   assert.deepEqual(initialColumns.map((node) => node.dataset.columnId), ["key", "type", "bib:title", "bib:journal", "bib:custom"]);
@@ -636,7 +761,7 @@ test("bibliography uses the full-file column union, 100-row pages, hidden search
   controller.setQuery("not found"); assert.equal(bibRows(h).length, 0);
   assert.equal(h.get("bibliographyState").textContent, h.t("bibliography.noResults"));
   controller.setQuery(""); h.get("bibliographyNext").dispatchEvent({ type: "click" }); assert.equal(bibRows(h).length, 1);
-  assert.equal(h.get("bibliographyDiagnostics").children.length, 2);
+  assert.equal(h.get("bibliographyDiagnostics").children.length, 100, "table pagination does not hide other references' diagnostics");
   controller.setSort({ id: "bib:title", descending: true });
   for (const column of initialColumns) controller.setColumnVisible(column.dataset.columnId, false);
   assert.equal(bibRows(h).length, 0);
@@ -665,8 +790,10 @@ test("bibliography renders inert full values, native RIS labels and associated m
   assert.ok(nodes.every((node) => !node.innerHTML));
   assert.equal(h.get("bibliographyDiagnostics").children.length, 3);
   assert.equal(h.get("bibliographyDiagnostics").children[0].dataset.entryIndex, "0");
+  h.get("bibliographyDiagnosticsButton").dispatchEvent({ type: "click" });
   const warning = descendants(h.get("bibliographyDiagnostics")).find((node) => node.tagName === "BUTTON");
   warning.dispatchEvent({ type: "click" });
+  await tick();
   assert.equal(h.get("bibliographyTextPanel").hidden, false);
   assert.equal(h.editor.selection().text, "CONF");
   assert.equal(h.app.hasUnsavedChanges(), false);
@@ -703,7 +830,7 @@ test("bibliography invalid remote updates clear stale rows, while load, empty an
   h.workers.at(-1).onerror({ preventDefault() {} });
   assert.equal(h.a.bibliography.context(), null);
   assert.equal(h.get("bibliographyStatus").textContent, h.t("bibliography.parseFailed"));
-  h.get("bibliographySource").dispatchEvent({ type: "click" });
+  h.get("bibliographyTextTab").dispatchEvent({ type: "click" });
   assert.equal(h.get("bibliographyTextPanel").hidden, false);
   assert.equal(h.editor.getValue(), "@book{a,title={New}}");
 });
@@ -723,6 +850,63 @@ test("bibliography source search and compiler diagnostics reveal the source befo
   assert.equal(h.get("bibliographyTextPanel").hidden, false); assert.equal(h.editor.selection().text, " title={Needle}");
   assert.equal(h.app.hasUnsavedChanges(), false);
 });
+
+test("compact bibliography diagnostics reflect actual issues, clear pending warnings and never auto-open", options, async () => {
+  const h = harness("en", true); await h.open(bibliographyData("@book{a,title={A},author={Writer},year=2026}")); parseBibliography(h);
+  const trigger = h.get("bibliographyDiagnosticsButton"), modal = h.get("bibliographyDiagnosticsModal");
+  assert.equal(trigger.disabled, true);
+  trigger.dispatchEvent({ type: "click" }); assert.equal(modal.classList.contains("on"), false);
+  h.edit("@book{a,title={A}}"); flushBibliography(h);
+  assert.equal(trigger.disabled, false);
+  assert.equal(modal.classList.contains("on"), false);
+  trigger.dispatchEvent({ type: "click" }); assert.equal(modal.classList.contains("on"), true);
+  h.edit("@book{broken,");
+  assert.equal(trigger.disabled, true);
+  assert.equal(h.get("bibliographyDiagnostics").children.length, 0);
+  assert.equal(modal.classList.contains("on"), true, "pending analysis must not lose the dialog's close path");
+  flushBibliography(h);
+  assert.equal(trigger.disabled, false);
+  assert.ok(h.get("bibliographyDiagnostics").children.some((node) => node.className.endsWith("error")));
+  h.get("bibliographyDiagnosticsClose").dispatchEvent({ type: "click" });
+  h.a.bibliography.setMode("text");
+  trigger.dispatchEvent({ type: "click" }); assert.equal(modal.classList.contains("on"), true, "errors are reachable with Table disabled");
+});
+
+for (const transition of ["revision", "file", "image", "project", "rekey", "logout"]) {
+  test(`compact bibliography ${transition} cancels delayed diagnostic navigation and stale column callbacks`, options, async () => {
+    const h = harness("en", true), data = bibliographyData("@book{a,title={A}}");
+    data.project.nodes.push({ type: "file", id: "other", kind: "bib", path: "other.bib", name: "other.bib", content: "@book{b,title={Other}}" },
+      { type: "file", id: "image", kind: "img", name: "image.png", path: "image.png" });
+    await h.open(data); parseBibliography(h);
+    const trigger = h.get("bibliographyDiagnosticsButton"), modal = h.get("bibliographyDiagnosticsModal");
+    trigger.dispatchEvent({ type: "click" });
+    const stale = descendants(h.get("bibliographyDiagnostics")).find((node) => node.tagName === "BUTTON");
+    const oldCheck = bibColumns(h).find((node) => node.dataset.columnId === "bib:title");
+    let release;
+    const close = h.window.IrisMotion.closeDialog;
+    h.window.IrisMotion.closeDialog = (node, options) => {
+      if (options?.force) return close(node, options);
+      return new Promise((resolve) => { release = async () => resolve(await close(node, options)); });
+    };
+    stale.dispatchEvent({ type: "click" });
+    assert.equal(typeof release, "function", "diagnostic navigation waits for the real close boundary");
+    if (transition === "revision") { h.edit("% peer\n@book{a,title={A}}"); flushBibliography(h); }
+    if (transition === "file" || transition === "image") h.a.openFile(transition === "file" ? "other" : "image");
+    if (transition === "project") { const next = bibliographyData(); next.id = "p2"; await h.open(next); }
+    if (transition === "rekey") h.a.bibliography.rekey(h.a.bibliography.context().documentKey, "canonical");
+    if (transition === "logout") { await close(modal, { force: true }); h.window.IrisMotion.setActiveSurface("login"); }
+    if (["file", "project"].includes(transition)) parseBibliography(h);
+    const before = h.editor.selection();
+    await release(); await tick();
+    stale.dispatchEvent({ type: "click" }); await tick();
+    assert.deepEqual(h.editor.selection(), before, "no old offsets are selected");
+    if (["file", "project", "rekey"].includes(transition)) {
+      oldCheck.checked = false; oldCheck.dispatchEvent({ type: "change" });
+      assert.equal(bibColumns(h).find((node) => node.dataset.columnId === "bib:title").checked, true);
+    }
+    assert.equal(modal.classList.contains("on"), false);
+  });
+}
 
 test("bibliography deactivates on non-source surfaces and preserves content recognition after deleting the last entry", options, async () => {
   const h = harness("en", true), data = bibliographyData("@book{a,title={A}}", "txt");
@@ -908,7 +1092,7 @@ test("bibliography coalesces rapid edits, ignores obsolete technical failures an
   h.timers.findLast((timer) => timer.delay === 150 && !timer.cleared).fn();
   assert.equal(h.a.bibliography.context(), null);
   assert.equal(h.get("bibliographyStatus").textContent, h.t("bibliography.parseFailed"));
-  h.get("bibliographySource").dispatchEvent({ type: "click" });
+  h.get("bibliographyTextTab").dispatchEvent({ type: "click" });
   h.get("bibliographyRetry").dispatchEvent({ type: "click" }); parseBibliography(h);
   assert.equal(h.a.bibliography.context().parsed.entries[0].key, "new");
   assert.equal(h.get("bibliographyTextPanel").hidden, false);

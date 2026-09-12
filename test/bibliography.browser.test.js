@@ -118,6 +118,457 @@ async function selectReference(page, index = 0) {
   assert.equal(await row.getAttribute("aria-current"), "true");
 }
 
+async function openFilters(page) {
+  if (!await page.locator("#bibliographyFilters").evaluate((node) => node.open)) {
+    await page.locator("#bibliographyFilters summary").click();
+  }
+}
+
+async function closeViewDialog(page, name) {
+  await page.locator(`#bibliography${name}Close`).click();
+  await page.locator(`#bibliography${name}Modal`).waitFor({ state: "hidden" });
+}
+
+for (const [layout, viewport] of [["desktop", { width: 1440, height: 900 }], ["mobile", { width: 390, height: 844 }]]) {
+  test(`diagnostic labels: ${layout} native identities, inert fallbacks and live locale changes`, options, async (t) => {
+    const source = 'TY  - JOUR\nID  -\nTI  - Other\nID  - Reference 1\nID  - Later\nER  -\n' +
+      'TY  - JOUR\nT2  - Container\nTI  -\nT1  - Mixed <img src=x onerror=alert(1)>\nER  -\n' +
+      'TY  - BOOK\nBT  - Primary BT\nER  -\nTY  - CHAP\nBT  - Container\nER  -';
+    const page = await pageFor(t, project(source, "refs.ris"), viewport);
+    await settled(page);
+    const before = await page.evaluate(() => ({ snapshot: IrisEditor.snapshot(), saved: IrisApp.serialize(), dirty: IrisApp.hasUnsavedChanges(), pending: IrisEditor.collabPending(), selection: IrisEditor.selection() }));
+    const headings = await page.locator("#bibliographyHead th").allTextContents();
+    assert.deepEqual(headings, ["Reference ID", "Type", "Title (TI)", "Title (T1)", "BT", "Journal", "Text"]);
+    assert.deepEqual(await page.locator("#bibliographyCards h3").allTextContents(), ["Reference 1", "Reference 2", "Reference 3", "Reference 4"]);
+    await page.locator("#bibliographyDiagnosticsButton").click();
+    for (const [index, label] of [[0, "Reference 1"], [1, "Mixed <img src=x onerror=alert(1)>"], [2, "Primary BT"], [3, "Reference without identifier (line 15)"]]) {
+      const labels = await page.locator(`#bibliographyDiagnostics [data-entry-index="${index}"] button`).allTextContents();
+      assert.ok(labels.length > 0);
+      assert.ok(labels.every((text) => text.startsWith(`${label}: Warning:`)), labels.join("\n"));
+    }
+    assert.equal(await page.locator("#bibliographyDiagnostics img").count(), 0);
+    await page.evaluate(() => IrisI18n.setLanguage("it"));
+    assert.ok((await page.locator('#bibliographyDiagnostics [data-entry-index="3"] button').first().textContent()).startsWith("Reference senza identificatore (riga 15): Avviso:"));
+    assert.ok((await page.locator('#bibliographyDiagnostics [data-entry-index="0"] button').first().textContent()).startsWith("Reference 1: Avviso:"));
+    await page.evaluate(() => IrisI18n.setLanguage("en"));
+    await noOverflow(page);
+    await closeViewDialog(page, "Diagnostics");
+    assert.deepEqual(await page.evaluate(() => ({ snapshot: IrisEditor.snapshot(), saved: IrisApp.serialize(), dirty: IrisApp.hasUnsavedChanges(), pending: IrisEditor.collabPending(), selection: IrisEditor.selection() })), before);
+    assert.equal(await page.evaluate(() => IrisEditor.undo()), false);
+    await page.evaluate(() => IrisEditor.applyText('@online{Web.TeX:2026/a+b,title={Other}}\n@book{,title={ },title={  Native {Case} & <b>Title</b>  }}'));
+    await settled(page);
+    await page.locator("#bibliographyDiagnosticsButton").click();
+    assert.ok((await page.locator('#bibliographyDiagnostics [data-entry-index="0"] button').first().textContent()).startsWith("Web.TeX:2026/a+b: Warning:"));
+    assert.ok((await page.locator('#bibliographyDiagnostics [data-entry-index="1"] button').first().textContent()).startsWith("  Native {Case} & <b>Title</b>  : Warning:"));
+    assert.equal(await page.locator("#bibliographyDiagnostics b").count(), 0);
+    await closeViewDialog(page, "Diagnostics");
+    assert.equal(await page.evaluate(() => IrisEditor.undo()), true);
+    assert.equal(await page.evaluate(() => IrisEditor.getValue()), source);
+  });
+}
+
+for (const format of ["bib", "ris"]) {
+  test(`diagnostic labels: duplicate ${format} identifiers outside pages navigate to the exact second diagnostic`, options, async (t) => {
+    const source = Array.from({ length: 102 }, (_, i) => format === "bib"
+      ? `@book{${i === 0 || i === 101 ? "Same:Key" : `k${i}`},title={Title ${i}}}`
+      : `TY  - BOOK\nID  - ${i === 0 || i === 101 ? "Same:ID" : `id${i}`}\nTI  - Title ${i}\nER  -`).join("\n");
+    const page = await pageFor(t, project(source, `refs.${format}`));
+    await settled(page);
+    const before = await page.evaluate(() => ({ snapshot: IrisEditor.snapshot(), saved: IrisApp.serialize(), dirty: IrisApp.hasUnsavedChanges(), pending: IrisEditor.collabPending() }));
+    await page.locator("#bibliographyNext").click();
+    assert.equal(await page.locator("#bibliographyRows tr").count(), 2);
+    await openFilters(page); await page.locator("#bibliographyQuery").fill("Title 101");
+    await page.locator("#bibliographyDiagnosticsButton").click();
+    const label = format === "bib" ? "Same:Key" : "Same:ID";
+    assert.ok((await page.locator("#bibliographyDiagnostics button").first().textContent()).startsWith(`${label} (line 1): Warning:`));
+    await page.locator("#bibliographyDiagnosticsNext").click();
+    await page.locator("#bibliographyDiagnosticsNext").click();
+    const second = page.locator('#bibliographyDiagnostics [data-entry-index="101"] button').first();
+    assert.ok((await second.textContent()).startsWith(`${label} (line ${format === "bib" ? 102 : 405}): Warning:`));
+    const expected = await page.evaluate((format) => {
+      const parsed = IrisBibliography.parse(IrisEditor.getValue(), format), entry = parsed.entries[101];
+      const diagnostic = [...parsed.diagnostics, ...IrisBibliography.metadataWarnings(parsed)].find((item) => item.from >= entry.from && item.to <= entry.to);
+      return { from: diagnostic.from, to: diagnostic.to };
+    }, format);
+    await second.click(); await page.locator("#bibliographyDiagnosticsModal").waitFor({ state: "hidden" });
+    const selection = await page.evaluate(() => IrisEditor.selection());
+    assert.equal(selection.from, expected.from); assert.equal(selection.to, expected.to);
+    assert.equal(selection.text, format === "bib" ? "Same:Key" : "BOOK");
+    assert.deepEqual(await page.evaluate(() => ({ snapshot: IrisEditor.snapshot(), saved: IrisApp.serialize(), dirty: IrisApp.hasUnsavedChanges(), pending: IrisEditor.collabPending() })), before);
+    assert.equal(await page.evaluate(() => IrisEditor.undo()), false);
+  });
+}
+
+test("diagnostic labels: raw source lines survive edits and file-level syntax has no identity", options, async (t) => {
+  const source = "\uFEFF% \u{1f600}\r\n@book{\r,title={ }\n}\r\n% \u{1f600}\r@book{\n,title={ }}";
+  const page = await pageFor(t, project(source));
+  await settled(page); await page.locator("#bibliographyDiagnosticsButton").click();
+  assert.ok((await page.locator('#bibliographyDiagnostics [data-entry-index="0"] button').first().textContent()).startsWith("Reference without identifier (line 2): Warning:"));
+  assert.ok((await page.locator('#bibliographyDiagnostics [data-entry-index="1"] button').first().textContent()).startsWith("Reference without identifier (line 6): Warning:"));
+  assert.equal(await page.evaluate(() => IrisEditor.getValue()), source);
+  const pending = await page.evaluate(() => {
+    window.oldLabel = document.querySelector('#bibliographyDiagnostics [data-entry-index="1"] button');
+    IrisEditor.applyText("% moved\r" + IrisEditor.getValue().slice(1));
+    oldLabel.click();
+    return document.querySelector("#bibliographyDiagnostics").children.length;
+  });
+  assert.equal(pending, 0);
+  await settled(page);
+  assert.ok((await page.locator('#bibliographyDiagnostics [data-entry-index="1"] button').first().textContent()).startsWith("Reference without identifier (line 7): Warning:"));
+  await page.evaluate(() => IrisEditor.applyText("@book{key,title={A}}\n@book{broken,"));
+  await settled(page);
+  const issues = await page.locator("#bibliographyDiagnostics button").allTextContents();
+  assert.ok(issues.some((text) => text.startsWith("Syntax error: ")));
+  assert.ok(issues.every((text) => /^(Syntax error|Warning): /.test(text)));
+  await page.locator("#bibliographyDiagnostics .error button").click();
+  await page.locator("#bibliographyDiagnosticsModal").waitFor({ state: "hidden" });
+  assert.equal(await page.locator("#bibliographyTextPanel").isVisible(), true);
+});
+
+for (const [layout, viewport] of [["desktop", { width: 1440, height: 900 }], ["mobile", { width: 390, height: 844 }]]) {
+  test(`compact: ${layout} starts with table space, persistent collapsed filters and recoverable modal columns`, options, async (t) => {
+    const source = '@book{a,title={Alpha},author={Writer},year=2026}\n@book{b,title={Beta},author={Writer},year=2026,x_last={Needle}}';
+    const page = await pageFor(t, project(source), viewport);
+    if (layout === "desktop") await page.locator("#btnSidebar").click();
+    await settled(page);
+    const before = await page.evaluate(() => ({ snapshot: IrisEditor.snapshot(), saved: IrisApp.serialize(), dirty: IrisApp.hasUnsavedChanges(), pending: IrisEditor.collabPending() }));
+    assert.equal(await page.locator("#bibliographySource").count(), 0);
+    assert.equal(await page.locator('#bibliographyResults button:visible').filter({ hasText: "Show source" }).count(), 2);
+    assert.equal(await page.locator("#bibliographyQuery").isVisible(), false);
+    assert.equal(await page.locator("#bibliographySort").isVisible(), false);
+    assert.equal(await page.locator("#bibliographyNotice").isVisible(), false);
+    assert.equal(await page.locator("#bibliographyDiagnosticsButton").isDisabled(), true);
+    const panel = await page.locator("#bibliographyPanel").boundingBox(), results = await page.locator("#bibliographyResults").boundingBox();
+    assert.ok(results.y - panel.y < 165, "initial controls do not consume the table viewport");
+    await screenshot(t, page, `compact-${layout}.png`);
+    await page.locator("#bibliographyFilters summary").focus();
+    await page.keyboard.press("Enter");
+    await page.locator("#bibliographyQuery").fill("Needle");
+    await page.locator("#bibliographySort").selectOption({ label: "Title: descending" });
+    await page.locator("#bibliographyFilters summary").press("Space");
+    assert.equal(await page.locator("#bibliographyQuery").isVisible(), false);
+    assert.match(await page.locator("#bibliographyFilters summary").textContent(), /Search active.*Sort active/);
+    assert.equal(await page.locator("#bibliographyRows tr").count(), 1);
+    await openFilters(page);
+    assert.equal(await page.locator("#bibliographyQuery").inputValue(), "Needle");
+    assert.equal(await page.locator("#bibliographySort").inputValue(), '{"id":"bib:title","descending":true}');
+    await page.locator("#bibliographyFilters summary").click();
+    await page.locator("#bibliographyColumnsButton").focus();
+    await page.keyboard.press("Enter");
+    const modal = page.locator("#bibliographyColumnsModal");
+    assert.equal(await page.getByRole("dialog", { name: "Columns", exact: true }).isVisible(), true);
+    assert.equal(await modal.evaluate((node) => node.closest(".app") === null && !node.closest("[inert]")), true);
+    assert.equal(await page.locator(".app").evaluate((node) => node.inert), true);
+    assert.equal(await page.getByRole("checkbox").count(), 6, "picker uses the whole-file field union, not filtered references");
+    await page.getByRole("checkbox", { name: "Title", exact: true }).press("Space");
+    assert.equal(await page.getByRole("checkbox", { name: "Title", exact: true }).evaluate((node) => node === document.activeElement), true);
+    for (const check of await modal.getByRole("checkbox").all()) await check.uncheck();
+    assert.equal(await page.locator("#bibliographyTable").isVisible(), false);
+    await screenshot(t, page, `compact-columns-${layout}.png`);
+    await page.keyboard.press("Escape");
+    await modal.waitFor({ state: "hidden" });
+    assert.equal(await page.evaluate(() => document.activeElement.id), "bibliographyColumnsButton");
+    await page.locator("#bibliographyColumnsButton").click();
+    await page.locator("#bibliographyShowAll").click();
+    assert.equal(await modal.locator("input:checked").count(), 6);
+    assert.equal(await page.locator("#bibliographyShowAll").isDisabled(), true);
+    assert.equal(await page.evaluate(() => document.activeElement.id), "bibliographyColumnsClose", "disabled Show all leaves a usable focus target");
+    await page.keyboard.press("Shift+Tab");
+    assert.equal(await modal.getByRole("checkbox").last().evaluate((node) => node === document.activeElement), true);
+    await page.keyboard.press("Tab");
+    assert.equal(await page.evaluate(() => document.activeElement.id), "bibliographyColumnsClose");
+    await closeViewDialog(page, "Columns");
+    await openFilters(page);
+    await page.locator("#bibliographyQuery").fill("");
+    assert.doesNotMatch(await page.locator("#bibliographyFilters summary").textContent(), /active/);
+    assert.deepEqual(await page.evaluate(() => ({ snapshot: IrisEditor.snapshot(), saved: IrisApp.serialize(), dirty: IrisApp.hasUnsavedChanges(), pending: IrisEditor.collabPending() })), before);
+    await noOverflow(page);
+  });
+
+  test(`compact: ${layout} diagnostics handles pending, empty, errors in Text and keyboard focus`, options, async (t) => {
+    const page = await pageFor(t, project('@book{a,title={A}}'), viewport);
+    await settled(page);
+    const trigger = page.locator("#bibliographyDiagnosticsButton"), modal = page.locator("#bibliographyDiagnosticsModal");
+    await trigger.focus(); await page.keyboard.press("Enter");
+    assert.equal(await page.getByRole("dialog", { name: "Diagnostics", exact: true }).isVisible(), true);
+    assert.ok(await modal.locator(".warning").count() > 0);
+    assert.equal(await modal.locator("#bibliographyDiagnostics button").first().evaluate((node) => {
+      const range = document.createRange(); range.selectNodeContents(node);
+      const text = range.getBoundingClientRect(), button = node.getBoundingClientRect();
+      return text.top >= button.top && text.bottom <= button.bottom;
+    }), true, "wrapped diagnostic text fits inside its clickable focus outline");
+    await screenshot(t, page, `compact-diagnostics-${layout}.png`);
+    const pending = await page.evaluate(() => {
+      window.staleDiagnostic = document.querySelector("#bibliographyDiagnostics button");
+      IrisEditor.applyText('@book{a,title={A},author={Writer},year=2026}');
+      staleDiagnostic.click();
+      return { disabled: document.querySelector("#bibliographyDiagnosticsButton").disabled,
+        issues: document.querySelector("#bibliographyDiagnostics").children.length,
+        focused: document.activeElement.id, state: document.querySelector("#bibliographyDiagnosticsState").textContent };
+    });
+    assert.equal(pending.disabled, true); assert.equal(pending.issues, 0);
+    assert.equal(pending.focused, "bibliographyDiagnosticsClose");
+    assert.match(pending.state, /Analyzing/);
+    await settled(page);
+    assert.equal(await modal.isVisible(), true);
+    assert.match(await page.locator("#bibliographyDiagnosticsState").textContent(), /No bibliography issues/);
+    await page.keyboard.press("Tab");
+    assert.equal(await page.evaluate(() => document.activeElement.id), "bibliographyDiagnosticsClose");
+    await page.keyboard.press("Escape"); await modal.waitFor({ state: "hidden" });
+    assert.equal(await page.evaluate(() => document.activeElement.id), "bibliographyTableTab", "disabled opener falls back to the active document");
+    await page.locator("#bibliographyTextTab").click();
+    await page.evaluate(() => { IrisEditor.applyText('@book{broken,'); IrisEditor.focus(); });
+    await settled(page);
+    assert.equal(await modal.isVisible(), false, "typing never opens a modal");
+    assert.equal(await page.locator("#bibliographyTableTab").getAttribute("aria-disabled"), "true");
+    assert.equal(await trigger.isDisabled(), false);
+    await trigger.click();
+    assert.ok(await modal.locator(".error").count() > 0);
+    await screenshot(t, page, `compact-errors-${layout}.png`);
+    await modal.locator("#bibliographyDiagnostics button").first().click();
+    await modal.waitFor({ state: "hidden" });
+    assert.equal(await page.evaluate(() => document.activeElement === IrisEditor.focusTarget()), true);
+    assert.equal(await page.locator("#bibliographyTextPanel").isVisible(), true);
+    await noOverflow(page);
+  });
+}
+
+test("compact: both icon actions have descriptive EN/IT names and retain SVGs through updates", options, async (t) => {
+  const page = await pageFor(t, project('@book{a,title={A}}'));
+  await settled(page);
+  for (const language of ["en", "it"]) {
+    await page.evaluate((language) => IrisI18n.setLanguage(language), language);
+    for (const [name, icon, label] of [["Diagnostics", "alert-triangle", language === "en" ? "Diagnostics" : "Diagnostica"],
+      ["Columns", "columns-3", language === "en" ? "Columns" : "Colonne"]]) {
+      const button = page.locator(`#bibliography${name}Button`);
+      assert.equal(await button.textContent(), "");
+      const title = await button.getAttribute("title");
+      assert.ok(title.startsWith(label) && title.length > label.length + 15);
+      assert.equal(await button.getAttribute("aria-label"), title);
+      assert.ok(await button.locator(`[data-icon="${icon}"] svg path`).count() > 0);
+      const box = await button.boundingBox(); assert.ok(box.width >= 34 && box.height >= 34);
+      await button.click();
+      assert.equal(await page.getByRole("dialog", { name: label, exact: true }).isVisible(), true);
+      await closeViewDialog(page, name);
+    }
+  }
+});
+
+test("compact: whole-file diagnostics stay bounded and reachable beyond filtered table pages", options, async (t) => {
+  const source = Array.from({ length: 10000 }, (_, i) => `@book{k${i},title={Title ${i}}}`).join("\n");
+  const page = await pageFor(t, project(source));
+  await settled(page); await openFilters(page);
+  await page.locator("#bibliographyQuery").fill("Title 9999");
+  await page.locator("#bibliographyDiagnosticsButton").click();
+  assert.equal(await page.locator("#bibliographyDiagnostics li").count(), 100);
+  assert.match(await page.locator("#bibliographyDiagnosticsTotal").textContent(), /1-100.*20000/);
+  await page.locator("#bibliographyDiagnosticsNext").click();
+  assert.match(await page.locator("#bibliographyDiagnosticsTotal").textContent(), /101-200.*20000/);
+  assert.equal(await page.locator("#bibliographyDiagnostics li").first().getAttribute("data-entry-index"), "50");
+  await page.locator("#bibliographyDiagnostics button").first().click();
+  await page.locator("#bibliographyDiagnosticsModal").waitFor({ state: "hidden" });
+  const selected = await page.evaluate(() => IrisEditor.selection());
+  assert.ok(selected.from >= source.indexOf("@book{k50,") && selected.to <= source.indexOf("@book{k51,"));
+});
+
+test("compact: canonical assignment without an open dialog does not steal focus", options, async (t) => {
+  const page = await pageFor(t, project('@book{a,title={A}}'));
+  await settled(page);
+  await page.locator("#btnSettings").focus();
+  await page.evaluate(() => {
+    IrisProjects.currentProjectId = () => "bibliography-test";
+    IrisProjects.resolveFileId = () => "11111111-1111-4111-8111-111111111111";
+    document.dispatchEvent(new CustomEvent("iris:collabrole", { detail: { role: "owner" } }));
+  });
+  assert.equal(await page.evaluate(() => document.activeElement.id), "btnSettings");
+});
+
+for (const name of ["Diagnostics", "Columns"]) for (const destination of ["file", "image", "project", "logout", "rekey"]) {
+  test(`compact: ${name} ${destination} closes safely and rejects retained callbacks`, options, async (t) => {
+    const data = project('@book{a,title={A}}');
+    data.openTabs.push("other");
+    data.project.nodes.push({ id: "other", type: "file", name: "other.bib", path: "other.bib", kind: "bib", content: '@book{b,title={Other}}' },
+      { id: "image", type: "file", name: "image.png", path: "image.png", kind: "img", data: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII=" });
+    const page = await pageFor(t, data);
+    await settled(page);
+    await page.locator(`#bibliography${name}Button`).click();
+    await page.evaluate(({ name, destination, replacement }) => {
+      window.retainedControl = document.querySelector(name === "Diagnostics" ? "#bibliographyDiagnostics button" : '#bibliographyColumns input[data-column-id="bib:title"]');
+      // Simulate a transition arriving during Motion's asynchronous close.
+      if (name === "Diagnostics") retainedControl.click();
+      if (destination === "project") return IrisApp.load(replacement);
+      if (destination === "logout") IrisAuth.showLogin();
+      else if (destination === "rekey") {
+        IrisProjects.currentProjectId = () => "bibliography-test";
+        IrisProjects.resolveFileId = () => "11111111-1111-4111-8111-111111111111";
+        document.dispatchEvent(new CustomEvent("iris:collabrole", { detail: { role: "owner" } }));
+      } else document.querySelector(`.node[data-id="${destination === "file" ? "other" : "image"}"]`).click();
+    }, { name, destination, replacement: project('@book{c,title={Replacement}}', "refs.bib", { id: "replacement" }) });
+    await page.locator(`#bibliography${name}Modal`).waitFor({ state: "hidden" });
+    const before = await page.evaluate(() => ({ snapshot: IrisEditor.snapshot(), selection: IrisEditor.selection() }));
+    await page.evaluate(() => { retainedControl.click(); });
+    // Await the existing Motion close interval, including its obsolete promise.
+    await page.waitForTimeout(200);
+    assert.deepEqual(await page.evaluate(() => ({ snapshot: IrisEditor.snapshot(), selection: IrisEditor.selection() })), before);
+    if (["file", "project", "rekey"].includes(destination)) {
+      await settled(page);
+      assert.equal(await page.locator("#bibliographyTextPanel").isVisible(), false);
+      await page.locator("#bibliographyColumnsButton").click();
+      assert.equal(await page.getByRole("checkbox", { name: "Title", exact: true }).isChecked(), true);
+      await closeViewDialog(page, "Columns");
+    } else if (destination === "image") {
+      assert.equal(await page.locator(".image-preview").isVisible(), true);
+      assert.equal(await page.locator("#bibliographyPanel").isVisible(), false);
+    } else assert.equal(await page.locator("#loginScreen").isVisible(), true);
+    assert.equal(await page.locator(".app").evaluate((node) => node.inert), destination === "logout");
+  });
+}
+
+test("compact: columns retains usable focus when async fields disappear and respects the modal stack", options, async (t) => {
+  const page = await pageFor(t, project('@book{a,title={A},x_note={Keep}}'));
+  await settled(page);
+  await page.locator("#bibliographyColumnsButton").click();
+  await page.getByRole("checkbox", { name: "x_note", exact: true }).focus();
+  await page.evaluate(() => IrisEditor.applyText('@book{a,title={A},x_new={New}}'));
+  await settled(page);
+  assert.equal(await page.evaluate(() => document.activeElement.id), "bibliographyColumnsClose");
+  assert.equal(await page.getByRole("checkbox", { name: "x_new", exact: true }).isChecked(), true);
+  await page.getByRole("checkbox", { name: "x_new", exact: true }).focus();
+  await page.evaluate(() => IrisI18n.setLanguage("it"));
+  assert.equal(await page.getByRole("checkbox", { name: "x_new", exact: true }).evaluate((node) => node === document.activeElement), true);
+  await page.evaluate(() => IrisMotion.openDialog("settingsModal"));
+  assert.equal(await page.locator("#bibliographyColumnsModal > .modal").evaluate((node) => node.inert), true);
+  await page.evaluate(() => IrisEditor.applyText(""));
+  await settled(page);
+  assert.equal(await page.locator("#settingsModal").evaluate((node) => node.contains(document.activeElement)), true);
+  await page.keyboard.press("Escape"); await page.locator("#settingsModal").waitFor({ state: "hidden" });
+  assert.equal(await page.evaluate(() => document.activeElement.id), "bibliographyColumnsClose", "nested close restores focus immediately, without a Tab rescue");
+  assert.match(await page.locator("#bibliographyColumnsState").textContent(), /Nessun campo/);
+  await page.keyboard.press("Escape"); await page.locator("#bibliographyColumnsModal").waitFor({ state: "hidden" });
+  await noOverflow(page);
+});
+
+for (const [layout, viewport] of [["desktop", { width: 1440, height: 900 }], ["mobile", { width: 390, height: 844 }]]) {
+  test(`review: ${layout} modal paint order follows Motion order and permits real pointer actions`, options, async (t) => {
+    const page = await pageFor(t, project('@book{a,title={A}}'), viewport);
+    await settled(page);
+    await page.locator("#bibliographyColumnsButton").click();
+    await page.evaluate(() => IrisMotion.openDialog("settingsModal"));
+    const tab = page.locator(layout === "desktop" ? "#settingsTabEditor" : '.set-accordion-trigger[data-set="editor"]');
+    await page.locator("#settingsModal").evaluate((node) => Promise.all(node.getAnimations({ subtree: true }).map((animation) => animation.finished)));
+    assert.equal(await tab.isVisible(), true);
+    await tab.scrollIntoViewIfNeeded();
+    assert.equal(await tab.evaluate((node) => {
+      const box = node.getBoundingClientRect();
+      return node.contains(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2));
+    }), true, "the logical top Settings control must also be the pointer hit target");
+    await tab.click();
+    assert.equal(await page.locator("#settingsPanelEditor").isVisible(), true);
+    // Promoting an already-open lower dialog must update paint order too.
+    await page.evaluate(() => IrisMotion.openDialog("bibliographyColumnsModal"));
+    const check = page.getByRole("checkbox", { name: "Title", exact: true });
+    await check.uncheck();
+    assert.equal(await check.isChecked(), false);
+    await screenshot(t, page, `review-stack-${layout}.png`);
+    await closeViewDialog(page, "Columns");
+    assert.equal(await tab.evaluate((node) => node === document.activeElement), true);
+    await page.locator(layout === "desktop" ? "#settingsTabFonts" : '.set-accordion-trigger[data-set="fonts"]').click();
+    assert.equal(await page.locator("#settingsPanelFonts").isVisible(), true);
+    await page.keyboard.press("Escape"); await page.locator("#settingsModal").waitFor({ state: "hidden" });
+    assert.equal(await page.locator(".app").evaluate((node) => node.inert), false);
+    await noOverflow(page);
+  });
+
+  for (const action of ["Columns", "Diagnostics", "issue pages"]) {
+    test(`review: ${layout} ${action} preserves expanded rows, native ranges and source state`, options, async (t) => {
+      const long = "Retained long bibliography value ".repeat(12);
+      const source = Array.from({ length: 51 }, (_, i) => `@book{k${i},title={Title ${i}}${i === 0 ? `,note={${long}}` : ""}}`).join("\n");
+      const page = await pageFor(t, project(source), viewport);
+      if (layout === "desktop") await page.locator("#btnSidebar").click();
+      await settled(page);
+      const row = page.locator(`${layout === "desktop" ? "#bibliographyRows" : "#bibliographyCards"} [data-entry-index="0"]`);
+      await row.locator("summary").click();
+      assert.equal(await row.locator("details").evaluate((node) => node.open), true);
+      const before = await page.evaluate(() => ({ snapshot: IrisEditor.snapshot(), saved: IrisApp.serialize(),
+        dirty: IrisApp.hasUnsavedChanges(), pending: IrisEditor.collabPending(), selection: IrisEditor.selection() }));
+      await row.evaluate((node) => {
+        window.reviewRow = node; window.reviewDetails = node.querySelector("details");
+        window.reviewRows = [...document.querySelectorAll("#bibliographyRows tr, #bibliographyCards article")];
+        window.reviewRange = document.createRange(); reviewRange.selectNodeContents(reviewDetails.querySelector(".bibliography-value"));
+        getSelection().removeAllRanges(); getSelection().addRange(reviewRange);
+      });
+      const modal = action === "Columns" ? "Columns" : "Diagnostics";
+      await page.locator(`#bibliography${modal}Button`).focus();
+      await page.keyboard.press("Enter");
+      if (action === "issue pages") {
+        await page.evaluate(() => { window.rowsBeforePaging = [...document.querySelectorAll("#bibliographyRows tr, #bibliographyCards article")]; });
+        await page.locator("#bibliographyDiagnosticsNext").click();
+        assert.equal(await page.evaluate(() => rowsBeforePaging.every((node) => node.isConnected)), true, "diagnostic pagination must not replace table/card nodes");
+        assert.match(await page.locator("#bibliographyDiagnosticsTotal").textContent(), /101-102.*102/);
+        assert.equal(await page.evaluate(() => document.activeElement.id), "bibliographyDiagnosticsClose", "a now-disabled Next immediately yields focus to Close");
+        await page.locator("#bibliographyDiagnosticsPrevious").click();
+      }
+      await closeViewDialog(page, modal);
+      assert.equal(await page.evaluate(() => reviewRows.every((node) => node.isConnected)), true, "modal-only actions must retain the existing table and cards");
+      assert.equal(await page.evaluate(() => reviewDetails.isConnected && reviewDetails.open), true);
+      assert.equal(await page.evaluate(() => reviewRange.toString()), long, "the live native text Range stays attached to the same value");
+      assert.equal(await page.evaluate(() => getSelection().toString()), long, "the browser's text selection survives the modal roundtrip");
+      assert.equal(await row.getAttribute("aria-current"), "true");
+      assert.equal(await page.locator("#bibliographyEdit").isDisabled(), false);
+      assert.deepEqual(await page.evaluate(() => ({ snapshot: IrisEditor.snapshot(), saved: IrisApp.serialize(),
+        dirty: IrisApp.hasUnsavedChanges(), pending: IrisEditor.collabPending(), selection: IrisEditor.selection() })), before);
+      await screenshot(t, page, `review-retained-${layout}-${action.replace(" ", "-")}.png`);
+      await noOverflow(page);
+    });
+  }
+}
+
+for (const opener of ["detached", "disabled", "missing", "intact"]) {
+  test(`review: nested close with ${opener} opener restores usable parent focus before another key`, options, async (t) => {
+    const page = await pageFor(t, project('@book{a,title={A},x_note={Keep}}'));
+    await settled(page);
+    await page.locator("#bibliographyColumnsButton").click();
+    await page.getByRole("checkbox", { name: "x_note", exact: true }).focus();
+    await page.evaluate((opener) => {
+      window.reviewOpener = document.activeElement;
+      if (opener === "missing") reviewOpener.blur();
+      IrisMotion.openDialog("settingsModal");
+      if (opener === "detached") IrisEditor.applyText('@book{a,title={A}}');
+      if (opener === "disabled") reviewOpener.disabled = true;
+    }, opener);
+    if (opener === "detached") await settled(page);
+    const restored = await page.evaluate(async () => {
+      await IrisMotion.closeDialog("settingsModal");
+      const focused = document.activeElement;
+      return { parent: document.querySelector("#bibliographyColumnsModal").contains(focused),
+        usable: !focused.disabled && !focused.closest("[inert], [hidden]"), original: focused === reviewOpener };
+    });
+    assert.equal(restored.parent, true, "focus must return inside the remaining dialog before any Tab");
+    assert.equal(restored.usable, true);
+    assert.equal(restored.original, opener === "intact");
+  });
+}
+
+for (const opener of ["detached", "disabled", "missing"]) {
+  test(`review: close with ${opener} opener and no parent restores the active document`, options, async (t) => {
+    const page = await pageFor(t, project('@book{a,title={A}}'));
+    await settled(page);
+    await page.locator("#btnSettings").focus();
+    await page.evaluate((opener) => {
+      const trigger = document.activeElement;
+      if (opener === "missing") trigger.blur();
+      IrisMotion.openDialog("settingsModal");
+      if (opener === "detached") trigger.remove();
+      if (opener === "disabled") trigger.disabled = true;
+    }, opener);
+    const focused = await page.evaluate(async () => {
+      await IrisMotion.closeDialog("settingsModal", { immediate: true });
+      return { id: document.activeElement.id, inert: document.querySelector(".app").inert };
+    });
+    assert.deepEqual(focused, { id: "bibliographyTableTab", inert: false });
+  });
+}
+
 for (const [layout, viewport] of [["desktop", { width: 1440, height: 900 }], ["mobile", { width: 390, height: 844 }]]) {
   test(`controls: ${layout} plain cells and blank areas select one reference without replacing DOM or swallowing native actions`, options, async (t) => {
     const long = "Selectable full value ".repeat(15);
@@ -224,10 +675,11 @@ test("controls: six real icons retain names, descriptive EN/IT tooltips, target 
     assert.equal(await page.locator("#bibliographyNext").isDisabled(), true);
     assert.equal(await page.locator("#bibliographyEdit").isDisabled(), true);
     await page.locator("#bibliographyPrevious").click();
+    await openFilters(page);
     await page.locator("#bibliographyQuery").fill("no matching reference");
     assert.equal(await page.locator("#bibliographyNext").isDisabled(), true);
     await page.locator("#bibliographyQuery").fill("");
-    assert.equal(await page.locator(".bibliography-actions svg, .bibliography-pagination svg").count(), 6);
+    assert.equal(await page.locator(".bibliography-actions svg, .bibliography-pagination svg").count(), 8);
     assert.equal(await page.evaluate((ids) => controlIcons.every((icon, i) => icon?.isConnected &&
       icon === document.querySelector(`#bibliography${ids[i]} svg`)), ids), true, "renders and language changes retain the hydrated SVG nodes");
     await page.locator("#bibliographyAdd").click();
@@ -253,6 +705,7 @@ test("controls: sort, filter, revision and file changes clear selection and stal
   data.project.nodes.push({ id: "other", type: "file", name: "other.bib", path: "other.bib", kind: "bib", content: '@book{other,title={Other}}' });
   const page = await pageFor(t, data);
   await settled(page);
+  await openFilters(page);
   for (const transition of ["sort", "filter", "revision", "file"]) {
     await selectReference(page);
     await page.locator(':is(#bibliographyRows, #bibliographyCards) [data-entry-index="0"]:visible').evaluate((node) => { window.staleReference = node; });
@@ -388,6 +841,7 @@ test("form: removal requires confirmation of the selected parsed entry, not its 
   const source = '@book{a,title={Alpha}}\n@book{b,title={Zulu}}';
   const page = await pageFor(t, project(source));
   await settled(page);
+  await openFilters(page);
   await page.locator("#bibliographySort").selectOption({ label: "Title: descending" });
   await selectReference(page, 1);
   await page.locator("#bibliographyRemove").click();
@@ -556,8 +1010,9 @@ test("form: keyless no-op and unused placeholders do not create fields, dirty ca
 test("form: candidate syntax errors keep source selection unchanged and new columns respect exclusions", options, async (t) => {
   const page = await pageFor(t, project('@book{k}\n@book{b,title={Other}}'));
   await settled(page);
-  await page.locator("#bibliographyColumnsLabel").click();
+  await page.locator("#bibliographyColumnsButton").click();
   await page.locator('#bibliographyColumns input[data-column-id="bib:title"]').uncheck();
+  await closeViewDialog(page, "Columns");
   await selectReference(page);
   await page.locator("#bibliographyEdit").click();
   const selection = await page.evaluate(() => IrisEditor.selection());
@@ -573,8 +1028,10 @@ test("form: candidate syntax errors keep source selection unchanged and new colu
   await page.locator("#bibliographyFormApply").click();
   await page.locator("#bibliographyModal").waitFor({ state: "hidden" });
   await settled(page);
+  await page.locator("#bibliographyColumnsButton").click();
   assert.equal(await page.locator('#bibliographyColumns input[data-column-id="bib:title"]').isChecked(), false);
   assert.equal(await page.locator('#bibliographyColumns input[data-column-id="bib:x_new"]').isChecked(), true);
+  await closeViewDialog(page, "Columns");
   assert.equal(await page.locator('#bibliographyHead [data-sort-id="bib:x_new"]').count(), 1);
 });
 
@@ -886,25 +1343,25 @@ test("all populated columns are visible and individually hideable", options, asy
   await page.getByRole("columnheader", { name: "x_note", exact: true }).waitFor();
   const before = await page.evaluate(() => ({ snapshot: IrisEditor.snapshot(), saved: IrisApp.serialize(), dirty: IrisApp.hasUnsavedChanges() }));
   assert.deepEqual(await page.locator("#bibliographyHead th").allTextContents(), ["Citation key", "Type", "Title", "Journal", "x_note", "Text"]);
-  const summary = page.locator("#bibliographyColumnsLabel");
-  await summary.focus();
+  const trigger = page.locator("#bibliographyColumnsButton");
+  await trigger.focus();
   await page.keyboard.press("Enter");
-  assert.equal(await page.locator("#bibliographyColumnPicker").evaluate((el) => el.open), true);
+  assert.equal(await page.locator("#bibliographyColumnsModal").isVisible(), true);
   const note = page.getByRole("checkbox", { name: "x_note", exact: true });
   await note.focus();
   await page.keyboard.press("Space");
   assert.equal(await note.evaluate((el) => el === document.activeElement), true);
-  assert.equal(await page.getByRole("columnheader", { name: "x_note", exact: true }).count(), 0);
+  assert.equal(await page.getByRole("columnheader", { name: "x_note", exact: true, includeHidden: true }).count(), 0);
   await page.keyboard.press("Space");
-  assert.equal(await page.getByRole("columnheader", { name: "x_note", exact: true }).count(), 1);
+  assert.equal(await page.getByRole("columnheader", { name: "x_note", exact: true, includeHidden: true }).count(), 1);
   for (const check of await page.locator("#bibliographyColumns input").all()) await check.uncheck();
   assert.equal(await page.locator("#bibliographyTable").isVisible(), false);
   assert.match(await page.locator("#bibliographyState").textContent(), /hidden/i);
   await page.locator("#bibliographyShowAll").click();
   assert.equal(await page.locator("#bibliographyColumns input:checked").count(), 5);
-  await summary.focus();
-  await page.keyboard.press("Space");
-  assert.equal(await page.locator("#bibliographyColumnPicker").evaluate((el) => el.open), false);
+  await page.keyboard.press("Escape");
+  await page.locator("#bibliographyColumnsModal").waitFor({ state: "hidden" });
+  assert.equal(await trigger.evaluate((el) => el === document.activeElement), true);
   await page.locator("#bibliographyHead").getByRole("button", { name: "Title", exact: true }).focus();
   await page.keyboard.press("Enter");
   assert.equal(await page.locator('#bibliographyHead th[aria-sort="ascending"]').count(), 1);
@@ -985,14 +1442,16 @@ test("10,000 references remain responsive with full-file columns, search and exp
   t.diagnostic(`10,000 references: ${duration}ms; max UI interval ${Math.max(...gaps).toFixed(1)}ms`);
   assert.equal(await page.locator("#bibliographyRows tr").count(), 100);
   assert.match(await page.locator("#bibliographyTotal").textContent(), /1.*100.*10000.*10000/);
-  await page.locator("#bibliographyColumnsLabel").click();
+  await page.locator("#bibliographyColumnsButton").click();
   const checks = await page.locator("#bibliographyColumns label").allTextContents();
   assert.ok(checks.includes("x_last"));
   assert.equal(await page.getByRole("checkbox", { name: "x_last", exact: true }).isChecked(), true);
   await page.getByRole("checkbox", { name: "x_last", exact: true }).uncheck();
+  await closeViewDialog(page, "Columns");
   await page.locator("#bibliographyNext").click();
   assert.equal(await page.locator("#bibliographyRows tr").first().getAttribute("data-entry-index"), "100");
   assert.match(await page.locator("#bibliographyTotal").textContent(), /101.*200.*10000/);
+  await openFilters(page);
   await page.locator("#bibliographyQuery").fill("only-last");
   assert.equal(await page.locator("#bibliographyRows tr").count(), 1);
   assert.equal(await page.locator("#bibliographyRows tr").getAttribute("data-entry-index"), "9999");
@@ -1151,10 +1610,11 @@ test("file tabs open RIS with repeated and custom fields visible and focus outsi
   await settled(page);
   assert.equal(await page.evaluate(() => document.activeElement.id), "bibliographyTableTab");
   assert.equal(await page.evaluate(() => IrisEditor.getValue()), content);
-  await page.locator("#bibliographyColumnsLabel").click();
+  await page.locator("#bibliographyColumnsButton").click();
   assert.equal(await page.locator("#bibliographyColumns input").count(), 5);
   assert.equal(await page.locator("#bibliographyColumns input:checked").count(), 5);
   assert.equal(await page.getByRole("checkbox", { name: "ZZ", exact: true }).isChecked(), true);
+  await closeViewDialog(page, "Columns");
   assert.match(await page.locator("#bibliographyCards").textContent(), /First\nSecond/);
   assert.match(await page.locator("#bibliographyCards").textContent(), /ZZcustom/);
   await noOverflow(page);
@@ -1293,13 +1753,17 @@ for (const language of ["en", "it"]) {
     await page.getByRole("columnheader", { name: `${journal} (journaltitle)`, exact: true }).waitFor();
     assert.equal(await page.locator("#bibliographyRows").getByText("0007", { exact: true }).textContent(), "0007");
     assert.equal(await page.locator("#bibliographyRows").getByText("2026-09-10", { exact: true }).textContent(), "2026-09-10");
-    await page.locator("#bibliographyColumnsLabel").click();
+    await page.locator("#bibliographyColumnsButton").click();
     await page.getByRole("checkbox", { name: `${journal} (journaltitle)`, exact: true }).uncheck();
+    await closeViewDialog(page, "Columns");
+    await openFilters(page);
     await page.locator("#bibliographyQuery").fill("Needle");
     assert.equal(await page.getByRole("columnheader", { name: `${journal} (journal)`, exact: true }).count(), 1);
+    await page.locator("#bibliographyColumnsButton").click();
     assert.equal(await page.getByRole("checkbox", { name: `${journal} (journaltitle)`, exact: true }).count(), 1);
     assert.ok((await page.locator("#bibliographySort option").allTextContents()).includes(`${journal} (journal): ${language === "en" ? "ascending" : "crescente"}`));
     await page.getByRole("checkbox", { name: `${journal} (journaltitle)`, exact: true }).check();
+    await closeViewDialog(page, "Columns");
     assert.ok((await page.locator("#bibliographySort option").allTextContents()).includes(`${journal} (journaltitle): ${language === "en" ? "ascending" : "crescente"}`));
     await noOverflow(page);
     if (language === "en") {
@@ -1317,6 +1781,7 @@ for (const language of ["en", "it"]) {
       ? ["1-1 of 1 result; 1 reference in the file", "0-0 of 0 results; 1 reference in the file", "1-1 of 1 result; 2 references in the file", "1-2 of 2 results; 2 references in the file"]
       : ["1-1 di 1 risultato; 1 reference nel file", "0-0 di 0 risultati; 1 reference nel file", "1-1 di 1 risultato; 2 reference nel file", "1-2 di 2 risultati; 2 reference nel file"];
     assert.equal(await page.locator("#bibliographyTotal").textContent(), totals[0]);
+    await openFilters(page);
     await page.locator("#bibliographyQuery").fill("missing");
     assert.equal(await page.locator("#bibliographyTotal").textContent(), totals[1]);
     await page.evaluate((source) => IrisEditor.applyText(source), first + "\n@book{b,title={Other}}");

@@ -3,15 +3,18 @@
   const core = window.IrisBibliography;
 
   function create({ root, editor, t, onSource, onFormat, actions = null }) {
-    const doc = root.ownerDocument, ui = {};
-    for (const name of ["Tabs", "TableTab", "TextTab", "TablePanel", "Status", "Source", "Retry",
-      "Query", "QueryLabel", "Sort", "SortLabel", "ColumnPicker", "ColumnsLabel", "Columns", "ShowAll",
-      "Diagnostics", "DiagnosticsLabel", "DiagnosticsDisclosure", "Table", "Head", "Rows", "Cards", "State",
-      "Total", "Previous", "Next", "Caption", "Results", "Add", "Edit", "Remove", "Undo"]) ui[name] = root.querySelector(`#bibliography${name}`);
+    const doc = root.ownerDocument, ui = {}, motion = window.IrisMotion;
+    for (const name of ["Tabs", "TableTab", "TextTab", "TablePanel", "Status", "Notice", "Retry",
+      "Query", "QueryLabel", "Sort", "SortLabel", "Filters", "FiltersLabel", "Columns", "ShowAll",
+      "ColumnsButton", "ColumnsModal", "ColumnsClose", "ColumnsState", "Diagnostics", "DiagnosticsButton",
+      "DiagnosticsModal", "DiagnosticsClose", "DiagnosticsState", "DiagnosticsTotal", "DiagnosticsPagination",
+      "DiagnosticsPrevious", "DiagnosticsNext", "Table", "Head", "Rows", "Cards", "State",
+      "Total", "Previous", "Next", "Caption", "Results", "Add", "Edit", "Remove", "Undo"]) ui[name] = doc.getElementById(`bibliography${name}`);
+    const dialogs = ["Diagnostics", "Columns"];
     const sourcePanel = doc.getElementById("bibliographyTextPanel");
     const exclusions = new Map(), checks = new Map(), sortTriggers = new Map(), listeners = [];
     let hiddenColumns = new Set(), projection = { columns: [], rows: [] };
-    let diagnostics = [], columnOrder = "";
+    let diagnostics = [], diagnosticReferences = [], columnOrder = "", diagnosticPage = 0, dialogGeneration = 0;
     let documentKey = null, hint = null, parsed = null, snapshot = null, scheduledRevision = null;
     let mode = "table", modeChosen = false, settled = false, query = "", sort = null, page = 0;
     let worker = null, busy = false, timer = null, latestRequestId = 0, failed = false, disposed = false;
@@ -92,13 +95,39 @@
       else ui.TableTab.focus();
       return true;
     }
-    function renderDiagnostics(entryIndices) {
-      const current = parsed ? diagnostics : [];
-      const shown = current.filter((item) => item.entryIndex < 0 || entryIndices.has(item.entryIndex));
+    function closeDialogs(restoreFocus = false) {
+      dialogGeneration++;
+      for (const name of dialogs) {
+        const modal = ui[`${name}Modal`];
+        if (modal.classList.contains("on") || modal.classList.contains("is-closing")) {
+          void motion.closeDialog(modal, { force: true, immediate: true, restoreFocus });
+        }
+      }
+    }
+    function restoreDialogFocus(name) {
+      const modal = ui[`${name}Modal`];
+      if (modal.classList.contains("on") && !modal.classList.contains("is-closing") && modal.getAttribute("aria-hidden") !== "true" &&
+        (!modal.contains(doc.activeElement) || doc.activeElement.disabled)) ui[`${name}Close`].focus();
+    }
+    function renderDiagnostics() {
+      const hadFocus = ui.DiagnosticsModal.contains(doc.activeElement);
+      const current = context() ? diagnostics : [];
+      diagnosticPage = Math.max(0, Math.min(diagnosticPage, Math.ceil(current.length / 100) - 1));
+      const start = diagnosticPage * 100, end = Math.min(current.length, start + 100);
+      const key = documentKey, result = parsed;
+      const isCurrent = () => documentKey === key && parsed === result && context() && motion.activeSurface() === "app";
       ui.Diagnostics.replaceChildren();
-      ui.DiagnosticsDisclosure.hidden = !current.length;
-      ui.DiagnosticsLabel.textContent = t("bibliography.diagnosticCount", { count: shown.length, total: current.length });
-      for (const diagnostic of shown) {
+      ui.DiagnosticsButton.disabled = !current.length;
+      ui.DiagnosticsButton.classList.toggle("has-issues", !!current.length);
+      ui.DiagnosticsButton.classList.toggle("has-errors", current.some((item) => item.severity === "error"));
+      ui.DiagnosticsState.textContent = !parsed ? t(failed ? "bibliography.parseFailed" : "bibliography.analyzing")
+        : !current.length ? t("bibliography.noDiagnostics") : "";
+      ui.DiagnosticsState.hidden = !ui.DiagnosticsState.textContent;
+      ui.DiagnosticsTotal.textContent = t("bibliography.diagnosticCount", { from: current.length ? start + 1 : 0, to: end, total: current.length });
+      ui.DiagnosticsPagination.hidden = !current.length;
+      ui.DiagnosticsPrevious.disabled = diagnosticPage === 0;
+      ui.DiagnosticsNext.disabled = end >= current.length;
+      for (const diagnostic of current.slice(start, end)) {
         const row = element("li");
         const { entryIndex } = diagnostic;
         row.dataset.entryIndex = String(entryIndex);
@@ -107,12 +136,21 @@
         if (expected && /[a-z]/.test(expected)) expected = t(`bibliography.expected.${expected}`);
         const message = t(`bibliography.diagnostics.${diagnostic.code}`, { ...diagnostic.params, expected });
         const prefix = t(diagnostic.severity === "error" ? "bibliography.error" : "bibliography.warning");
-        const location = entryIndex < 0 ? "" : t("bibliography.reference", { number: entryIndex + 1 }) + ": ";
-        row.appendChild(button(`${location}${prefix}: ${message}`, () => {
-          if (context()) onSource({ from: diagnostic.from, to: diagnostic.to });
+        const reference = diagnosticReferences[entryIndex];
+        let location = reference ? reference.value || t("bibliography.referenceWithoutIdentifier") : "";
+        if (reference?.withLine) location = t("bibliography.referenceAtLine", { reference: location, line: reference.line });
+        row.appendChild(button(`${location ? location + ": " : ""}${prefix}: ${message}`, async () => {
+          const modal = ui.DiagnosticsModal;
+          if (!isCurrent() || !ui.Diagnostics.contains(row) || !modal.classList.contains("on") || modal.classList.contains("is-closing")) return;
+          const generation = dialogGeneration;
+          const closed = await motion.closeDialog(modal);
+          // Closing is asynchronous. A new revision, dialog or document cancels
+          // this navigation rather than reusing an old offset in a new source.
+          if (closed && generation === dialogGeneration && isCurrent()) onSource({ from: diagnostic.from, to: diagnostic.to });
         }));
         ui.Diagnostics.appendChild(row);
       }
+      if (hadFocus) restoreDialogFocus("Diagnostics");
     }
     function renderColumns(columns) {
       const ids = new Set(projection.columns.map((column) => column.id));
@@ -123,12 +161,15 @@
         let check = checks.get(column.id);
         if (!check) {
           const wrapper = element("label"), input = element("input"), text = element("span");
+          const key = documentKey;
           input.type = "checkbox"; input.dataset.columnId = column.id;
-          input.addEventListener("change", () => setColumnVisible(column.id, input.checked));
+          input.addEventListener("change", () => {
+            if (documentKey === key && checks.get(column.id)?.input === input && context()) setColumnVisible(column.id, input.checked);
+          });
           wrapper.appendChild(input); wrapper.appendChild(text);
           check = { wrapper, input, text }; checks.set(column.id, check); changed = true;
         }
-        check.input.checked = !hiddenColumns.has(column.id); check.text.textContent = label(column);
+        check.input.checked = !hiddenColumns.has(column.id); check.input.disabled = !context(); check.text.textContent = label(column);
       }
       // Ordinary visibility/search operations never detach the focused checkbox.
       if (changed) {
@@ -144,7 +185,11 @@
         option.value = JSON.stringify({ id: column.id, descending }); ui.Sort.appendChild(option);
       }
       ui.Sort.value = sort ? JSON.stringify(sort) : "";
-      ui.ShowAll.disabled = !hiddenColumns.size;
+      ui.ShowAll.disabled = !hiddenColumns.size || !context();
+      ui.ColumnsButton.disabled = !projection.columns.length || !context();
+      ui.ColumnsState.textContent = !parsed ? t(failed ? "bibliography.parseFailed" : "bibliography.analyzing")
+        : !projection.columns.length ? t("bibliography.noColumns") : "";
+      ui.ColumnsState.hidden = !ui.ColumnsState.textContent;
     }
     function valueNode(value, field) {
       if (!value) return element("span", t("bibliography.noValue"), "bibliography-missing");
@@ -159,6 +204,7 @@
     }
     function render() {
       if (!documentKey) return;
+      const focusedDialog = dialogs.find((name) => ui[`${name}Modal`].contains(doc.activeElement));
       const labels = new Map();
       for (const column of projection.columns) {
         const name = column.labelKey === null ? column.nativeName : t(column.labelKey);
@@ -170,7 +216,7 @@
         columnLabels.set(column.id, columns.length > 1 ? `${name} (${column.nativeName})` : name);
       }
       for (const [name, key] of Object.entries({ TableTab: "table", TextTab: "text", QueryLabel: "searchAll",
-        SortLabel: "sort", ColumnsLabel: "columns", ShowAll: "showAll", Source: "showSource", Retry: "retry",
+        SortLabel: "sort", ShowAll: "showAll", Retry: "retry",
         Caption: "references" })) ui[name].textContent = t(`bibliography.${key}`);
       for (const [name, key] of Object.entries({ Previous: "previous", Next: "next", Add: "add", Edit: "edit", Remove: "remove", Undo: "undo" })) {
         ui[name].setAttribute("aria-label", t(`bibliography.${key}`));
@@ -183,15 +229,19 @@
         : parsed.status === "invalid" ? t("bibliography.invalid") : parsed.status === "unrecognized" ? t("bibliography.unrecognized") : "";
       ui.Status.hidden = !ui.Status.textContent;
       ui.Retry.hidden = !failed;
+      ui.Notice.hidden = ui.Status.hidden && ui.Retry.hidden;
       ui.Results.setAttribute("aria-busy", String(pending));
       if (sort && (!projection.columns.some((column) => column.id === sort.id) || hiddenColumns.has(sort.id))) sort = null;
+      ui.FiltersLabel.textContent = [t("bibliography.filters"), query.trim() ? t("bibliography.searchActive") : "",
+        sort ? t("bibliography.sortActive") : ""].filter(Boolean).join(" / ");
+      ui.Filters.classList.toggle("is-active", !!query.trim() || !!sort);
       const columns = core.visibleColumns(projection.columns, hiddenColumns);
       renderColumns(columns);
       const rows = tableAvailable() ? core.queryRows(projection, query, sort) : [];
       if (tableAvailable()) page = Math.max(0, Math.min(page, Math.ceil(rows.length / 100) - 1));
       const start = page * 100, end = Math.min(rows.length, start + 100);
       const currentRows = rows.slice(start, end);
-      renderDiagnostics(new Set(currentRows.map((row) => row.entryIndex)));
+      renderDiagnostics();
       ui.Total.textContent = tableAvailable() ? t("bibliography.total", {
         from: rows.length ? start + 1 : 0, to: end,
         results: t("bibliography.resultCount", { count: rows.length }),
@@ -239,6 +289,7 @@
       }
       syncMode();
       syncActions();
+      if (focusedDialog) restoreDialogFocus(focusedDialog);
     }
     function stop() {
       clearTimeout(timer); timer = null; latestRequestId++;
@@ -265,6 +316,23 @@
           if (message.error) { fail(); return; }
           busy = false; failed = false; parsed = message.result;
           projection = core.project(parsed);
+          const counts = new Map();
+          let offset = 0, line = 1;
+          // Cache native labels and entry-start lines once per accepted source,
+          // across the whole document, independently of either UI page or locale.
+          diagnosticReferences = parsed.entries.map((entry) => {
+            while (offset < entry.from) {
+              if (parsed.text[offset] === "\r" || (parsed.text[offset] === "\n" && parsed.text[offset - 1] !== "\r")) line++;
+              offset++;
+            }
+            let value = parsed.format === "bib" ? entry.key
+              : entry.fields.find((field) => field.name === "ID" && field.value.trim())?.value;
+            if (!value?.trim()) value = entry.fields.find((field) => field.value.trim() &&
+              core.describeField(parsed.format, entry.type, field.name).labelKey === "bibliography.fields.title")?.value || "";
+            counts.set(value, (counts.get(value) || 0) + 1);
+            return { value, line };
+          });
+          for (const reference of diagnosticReferences) reference.withLine = !reference.value || counts.get(reference.value) > 1;
           diagnostics = [...parsed.diagnostics, ...core.metadataWarnings(parsed)].map((diagnostic) => {
             // Entry spans are source ordered; associate warnings once, without a
             // scan of every reference for every missing-metadata diagnostic.
@@ -281,7 +349,7 @@
           if (tableAvailable()) { hint = parsed.format; onFormat?.(documentKey, hint); }
           const revealSource = !settled && !modeChosen && !tableAvailable();
           const moveFocus = revealSource && (doc.activeElement === ui.TableTab || ui.TablePanel.contains(doc.activeElement));
-          if (revealSource) { mode = "text"; ui.DiagnosticsDisclosure.open = true; }
+          if (revealSource) mode = "text";
           settled = true;
           render();
           if (revealSource) {
@@ -300,6 +368,7 @@
       const current = editor.snapshot();
       if (current.revision === scheduledRevision) { render(); return; }
       stop(); parsed = null; snapshot = null; failed = false; scheduledRevision = current.revision; selected = null;
+      diagnostics = []; diagnosticReferences = []; diagnosticPage = 0;
       // Invalidate rows now, but do no complete parsing in the input callback.
       render();
       timer = setTimeout(dispatch, 150);
@@ -307,11 +376,13 @@
     function activate(next) {
       if (disposed) return;
       if (documentKey === next.documentKey) { refresh(); return; }
+      closeDialogs(); checks.clear(); columnOrder = "";
       stop(); documentKey = next.documentKey; hint = next.hint; selected = null;
       if (!exclusions.has(documentKey)) exclusions.set(documentKey, new Set());
       hiddenColumns = exclusions.get(documentKey);
       parsed = null; snapshot = null; failed = false; scheduledRevision = null;
       projection = { columns: [], rows: [] }; query = ""; sort = null; page = 0;
+      diagnostics = []; diagnosticReferences = []; diagnosticPage = 0; ui.Filters.open = false;
       const editing = next.editing === true;
       mode = editing ? "text" : "table"; modeChosen = editing; settled = false;
       if (editing) refresh();
@@ -335,12 +406,18 @@
       if (oldKey === newKey) return;
       if (exclusions.has(oldKey)) { exclusions.set(newKey, exclusions.get(oldKey)); exclusions.delete(oldKey); }
       if (documentKey !== oldKey) return;
+      closeDialogs(true); checks.clear(); columnOrder = "";
       stop(); documentKey = newKey; selected = null;
       if (!parsed || snapshot.revision !== editor.snapshot().revision) { parsed = null; render(); dispatch(); }
       else render();
     }
     function deactivate() {
+      closeDialogs(); checks.clear(); columnOrder = "";
       stop(); documentKey = null; parsed = null; snapshot = null; scheduledRevision = null; selected = null;
+      diagnostics = []; diagnosticReferences = []; diagnosticPage = 0;
+      ui.Diagnostics.replaceChildren(); ui.Columns.replaceChildren();
+      ui.DiagnosticsButton.disabled = ui.ColumnsButton.disabled = true;
+      ui.DiagnosticsButton.classList.remove("has-issues", "has-errors");
       selections = [];
       projection = { columns: [], rows: [] }; ui.Rows.replaceChildren(); ui.Cards.replaceChildren();
       syncMode(); editor.requestMeasure();
@@ -353,11 +430,23 @@
       const next = !tableAvailable() || event.key === "End" ? "text" : event.key === "Home" ? "table" : mode === "table" ? "text" : "table";
       setMode(next); ui[next === "table" ? "TableTab" : "TextTab"].focus();
     });
-    listen(ui.Source, "click", () => onSource(null));
+    for (const name of dialogs) {
+      const modal = ui[`${name}Modal`];
+      listen(ui[`${name}Button`], "click", () => {
+        if (ui[`${name}Button`].disabled || !documentKey || disposed || motion.activeSurface() !== "app") return;
+        dialogGeneration++; motion.openDialog(modal);
+      });
+      listen(ui[`${name}Close`], "click", () => { void motion.closeDialog(modal); });
+      listen(modal, "click", (event) => { if (event.target === modal) void motion.closeDialog(modal); });
+      listen(modal, "iris:before-dialog-close", (event) => { if (event.detail.force) dialogGeneration++; });
+    }
+    for (const [name, step] of [["DiagnosticsPrevious", -1], ["DiagnosticsNext", 1]]) {
+      listen(ui[name], "click", () => { if (!ui[name].disabled) { diagnosticPage += step; renderDiagnostics(); } });
+    }
     listen(ui.Retry, "click", () => { stop(); failed = false; parsed = null; render(); dispatch(); });
     listen(ui.Query, "input", () => setQuery(ui.Query.value));
     listen(ui.Sort, "change", () => setSort(ui.Sort.value ? JSON.parse(ui.Sort.value) : null));
-    listen(ui.ShowAll, "click", showAllColumns);
+    listen(ui.ShowAll, "click", () => { if (!ui.ShowAll.disabled) showAllColumns(); });
     listen(ui.Previous, "click", () => setPage(page - 1));
     listen(ui.Next, "click", () => setPage(page + 1));
     listen(ui.Add, "click", () => { if (!ui.Add.disabled) actions.add(); });

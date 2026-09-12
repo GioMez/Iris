@@ -111,37 +111,32 @@
           <button id="bibliographyTableTab" type="button" role="tab" aria-controls="bibliographyTablePanel" aria-selected="true" tabindex="0" class="on" data-i18n="bibliography.table">Table</button>
           <button id="bibliographyTextTab" type="button" role="tab" aria-controls="bibliographyTextPanel" aria-selected="false" tabindex="-1" data-i18n="bibliography.text">Text</button>
         </div>
-        <div class="bibliography-notice">
-          <p id="bibliographyStatus" role="status" aria-live="polite"></p>
-          <button class="btn sm" id="bibliographySource" type="button" data-i18n="bibliography.showSource">Show source</button>
+        <div class="bibliography-notice" id="bibliographyNotice" hidden>
+          <p id="bibliographyStatus" role="status" aria-live="polite" hidden></p>
           <button class="btn sm" id="bibliographyRetry" type="button" data-i18n="bibliography.retry" hidden>Retry analysis</button>
-          <details id="bibliographyDiagnosticsDisclosure" hidden>
-            <summary id="bibliographyDiagnosticsLabel"></summary>
-            <ul id="bibliographyDiagnostics"></ul>
-          </details>
+        </div>
+        <div class="bibliography-actions">
+          <button class="btn sm icononly" id="bibliographyAdd" type="button" title="Add: create a new reference" aria-label="Add" data-i18n-title="bibliography.addTitle" data-i18n-aria-label="bibliography.add" disabled><span class="ic" data-icon="plus"></span></button>
+          <button class="btn sm icononly" id="bibliographyEdit" type="button" title="Edit: modify the selected reference" aria-label="Edit" data-i18n-title="bibliography.editTitle" data-i18n-aria-label="bibliography.edit" disabled><span class="ic" data-icon="edit"></span></button>
+          <button class="btn sm icononly" id="bibliographyRemove" type="button" title="Remove: confirm removal of the selected reference" aria-label="Remove" data-i18n-title="bibliography.removeTitle" data-i18n-aria-label="bibliography.remove" disabled><span class="ic" data-icon="trash"></span></button>
+          <button class="btn sm icononly" id="bibliographyUndo" type="button" title="Undo: undo the last source change" aria-label="Undo" data-i18n-title="bibliography.undoTitle" data-i18n-aria-label="bibliography.undo" disabled><span class="ic" data-icon="arrow-back-up"></span></button>
+          <button class="btn sm icononly" id="bibliographyDiagnosticsButton" type="button" aria-haspopup="dialog" aria-controls="bibliographyDiagnosticsModal" title="Diagnostics: review warnings and errors in this bibliography" aria-label="Diagnostics: review warnings and errors in this bibliography" data-i18n-title="bibliography.diagnosticsTitle" data-i18n-aria-label="bibliography.diagnosticsTitle" disabled><span class="ic" data-icon="alert-triangle"></span></button>
+          <button class="btn sm icononly" id="bibliographyColumnsButton" type="button" aria-haspopup="dialog" aria-controls="bibliographyColumnsModal" title="Columns: choose visible fields for this bibliography" aria-label="Columns: choose visible fields for this bibliography" data-i18n-title="bibliography.columnsTitle" data-i18n-aria-label="bibliography.columnsTitle" disabled><span class="ic" data-icon="columns-3"></span></button>
         </div>
         <div id="bibliographyTablePanel" role="tabpanel" aria-labelledby="bibliographyTableTab" tabindex="0">
-          <div class="bibliography-actions">
-            <button class="btn sm icononly" id="bibliographyAdd" type="button" title="Add: create a new reference" aria-label="Add" data-i18n-title="bibliography.addTitle" data-i18n-aria-label="bibliography.add" disabled><span class="ic" data-icon="plus"></span></button>
-            <button class="btn sm icononly" id="bibliographyEdit" type="button" title="Edit: modify the selected reference" aria-label="Edit" data-i18n-title="bibliography.editTitle" data-i18n-aria-label="bibliography.edit" disabled><span class="ic" data-icon="edit"></span></button>
-            <button class="btn sm icononly" id="bibliographyRemove" type="button" title="Remove: confirm removal of the selected reference" aria-label="Remove" data-i18n-title="bibliography.removeTitle" data-i18n-aria-label="bibliography.remove" disabled><span class="ic" data-icon="trash"></span></button>
-            <button class="btn sm icononly" id="bibliographyUndo" type="button" title="Undo: undo the last source change" aria-label="Undo" data-i18n-title="bibliography.undoTitle" data-i18n-aria-label="bibliography.undo" disabled><span class="ic" data-icon="arrow-back-up"></span></button>
-          </div>
-          <div class="bibliography-tools">
-            <div class="bibliography-search">
-              <label for="bibliographyQuery" id="bibliographyQueryLabel" data-i18n="bibliography.searchAll">Search all fields, including hidden columns</label>
-              <input class="input" id="bibliographyQuery" type="search" autocomplete="off" spellcheck="false">
+          <details id="bibliographyFilters">
+            <summary id="bibliographyFiltersLabel"></summary>
+            <div class="bibliography-tools">
+              <div class="bibliography-search">
+                <label for="bibliographyQuery" id="bibliographyQueryLabel" data-i18n="bibliography.searchAll">Search all fields, including hidden columns</label>
+                <input class="input" id="bibliographyQuery" type="search" autocomplete="off" spellcheck="false">
+              </div>
+              <div>
+                <label for="bibliographySort" id="bibliographySortLabel" data-i18n="bibliography.sort">Sort</label>
+                <select class="select" id="bibliographySort"></select>
+              </div>
             </div>
-            <div>
-              <label for="bibliographySort" id="bibliographySortLabel" data-i18n="bibliography.sort">Sort</label>
-              <select class="select" id="bibliographySort"></select>
-            </div>
-            <details id="bibliographyColumnPicker">
-              <summary id="bibliographyColumnsLabel" data-i18n="bibliography.columns">Columns</summary>
-              <div id="bibliographyColumns"></div>
-              <button class="btn sm" id="bibliographyShowAll" type="button" data-i18n="bibliography.showAll">Show all</button>
-            </details>
-          </div>
+          </details>
           <div class="bibliography-results" id="bibliographyResults">
             <p id="bibliographyState" role="status" aria-live="polite"></p>
             <div class="bibliography-table-scroll" tabindex="0" role="region" aria-labelledby="bibliographyCaption">
@@ -668,6 +663,40 @@
 </div>
 
 <!-- ===================== PROJECT MODALS ===================== -->
+<div class="scrim" id="bibliographyDiagnosticsModal" aria-hidden="true">
+  <div class="modal bibliography-view-dialog" role="dialog" aria-modal="true" aria-labelledby="bibliographyDiagnosticsTitle">
+    <div class="m-head">
+      <h3 id="bibliographyDiagnosticsTitle" data-i18n="bibliography.diagnosticsLabel">Diagnostics</h3>
+      <button class="m-x" id="bibliographyDiagnosticsClose" type="button" aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
+    </div>
+    <div class="m-body">
+      <p id="bibliographyDiagnosticsState" role="status" aria-live="polite" hidden></p>
+      <ul id="bibliographyDiagnostics"></ul>
+    </div>
+    <div class="m-foot" id="bibliographyDiagnosticsPagination" hidden>
+      <span id="bibliographyDiagnosticsTotal" role="status" aria-live="polite"></span>
+      <button class="btn sm icononly" id="bibliographyDiagnosticsPrevious" type="button" aria-label="Previous diagnostics" title="Previous diagnostics" data-i18n-aria-label="bibliography.diagnosticsPrevious" data-i18n-title="bibliography.diagnosticsPrevious"><span data-icon="chevron-left"></span></button>
+      <button class="btn sm icononly" id="bibliographyDiagnosticsNext" type="button" aria-label="Next diagnostics" title="Next diagnostics" data-i18n-aria-label="bibliography.diagnosticsNext" data-i18n-title="bibliography.diagnosticsNext"><span data-icon="chevron-right"></span></button>
+    </div>
+  </div>
+</div>
+
+<div class="scrim" id="bibliographyColumnsModal" aria-hidden="true">
+  <div class="modal bibliography-view-dialog" role="dialog" aria-modal="true" aria-labelledby="bibliographyColumnsTitle">
+    <div class="m-head">
+      <h3 id="bibliographyColumnsTitle" data-i18n="bibliography.columns">Columns</h3>
+      <button class="m-x" id="bibliographyColumnsClose" type="button" aria-label="Close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
+    </div>
+    <div class="m-body">
+      <p id="bibliographyColumnsState" role="status" aria-live="polite" hidden></p>
+      <div id="bibliographyColumns"></div>
+    </div>
+    <div class="m-foot">
+      <button class="btn sm" id="bibliographyShowAll" type="button" data-i18n="bibliography.showAll">Show all</button>
+    </div>
+  </div>
+</div>
+
 <div class="scrim" id="bibliographyModal">
   <form class="modal wide bibliography-form" role="dialog" aria-modal="true" aria-labelledby="bibliographyFormTitle" novalidate>
     <div class="m-head">
