@@ -199,7 +199,7 @@ test("local-to-SSO conversion revokes local sessions and clears forced change; S
   const user = await createUser(f);
   const live = await openSession(t, f, user);
   await f.pool.query("UPDATE users SET oidc_link_pending = TRUE, password_change_required = TRUE WHERE id = $1", [user.id]);
-  const profile = { email: user.email, subject: "alice", name: "Alice", preferredUsername: "alice" };
+  const profile = { email: user.email, subject: "alice", name: "Alice", preferredUsername: "alice", emailVerified: true };
   const gate = pauseAt(f.hooks, "beforeQuery", (sql) => sql.includes("INSERT INTO audit_events"));
   const pending = f.app.userFromOAuthProfile(profile);
   try {
@@ -351,7 +351,7 @@ for (const action of ["reset-password", "unlink-sso"]) {
       await gate.wait(pending);
       if (action === "unlink-sso") assert.equal((await f.request(`/api/admin/users/${user.id}/unlink-sso`, { method: "POST", cookie: f.cookieFor(admin) })).status, 200);
       await f.pool.query("UPDATE users SET oidc_link_pending = TRUE WHERE id = $1", [user.id]);
-      transitioned = await f.app.userFromOAuthProfile({ email: user.email, subject: "new", name: "Alice" });
+      transitioned = await f.app.userFromOAuthProfile({ email: user.email, subject: "new", name: "Alice", emailVerified: true });
     } finally {
       gate.release();
       await pending;

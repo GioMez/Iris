@@ -68,8 +68,8 @@ test("waiting for approval and having been disabled are told apart", () => {
   assert.match(server, /errorCode = "AUTH_ACCOUNT_PENDING"/);
   assert.match(server, /authError = "account_pending"/);
   assert.match(server, /function inactiveAccountError\(status\) \{\s*\n\s*return status === "pending" \? pendingAccountError\(\) : disabledAccountError\(\)/);
-  // Every SSO refusal routes through the helper rather than assuming "disabled".
-  assert.equal((server.match(/inactiveAccountError\((existing|emailMatch|retry\.rows\[0\])\.status\)/g) || []).length, 3);
+  // oauth-linking.test.js exercises pending/disabled identity and email matches,
+  // including real PostgreSQL provisioning conflicts, through the handlers.
   assert.match(server, /pending \? "AUTH_ACCOUNT_PENDING" : "AUTH_ACCOUNT_DISABLED"/);
   // Access checks are an allow-list on 'active', so the new state is refused
   // everywhere without a new check: requireUser is the one that matters most.

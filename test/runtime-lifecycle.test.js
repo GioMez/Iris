@@ -194,7 +194,7 @@ test("successful SSO GET linking stays counted through user changes and the fina
       return Promise.resolve(Response.json({ access_token: "lifecycle-token" }));
     }
     if (String(url) === `${issuer}/userinfo`) return Promise.resolve(Response.json({
-      sub: "durable-subject", email: user.email, name: user.display_name,
+      sub: "durable-subject", email: user.email, name: user.display_name, email_verified: true,
     }));
     return fetchRequest(url, init);
   });

@@ -509,14 +509,34 @@ https://iris.example.com/api/auth/sso/callback
 ```
 
 Set `OAUTH_REDIRECT_URI` when the callback cannot be derived from
-`APP_BASE_URL`. Without `OAUTH_ISSUER_URL`, configure
+`APP_BASE_URL`. To override discovery, configure all three of
 `OAUTH_AUTHORIZATION_URL`, `OAUTH_TOKEN_URL`, and `OAUTH_USERINFO_URL`
-directly.
+directly. `OAUTH_ISSUER_URL` is required for sign-in even with explicit endpoints:
+it identifies the provider when Iris matches accounts.
 
-OIDC identities are matched to local users by normalized email address. With
-`OAUTH_AUTO_REGISTER=false`, the matching local user must already exist. With
-auto-registration enabled, Iris creates an account without a local password.
-Existing users retain their current role.
+Iris identifies an OIDC account by the configured issuer URL and the provider's
+`sub` claim. A known identity can sign in to its active OIDC account even if its
+email changes or the provider no longer reports verified email.
+
+For an unknown identity whose email matches an existing account, an administrator
+must open that account's one-time linking window (`oidcLinkPending`). The account
+must be active and have neither an issuer nor a subject binding, and the provider
+must return `email_verified` as the literal boolean `true`. Iris compares email
+addresses case-insensitively. A successful link removes the local password,
+clears any forced password change, closes the linking window and ends existing
+sessions. Existing users retain their current role. A callback whose linking
+preconditions change before the write is refused, including after a password
+reset, email change, deactivation or competing link.
+
+With `OAUTH_AUTO_REGISTER=false`, a user needs an existing OIDC identity or an
+account eligible for the linking flow above. With auto-registration enabled, Iris
+creates an account without a local password when neither identity nor email
+matches. The verified-email requirement applies to linking an existing account;
+it does not change the auto-registration policy.
+
+Concurrent registrations can recover only the current active OIDC account with
+the same issuer and subject. A collision on email or username alone cannot grant
+access to the other account. Pending and disabled identities remain refused.
 
 An auto-registered account is created *pending* unless
 `OAUTH_APPROVAL_REQUIRED=false`: the row exists so an administrator can decide on
@@ -535,7 +555,7 @@ projects they are invited to, but not to create projects or own one.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `APP_BASE_URL` | request origin | Public application URL used to build the callback. |
-| `OAUTH_ISSUER_URL` | empty | OIDC issuer used for discovery. |
+| `OAUTH_ISSUER_URL` | empty | Required for SSO sign-in; identifies the provider and supplies discovery unless endpoints are explicit. |
 | `OAUTH_AUTHORIZATION_URL` | empty | Explicit authorization endpoint. |
 | `OAUTH_TOKEN_URL` | empty | Explicit token endpoint. |
 | `OAUTH_USERINFO_URL` | empty | Explicit user-info endpoint. |
@@ -544,7 +564,7 @@ projects they are invited to, but not to create projects or own one.
 | `OAUTH_REDIRECT_URI` | derived | Explicit callback override. |
 | `OAUTH_SCOPE` | `openid email profile` | Requested scopes. |
 | `OAUTH_CLIENT_AUTH_METHOD` | `client_secret_basic` | Token endpoint authentication; `client_secret_post` is also supported. |
-| `OAUTH_AUTO_REGISTER` | `false` | Create missing users from verified OIDC profiles. |
+| `OAUTH_AUTO_REGISTER` | `false` | Create accounts for unknown OIDC identities whose email does not match an existing account. |
 | `OAUTH_DEFAULT_ROLE` | `regular` | Server role for auto-registered accounts; `regular` or `external` only. |
 | `OAUTH_APPROVAL_REQUIRED` | `true` | Create auto-registered accounts pending an administrator's approval. |
 

@@ -51,6 +51,8 @@
   --shadow:0 8px 30px -8px rgba(0,0,0,.55);
 }
 *{box-sizing:border-box}
+/* Hidden state takes precedence over component and normal inline display. */
+[hidden]{display:none!important}
 html,body{height:100%;margin:0}
 body{
   background:var(--bg);color:var(--txt);

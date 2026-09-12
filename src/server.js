@@ -604,6 +604,7 @@ async function oauthUserInfo(accessToken) {
   if (!subject) throw new Error("The SSO provider did not return a subject (sub) claim");
   return {
     email,
+    emailVerified: data.email_verified === true,
     subject,
     name: String(data.name || data.preferred_username || email).trim(),
     preferredUsername: String(data.preferred_username || email.split("@")[0]).trim(),
@@ -670,21 +671,27 @@ function ssoLinkRequiredError() {
   return err;
 }
 
-async function userFromOAuthProfile(profile, ip = null) {
-  const issuer = OAUTH_ISSUER_URL || null;
-  const subject = profile.subject || null;
-  // SSO cannot be enabled without an issuer, and oauthUserInfo already rejects an
-  // empty subject; the pair is the only identity used to match an account.
-  if (!issuer || !subject) throw new Error("SSO profile is missing a durable identity");
-
-  const byOidc = await db.query(
+async function userFromOAuthIdentity(issuer, subject) {
+  const { rows } = await db.query(
     `SELECT ${OAUTH_USER_COLUMNS} FROM users WHERE oidc_issuer = $1 AND oidc_subject = $2 LIMIT 1`,
     [issuer, subject]
   );
-  const existing = byOidc.rows[0] || null;
+  const user = rows[0] || null;
+  if (!user) return null;
+  if (user.status !== "active") throw inactiveAccountError(user.status);
+  if (user.auth_source !== "oidc") throw requestError("NOT_AUTHENTICATED", 401);
+  return user;
+}
 
+async function userFromOAuthProfile(profile, ip = null) {
+  const issuer = OAUTH_ISSUER_URL || null;
+  const subject = profile.subject || null;
+  // SSO sign-in needs an issuer even with explicit endpoints. oauthUserInfo
+  // rejects an empty subject; the pair is the durable account identity.
+  if (!issuer || !subject) throw new Error("SSO profile is missing a durable identity");
+
+  const existing = await userFromOAuthIdentity(issuer, subject);
   if (existing) {
-    if (existing.status !== "active") throw inactiveAccountError(existing.status);
     const nextName = profile.name || existing.display_name;
     if (nextName && nextName !== existing.display_name) {
       await db.query("UPDATE users SET display_name = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2", [nextName, existing.id]);
@@ -694,8 +701,8 @@ async function userFromOAuthProfile(profile, ip = null) {
   }
 
   // No durable-identity match. Email is never used to silently adopt an account:
-  // if it belongs to an existing one, the identity is bound only through an
-  // admin-opened one-time linking window, after which the account is SSO-only.
+  // binding an existing account requires verified email and an admin-opened
+  // one-time linking window, after which the account is SSO-only.
   const byEmail = await db.query(
     `SELECT ${OAUTH_USER_COLUMNS} FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1`,
     [profile.email]
@@ -703,18 +710,25 @@ async function userFromOAuthProfile(profile, ip = null) {
   const emailMatch = byEmail.rows[0] || null;
   if (emailMatch) {
     if (emailMatch.status !== "active") throw inactiveAccountError(emailMatch.status);
-    // Email already bound to a different SSO identity → refuse (email reuse).
-    if (emailMatch.oidc_issuer && emailMatch.oidc_subject) {
+    // Refuse email reuse, including accounts with only a partial binding.
+    if (emailMatch.oidc_issuer !== null || emailMatch.oidc_subject !== null) {
       throw new Error("This email is already linked to a different SSO identity");
     }
     if (!emailMatch.oidc_link_pending) throw ssoLinkRequiredError();
+    if (profile.emailVerified !== true) throw new Error("The SSO provider did not verify this email address");
+    // Recheck the snapshot at the mutation boundary so an admin change or a
+    // competing link wins over this stale callback without losing credentials.
     const converted = await db.query(
       `UPDATE users SET oidc_issuer = $1, oidc_subject = $2, auth_source = 'oidc',
          password_hash = NULL, oidc_link_pending = FALSE, oidc_linked_at = CURRENT_TIMESTAMP,
          password_change_required = FALSE, session_version = session_version + 1,
          session_epoch = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-       WHERE id = $3 RETURNING ${OAUTH_USER_COLUMNS}`,
-      [issuer, subject, emailMatch.id]
+       WHERE id = $3 AND LOWER(email) = LOWER($4)
+         AND oidc_link_pending = TRUE AND status = 'active'
+         AND oidc_issuer IS NULL AND oidc_subject IS NULL
+         AND session_version = $5 AND auth_source = $6
+       RETURNING ${OAUTH_USER_COLUMNS}`,
+      [issuer, subject, emailMatch.id, emailMatch.email, emailMatch.session_version, emailMatch.auth_source]
     );
     if (!converted.rows.length) throw requestError("NOT_AUTHENTICATED", 401);
     collabRevokeUser(emailMatch.id);
@@ -755,14 +769,10 @@ async function userFromOAuthProfile(profile, ip = null) {
     id = String(created.id);
   } catch (err) {
     if (err.code !== "23505") throw err;
-    const retry = await db.query(
-      `SELECT ${OAUTH_USER_COLUMNS} FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1`,
-      [profile.email]
-    );
-    if (retry.rows[0]) {
-      if (retry.rows[0].status !== "active") throw inactiveAccountError(retry.rows[0].status);
-      return retry.rows[0];
-    }
+    // Another provisioner may have created this identity. Email or username
+    // collisions alone must never authenticate the account that won the race.
+    const retry = await userFromOAuthIdentity(issuer, subject);
+    if (retry) return retry;
     throw err;
   }
   await audit({
