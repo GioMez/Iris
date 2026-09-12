@@ -992,11 +992,6 @@ function dataUrlToBuffer(value) {
   }
 }
 
-function dataUrlMime(value) {
-  const match = String(value || "").match(/^data:([^;,]+)?[;,]/);
-  return match && match[1] ? match[1] : "application/octet-stream";
-}
-
 function mimeForProjectFile(filePath) {
   const ext = path.extname(filePath).toLowerCase();
   if ([".tex", ".ly", ".ily", ".bib", ".ris", ".bst", ".bbx", ".cbx", ".lbx", ".txt", ".sty", ".cls", ".md", ".log", ".aux", ".bbl", ".blg", ".idx", ".ilg", ".ind", ".out", ".toc", ".bcf", ".fls", ".fdb_latexmk"].includes(ext)) return "text/plain; charset=utf-8";
@@ -1420,17 +1415,7 @@ async function syncNodesWithFilesystem(storagePath, data, strictRead = false) {
 
 async function readProjectFile(storagePath, { strictRead = false } = {}) {
   const metaFile = path.join(storagePath, ".iris", "project.json");
-  const legacyFile = path.join(storagePath, "project.json");
-  let data;
-  let legacy = false;
-  try {
-    data = JSON.parse(await fs.readFile(metaFile, "utf8"));
-  } catch (err) {
-    if (err.code !== "ENOENT") throw err;
-    legacy = true;
-    data = JSON.parse(await fs.readFile(legacyFile, "utf8"));
-  }
-  data = data || {};
+  const data = JSON.parse(await fs.readFile(metaFile, "utf8")) || {};
   if (!data.project) data.project = { nodes: [] };
   data.assets = data.assets || {};
   // Missing stale manifest entries are reconciled by the scan below. Compile
@@ -1451,12 +1436,9 @@ async function readProjectFile(storagePath, { strictRead = false } = {}) {
       if (fileIsBinaryNode(node)) {
         const buf = await fs.readFile(abs).catch((err) => { if (strictRead && err.code !== "ENOENT") throw err; return null; });
         if (buf) {
-          const mime = legacy && node.data ? dataUrlMime(node.data) : mimeForProjectFile(rel);
-          const dataUrl = `data:${mime};base64,${buf.toString("base64")}`;
+          const dataUrl = `data:${mimeForProjectFile(rel)};base64,${buf.toString("base64")}`;
           node.data = dataUrl;
           data.assets[rel] = dataUrl;
-        } else if (legacy && node.data) {
-          data.assets[rel] = node.data;
         }
       } else {
         const bytes = await fs.readFile(abs).catch((err) => { if (strictRead && err.code !== "ENOENT") throw err; return null; });
@@ -1468,7 +1450,7 @@ async function readProjectFile(storagePath, { strictRead = false } = {}) {
             node.sourceError = err.errorCode;
           }
         }
-        else if (!legacy) node.content = "";
+        else node.content = "";
       }
     }
   };
@@ -1548,7 +1530,6 @@ async function writeProjectFile(storagePath, data, renames = []) {
   await writeProjectFonts(storagePath, data, expectedFiles);
   await pruneProjectFiles(storagePath, expectedFiles);
   await writeProjectManifest(storagePath, data);
-  await fs.rm(path.join(storagePath, "project.json"), { force: true });
 }
 
 async function collectProjectArchiveEntries(storagePath, projectName, limits = {}) {
