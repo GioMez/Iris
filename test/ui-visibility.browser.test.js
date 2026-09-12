@@ -54,8 +54,8 @@ test.before(async (t) => {
   t.diagnostic(`Browser: ${browser.version()}; isolated fixture: ${base.origin}`);
 }, { timeout: 30000 });
 
-async function pageFor(t, variant, { openProject = true } = {}) {
-  const context = await browser.newContext({ viewport: variant.viewport, reducedMotion: "reduce" });
+async function pageFor(t, variant, { openProject = true, authenticated = true, projects = [] } = {}) {
+  const context = await browser.newContext({ viewport: variant.viewport, deviceScaleFactor: variant.scale || 1, reducedMotion: "reduce" });
   const sockets = new Set(), gates = new Set(), errors = [];
   let page, closing = false;
   t.after(async () => {
@@ -103,10 +103,10 @@ async function pageFor(t, variant, { openProject = true } = {}) {
       if (!url.pathname.startsWith("/api/")) return await route.continue();
       const responses = {
         "/api/config": { auth: { ssoEnabled: false } },
-        "/api/auth/session": { user: { id: "browser-admin", username: "browser-test", name: "Browser Admin",
+        "/api/auth/session": { user: authenticated ? { id: "browser-admin", username: "browser-test", name: "Browser Admin",
           email: "browser@example.invalid", role: "admin", authSource: "local",
-          canChangePassword: true, passwordChangeRequired: false } },
-        "/api/projects": { projects: [] },
+          canChangePassword: true, passwordChangeRequired: false } : null },
+        "/api/projects": { projects },
         "/api/project-templates": { templates: { latex: [], lilypond: [] } },
         [`/api/projects/${projectId}`]: data,
         [`/api/projects/${projectId}/builds`]: { builds: [], nextOffset: null },
@@ -147,12 +147,13 @@ async function pageFor(t, variant, { openProject = true } = {}) {
   });
   const response = await page.goto(base.href, { waitUntil: "networkidle", timeout: 10000 });
   assert.equal(response.status(), 200, "fixture serves the actual Iris document");
-  await page.waitForFunction(() => document.documentElement.classList.contains("iris-authed"));
+  await page.waitForFunction((authenticated) => document.documentElement.classList.contains("iris-authed") === authenticated
+    && IrisMotion.activeSurface() === (authenticated ? "picker" : "login"), authenticated);
   await bounded(() => page.evaluate(async (language) => {
     await Promise.all([IrisEditor.ready, IrisI18n.ready]);
     await IrisI18n.setLanguage(language);
   }, variant.language), "application ready");
-  if (openProject) {
+  if (openProject && authenticated) {
     await bounded(() => page.evaluate((id) => IrisProjects.openProject(id), projectId), "open project");
     await page.waitForFunction(() => IrisCollab.status() === "live" && IrisMotion.activeSurface() === "app");
     assert.equal(await page.locator(".app").evaluate((node) => node.inert), false);
@@ -360,6 +361,85 @@ for (const variant of variants) {
   });
 }
 
+// Doubling DPR while halving the desktop's CSS viewport models the reflow and
+// raster density of 200% browser zoom; it does not claim a physical-device test.
+const layoutVariants = [
+  { name: "desktop EN", viewport: { width: 1440, height: 900 }, language: "en" },
+  { name: "tablet IT", viewport: { width: 1024, height: 768 }, language: "it" },
+  { name: "compact EN", viewport: { width: 390, height: 844 }, language: "en" },
+  { name: "compact IT", viewport: { width: 390, height: 844 }, language: "it" },
+  { name: "200% equivalent IT", viewport: { width: 720, height: 450 }, scale: 2, language: "it" },
+];
+
+async function surfaceFits(page, selector) {
+  const surface = page.locator(selector);
+  await surface.waitFor({ state: "visible" });
+  const issues = await surface.evaluate((node) => {
+    const box = node.getBoundingClientRect();
+    const problems = [];
+    if (box.left < -1 || box.right > innerWidth + 1) problems.push("surface leaves viewport horizontally");
+    for (const control of node.querySelectorAll("button,input,select,textarea")) {
+      const rect = control.getBoundingClientRect();
+      if (!rect.width || !rect.height || control.closest("[hidden]")) continue;
+      if (rect.width > box.width + 1) problems.push(`${control.id || control.className}: control wider than surface`);
+    }
+    for (const copy of node.querySelectorAll(".login-sub,.picker-sub,.pcard-name,.pcard-meta,.desc,.hint")) {
+      if (copy.clientWidth && copy.scrollWidth > copy.clientWidth + 1) problems.push(`${copy.className}: text overflows horizontally`);
+    }
+    return problems;
+  });
+  assert.deepEqual(issues, [], `${selector} keeps controls and wrapping text inside its layout`);
+}
+
+async function openSettings(page) {
+  await page.locator("#btnSettings").click();
+  // IrisMotion may focus the same tab synchronously before openSettings repeats
+  // that focus in requestAnimationFrame. Cross the queued frame, then verify the
+  // handoff, before directing keyboard input elsewhere.
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
+  await page.waitForFunction(() => document.activeElement === document.querySelector(
+    matchMedia("(max-width: 700px)").matches ? '.set-accordion-trigger[data-set="fonts"]' : "#settingsTabFonts"));
+}
+
+for (const variant of layoutVariants) {
+  test(`UI scale reflow keeps login, project home, admin and settings usable: ${variant.name}`, options, async (t) => {
+    const login = await pageFor(t, variant, { openProject: false, authenticated: false });
+    await surfaceFits(login.page, ".login-card");
+    const projects = [{ id: projectId, name: "Appunti e riferimenti per il laboratorio di composizione e ricerca",
+      projectType: "latex", role: "owner", updatedAt: "2026-09-12T10:00:00.000Z" }];
+    const { page } = await pageFor(t, variant, { openProject: false, projects });
+    await surfaceFits(page, "#pickerScreen .picker-wrap");
+    await surfaceFits(page, ".pcard");
+    const homeInset = await page.locator("#pickerScreen").evaluate((node) => getComputedStyle(node).padding);
+    await page.locator("#pkAdmin").click();
+    await surfaceFits(page, "#adminScreen .picker-wrap");
+    assert.equal(await page.locator("#adminScreen").evaluate((node) => getComputedStyle(node).padding), homeInset);
+    await page.locator("#adminTabTemplates").click();
+    await page.locator("#adminTemplateNew").click();
+    await surfaceFits(page, ".admin-template-modal");
+    await page.locator("#adminTemplateCancel").focus();
+    await page.keyboard.press("Enter");
+    await page.locator("#adminTemplateModal").waitFor({ state: "hidden" });
+    await page.locator("#adminBack").click();
+    await page.evaluate((id) => IrisProjects.openProject(id), projectId);
+    await page.waitForFunction(() => IrisCollab.status() === "live");
+    await surfaceFits(page, ".app");
+    for (const selector of ["#btnCompile", "#btnSettings"]) {
+      assert.equal(await page.locator(selector).evaluate((node) => {
+        const box = node.getBoundingClientRect();
+        return box.width > 0 && box.left >= 0 && box.right <= innerWidth && box.top >= 0 && box.bottom <= innerHeight;
+      }), true, `${selector} remains reachable in the viewport`);
+    }
+    await openSettings(page);
+    await surfaceFits(page, ".settings-modal");
+    const close = page.locator("#settingsModal .m-foot [data-close]");
+    await close.focus();
+    await page.keyboard.press("Enter");
+    await page.locator("#settingsModal").waitFor({ state: "hidden" });
+    assert.equal(await page.evaluate(() => document.activeElement.id), "btnSettings");
+  });
+}
+
 test("hidden invariant: ordinary inline display cannot expose an explicitly hidden app control", options, async (t) => {
   const { page } = await pageFor(t, variants[0]);
   const checks = hiddenChecks(t);
@@ -377,3 +457,126 @@ test("hidden invariant: ordinary inline display cannot expose an explicitly hidd
   await page.locator("#btnSettings").evaluate((node) => node.style.removeProperty("display"));
   checks.verify();
 });
+
+// A local hard-coded measurement must not detach a consumer from the shared UI
+// scale. Override tokens with non-default values and observe the rendered app;
+// editor metrics deliberately remain independent of interface typography.
+for (const variant of variants) {
+  test(`shared UI scales reach dialog controls without changing editor metrics: ${variant.name}`, options, async (t) => {
+    const { page } = await pageFor(t, variant);
+    const editorMetrics = () => page.locator(".cm-host .cm-scroller").evaluate((node) => {
+      const style = getComputedStyle(node);
+      const line = getComputedStyle(document.querySelector(".cm-host .cm-line"));
+      return [style.fontSize, style.lineHeight, line.paddingLeft];
+    });
+    const before = await editorMetrics();
+    await page.evaluate(() => {
+      for (const [name, value] of Object.entries({
+        "--space-6": "20px", "--text-md": "15px",
+        "--radius-control": "3px", "--radius-dialog": "9px",
+      })) document.documentElement.style.setProperty(name, value);
+      IrisMotion.openDialog("attachModal");
+    });
+    await page.locator("#attachModal").waitFor({ state: "visible" });
+    const actual = await page.evaluate(() => {
+      const style = (selector) => getComputedStyle(document.querySelector(selector));
+      return {
+        inset: style("#attachModal .m-body").paddingLeft,
+        fieldGap: style("#attachModal .field").marginBottom,
+        controls: ["#attachModal .btn", "#attachRename", "#attachDest"].map((selector) => {
+          const { fontSize, borderTopLeftRadius } = style(selector);
+          return [fontSize, borderTopLeftRadius];
+        }),
+        dialogRadius: style("#attachModal .modal").borderTopLeftRadius,
+      };
+    });
+    assert.deepEqual(actual, { inset: "20px", fieldGap: "20px",
+      controls: [["15px", "3px"], ["15px", "3px"], ["15px", "3px"]], dialogRadius: "9px" });
+    assert.deepEqual(await editorMetrics(), before);
+    await page.locator("#attachModal .m-foot [data-close]").click();
+  });
+
+  test(`settings section spacing follows the shared scale through tab changes: ${variant.name}`, options, async (t) => {
+    const { page } = await pageFor(t, variant);
+    await openSettings(page);
+    await page.locator("#settingsModal").waitFor({ state: "visible" });
+    await page.evaluate(() => {
+      document.documentElement.style.setProperty("--space-6", "23px");
+      document.documentElement.style.setProperty("--space-7", "29px");
+    });
+    assert.equal(await page.locator('[data-i18n="settings.uploadedFonts"]').evaluate((node) => getComputedStyle(node).marginTop), "23px");
+    const section = variant.viewport.width <= 700 ? '.set-accordion-trigger[data-set="compile"]' : "#settingsTabCompile";
+    await page.locator(section).click();
+    assert.equal(await page.locator("#compilePreset").evaluate((node) => getComputedStyle(node.closest(".field")).marginTop), "23px");
+    assert.equal(await page.locator("#compileMainPath").evaluate((node) => getComputedStyle(node.closest(".field")).marginTop), "29px");
+    const close = page.locator("#settingsModal .m-foot [data-close]");
+    await close.focus();
+    await page.keyboard.press("Enter");
+    await page.locator("#settingsModal").waitFor({ state: "hidden" });
+    assert.equal(await page.evaluate(() => document.activeElement.id), "btnSettings");
+  });
+}
+
+for (const language of ["en", "it"]) {
+  test(`pinned toolbar controls fit at compact boundary widths: ${language}`, options, async (t) => {
+    const { page } = await pageFor(t, { viewport: { width: 1440, height: 900 }, language });
+    for (const width of language === "en" ? [375, 575] : [375, 590]) {
+      await page.setViewportSize({ width, height: 844 });
+      await page.locator(".topbar").evaluate(async (node) => {
+        // Let viewport-dependent transitions finish before measuring their endpoint.
+        getComputedStyle(node).width;
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+        await Promise.all(node.getAnimations({ subtree: true }).map((animation) => animation.finished));
+      });
+      const clipped = await page.evaluate(() => {
+        const failures = [];
+        for (const selector of [".topbar", ".statusbar"]) {
+          const parent = document.querySelector(selector).getBoundingClientRect();
+          for (const control of document.querySelectorAll(`${selector} button`)) {
+            const box = control.getBoundingClientRect();
+            if (!box.width || !box.height || control.closest("[hidden],.tbar-scroll,.sb-info")) continue;
+            if (box.left < Math.max(0, parent.left) - .5 || box.right > Math.min(innerWidth, parent.right) + .5) {
+              failures.push({ id: control.id || control.dataset.workspace, left: box.left, right: box.right });
+            }
+          }
+        }
+        return failures;
+      });
+      assert.deepEqual(clipped, [], `${language} at ${width}px: account, sharing and pinned actions stay inside the viewport`);
+    }
+  });
+}
+
+for (const format of ["png", "svg"]) {
+  test(`rendered ${format} build dimensions agree with the zoom label`, options, async (t) => {
+    const { page } = await pageFor(t, variants[0]);
+    await page.evaluate(async (format) => {
+      let base64;
+      if (format === "png") {
+        const canvas = document.createElement("canvas");
+        canvas.width = 100; canvas.height = 200;
+        canvas.getContext("2d").fillRect(0, 0, 100, 200);
+        base64 = canvas.toDataURL("image/png").split(",")[1];
+      } else {
+        base64 = btoa('<svg xmlns="http://www.w3.org/2000/svg" width="100" height="200"><rect width="100" height="200"/></svg>');
+      }
+      await IrisApp.showBuildOutput({
+        build: { id: "33333333-3333-4333-8333-333333333333", status: "succeeded", format,
+          mainPath: "main.ly", displayName: `score.${format}`, compiler: "lilypond", projectType: "lilypond",
+          durationMs: 100, exitCode: 0, completedAt: "2026-09-13T10:00:00Z", warnings: [], errors: [] },
+        artifacts: [{ name: `score.${format}`, mimeType: format === "png" ? "image/png" : "image/svg+xml", base64 }],
+      });
+      // Use the real zoom controls: reach the 10% floor, then advance to 100%.
+      for (let i = 0; i < 30; i++) document.querySelector("#zOut").click();
+      for (let i = 0; i < 9; i++) document.querySelector("#zIn").click();
+    }, format);
+    const size = () => page.locator(".image-preview img").evaluate((image) => {
+      const box = image.getBoundingClientRect();
+      return { natural: [image.naturalWidth, image.naturalHeight], rendered: [box.width, box.height],
+        label: document.querySelector("#zVal").textContent };
+    });
+    assert.deepEqual(await size(), { natural: [100, 200], rendered: [100, 200], label: "100%" });
+    await page.locator("#zIn").click();
+    assert.deepEqual(await size(), { natural: [100, 200], rendered: [110, 220], label: "110%" });
+  });
+}

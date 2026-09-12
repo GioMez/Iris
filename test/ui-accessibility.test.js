@@ -297,8 +297,8 @@ test("home and admin share one aligned responsive header system", () => {
   assert.match(css, /\.login-brand \.mark\{width:34px;height:34px/);
   assert.match(css, /\.admin-switch\{[^}]*height:34px;[^}]*padding:2px/);
   assert.match(css, /\.admin-switch button\{height:28px/);
-  assert.match(css, /@media\(max-width:640px\)\{[\s\S]*\.picker-screen\{padding:30px 18px 48px/);
-  assert.match(css, /@media\(max-width:640px\)\{[\s\S]*\.admin-screen\{padding:30px 18px 48px/);
+  // Shared responsive insets are compared on the rendered home/admin surfaces
+  // in ui-visibility.browser.test.js, including the compact and zoom layouts.
   const adminHeader = html.slice(html.indexOf('<div class="admin-screen"'), html.indexOf('<!-- USERS PANEL -->'));
   assert.match(adminHeader, /class="login-brand"/);
   assert.match(adminHeader, /class="picker-user admin-header-actions"/);
@@ -548,7 +548,7 @@ test("settings use accessible tabs and a compact accordion", () => {
 test("settings typography and compiler guidance keep their visual alignment", () => {
   assert.match(html, /id="fontDrop"[\s\S]*class="fontdrop-copy"/);
   assert.match(css, /#fontDrop\{display:flex;align-items:center;justify-content:center/);
-  assert.match(css, /\.binresolve\+\.field\{margin-top:20px\}/);
+  // The browser suite checks the section gap's actual response to its UI token.
   assert.match(css, /\.hint\{[^}]*display:block/);
   assert.doesNotMatch(css, /\.hint\{[^}]*display:flex/);
 });

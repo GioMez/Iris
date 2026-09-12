@@ -1329,6 +1329,9 @@ For a production deployment, also:
 
 ## Development
 
+See [Interface measurement tokens](docs/ui-measurements.md) for the shared
+spacing, typography and corner scales, their geometry exceptions and browser checks.
+
 Run the test suite with:
 
 ```sh
