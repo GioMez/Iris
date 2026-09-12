@@ -467,7 +467,7 @@ for (const admin of [false, true]) {
       assert.equal(client.session.projectId, null);
       assert.equal((await client.next("revoked")).fileId, f.fileId);
       assert.equal(client.messages.some((m) => m.t === "file-closed"), false);
-      await f.app.collabPersistNow(room, true);
+      await within(f.app.collabPersistNow(room, true));
       await assert.rejects(fs.stat(f.dir), { code: "ENOENT" });
     } finally { release.resolve(); assert.equal((await deletion).status, 200); }
   });

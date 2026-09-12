@@ -15,6 +15,7 @@ const { parseAppBaseUrl, requestAuthority, requestOrigin, isRequestOriginAllowed
 const { recordAuditEvent } = require("./audit");
 const { normalizeProjectPath, collectProjectFiles, reconcileProjectFiles, remapImportedFileIds } = require("./project-files");
 const { createProjectMutations } = require("./project-mutations");
+const { createProjectDeletions } = require("./project-deletions");
 const { hashContent, isVersionableText, contentChanged } = require("./versions");
 const { CollabRooms, CollabError, peerColor, normalizePresence } = require("./collab");
 const { isSystemRole, isUserStatus, isAccountStatus, leavesNoActiveAdmin, normalizeSearch, userDeletionBlock } = require("./admin");
@@ -192,6 +193,7 @@ const CODEMIRROR_MODULES = {
 
 let db;
 const projectMutations = createProjectMutations({ fs, getDb: () => db, backupRoot: path.join(DATA_DIR, ".project-backups"), requestError });
+const projectDeletions = createProjectDeletions({ fs, getDb: () => db, mutations: projectMutations, backupRoot: path.join(DATA_DIR, ".project-backups"), requestError, log: console });
 let oauthDiscoveryCache = null;
 let initialAdminCredentials = null;
 let shuttingDown = false;
@@ -3359,24 +3361,43 @@ async function updateProject(req, res, user, id) {
   });
 }
 
-async function deleteProject(req, res, user, id) {
-  const row = await authorizedProjectGate(id, user, "delete", async (row) => {
-    await projectMutations.transaction({ id, storageDir: row.storageDir, deleting: true }, async (client, protect) => {
-      await authorizeProject(id, user, "delete", client);
-      await protect();
-      await client.query("DELETE FROM projects WHERE id = $1", [id]);
+async function deleteProject(req, res, user, id, admin = false) {
+  const authenticate = async (queryable = db) => {
+    const current = await requireUser(req, queryable);
+    if (current.sub !== user.sub || current.sessionVersion !== user.sessionVersion) throw requestError("NOT_AUTHENTICATED", 401);
+    if (current.passwordChangeRequired) throw requestError("PASSWORD_CHANGE_REQUIRED", 403);
+    if (admin) requireAdmin(current);
+    return current;
+  };
+  let result, committed;
+  try {
+    result = await projectDeletions.remove({
+      id, admin, authenticate,
+      authorizeLive: async (queryable = db) => {
+        const current = await authenticate(queryable);
+        return admin ? withStorageDir(await adminProjectRow(id, queryable)) : authorizeProject(id, current, "delete", queryable);
+      },
+      lockAuthority: async (client, current) => {
+        await lockSharingUsers(client, current.sub);
+        await client.query("SELECT pg_advisory_xact_lock($1, hashtext($2))", [PROJECT_OWNER_LOCK, id]);
+      },
+      onCommitted: (row, current) => {
+        committed = { row, current };
+        collabReconcileProject(id);
+      },
     });
-    collabReconcileProject(id);
-    return row;
-  });
-  await audit({
-    ...sessionActor(req, user),
-    action: "project.deleted",
-    targetType: "project",
-    targetId: id,
-    metadata: { name: row.name },
-  });
-  json(res, 200, { ok: true });
+  } finally {
+    // Audit remains HTTP-accounted even on readiness failure, but must not hold
+    // the project queue and delay retired-room persistence or cleanup retries.
+    if (committed) {
+      const { row, current } = committed;
+      await audit({
+        ...sessionActor(req, current), action: "project.deleted", targetType: "project", targetId: id,
+        metadata: { name: row.name, ...(admin ? { via: "admin" } : {}) },
+      });
+    }
+  }
+  json(res, 200, result);
 }
 
 async function downloadProjectFile(req, res, user, id, url) {
@@ -4839,6 +4860,7 @@ async function runRetentionSweepNow() {
   const now = Date.now();
   const totals = { builds: 0, versions: 0, directories: 0, audit: 0, stalled: 0 };
   try {
+    await resumeProjectDeletions();
     totals.stalled = await reconcileStalledBuildsNow();
     const { rows } = await db.query(
       `SELECT id, storage_path, build_keep, build_days, version_keep, version_days FROM projects`
@@ -4882,7 +4904,13 @@ async function runRetentionSweepNow() {
   return totals;
 }
 
+function resumeProjectDeletions() {
+  return startBackgroundWrite(() => projectDeletions.sweep({ shouldRun: () => !shuttingDown && !maintenanceActive() }));
+}
+
 function startRetentionSweep() {
+  // Confirmed deletions are resumed even when history retention is disabled.
+  resumeProjectDeletions().catch((err) => console.error("Project deletion startup cleanup failed", err));
   if (!RETENTION_ENABLED) {
     console.log("Retention sweep disabled (RETENTION_ENABLED=false)");
     return null;
@@ -5391,24 +5419,7 @@ async function adminRemoveProjectMember(req, res, actor, projectId, memberId) {
 }
 
 async function adminDeleteProject(req, res, actor, projectId) {
-  const row = await projectMutations.gate(projectId, async () => {
-    const row = await adminProjectRow(projectId);
-    const storageDir = resolveProjectStorageDir(DATA_DIR, row.storage_path);
-    await projectMutations.transaction({ id: projectId, storageDir, deleting: true }, async (client, protect) => {
-      await protect();
-      await client.query("DELETE FROM projects WHERE id = $1", [projectId]);
-    });
-    collabReconcileProject(projectId);
-    return row;
-  });
-  await audit({
-    ...sessionActor(req, actor),
-    action: "project.deleted",
-    targetType: "project",
-    targetId: projectId,
-    metadata: { name: row.name, via: "admin" },
-  });
-  json(res, 200, { ok: true });
+  return deleteProject(req, res, actor, projectId, true);
 }
 
 // The projects for which the user is the *only* owner. Deleting the user would

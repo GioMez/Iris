@@ -362,6 +362,35 @@ An uncertain commit or failed compensation retains a backup below
 before repairing the project and removing that backup; restart after recovery.
 This is not automatic crash recovery or multi-process filesystem coordination.
 
+Project deletion uses a current PostgreSQL receipt in `project_deletions`.
+The server snapshots the owners, quarantines storage, and deletes project metadata
+in one transaction. It revokes collaboration rooms after acknowledging `COMMIT`,
+then marks the receipt `cleanup_ready` before removing quarantine bytes. Missing
+source storage counts as an absent payload; other filesystem errors still fail.
+An uncertain commit leaves a `prepared` receipt and requires operator inspection.
+The server does not infer deletion from an unknown backup or an absent project row.
+
+Both owner and admin DELETE routes return `{ok:true, cleanupPending:false}` after
+cleanup. A confirmed deletion whose filesystem cleanup fails returns
+`{ok:true, cleanupPending:true}`. A retry can finish partial cleanup. Historical
+owners must authenticate with a current session on the owner route; admins must
+use the admin route with current administrator authority. Other users receive
+`404`. Authorized requests for `prepared` receipts receive
+`503 PROJECT_RECOVERY_REQUIRED`. Readiness or completion database errors also
+return recovery-required and retain the receipt for inspection or retry.
+
+Completed receipts support repeated `200` responses without filesystem writes or
+duplicate deletion audit events. A cleanup pass prunes them after seven days from
+completion; retries then return `404`. Prepared and pending-cleanup receipts do
+not expire. Startup resumes ready cleanup even with `RETENTION_ENABLED=false`;
+the existing retention sweep also resumes it when enabled. Maintenance and shutdown
+prevent new background cleanup work. The server leaves any ready receipt with a
+live project row untouched for operator inspection.
+
+This beta changes the database definition. Existing beta installations require an
+explicit reset for the new baseline; Iris does not convert deletion receipts or
+reset an installation on startup.
+
 ### Portable project archives
 
 Every project card can download a ZIP archive. The archive keeps the project
