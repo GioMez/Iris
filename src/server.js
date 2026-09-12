@@ -851,12 +851,12 @@ async function readBody(req) {
 // disabled account, a bumped session version (a forced sign-out or password reset)
 // or a role change is honoured on the very next request rather than lingering
 // until the token expires.
-async function requireUser(req) {
+async function requireUser(req, queryable = db) {
   const token = parseCookies(req).iris_session;
   const payload = verifyToken(token);
   if (!payload) throw requestError("NOT_AUTHENTICATED", 401);
 
-  const { rows } = await db.query(
+  const { rows } = await queryable.query(
     "SELECT id, username, email, display_name, system_role, status, auth_source, session_version, password_change_required FROM users WHERE id = $1 LIMIT 1",
     [payload.sub]
   );
@@ -1707,17 +1707,51 @@ async function getProjectTemplate(req, res, type, encodedFileName) {
 // the same project cannot race past the last-owner check.
 const PROJECT_OWNER_LOCK = 4952;
 
+// Account conversion locks users before owned projects. Sharing must use the
+// same order, including INSERT's target and invited_by foreign-key references.
+// SHARE protects requester authority; compatible SHARE locks let that requester
+// work on independent projects. Deduplicate before locking to avoid upgrades.
+async function lockSharingUsers(client, requesterId, targetId = null) {
+  const ids = [...new Set(targetId ? [requesterId, targetId] : [requesterId])].sort();
+  for (const id of ids) {
+    await client.query(id === requesterId
+      ? "SELECT id FROM users WHERE id = $1 FOR SHARE"
+      : "SELECT id FROM users WHERE id = $1 FOR KEY SHARE", [id]);
+  }
+}
+
+// Call after the project and target-membership lock waits, on the writing
+// client. A separate statement gets a fresh READ COMMITTED authorization view.
+async function authorizeSharingRequester(req, user, projectId, capability, client) {
+  const current = await requireUser(req, client);
+  if (current.sub !== user.sub || current.sessionVersion !== user.sessionVersion) {
+    throw requestError("NOT_AUTHENTICATED", 401);
+  }
+  if (current.passwordChangeRequired) throw requestError("PASSWORD_CHANGE_REQUIRED", 403);
+  if (capability === "admin") {
+    requireAdmin(current);
+    await adminProjectRow(projectId, client);
+  } else {
+    await authorizeProject(projectId, current, capability, client);
+  }
+}
+
+function requireSharingSessionUnexpired(user) {
+  // Even after the final authorization, DML can wait on a foreign-key row.
+  if (user.exp <= Math.floor(Date.now() / 1000)) throw requestError("NOT_AUTHENTICATED", 401);
+}
+
 // Sharing targets accounts that already exist. The UI resolves a partial search
 // to an immutable user id; exact username/email remains available to admin flows.
 // Pending invitations for strangers are a later evolution.
-async function resolveMemberUser(identifier, userId = null, activeOnly = false) {
+async function resolveMemberUser(identifier, userId = null, activeOnly = false, queryable = db) {
   const value = String(identifier || "").trim();
   if (!userId && !value) throw requestError("MEMBER_IDENTIFIER_REQUIRED", 400);
   if (userId && !isUuid(userId)) throw requestError("MEMBER_USER_NOT_FOUND", 404);
   const where = userId
     ? `id = $1${activeOnly ? " AND status = 'active'" : ""}`
     : `(LOWER(username) = LOWER($1) OR LOWER(email) = LOWER($1))${activeOnly ? " AND status = 'active'" : ""}`;
-  const { rows } = await db.query(
+  const { rows } = await queryable.query(
     `SELECT id, username, email, display_name, system_role FROM users WHERE ${where} LIMIT 1`,
     [userId || value]
   );
@@ -1731,6 +1765,46 @@ async function resolveMemberUser(identifier, userId = null, activeOnly = false) 
 // alike, because a rule an administrator can step around is not an invariant.
 function requireGrantableRole(systemRole, projectRole) {
   if (!canHoldProjectRole(systemRole, projectRole)) throw requestError("MEMBER_EXTERNAL_NOT_OWNER", 409);
+}
+
+async function insertProjectMembership(req, user, projectId, { identifier, userId = null, role }, viaAdmin = false) {
+  let target, targetError;
+  try {
+    target = await resolveMemberUser(identifier, userId, !viaAdmin);
+  } catch (err) {
+    // Only expected lookup errors wait for the requester gate. SQL failures
+    // propagate here, outside a transaction; no aborted client is reauthorized.
+    if (err.errorCode !== "MEMBER_USER_NOT_FOUND" && err.errorCode !== "MEMBER_IDENTIFIER_REQUIRED") throw err;
+    targetError = err;
+  }
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN ISOLATION LEVEL READ COMMITTED");
+    await lockSharingUsers(client, user.sub, target?.id);
+    await client.query("SELECT pg_advisory_xact_lock($1, hashtext($2))", [PROJECT_OWNER_LOCK, projectId]);
+    await authorizeSharingRequester(req, user, projectId, viaAdmin ? "admin" : "share", client);
+    if (targetError) throw targetError;
+    // Resolve once to identity, then reread eligibility after the lock waits.
+    target = await resolveMemberUser(null, target.id, !viaAdmin, client);
+    requireGrantableRole(target.system_role, role);
+    await client.query(
+      "INSERT INTO project_members (project_id, user_id, role, invited_by) VALUES ($1, $2, $3, $4)",
+      [projectId, target.id, role, user.sub]
+    );
+    requireSharingSessionUnexpired(user);
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    if (err.code === "23505") {
+      // A conflicting insert can also wait past expiry before reporting 23505.
+      requireSharingSessionUnexpired(user);
+      throw requestError("MEMBER_ALREADY", 409);
+    }
+    throw err;
+  } finally {
+    client.release();
+  }
+  return target;
 }
 
 async function searchProjectMembers(req, res, user, projectId, url) {
@@ -1793,17 +1867,9 @@ async function addProjectMember(req, res, user, projectId) {
   const body = await readBody(req);
   const role = String((body && body.role) || "");
   if (!isProjectRole(role)) throw requestError("MEMBER_ROLE_INVALID", 400);
-  const target = await resolveMemberUser(body && body.identifier, body && body.userId, true);
-  requireGrantableRole(target.system_role, role);
-  try {
-    await db.query(
-      "INSERT INTO project_members (project_id, user_id, role, invited_by) VALUES ($1, $2, $3, $4)",
-      [projectId, target.id, role, user.sub]
-    );
-  } catch (err) {
-    if (err.code === "23505") throw requestError("MEMBER_ALREADY", 409);
-    throw err;
-  }
+  const target = await insertProjectMembership(req, user, projectId, {
+    identifier: body && body.identifier, userId: body && body.userId, role,
+  });
   await audit({
     ...sessionActor(req, user),
     action: "project.shared",
@@ -1825,7 +1891,8 @@ async function updateProjectMember(req, res, user, projectId, memberId) {
   let previousRole;
   const client = await db.connect();
   try {
-    await client.query("BEGIN");
+    await client.query("BEGIN ISOLATION LEVEL READ COMMITTED");
+    await lockSharingUsers(client, user.sub);
     await client.query("SELECT pg_advisory_xact_lock($1, hashtext($2))", [PROJECT_OWNER_LOCK, projectId]);
     // Only the membership row is locked: the join reads the member's server role,
     // which decides whether the new project role may be granted at all.
@@ -1835,6 +1902,7 @@ async function updateProjectMember(req, res, user, projectId, memberId) {
        WHERE m.project_id = $1 AND m.user_id = $2 FOR UPDATE OF m`,
       [projectId, memberId]
     );
+    await authorizeSharingRequester(req, user, projectId, "share", client);
     if (!current.rows.length) throw requestError("MEMBER_NOT_FOUND", 404);
     requireGrantableRole(current.rows[0].system_role, nextRole);
     previousRole = current.rows[0].role;
@@ -1847,6 +1915,7 @@ async function updateProjectMember(req, res, user, projectId, memberId) {
       "UPDATE project_members SET role = $3, updated_at = CURRENT_TIMESTAMP WHERE project_id = $1 AND user_id = $2",
       [projectId, memberId, nextRole]
     );
+    requireSharingSessionUnexpired(user);
     await client.query("COMMIT");
   } catch (err) {
     await client.query("ROLLBACK").catch(() => {});
@@ -1876,12 +1945,14 @@ async function removeProjectMember(req, res, user, projectId, memberId) {
   const client = await db.connect();
   let removed = false;
   try {
-    await client.query("BEGIN");
+    await client.query("BEGIN ISOLATION LEVEL READ COMMITTED");
+    await lockSharingUsers(client, user.sub);
     await client.query("SELECT pg_advisory_xact_lock($1, hashtext($2))", [PROJECT_OWNER_LOCK, projectId]);
     const current = await client.query(
       "SELECT role FROM project_members WHERE project_id = $1 AND user_id = $2 FOR UPDATE",
       [projectId, memberId]
     );
+    await authorizeSharingRequester(req, user, projectId, selfLeave ? "read" : "share", client);
     if (!current.rows.length) throw requestError("MEMBER_NOT_FOUND", 404);
     const others = await client.query(
       "SELECT COUNT(*) AS n FROM project_members WHERE project_id = $1 AND role = 'owner' AND user_id <> $2",
@@ -1890,6 +1961,7 @@ async function removeProjectMember(req, res, user, projectId, memberId) {
     if (leavesNoOwner(current.rows[0].role, null, Number(others.rows[0].n))) throw requestError("PROJECT_LAST_OWNER", 409);
     await client.query("DELETE FROM project_members WHERE project_id = $1 AND user_id = $2", [projectId, memberId]);
     removed = true;
+    requireSharingSessionUnexpired(user);
     await client.query("COMMIT");
   } catch (err) {
     await client.query("ROLLBACK").catch(() => {});
@@ -5169,8 +5241,8 @@ async function adminUnlinkSso(req, res, actor, targetId) {
 // (server role vs project role) separate.
 // ---------------------------------------------------------------------------
 
-async function adminProjectRow(projectId) {
-  const { rows } = await db.query("SELECT id, name, storage_path FROM projects WHERE id = $1", [projectId]);
+async function adminProjectRow(projectId, queryable = db) {
+  const { rows } = await queryable.query("SELECT id, name, storage_path FROM projects WHERE id = $1", [projectId]);
   if (!rows.length) throw requestError("PROJECT_NOT_FOUND", 404);
   return rows[0];
 }
@@ -5227,17 +5299,7 @@ async function adminAddProjectMember(req, res, actor, projectId) {
   const body = await readBody(req);
   const role = String(body.role || "");
   if (!isProjectRole(role)) throw requestError("MEMBER_ROLE_INVALID", 400);
-  const target = await resolveMemberUser(body.identifier);
-  requireGrantableRole(target.system_role, role);
-  try {
-    await db.query(
-      "INSERT INTO project_members (project_id, user_id, role, invited_by) VALUES ($1, $2, $3, $4)",
-      [projectId, target.id, role, actor.sub]
-    );
-  } catch (err) {
-    if (err.code === "23505") throw requestError("MEMBER_ALREADY", 409);
-    throw err;
-  }
+  const target = await insertProjectMembership(req, actor, projectId, { identifier: body.identifier, role }, true);
   await audit({
     ...sessionActor(req, actor),
     action: "project.shared",
@@ -5259,7 +5321,8 @@ async function adminUpdateProjectMember(req, res, actor, projectId, memberId) {
   let previousRole;
   const client = await db.connect();
   try {
-    await client.query("BEGIN");
+    await client.query("BEGIN ISOLATION LEVEL READ COMMITTED");
+    await lockSharingUsers(client, actor.sub);
     await client.query("SELECT pg_advisory_xact_lock($1, hashtext($2))", [PROJECT_OWNER_LOCK, projectId]);
     const current = await client.query(
       `SELECT m.role, u.system_role
@@ -5267,6 +5330,7 @@ async function adminUpdateProjectMember(req, res, actor, projectId, memberId) {
        WHERE m.project_id = $1 AND m.user_id = $2 FOR UPDATE OF m`,
       [projectId, memberId]
     );
+    await authorizeSharingRequester(req, actor, projectId, "admin", client);
     if (!current.rows.length) throw requestError("MEMBER_NOT_FOUND", 404);
     requireGrantableRole(current.rows[0].system_role, nextRole);
     previousRole = current.rows[0].role;
@@ -5279,6 +5343,7 @@ async function adminUpdateProjectMember(req, res, actor, projectId, memberId) {
       "UPDATE project_members SET role = $3, updated_at = CURRENT_TIMESTAMP WHERE project_id = $1 AND user_id = $2",
       [projectId, memberId, nextRole]
     );
+    requireSharingSessionUnexpired(actor);
     await client.query("COMMIT");
   } catch (err) {
     await client.query("ROLLBACK").catch(() => {});
@@ -5304,12 +5369,14 @@ async function adminRemoveProjectMember(req, res, actor, projectId, memberId) {
   const client = await db.connect();
   let removed = false;
   try {
-    await client.query("BEGIN");
+    await client.query("BEGIN ISOLATION LEVEL READ COMMITTED");
+    await lockSharingUsers(client, actor.sub);
     await client.query("SELECT pg_advisory_xact_lock($1, hashtext($2))", [PROJECT_OWNER_LOCK, projectId]);
     const current = await client.query(
       "SELECT role FROM project_members WHERE project_id = $1 AND user_id = $2 FOR UPDATE",
       [projectId, memberId]
     );
+    await authorizeSharingRequester(req, actor, projectId, "admin", client);
     if (!current.rows.length) throw requestError("MEMBER_NOT_FOUND", 404);
     const others = await client.query(
       "SELECT COUNT(*) AS n FROM project_members WHERE project_id = $1 AND role = 'owner' AND user_id <> $2",
@@ -5318,6 +5385,7 @@ async function adminRemoveProjectMember(req, res, actor, projectId, memberId) {
     if (leavesNoOwner(current.rows[0].role, null, Number(others.rows[0].n))) throw requestError("PROJECT_LAST_OWNER", 409);
     await client.query("DELETE FROM project_members WHERE project_id = $1 AND user_id = $2", [projectId, memberId]);
     removed = true;
+    requireSharingSessionUnexpired(actor);
     await client.query("COMMIT");
   } catch (err) {
     await client.query("ROLLBACK").catch(() => {});

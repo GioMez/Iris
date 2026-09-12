@@ -30,9 +30,9 @@ test("both ways a project comes into existence are closed to an external account
 
 test("no path grants ownership to an external account, the admin console included", () => {
   assert.match(server, /function requireGrantableRole\(systemRole, projectRole\) \{[\s\S]*?requestError\("MEMBER_EXTERNAL_NOT_OWNER", 409\)/);
-  // Both add sites resolve the target first, both update sites read the member's
-  // server role in the same locked query that reads their current project role.
-  assert.equal((server.match(/requireGrantableRole\(target\.system_role, role\)/g) || []).length, 2);
+  // project-sharing-auth.test.js exercises owner/admin grants and target-role
+  // rechecks through HTTP/PostgreSQL. Updates also read the member's server role
+  // in the same locked query that reads their current project role.
   assert.equal((server.match(/requireGrantableRole\(current\.rows\[0\]\.system_role, nextRole\)/g) || []).length, 2);
   assert.equal((server.match(/FOR UPDATE OF m/g) || []).length, 2);
   assert.match(server, /SELECT id, username, email, display_name, system_role FROM users WHERE/);

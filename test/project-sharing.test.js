@@ -32,7 +32,8 @@ test("member search is owner-authorized and returns only eligible accounts", () 
   assert.match(server, /u\.status = 'active'/);
   assert.match(server, /NOT EXISTS \([\s\S]*?project_members/);
   assert.match(server, /LIMIT 20/);
-  assert.match(server, /resolveMemberUser\(body && body\.identifier, body && body\.userId, true\)/);
+  // Add-target eligibility after lock waits is exercised through HTTP/PostgreSQL
+  // in project-sharing-auth.test.js.
 });
 
 test("the project role reaches the workspace controls", () => {
