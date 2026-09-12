@@ -976,6 +976,8 @@
     "LILYPOND_FORMAT_UNSUPPORTED": "Unsupported LilyPond output format.",
     "LATEX_ENGINE_UNSUPPORTED": "Unsupported LaTeX engine.",
     "REQUEST_TOO_LARGE": "The request is too large.",
+    "REQUEST_ORIGIN_FORBIDDEN": "This request must come from the same origin as Iris.",
+    "REQUEST_CONTENT_TYPE_UNSUPPORTED": "Use application/json, optionally with charset=utf-8, for this request.",
     "INVALID_JSON": "Invalid JSON.",
     "NOT_AUTHENTICATED": "You are not signed in.",
     "ENDPOINT_NOT_FOUND": "Endpoint not found.",

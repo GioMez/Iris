@@ -10,7 +10,8 @@ const argon2 = require("argon2");
 const { createDatabase } = require("./database");
 const { loadDotEnv } = require("./env");
 const { uuidv7, isUuid, UUID_PATTERN } = require("./ids");
-const { lifecycleGate, healthStatus, isWriteRequest, HEALTH_PATH } = require("./lifecycle");
+const { lifecycleGate, healthStatus, isWriteRequest, isMutatingMethod, HEALTH_PATH } = require("./lifecycle");
+const { parseAppBaseUrl, requestAuthority, requestOrigin, isRequestOriginAllowed, isJsonMediaAllowed } = require("./request-security");
 const { recordAuditEvent } = require("./audit");
 const { normalizeProjectPath, collectProjectFiles, reconcileProjectFiles } = require("./project-files");
 const { createProjectMutations } = require("./project-mutations");
@@ -147,7 +148,7 @@ const API_RATE_WINDOW_MS = positiveIntEnv("API_RATE_WINDOW_MS", 60000);
 // whole document in memory, so this bounds what a single socket can pin.
 const COLLAB_MAX_ROOMS_PER_SESSION = positiveIntEnv("COLLAB_MAX_ROOMS_PER_SESSION", 50);
 const COLLAB_MAX_SESSIONS_PER_USER = positiveIntEnv("COLLAB_MAX_SESSIONS_PER_USER", 12);
-const APP_BASE_URL = String(process.env.APP_BASE_URL || "").replace(/\/+$/, "");
+const APP_BASE_URL = parseAppBaseUrl(process.env.APP_BASE_URL || "");
 const OAUTH_ISSUER_URL = String(process.env.OAUTH_ISSUER_URL || "").replace(/\/+$/, "");
 const OAUTH_AUTHORIZATION_URL = process.env.OAUTH_AUTHORIZATION_URL || "";
 const OAUTH_TOKEN_URL = process.env.OAUTH_TOKEN_URL || "";
@@ -496,10 +497,7 @@ function oauthEnabled() {
 }
 
 function requestBaseUrl(req) {
-  if (APP_BASE_URL) return APP_BASE_URL;
-  const proto = String(req.headers["x-forwarded-proto"] || "http").split(",")[0].trim() || "http";
-  const host = req.headers["x-forwarded-host"] || req.headers.host || `localhost:${PORT}`;
-  return `${proto}://${host}`;
+  return APP_BASE_URL || requestOrigin(req, { trustProxy: TRUST_PROXY });
 }
 
 function oauthRedirectUri(req) {
@@ -3095,6 +3093,9 @@ async function collabUpgrade(req, socket, head, wss) {
     socket.destroy();
   };
   if (shuttingDown || maintenanceActive()) return finish("503 Service Unavailable", "Iris is unavailable");
+  if (!isRequestOriginAllowed(req, { appBaseUrl: APP_BASE_URL, trustProxy: TRUST_PROXY })) {
+    return finish("403 Forbidden", "Request origin forbidden");
+  }
   let user;
   let generation;
   try {
@@ -5982,7 +5983,7 @@ function healthPayload() {
 
 function parseRequestUrl(req) {
   // Validate Host separately so it cannot influence route resolution.
-  if (req.headers.host) new URL(`http://${req.headers.host}`);
+  requestAuthority(req);
   return new URL(req.url, "http://localhost");
 }
 
@@ -6009,6 +6010,19 @@ async function handle(req, res) {
     if (gate) {
       if (url.pathname.startsWith("/api/")) return errorJson(res, gate.status, gate.code);
       return text(res, gate.status, gate.code === "MAINTENANCE_MODE" ? "Iris is in maintenance" : "Iris is shutting down");
+    }
+
+    if (url.pathname.startsWith("/api/") && isMutatingMethod(req.method)) {
+      // Header refusals precede authentication, body reads and accepted-write
+      // accounting. Connection:close finishes the response and closes even an
+      // incomplete unread body; accepted requests retain normal keep-alive.
+      if (!isRequestOriginAllowed(req, { appBaseUrl: APP_BASE_URL, trustProxy: TRUST_PROXY })) {
+        return errorJson(res, 403, "REQUEST_ORIGIN_FORBIDDEN", {}, { connection: "close" });
+      }
+      const rawImport = req.method === "POST" && url.pathname === "/api/projects/import";
+      if (!rawImport && !isJsonMediaAllowed(req)) {
+        return errorJson(res, 415, "REQUEST_CONTENT_TYPE_UNSUPPORTED", {}, { connection: "close" });
+      }
     }
 
     if (isWriteRequest(req.method, url.pathname)) {

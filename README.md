@@ -554,7 +554,7 @@ projects they are invited to, but not to create projects or own one.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `APP_BASE_URL` | request origin | Public application URL used to build the callback. |
+| `APP_BASE_URL` | empty (automatic) | Public HTTP(S) base URL: pins the origin for API writes and WebSocket upgrades and supplies the callback base, retaining its base path. No credentials, query or fragment; invalid nonempty values stop startup. A public URL pin is recommended for deployment. |
 | `OAUTH_ISSUER_URL` | empty | Required for SSO sign-in; identifies the provider and supplies discovery unless endpoints are explicit. |
 | `OAUTH_AUTHORIZATION_URL` | empty | Explicit authorization endpoint. |
 | `OAUTH_TOKEN_URL` | empty | Explicit token endpoint. |
@@ -584,10 +584,10 @@ already present in the process environment.
 | `DATA_DIR` | `./data/projects` | Root directory for project files. |
 | `PUBLIC_DIR` | `./public` | Static frontend directory. |
 | `TEMPLATE_DIR` | `DATA_DIR/templates` | Mutable LaTeX and LilyPond project-template catalog. |
-| `MAX_BODY_MB` | `25` | Maximum JSON request body size in MiB. |
+| `MAX_BODY_MB` | `25` | Maximum request body size in MiB, including JSON and raw ZIP imports. |
 | `PROJECT_DOWNLOAD_TIMEOUT_MS` | `30000` | Hard source-file transfer deadline; a stalled receiver cannot indefinitely block the project's mutations. |
 | `COOKIE_SECURE` | `false` | Set `true` when Iris is served over HTTPS. |
-| `TRUST_PROXY` | `false` | Set `true` only behind a reverse proxy that rewrites `X-Forwarded-For`, so audit events record the client address instead of the proxy. |
+| `TRUST_PROXY` | `false` | Trust forwarded client addresses and, with an empty `APP_BASE_URL`, forwarded host/protocol. Enable only when the proxy overwrites or strips incoming `X-Forwarded-For`, `X-Forwarded-Host` and `X-Forwarded-Proto`; preserve browser origin metadata. |
 | `MAINTENANCE_FILE` | `DATA_DIR/.maintenance` | Path whose presence puts Iris into maintenance mode: writes are refused, reads continue. |
 | `SHUTDOWN_TIMEOUT_MS` | `15000` | Deadline for the complete shutdown drain, including background/realtime work, direct compiler children and database-pool closure. |
 
@@ -1158,6 +1158,80 @@ FROM audit_events ORDER BY occurred_at DESC LIMIT 50;
 ```
 
 ## Security notes
+
+### Request admission and reverse proxies
+
+Iris checks the request origin before authentication or body processing for API
+`POST`, `PUT`, `PATCH` and `DELETE` requests and collaboration WebSocket upgrades.
+The expected origin is the origin of `APP_BASE_URL` when configured. Otherwise,
+Iris uses the validated `Host` and the actual HTTP/HTTPS connection scheme.
+`COOKIE_SECURE` and an absolute request target do not determine that origin.
+
+Origin comparison uses normalized HTTP(S) scheme, hostname and effective port.
+Host/scheme case and default ports are equivalent; bracketed IPv6 is supported.
+Sibling hosts, different schemes or nondefault ports, and trailing-dot differences
+do not match. DNS hostnames with a trailing dot remain valid but distinct from
+their non-dotted spelling. IPv4 authority forms with a terminal dot, such as
+`127.0.0.1.`, are unsupported and rejected before origin normalization in Host,
+Origin/Referer, trusted forwarded host and APP_BASE_URL inputs.
+An Origin must contain only `scheme://authority`, with no credentials,
+path, trailing slash, query or fragment. Empty, `null`, malformed, list-valued and
+duplicate Origins fail admission, including identical duplicate fields.
+
+Browser metadata follows this order:
+
+1. A present `Origin` must match. Referer and Fetch Metadata cannot rescue a bad
+   Origin and do not override a matching one.
+2. Without Origin, `Sec-Fetch-Site: same-site` or `cross-site`, or an invalid or
+   ambiguous Fetch token, fails admission. A present `Referer` must be a single
+   absolute, credential-free HTTP(S) URL with the expected origin; paths and query
+   strings, including commas, are allowed.
+3. Without Origin or Referer, `Sec-Fetch-Site: same-origin` provides browser
+   evidence. `none` alone is insufficient. A matching Referer works with absent,
+   `none` or `same-origin` Fetch Metadata.
+4. Requests with all three fields absent pass this layer for native HTTP/WS client
+   compatibility. Routes still enforce their authentication requirements; native
+   headers are spoofable and do not authenticate callers.
+
+Origin refusals return `403 REQUEST_ORIGIN_FORBIDDEN` for HTTP APIs and 403 for WS
+handshakes. Ordinary GET/HEAD reads keep their existing behavior. The SSO callback
+GET accepts cross-site metadata and continues to require matching state cookies
+and unexpired signed state before the provider exchange. Maintenance/shutdown
+refusals retain precedence over these admission checks.
+
+Unsafe API requests require `Content-Type: application/json`, case-insensitive,
+with at most one optional `charset=utf-8` parameter. The charset is case-insensitive
+and may be quoted; spaces/tabs around the parameter are allowed. Other media types,
+vendor `+json` types, extra or duplicate parameters, unsupported charsets and
+duplicate Content-Type fields receive `415 REQUEST_CONTENT_TYPE_UNSUPPORTED`.
+An explicit wrong type fails even with an empty body. A missing type is allowed
+only without Transfer-Encoding and with Content-Length absent or zero; even an
+empty chunked request needs the JSON type. No-body commands remain usable.
+
+Only `POST /api/projects/import`, matched by the parsed pathname, exempts raw ZIP
+uploads from the media check. Native clients may send ZIP, octet-stream or no type;
+Origin checks, body limits and archive validation still apply. Safe reads and WS
+handshakes have no JSON media gate. HTTP header refusals close the connection after
+the final response, including for incomplete bodies; successful requests retain
+normal keep-alive.
+
+For deployment, set a public URL pin such as `APP_BASE_URL=https://iris.example.com`.
+It takes precedence over forwarding regardless of `TRUST_PROXY`. The default is
+empty, including in Compose, so local access can derive its origin from the request.
+With an empty pin and `TRUST_PROXY=true`, Iris accepts single nonempty validated
+`X-Forwarded-Host` and HTTP(S) `X-Forwarded-Proto` values. Each missing component
+falls back to Host or the actual connection. Repeated fields and comma chains are
+invalid. With `TRUST_PROXY=false`, Iris ignores these forwarded fields, including
+when constructing SSO callback URLs. `OAUTH_REDIRECT_URI` remains the explicit
+callback override.
+
+Before enabling proxy trust, configure your proxy to overwrite or strip incoming
+`X-Forwarded-For`, `X-Forwarded-Host` and `X-Forwarded-Proto`, and to preserve browser
+`Origin`, `Referer` and `Sec-Fetch-Site`. Restrict backend access to the trusted proxy.
+Forwarded-For affects audit attribution and rate limiting even with a public URL
+pin; host/protocol forwarding affects origin derivation only without a pin.
+
+### Compilation
 
 Iris applies several boundaries to compilation:
 

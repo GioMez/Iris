@@ -21,15 +21,16 @@ services:
       DB_NAME: iris
       DATA_DIR: /app/data
       TEMPLATE_DIR: /app/data/templates
-      APP_BASE_URL: http://localhost:3000
+      APP_BASE_URL: "${APP_BASE_URL:-}"
       TEX_BIN_PATH: /usr/local/texlive/bin/x86_64-linux
       TEX_PATH_LOCKED: "true"
       LILYPOND_BIN_PATH: /usr/bin
       LILYPOND_PATH_LOCKED: "true"
       COMPILE_TIMEOUT_MS: 30000
       COOKIE_SECURE: "false"
-      # Enable only behind a reverse proxy that rewrites X-Forwarded-For.
-      TRUST_PROXY: "false"
+      # Enable only when the proxy overwrites/strips X-Forwarded-For,
+      # X-Forwarded-Host and X-Forwarded-Proto and preserves browser metadata.
+      TRUST_PROXY: "${TRUST_PROXY:-false}"
       # Presence of this file refuses writes for a consistent backup/restore
       # window; reads continue. Remove it to reopen writes.
       MAINTENANCE_FILE: /app/data/.maintenance
