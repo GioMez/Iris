@@ -320,8 +320,10 @@ button{font-family:inherit;color:inherit}
 .bibliography-card dd{margin:4px 0 0}
 .bibliography-pagination{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:10px 12px;border-top:1px solid var(--border)}
 .bibliography-actions{display:flex;flex-wrap:wrap;gap:8px;padding:10px 12px;border-bottom:1px solid var(--border)}
-.bibliography-select{display:flex;align-items:center;gap:8px;min-height:36px;cursor:pointer;margin-bottom:6px;color:var(--txt-dim)}
-.bibliography-select input{accent-color:var(--accent)}
+#bibliographyRows tr[tabindex],.bibliography-card[tabindex]{cursor:pointer}
+#bibliographyRows tr[aria-current="true"],.bibliography-card[aria-current="true"]{background:var(--selection-soft)}
+.bibliography-panel .btn.icononly{width:36px;height:36px;padding:0;justify-content:center}
+.bibliography-panel .btn.icononly .ti{width:16px;height:16px}
 #bibliographyTotal{flex:1 1 160px;color:var(--txt-dim)}
 @container bibliography (max-width:700px){
   .bibliography-table-scroll{display:none}

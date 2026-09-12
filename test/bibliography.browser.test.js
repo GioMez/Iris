@@ -112,10 +112,161 @@ async function screenshot(t, page, name) {
 }
 
 async function selectReference(page, index = 0) {
-  const radio = page.locator(`:is(#bibliographyRows, #bibliographyCards) [data-entry-index="${index}"] input[type="radio"]:visible`);
-  assert.equal(await radio.count(), 1, "each visible reference has one native selection control");
-  await radio.check();
+  const row = page.locator(`:is(#bibliographyRows, #bibliographyCards) [data-entry-index="${index}"]:visible`);
+  assert.equal(await row.count(), 1, "each reference has one visible row or card");
+  await row.click({ position: { x: 8, y: 8 } });
+  assert.equal(await row.getAttribute("aria-current"), "true");
 }
+
+for (const [layout, viewport] of [["desktop", { width: 1440, height: 900 }], ["mobile", { width: 390, height: 844 }]]) {
+  test(`controls: ${layout} plain cells and blank areas select one reference without replacing DOM or swallowing native actions`, options, async (t) => {
+    const long = "Selectable full value ".repeat(15);
+    const source = `@book{a,title={Alpha},note={${long}}}\n@book{b,title={Beta}}`;
+    const page = await pageFor(t, project(source), viewport);
+    if (layout === "desktop") await page.locator("#btnSidebar").click();
+    await page.evaluate((source) => IrisEditor.loadCollab(source, "bib", { version: 0 }), source);
+    await settled(page);
+    const host = page.locator(layout === "desktop" ? "#bibliographyRows" : "#bibliographyCards");
+    const first = host.locator('[data-entry-index="0"]'), second = host.locator('[data-entry-index="1"]');
+    await host.waitFor({ state: "visible" });
+    const before = await page.evaluate(() => ({ snapshot: IrisEditor.snapshot(), saved: IrisApp.serialize(),
+      dirty: IrisApp.hasUnsavedChanges(), pending: IrisEditor.collabPending(), version: IrisEditor.collabVersion() }));
+    const idleBackground = await first.evaluate((node) => getComputedStyle(node).backgroundColor);
+    await first.getByText("Alpha", { exact: true }).click();
+    assert.equal(await first.getAttribute("aria-current"), "true", "plain value click selects its reference");
+    assert.notEqual(await first.evaluate((node) => getComputedStyle(node).backgroundColor), idleBackground, "selection is visibly highlighted");
+    assert.equal(await page.locator("#bibliographyEdit").isDisabled(), false);
+    await second.click({ position: { x: 8, y: 8 } });
+    await second.click({ position: { x: 8, y: 8 } });
+    assert.equal(await second.getAttribute("aria-current"), "true", "blank area selects, and never toggles off");
+    assert.equal(await host.locator('[aria-current="true"]').count(), 1);
+    assert.equal(await first.getAttribute("aria-current"), "false");
+    assert.equal(await page.locator("#bibliographyRows input, #bibliographyCards input").count(), 0, "no hidden item controls either");
+    assert.equal(await page.locator('#bibliographyResults [role="button"], #bibliographyResults [role="grid"]').count(), 0);
+    assert.ok(await page.getByRole(layout === "desktop" ? "table" : "article").count() > 0);
+    for (const key of ["Enter", "Space"]) {
+      await first.focus();
+      await page.keyboard.press(key);
+      assert.equal(await first.getAttribute("aria-current"), "true");
+      assert.equal(await first.evaluate((node) => node === document.activeElement), true);
+      await second.focus();
+      await page.keyboard.press(key);
+      assert.equal(await second.getAttribute("aria-current"), "true");
+    }
+    const summary = first.locator("summary");
+    await summary.click();
+    assert.equal(await first.locator("details").evaluate((node) => node.open), true, "native click disclosure was not cancelled");
+    await summary.press("Space");
+    assert.equal(await first.locator("details").evaluate((node) => node.open), false);
+    await summary.press("Enter");
+    assert.equal(await first.locator("details").evaluate((node) => node.open), true);
+    await first.evaluate((node) => {
+      window.retainedReference = node;
+      window.retainedSummary = node.querySelector("summary");
+      const range = document.createRange(); range.selectNodeContents(node.querySelector("details > .bibliography-value"));
+      getSelection().removeAllRanges(); getSelection().addRange(range);
+    });
+    // A bubbling click after selecting text must not detach the Range or steal focus.
+    await second.dispatchEvent("click");
+    assert.deepEqual(await page.evaluate(() => ({ connected: retainedReference.isConnected,
+      focused: retainedSummary === document.activeElement, text: getSelection().toString() })),
+    { connected: true, focused: true, text: long });
+    assert.equal(await second.getAttribute("aria-current"), "true");
+    // Real double-click text selection also survives the row's click handler.
+    await second.getByText("Beta", { exact: true }).dblclick();
+    assert.equal(await page.evaluate(() => getSelection().toString()), "Beta");
+    assert.deepEqual(await page.evaluate(() => ({ snapshot: IrisEditor.snapshot(), saved: IrisApp.serialize(),
+      dirty: IrisApp.hasUnsavedChanges(), pending: IrisEditor.collabPending(), version: IrisEditor.collabVersion() })), before);
+    await screenshot(t, page, `controls-${layout}.png`);
+    const sourceButton = second.getByRole("button", { name: "Show source", exact: true });
+    assert.equal(await sourceButton.textContent(), "Show source");
+    await sourceButton.click();
+    assert.equal(await page.locator("#bibliographyTextPanel").isVisible(), true);
+    assert.equal(await page.evaluate(() => IrisEditor.selection().text), "@book{b,title={Beta}}");
+    await page.locator("#bibliographyTableTab").click();
+    await first.getByRole("button", { name: "Show source", exact: true }).press("Enter");
+    assert.equal(await page.evaluate(() => IrisEditor.selection().text), source.split("\n")[0]);
+    assert.equal(await page.evaluate(() => IrisEditor.getValue()), source);
+    await noOverflow(page);
+  });
+}
+
+test("controls: six real icons retain names, descriptive EN/IT tooltips, target sizes and disabled boundaries across rerenders", options, async (t) => {
+  const source = Array.from({ length: 101 }, (_, i) => `@book{k${i},title={Title ${i}}}`).join("\n");
+  const page = await pageFor(t, project(source));
+  await settled(page);
+  const ids = ["Add", "Edit", "Remove", "Undo", "Previous", "Next"];
+  await page.evaluate((ids) => { window.controlIcons = ids.map((id) => document.querySelector(`#bibliography${id} svg`)); }, ids);
+  const icons = ["plus", "edit", "trash", "arrow-back-up", "chevron-left", "chevron-right"];
+  const names = { en: ["Add", "Edit", "Remove", "Undo", "Previous page", "Next page"],
+    it: ["Aggiungi", "Modifica", "Rimuovi", "Annulla modifica", "Pagina precedente", "Pagina successiva"] };
+  for (const language of ["en", "it", "en"]) {
+    await page.evaluate((language) => IrisI18n.setLanguage(language), language);
+    for (const [i, id] of ids.entries()) {
+      const button = page.locator(`#bibliography${id}`), name = names[language][i];
+      assert.equal(await page.locator("#bibliographyPanel").getByRole("button", { name, exact: true }).count(), 1);
+      assert.equal(await button.textContent(), "", `${id} is icon-only`);
+      assert.equal(await button.locator(`[data-icon="${icons[i]}"] svg[aria-hidden="true"] path`).count() > 0, true, `${id} has actual SVG paths`);
+      const title = await button.getAttribute("title");
+      assert.ok(title.startsWith(name), `${id} tooltip contains its action name`);
+      assert.ok(title.length > name.length + 10, `${id} tooltip explains the action`);
+      assert.match(title, language === "en" ? /reference|bibliography|change/ : /reference|bibliografia|modifica/);
+      assert.doesNotMatch(title, /bibliography\./);
+      const box = await button.boundingBox();
+      assert.ok(box.width >= 34 && box.height >= 34, `${id} retains a usable touch target`);
+    }
+    assert.equal(await page.locator("#bibliographyPrevious").isDisabled(), true);
+    assert.equal(await page.locator("#bibliographyNext").isDisabled(), false);
+    assert.equal(await page.locator("#bibliographyEdit").isDisabled(), true);
+    await selectReference(page);
+    await page.locator("#bibliographyNext").click();
+    assert.equal(await page.locator("#bibliographyPrevious").isDisabled(), false);
+    assert.equal(await page.locator("#bibliographyNext").isDisabled(), true);
+    assert.equal(await page.locator("#bibliographyEdit").isDisabled(), true);
+    await page.locator("#bibliographyPrevious").click();
+    await page.locator("#bibliographyQuery").fill("no matching reference");
+    assert.equal(await page.locator("#bibliographyNext").isDisabled(), true);
+    await page.locator("#bibliographyQuery").fill("");
+    assert.equal(await page.locator(".bibliography-actions svg, .bibliography-pagination svg").count(), 6);
+    assert.equal(await page.evaluate((ids) => controlIcons.every((icon, i) => icon?.isConnected &&
+      icon === document.querySelector(`#bibliography${ids[i]} svg`)), ids), true, "renders and language changes retain the hydrated SVG nodes");
+    await page.locator("#bibliographyAdd").click();
+    for (const [id, label] of [["Cancel", language === "en" ? "Cancel" : "Annulla"], ["Apply", language === "en" ? "Apply" : "Applica"],
+      ["AddField", language === "en" ? "Add field" : "Aggiungi campo"], ["Source", language === "en" ? "Show source" : "Mostra sorgente"]]) {
+      assert.equal(await page.locator(`#bibliographyForm${id}`).textContent(), label);
+    }
+    await screenshot(t, page, `controls-form-${language}.png`);
+    await page.locator("#bibliographyFormCancel").click();
+    await page.locator("#bibliographyModal").waitFor({ state: "hidden" });
+  }
+  await selectReference(page);
+  for (const role of ["viewer", "owner"]) {
+    await page.evaluate((role) => document.dispatchEvent(new CustomEvent("iris:collabrole", { detail: { role } })), role);
+    for (const id of ids.slice(0, 4)) assert.equal(await page.locator(`#bibliography${id}`).isDisabled(), role === "viewer");
+  }
+  assert.equal(await page.evaluate(() => IrisEditor.getValue()), source);
+});
+
+test("controls: sort, filter, revision and file changes clear selection and stale DOM cannot select or show another reference", options, async (t) => {
+  const data = project('@book{a,title={Alpha}}\n@book{b,title={Zulu}}');
+  data.openTabs.push("other");
+  data.project.nodes.push({ id: "other", type: "file", name: "other.bib", path: "other.bib", kind: "bib", content: '@book{other,title={Other}}' });
+  const page = await pageFor(t, data);
+  await settled(page);
+  for (const transition of ["sort", "filter", "revision", "file"]) {
+    await selectReference(page);
+    await page.locator(':is(#bibliographyRows, #bibliographyCards) [data-entry-index="0"]:visible').evaluate((node) => { window.staleReference = node; });
+    if (transition === "sort") await page.locator("#bibliographySort").selectOption({ label: "Title: descending" });
+    if (transition === "filter") await page.locator("#bibliographyQuery").fill("Alpha");
+    if (transition === "revision") await page.evaluate(() => IrisEditor.replaceRange(0, 0, "% peer\n"));
+    if (transition === "file") await page.getByRole("tab", { name: /other\.bib/ }).click();
+    await settled(page);
+    await page.evaluate(() => { staleReference.click(); staleReference.querySelector("button").click(); });
+    assert.equal(await page.locator('#bibliographyResults [aria-current="true"]').count(), 0, transition);
+    assert.equal(await page.locator("#bibliographyEdit").isDisabled(), true, transition);
+    assert.equal(await page.locator("#bibliographyTextPanel").isVisible(), false, transition);
+  }
+});
 
 test("form: empty bibliography offers add only, shared dialog cancels cleanly and validates inline", options, async (t) => {
   const page = await pageFor(t, project(""));
@@ -590,20 +741,20 @@ for (const destination of ["file", "image", "logout"]) {
   });
 }
 
-test("form round1: same-role and transport status updates retain the actual focused selection control", options, async (t) => {
+test("form round1: same-role and transport status updates retain the actual focused selected row", options, async (t) => {
   const page = await pageFor(t, project('@book{a,title={A}}'));
   await settled(page);
   await selectReference(page);
-  const radio = page.locator('#bibliographyPanel input[type="radio"]:visible');
-  await radio.focus();
-  await radio.evaluate((node) => { window.selectedRadio = node; });
+  const row = page.locator('#bibliographyResults [aria-current="true"]:visible');
+  await row.focus();
+  await row.evaluate((node) => { window.selectedRow = node; });
   const before = await page.evaluate(() => IrisEditor.snapshot());
   for (const event of ["role", "status"]) {
     await page.evaluate((event) => {
       if (event === "role") document.dispatchEvent(new CustomEvent("iris:collabrole", { detail: { role: "owner" } }));
       else IrisCollab.disconnect();
     }, event);
-    assert.equal(await page.evaluate(() => selectedRadio.isConnected && selectedRadio === document.activeElement && selectedRadio.checked), true, event);
+    assert.equal(await page.evaluate(() => selectedRow.isConnected && selectedRow === document.activeElement && selectedRow.getAttribute("aria-current") === "true"), true, event);
     assert.equal(await page.locator("#bibliographyEdit").isDisabled(), false);
   }
   assert.deepEqual(await page.evaluate(() => IrisEditor.snapshot()), before);

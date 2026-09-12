@@ -44,15 +44,21 @@
       ui.Add.disabled = !writable || !tableAvailable() || !context();
       ui.Edit.disabled = ui.Remove.disabled = ui.Add.disabled || selected === null;
       ui.Undo.disabled = !writable;
-      for (const { input, index } of selections) input.checked = index === selected;
+      for (const { node, index } of selections) node.setAttribute("aria-current", String(index === selected));
     }
-    function selectionControl(index, layout) {
-      const wrapper = element("label", undefined, "bibliography-select"), input = element("input");
-      input.type = "radio"; input.name = `bibliography-selection-${layout}`;
-      input.addEventListener("change", () => { if (context()) { selected = index; syncActions(); } });
-      wrapper.appendChild(input); wrapper.appendChild(element("span", t("bibliography.select", { number: index + 1 })));
-      selections.push({ input, index });
-      return wrapper;
+    function selectable(node, index) {
+      node.tabIndex = 0;
+      node.setAttribute("aria-label", t("bibliography.select", { number: index + 1 }));
+      const selection = { node, index }; selections.push(selection);
+      const select = () => {
+        if (context() && selections.includes(selection)) { selected = index; syncActions(); }
+      };
+      // Do not rerender or cancel clicks: native disclosures, focus and text Ranges survive.
+      node.addEventListener("click", select);
+      node.addEventListener("keydown", (event) => {
+        if (event.target !== node || !["Enter", " "].includes(event.key)) return;
+        event.preventDefault(); select();
+      });
     }
     function syncMode() {
       root.hidden = !documentKey;
@@ -165,7 +171,11 @@
       }
       for (const [name, key] of Object.entries({ TableTab: "table", TextTab: "text", QueryLabel: "searchAll",
         SortLabel: "sort", ColumnsLabel: "columns", ShowAll: "showAll", Source: "showSource", Retry: "retry",
-        Previous: "previous", Next: "next", Caption: "references", Add: "add", Edit: "edit", Remove: "remove", Undo: "undo" })) ui[name].textContent = t(`bibliography.${key}`);
+        Caption: "references" })) ui[name].textContent = t(`bibliography.${key}`);
+      for (const [name, key] of Object.entries({ Previous: "previous", Next: "next", Add: "add", Edit: "edit", Remove: "remove", Undo: "undo" })) {
+        ui[name].setAttribute("aria-label", t(`bibliography.${key}`));
+        ui[name].title = t(`bibliography.${key}Title`);
+      }
       ui.Tabs.setAttribute("aria-label", t("bibliography.views"));
       ui.Query.value = query;
       const pending = !parsed && !failed;
@@ -219,9 +229,9 @@
             list.appendChild(element("dt", label(column)));
             const dd = element("dd"); dd.appendChild(valueNode(value, label(column))); list.appendChild(dd);
           }
-          const go = () => { if (context()) { const entry = parsed.entries[row.entryIndex]; onSource({ from: entry.from, to: entry.to }); } };
+          const go = () => { if (context() && ui.Rows.contains(tr)) { const entry = parsed.entries[row.entryIndex]; onSource({ from: entry.from, to: entry.to }); } };
           const cell = element("td");
-          if (actions) { cell.appendChild(selectionControl(row.entryIndex, "table")); card.appendChild(selectionControl(row.entryIndex, "cards")); }
+          if (actions) { selectable(tr, row.entryIndex); selectable(card, row.entryIndex); }
           cell.appendChild(button(t("bibliography.showSource"), go)); tr.appendChild(cell);
           card.appendChild(button(t("bibliography.showSource"), go));
           ui.Rows.appendChild(tr); ui.Cards.appendChild(card);
@@ -331,6 +341,7 @@
     }
     function deactivate() {
       stop(); documentKey = null; parsed = null; snapshot = null; scheduledRevision = null; selected = null;
+      selections = [];
       projection = { columns: [], rows: [] }; ui.Rows.replaceChildren(); ui.Cards.replaceChildren();
       syncMode(); editor.requestMeasure();
     }

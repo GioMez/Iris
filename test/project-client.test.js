@@ -370,20 +370,72 @@ function flushBibliography(h) {
   timer.ran = true; timer.fn(); parseBibliography(h);
 }
 
-test("bibliography action selection uses parsed indices and resets on page, query, revision and canonical changes", options, async () => {
+test("bibliography action selection uses parsed indices and resets on sort, page, query, revision and context changes", options, async () => {
   const text = Array.from({ length: 102 }, (_, i) => `@book{k${i},title={Title ${i}}}`).join("\n");
   const h = harness("en", true); await h.open(bibliographyData(text)); parseBibliography(h);
   const view = h.a.bibliography;
-  const selectFirst = () => descendants(bibRows(h)[0]).find((node) => node.type === "radio").dispatchEvent({ type: "change" });
+  const selectFirst = () => bibRows(h)[0].dispatchEvent({ type: "click", target: bibRows(h)[0] });
   view.setSort({ id: "bib:title", descending: true }); selectFirst();
   h.get("bibliographyEdit").dispatchEvent({ type: "click" });
   assert.equal(h.get("bibliographyFormKey").value, "k99");
   h.a.openFile("main"); flushBibliography(h);
+  selectFirst(); view.setSort(null); assert.equal(h.get("bibliographyEdit").disabled, true);
   selectFirst(); view.setPage(1); assert.equal(h.get("bibliographyEdit").disabled, true);
   selectFirst(); view.setQuery("Title"); assert.equal(h.get("bibliographyRemove").disabled, true);
   selectFirst(); h.editor.replaceRange(0, 0, "% outside\n"); assert.equal(h.get("bibliographyEdit").disabled, true);
   flushBibliography(h); assert.equal(h.get("bibliographyEdit").disabled, true);
   selectFirst(); view.rekey(view.context().documentKey, "canonical-test"); assert.equal(h.get("bibliographyEdit").disabled, true);
+  selectFirst(); h.a.openFile("main"); parseBibliography(h); assert.equal(h.get("bibliographyEdit").disabled, true);
+});
+
+test("bibliography row and card selection is single, keyboard accessible and never replaces focused DOM or editor state", options, async () => {
+  const h = harness("en", true); await h.open(bibliographyData('@book{a,title={A}}\n@book{b,title={B}}')); parseBibliography(h);
+  const rows = [...bibRows(h)], cards = [...h.get("bibliographyCards").children];
+  const before = h.editor.snapshot(), doc = h.editor.view().state.doc, saved = clone(h.app.serialize());
+  rows[0].focus();
+  rows[0].dispatchEvent({ type: "click", target: rows[0].children[0] });
+  assert.equal(rows[0].getAttribute("aria-current"), "true");
+  assert.equal(h.get("bibliographyEdit").disabled, false);
+  rows[0].dispatchEvent({ type: "click", target: rows[0] });
+  assert.equal(rows[0].getAttribute("aria-current"), "true", "same-row click never toggles off");
+  cards[1].dispatchEvent({ type: "click", target: cards[1] });
+  for (const nodes of [rows, cards]) assert.deepEqual(nodes.map((node) => node.getAttribute("aria-current")), ["false", "true"]);
+  for (const key of ["Enter", " "]) {
+    rows[0].dispatchEvent({ type: "keydown", target: rows[0], key, preventDefault() {} });
+    assert.equal(rows[0].getAttribute("aria-current"), "true");
+    cards[1].dispatchEvent({ type: "click", target: cards[1] });
+  }
+  let prevented = false;
+  rows[0].dispatchEvent({ type: "keydown", target: rows[0].children.at(-1).children.at(-1), key: "Enter", preventDefault() { prevented = true; } });
+  assert.equal(prevented, false, "nested controls retain native keyboard actions");
+  assert.equal(rows[0].getAttribute("aria-current"), "false");
+  for (const node of [...rows, ...cards]) {
+    assert.equal(node.tabIndex, 0);
+    assert.match(node.getAttribute("aria-label"), /Select reference [12]/);
+    assert.equal(descendants(node).filter((node) => node.tagName === "INPUT").length, 0);
+  }
+  assert.equal(h.document.activeElement, rows[0]);
+  assert.equal(bibRows(h)[0], rows[0]);
+  assert.equal(h.get("bibliographyCards").children[1], cards[1]);
+  assert.equal(h.editor.view().state.doc, doc);
+  assert.deepEqual(h.editor.snapshot(), before);
+  assert.deepEqual(clone(h.app.serialize()), saved);
+  assert.equal(h.app.hasUnsavedChanges(), false);
+});
+
+test("bibliography detached and outdated row targets cannot revive selection or navigate into a new projection", options, async () => {
+  const h = harness("en", true); await h.open(bibliographyData()); parseBibliography(h);
+  for (const transition of [() => h.a.bibliography.setSort({ id: "bib:title" }), () => {
+    h.editor.replaceRange(0, 0, "% peer\n"); flushBibliography(h);
+  }, () => { h.a.openFile("main"); flushBibliography(h); }]) {
+    const stale = bibRows(h)[0], source = descendants(stale).find((node) => node.tagName === "BUTTON");
+    transition();
+    stale.dispatchEvent({ type: "click", target: stale });
+    stale.dispatchEvent({ type: "keydown", target: stale, key: "Enter", preventDefault() {} });
+    assert.equal(h.get("bibliographyEdit").disabled, true);
+    source.dispatchEvent({ type: "click" });
+    assert.equal(h.get("bibliographyTextPanel").hidden, true, "detached source buttons cannot retarget");
+  }
 });
 
 test("bibliography table undo and actions use the current maintenance and role gate", options, async () => {

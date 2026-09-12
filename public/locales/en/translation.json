@@ -4,6 +4,12 @@
     "edit": "Edit",
     "remove": "Remove",
     "undo": "Undo",
+    "addTitle": "Add: create a new reference",
+    "editTitle": "Edit: modify the selected reference",
+    "removeTitle": "Remove: confirm removal of the selected reference",
+    "undoTitle": "Undo: undo the last source change",
+    "previousTitle": "Previous page: show the previous references",
+    "nextTitle": "Next page: show the next references",
     "select": "Select reference {{number}}",
     "form": {
       "add": "Add reference",

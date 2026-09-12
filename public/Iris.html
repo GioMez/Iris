@@ -122,10 +122,10 @@
         </div>
         <div id="bibliographyTablePanel" role="tabpanel" aria-labelledby="bibliographyTableTab" tabindex="0">
           <div class="bibliography-actions">
-            <button class="btn sm" id="bibliographyAdd" type="button" data-i18n="bibliography.add" disabled>Add</button>
-            <button class="btn sm" id="bibliographyEdit" type="button" data-i18n="bibliography.edit" disabled>Edit</button>
-            <button class="btn sm" id="bibliographyRemove" type="button" data-i18n="bibliography.remove" disabled>Remove</button>
-            <button class="btn sm" id="bibliographyUndo" type="button" data-i18n="bibliography.undo" disabled>Undo</button>
+            <button class="btn sm icononly" id="bibliographyAdd" type="button" title="Add: create a new reference" aria-label="Add" data-i18n-title="bibliography.addTitle" data-i18n-aria-label="bibliography.add" disabled><span class="ic" data-icon="plus"></span></button>
+            <button class="btn sm icononly" id="bibliographyEdit" type="button" title="Edit: modify the selected reference" aria-label="Edit" data-i18n-title="bibliography.editTitle" data-i18n-aria-label="bibliography.edit" disabled><span class="ic" data-icon="edit"></span></button>
+            <button class="btn sm icononly" id="bibliographyRemove" type="button" title="Remove: confirm removal of the selected reference" aria-label="Remove" data-i18n-title="bibliography.removeTitle" data-i18n-aria-label="bibliography.remove" disabled><span class="ic" data-icon="trash"></span></button>
+            <button class="btn sm icononly" id="bibliographyUndo" type="button" title="Undo: undo the last source change" aria-label="Undo" data-i18n-title="bibliography.undoTitle" data-i18n-aria-label="bibliography.undo" disabled><span class="ic" data-icon="arrow-back-up"></span></button>
           </div>
           <div class="bibliography-tools">
             <div class="bibliography-search">
@@ -155,8 +155,8 @@
           </div>
           <div class="bibliography-pagination">
             <span id="bibliographyTotal" role="status" aria-live="polite"></span>
-            <button class="btn sm" id="bibliographyPrevious" type="button" data-i18n="bibliography.previous">Previous page</button>
-            <button class="btn sm" id="bibliographyNext" type="button" data-i18n="bibliography.next">Next page</button>
+            <button class="btn sm icononly" id="bibliographyPrevious" type="button" title="Previous page: show the previous references" aria-label="Previous page" data-i18n-title="bibliography.previousTitle" data-i18n-aria-label="bibliography.previous"><span class="ic" data-icon="chevron-left"></span></button>
+            <button class="btn sm icononly" id="bibliographyNext" type="button" title="Next page: show the next references" aria-label="Next page" data-i18n-title="bibliography.nextTitle" data-i18n-aria-label="bibliography.next"><span class="ic" data-icon="chevron-right"></span></button>
           </div>
         </div>
       </section>
