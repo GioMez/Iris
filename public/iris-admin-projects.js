@@ -49,7 +49,7 @@
   function modalError(err) {
     const el = $("adminProjectError");
     el.textContent = err ? window.IrisI18n.error(err) : "";
-    el.style.display = err ? "flex" : "none";
+    el.hidden = !err;
   }
 
   function activeProject() {
@@ -117,9 +117,9 @@
     const body = $("adminProjectRows");
     const empty = $("adminProjectEmpty");
     body.innerHTML = "";
-    if (loadFailed) { empty.style.display = "none"; return; }
-    if (!projects.length) { empty.style.display = ""; return; }
-    empty.style.display = "none";
+    if (loadFailed) { empty.hidden = true; return; }
+    if (!projects.length) { empty.hidden = false; return; }
+    empty.hidden = true;
     for (const p of projects) {
       const tr = document.createElement("tr");
       if (p.orphaned) tr.className = "adminproj-orphan-row";
@@ -145,7 +145,7 @@
     modalError(null);
     modalStatus("");
     $("adminProjectTitle").textContent = project.name;
-    $("adminProjectOrphan").style.display = project.orphaned ? "" : "none";
+    $("adminProjectOrphan").hidden = !project.orphaned;
     $("adminProjectAddIdentifier").value = "";
     $("adminProjectAddRole").value = "editor";
     renderMembers();
@@ -188,7 +188,7 @@
     await load({ preserveStatus: true });
     const project = activeProject();
     if (!project) { await closeDialog("adminProjectModal"); return; }
-    $("adminProjectOrphan").style.display = project.orphaned ? "" : "none";
+    $("adminProjectOrphan").hidden = !project.orphaned;
     renderMembers();
   }
 
@@ -278,7 +278,7 @@
     $("adminProjectDeleteLabel").textContent = t("adminProjects.deleteProjectConfirmLabel");
     $("adminProjectDeleteConfirm").value = "";
     $("adminProjectDeleteConfirm").removeAttribute("aria-invalid");
-    $("adminProjectDeleteError").style.display = "none";
+    $("adminProjectDeleteError").hidden = true;
     openDialog("adminProjectDeleteModal");
     setTimeout(() => $("adminProjectDeleteConfirm").focus(), 50);
   }
@@ -294,7 +294,7 @@
       $("adminProjectDeleteConfirm").setAttribute("aria-invalid", "true");
       const error = $("adminProjectDeleteError");
       error.textContent = t("adminProjects.confirmMismatch");
-      error.style.display = "flex";
+      error.hidden = false;
       $("adminProjectDeleteConfirm").focus();
       return;
     }
@@ -313,7 +313,7 @@
     } catch (err) {
       const el = $("adminProjectDeleteError");
       el.textContent = window.IrisI18n.error(err);
-      el.style.display = "flex";
+      el.hidden = false;
     } finally {
       busy = false;
       btn.disabled = false; btn.classList.remove("loading");
@@ -337,7 +337,7 @@
     $("adminProjectDeleteConfirm").addEventListener("input", () => {
       $("adminProjectDeleteConfirm").classList.remove("nomatch");
       $("adminProjectDeleteConfirm").removeAttribute("aria-invalid");
-      $("adminProjectDeleteError").style.display = "none";
+      $("adminProjectDeleteError").hidden = true;
     });
     // Click-outside for these two modals (data-admin-close buttons and the global
     // Escape handler cover the rest).

@@ -1,6 +1,8 @@
 /* Tabler Icons 3.45.0 — MIT License — https://tabler.io/icons */
 (function () {
   const paths = {
+    "layout-sidebar-right-collapse": "<path d=\"M4 6a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2l0 -12\" /><path d=\"M15 4v16\" /><path d=\"M9 10l2 2l-2 2\" />",
+    "layout-sidebar-right-expand": "<path d=\"M4 6a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2l0 -12\" /><path d=\"M15 4v16\" /><path d=\"M10 10l-2 2l2 2\" />",
     "layout-sidebar-left-collapse": "<path d=\"M4 6a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2l0 -12\" /><path d=\"M9 4v16\" /><path d=\"M15 10l-2 2l2 2\" />",
     "layout-sidebar-left-expand": "<path d=\"M4 6a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2l0 -12\" /><path d=\"M9 4v16\" /><path d=\"M14 10l2 2l-2 2\" />",
     "arrow-left": "<path d=\"M5 12l14 0\" /><path d=\"M5 12l6 6\" /><path d=\"M5 12l6 -6\" />",

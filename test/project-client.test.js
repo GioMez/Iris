@@ -2310,8 +2310,8 @@ test("clean live diagnostics and reopened history clear list, gutter and counter
   ]));
   assert.equal(diagnosticRows(h).length, 2);
   assert.equal(h.editor.diagnostics().length, 2);
-  assert.equal(h.get("stWarn").style.display, "");
-  assert.equal(h.get("stErr").style.display, "");
+  assert.equal(h.get("stWarn").hidden, false);
+  assert.equal(h.get("stErr").hidden, false);
   const log = "===== Iris step 1/4: pdflatex =====\nLaTeX Warning: Citation 'resolved' undefined on input line 2.\n===== Iris step 4/4: pdflatex =====\nOutput written on main.pdf";
   const artifacts = [{ name: "main.pdf", mimeType: "application/pdf", size: 12 }];
   const pending = h.a.compile(); await tick();
@@ -2324,8 +2324,8 @@ test("clean live diagnostics and reopened history clear list, gutter and counter
     assert.equal(h.editor.diagnostics().length, 0);
     assert.equal(h.get("diagnosticsEmpty").hidden, false);
     assert.match(h.get("diagnosticsSummary").textContent, /0 errors.*0 warnings/);
-    assert.equal(h.get("stWarn").style.display, "none");
-    assert.equal(h.get("stErr").style.display, "none");
+    assert.equal(h.get("stWarn").hidden, true);
+    assert.equal(h.get("stErr").hidden, true);
     assert.match(h.get("logView").innerHTML, /Citation.*resolved.*undefined/);
     assert.match(h.get("logView").innerHTML, /Iris step 4\/4/);
   };

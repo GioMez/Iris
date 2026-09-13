@@ -13,7 +13,27 @@
 
   const reducedMotion = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   const elementOf = (target) => typeof target === "string" ? document.getElementById(target) : target;
-  const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+  function duration(token, fallback) {
+    const value = getComputedStyle(root).getPropertyValue(token).trim();
+    const match = /^(\d+(?:\.\d+)?)(ms|s)$/.exec(value);
+    return match ? Number(match[1]) * (match[2] === "s" ? 1000 : 1) : fallback;
+  }
+  async function afterMotion(element, token, fallback) {
+    if (reducedMotion() || !element) return;
+    const surface = element.querySelector(":scope > .modal");
+    const animations = [element, surface].filter(Boolean).flatMap((node) => node.getAnimations())
+      .filter((animation) => Number.isFinite(animation.effect.getComputedTiming().endTime));
+    if (!animations.length) return;
+    // Completion follows the actual CSS timeline, including local overrides.
+    // The bounded fallback also handles a stalled rendering timeline.
+    const deadline = Math.max(duration(token, fallback), ...animations.map((animation) =>
+      animation.effect.getComputedTiming().endTime / (Math.abs(animation.playbackRate) || 1))) + 50;
+    let timer;
+    try {
+      await Promise.race([Promise.allSettled(animations.map((animation) => animation.finished)),
+        new Promise((resolve) => { timer = setTimeout(resolve, deadline); })]);
+    } finally { clearTimeout(timer); }
+  }
   const setDialogInteractive = (dialog, interactive) => {
     const surface = dialog.querySelector(":scope > .modal");
     if (surface) surface.inert = !interactive;
@@ -44,7 +64,7 @@
     if (!Object.prototype.hasOwnProperty.call(topLevelSurfaces(), name)) return;
     if (name !== activeSurface) {
       document.querySelectorAll(".menu.on").forEach((menu) => menu.classList.remove("on"));
-      document.querySelectorAll('[aria-expanded="true"][aria-controls]').forEach((trigger) => trigger.setAttribute("aria-expanded", "false"));
+      document.querySelectorAll('[aria-expanded="true"][aria-haspopup="menu"]').forEach((trigger) => trigger.setAttribute("aria-expanded", "false"));
     }
     activeSurface = name;
     syncSurfaceInteractivity();
@@ -159,7 +179,7 @@
     dialogTokens.set(dialog, token);
     setDialogInteractive(dialog, false);
     dialog.classList.add("is-closing");
-    const closing = wait(160).then(() => {
+    const closing = afterMotion(dialog, "--motion-dialog-exit", 160).then(() => {
       if (dialogTokens.get(dialog) === token) {
         dialog.classList.remove("on", "is-closing");
         restoreDialogContext(dialog, options.restoreFocus !== false);
@@ -191,9 +211,9 @@
     // on the browser retaining a previous animation state.
     void document.querySelector(".app")?.offsetWidth;
     root.classList.add("iris-project-opening");
-    setTimeout(() => {
+    void afterMotion(document.querySelector(".app"), "--motion-project-enter", 240).then(() => {
       if (projectToken === token) root.classList.remove("iris-project-opening");
-    }, 260);
+    });
   }
 
   async function closeProject() {
@@ -205,7 +225,7 @@
       return true;
     }
     root.classList.add("iris-project-closing");
-    await wait(190);
+    await afterMotion(document.querySelector(".app"), "--motion-project-exit", 180);
     if (projectToken === token) root.classList.remove("iris-inproject", "iris-project-closing");
     return true;
   }
@@ -250,5 +270,7 @@
     resetProject,
     setActiveSurface,
     activeSurface: () => activeSurface,
+    duration,
+    afterMotion,
   };
 })();

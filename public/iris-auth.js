@@ -43,9 +43,9 @@
     // lives at the IdP and changing the Iris username is pointless.
     const isLocalAccount = u.canChangePassword;
     const pwd = $("miPassword");
-    if (pwd) pwd.style.display = isLocalAccount ? "" : "none";
+    if (pwd) pwd.hidden = !isLocalAccount;
     const uname = $("miUsername");
-    if (uname) uname.style.display = isLocalAccount ? "" : "none";
+    if (uname) uname.hidden = !isLocalAccount;
   }
 
   // Re-reads the live session and re-stamps role/identity. Used after an admin
@@ -104,7 +104,7 @@
   function showError(msg) {
     const e = $("loginError");
     e.textContent = msg;
-    e.style.display = "flex";
+    e.hidden = false;
     $("loginUser").setAttribute("aria-invalid", "true");
     $("loginPass").setAttribute("aria-invalid", "true");
     const card = $("loginCard");
@@ -113,7 +113,7 @@
     card.classList.add("shake");
   }
   const hideError = () => {
-    $("loginError").style.display = "none";
+    $("loginError").hidden = true;
     $("loginUser").removeAttribute("aria-invalid");
     $("loginPass").removeAttribute("aria-invalid");
   };
@@ -121,11 +121,11 @@
   function passwordError(msg, fields = []) {
     const e = $("passwordError");
     e.textContent = msg;
-    e.style.display = "flex";
+    e.hidden = false;
     fields.forEach((id) => $(id).setAttribute("aria-invalid", "true"));
   }
   function hidePasswordError() {
-    $("passwordError").style.display = "none";
+    $("passwordError").hidden = true;
     $("passwordHint").textContent = "";
     ["passwordCurrent", "passwordNew", "passwordConfirm"].forEach((id) => $(id).removeAttribute("aria-invalid"));
   }
@@ -262,11 +262,11 @@
   function usernameError(msg, field = "usernameNew") {
     const e = $("usernameError");
     e.textContent = msg;
-    e.style.display = "flex";
+    e.hidden = false;
     $(field).setAttribute("aria-invalid", "true");
   }
   function hideUsernameError() {
-    $("usernameError").style.display = "none";
+    $("usernameError").hidden = true;
     $("usernameHint").textContent = "";
     $("usernameNew").removeAttribute("aria-invalid");
     $("usernameCurrent").removeAttribute("aria-invalid");
@@ -282,7 +282,7 @@
     $("usernameNew").value = currentUser.username || "";
     // Step-up: local accounts confirm with their password; SSO accounts have no
     // local secret, so the live session stands in for it.
-    $("usernameReauthRow").style.display = currentUser.canChangePassword ? "" : "none";
+    $("usernameReauthRow").hidden = !currentUser.canChangePassword;
     openDialog("usernameModal");
     setTimeout(() => $("usernameNew").focus(), 50);
   }

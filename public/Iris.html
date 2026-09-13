@@ -60,6 +60,7 @@
       <button class="workflow-btn workflow-builds" id="btnBuilds" type="button" title="Compilation history" aria-label="Open compilation history" data-i18n-title="toolbar.buildsTitle" data-i18n-aria-label="toolbar.buildsAria"><span class="ic" data-icon="box"></span><span class="workflow-label" data-i18n="toolbar.builds">Builds</span></button>
     </div>
     <div class="tbar-right">
+      <button class="tbtn icononly" id="btnPreviewPane" type="button" aria-controls="previewPane" aria-expanded="true" title="Hide preview panel" aria-label="Hide preview panel" data-i18n-title="preview.hidePane" data-i18n-aria-label="preview.hidePane"><span class="ic" data-icon="layout-sidebar-right-collapse"></span></button>
       <button class="tbtn icononly project-share-trigger" id="btnShareProject" type="button" title="Share project" aria-label="Share project" data-i18n-title="sharing.toolbarTitle" data-i18n-aria-label="sharing.toolbarAria" hidden><span class="ic" data-icon="users"></span></button>
       <button class="userchip" id="userChip" title="Account" aria-label="Account" data-i18n-title="common.account" data-i18n-aria-label="common.account" aria-haspopup="menu" aria-expanded="false" aria-controls="userMenu">
         <span class="avatar" id="userAvatar">–</span>
@@ -92,7 +93,7 @@
             <span data-i18n="sidebar.dropImagesRest">in the selected folder, or browse…</span>
           </button>
         </div>
-        <div id="sidePanelOutline" role="tabpanel" aria-labelledby="sideTabOutline" tabindex="0" data-panel="outline" style="display:none">
+        <div id="sidePanelOutline" role="tabpanel" aria-labelledby="sideTabOutline" tabindex="0" data-panel="outline" hidden>
           <div class="side-head" data-i18n="sidebar.documentOutline">Document outline</div>
           <div class="outline" id="outline"></div>
         </div>
@@ -180,7 +181,7 @@
     <div class="resizer" id="rz2" title="Drag to resize" data-i18n-title="sidebar.resize"></div>
 
     <!-- preview -->
-    <section class="pane pvpane">
+    <section class="pane pvpane" id="previewPane">
       <div class="pvbar">
         <div class="seg" id="pvSeg">
           <button type="button" data-view="preview" class="on" aria-pressed="true" aria-label="Show preview" title="Show the rendered output" data-i18n-aria-label="workspace.showPreview" data-i18n-title="preview.showPreview"><span data-icon="file"></span><span class="lbl" data-i18n="preview.preview">Preview</span></button>
@@ -240,8 +241,8 @@
       <span class="st sb-peers" id="stPeers" role="status" aria-live="polite" hidden></span>
       <div class="spring"></div>
       <span class="st" id="stMath"></span>
-      <button class="st warn btnlike" id="stWarn" type="button" style="display:none"></button>
-      <button class="st err btnlike" id="stErr" type="button" style="display:none"></button>
+      <button class="st warn btnlike" id="stWarn" type="button" hidden></button>
+      <button class="st err btnlike" id="stErr" type="button" hidden></button>
       <span class="st" id="stTime" data-i18n="status.neverCompiled">not compiled yet</span>
     </div>
     <div class="sb-actions">
@@ -293,7 +294,7 @@
           <span class="ic" data-icon="upload"></span>
           <span data-i18n="attach.drop">Drop a file here or click to browse</span>
         </button>
-        <div class="filerow" id="attachPicked" style="display:none">
+        <div class="filerow" id="attachPicked" hidden>
           <img class="thumb" id="attachThumb" alt="">
           <span id="attachName">—</span>
           <span class="meta" id="attachMeta"></span>
@@ -409,12 +410,12 @@
           <input class="input code" id="texPath" placeholder="optional, e.g. /opt/homebrew/bin" data-i18n-placeholder="common.optionalExample" spellcheck="false" autocomplete="off">
           <div class="hint" id="texPathHint"><span data-icon="info-circle"></span><span>When empty, the backend PATH is used.</span></div>
         </div>
-        <div class="field" id="lilypondArgsField" style="display:none">
+        <div class="field" id="lilypondArgsField" hidden>
           <label class="label" for="lilypondArgs" data-i18n="settings.lilypondArgs">LilyPond arguments</label>
           <input class="input code" id="lilypondArgs" placeholder='e.g. --loglevel=WARNING -I "music includes"' data-i18n-placeholder="settings.lilypondArgsPlaceholder" spellcheck="false" autocomplete="off" maxlength="2000">
           <div class="hint"><span data-icon="info-circle"></span><span data-i18n="settings.lilypondArgsHint">Inserted between lilypond and the .ly file; quoted values are supported. Iris still manages the destination.</span></div>
         </div>
-        <div class="field" id="lilypondFormatField" style="display:none">
+        <div class="field" id="lilypondFormatField" hidden>
           <label class="label" for="lilypondFormat" data-i18n="settings.lilypondOutput">LilyPond output format</label>
           <select class="select" id="lilypondFormat">
             <option value="pdf" data-i18n="settings.formatPdf">PDF — typeset document</option>
@@ -588,7 +589,7 @@
       <button class="m-x" data-close aria-label="Close" title="Close" data-i18n-title="common.close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
-      <div class="login-error inline" id="passwordError" role="alert" data-i18n="password.invalid">Invalid password.</div>
+      <div class="login-error inline" id="passwordError" role="alert" data-i18n="password.invalid" hidden>Invalid password.</div>
       <div class="field">
         <label class="label" for="passwordCurrent" data-i18n="password.current">Current password</label>
         <input class="input" id="passwordCurrent" type="password" autocomplete="current-password" aria-describedby="passwordError">
@@ -618,7 +619,7 @@
       <button class="m-x" data-close aria-label="Close" title="Close" data-i18n-title="common.close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
-      <div class="login-error inline" id="usernameError" role="alert"></div>
+      <div class="login-error inline" id="usernameError" role="alert" hidden></div>
       <div class="field">
         <label class="label" for="usernameNew" data-i18n="admin.username">Username</label>
         <input class="input" id="usernameNew" spellcheck="false" autocomplete="off" aria-describedby="usernameRequirement usernameError">
@@ -755,7 +756,7 @@
       <button class="m-x" data-close aria-label="Close" title="Close" data-i18n-title="common.close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
-      <div class="login-error inline" id="projModalError" role="alert"></div>
+      <div class="login-error inline" id="projModalError" role="alert" hidden></div>
       <div class="field">
         <label class="label" for="projNameInput" data-i18n="projects.name">Project name</label>
         <input class="input" id="projNameInput" placeholder="e.g. Graduation thesis" data-i18n-placeholder="projects.namePlaceholder" spellcheck="false" autocomplete="off" maxlength="80" aria-describedby="projModalHint projModalError">
@@ -790,7 +791,7 @@
     </div>
     <div class="m-body">
       <p class="confirm-txt" id="projDeleteText" data-i18n="projects.deleteGeneric">Do you want to delete this project? All its files and bibliographies will be removed. This action cannot be undone.</p>
-      <div class="login-error inline modal-error-after" id="projDeleteError" role="alert"></div>
+      <div class="login-error inline modal-error-after" id="projDeleteError" role="alert" hidden></div>
     </div>
     <div class="m-foot">
       <button class="btn" data-close data-i18n="common.cancel">Cancel</button>
@@ -825,7 +826,7 @@
       <button class="m-x" type="button" data-close aria-label="Close" title="Close" data-i18n-title="common.close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
-      <div class="login-error inline" id="projectShareError" role="alert" style="display:none"></div>
+      <div class="login-error inline" id="projectShareError" role="alert" hidden></div>
       <h4 class="set-title" data-i18n="sharing.members">People with access</h4>
       <p class="hint adminproj-owner-hint" id="projectShareOwnerHint" data-i18n="sharing.ownerHint">Every project must keep at least one owner.</p>
       <div class="project-share-members" id="projectShareMembers"></div>
@@ -887,7 +888,7 @@
 
     <div class="picker-grid" id="pkGrid"></div>
 
-    <div class="picker-empty" id="pkEmpty" role="status" aria-live="polite" style="display:none">
+    <div class="picker-empty" id="pkEmpty" role="status" aria-live="polite" hidden>
       <div class="pe-mark" data-icon="files"></div>
       <div class="pe-title" data-i18n="projects.empty">No projects</div>
       <div class="pe-sub internal-only" data-i18n="projects.emptyDescription">Create your first project to start writing in LaTeX or LilyPond.</div>
@@ -971,7 +972,7 @@
         </thead>
         <tbody id="adminRows"></tbody>
       </table>
-      <div class="picker-empty" id="adminEmpty" role="status" aria-live="polite" style="display:none">
+      <div class="picker-empty" id="adminEmpty" role="status" aria-live="polite" hidden>
         <div class="pe-title" data-i18n="admin.noUsers">No matching users</div>
         <div class="pe-sub" data-i18n="admin.noUsersDescription">Try changing the search or filters.</div>
       </div>
@@ -1017,7 +1018,7 @@
           </thead>
           <tbody id="adminProjectRows"></tbody>
         </table>
-        <div class="picker-empty" id="adminProjectEmpty" role="status" aria-live="polite" style="display:none">
+        <div class="picker-empty" id="adminProjectEmpty" role="status" aria-live="polite" hidden>
           <div class="pe-title" data-i18n="adminProjects.noProjects">No matching projects</div>
           <div class="pe-sub" data-i18n="adminProjects.noProjectsDescription">Try changing the search or filters.</div>
         </div>
@@ -1060,7 +1061,7 @@
           </thead>
           <tbody id="adminTemplateRows"></tbody>
         </table>
-        <div class="picker-empty" id="adminTemplateEmpty" role="status" aria-live="polite" style="display:none">
+        <div class="picker-empty" id="adminTemplateEmpty" role="status" aria-live="polite" hidden>
           <div class="pe-title" data-i18n="adminTemplates.noTemplates">No matching templates</div>
           <div class="pe-sub" data-i18n="adminTemplates.noTemplatesDescription">Try changing the type filter or create a template.</div>
         </div>
@@ -1077,7 +1078,7 @@
       <button class="m-x" type="button" data-admin-close aria-label="Close" title="Close" data-i18n-title="common.close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
-      <div class="login-error inline" id="adminCreateError" role="alert"></div>
+      <div class="login-error inline" id="adminCreateError" role="alert" hidden></div>
       <div class="field">
         <label class="label" for="adminCreateUsername" data-i18n="admin.username">Username</label>
         <input class="input" id="adminCreateUsername" spellcheck="false" autocomplete="off" maxlength="64" required aria-describedby="adminCreateUsernameHint adminCreateError">
@@ -1116,7 +1117,7 @@
       <button class="m-x" type="button" data-admin-close aria-label="Close" title="Close" data-i18n-title="common.close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
-      <div class="login-error inline" id="adminEditError" role="alert"></div>
+      <div class="login-error inline" id="adminEditError" role="alert" hidden></div>
       <div class="admin-edit-id" id="adminEditIdentity"></div>
       <div class="field">
         <label class="label" for="adminEditUsername" data-i18n="admin.username">Username</label>
@@ -1149,7 +1150,7 @@
           <option value="active" data-i18n="admin.statusActive">Active</option>
           <option value="disabled" data-i18n="admin.statusDisabled">Disabled</option>
         </select>
-        <span class="hint" id="adminEditPendingHint" style="display:none" data-i18n="admin.statusPendingHint">This account was provisioned by the identity provider and has never had access. Set it to Active to approve it, or Disabled to turn it away.</span>
+        <span class="hint" id="adminEditPendingHint" hidden data-i18n="admin.statusPendingHint">This account was provisioned by the identity provider and has never had access. Set it to Active to approve it, or Disabled to turn it away.</span>
       </div>
       <div class="field" id="adminLinkRow">
         <label class="admin-check"><input type="checkbox" id="adminEditLinkPending"><span data-i18n="admin.linkPending">Allow SSO linking (one time)</span></label>
@@ -1222,7 +1223,7 @@
     </div>
     <div class="m-body">
       <p class="confirm-txt" data-i18n="admin.deleteUserWarn">This permanently deletes the account. Revisions and audit entries are kept but attributed to a former user. This cannot be undone.</p>
-      <div class="admin-sole-owner" id="adminDeleteUserSoleOwner" style="display:none">
+      <div class="admin-sole-owner" id="adminDeleteUserSoleOwner" hidden>
         <p class="admin-sole-owner-txt" data-i18n="admin.deleteUserSoleOwner">This user is the only owner of the projects below. Reassign or delete them in the Projects tab first, then come back.</p>
         <ul class="admin-sole-owner-list" id="adminDeleteUserProjects"></ul>
         <button class="btn" type="button" id="adminDeleteUserOpenProjects"><span class="ic" data-icon="arrow-right"></span><span data-i18n="admin.deleteUserOpenProjects">Open Projects</span></button>
@@ -1231,7 +1232,7 @@
         <label class="label" id="adminDeleteUserConfirmLabel" for="adminDeleteUserConfirm"></label>
         <input class="input" id="adminDeleteUserConfirm" spellcheck="false" autocomplete="off">
       </div>
-      <div class="login-error inline" id="adminDeleteUserError" role="alert" style="display:none"></div>
+      <div class="login-error inline" id="adminDeleteUserError" role="alert" hidden></div>
     </div>
     <div class="m-foot">
       <button class="btn" type="button" data-admin-close data-i18n="common.cancel">Cancel</button>
@@ -1248,8 +1249,8 @@
       <button class="m-x" type="button" data-admin-close aria-label="Close" title="Close" data-i18n-title="common.close" data-i18n-aria-label="common.close"><span data-icon="x"></span></button>
     </div>
     <div class="m-body">
-      <div class="adminproj-orphan" id="adminProjectOrphan" style="display:none"><span data-icon="alert-triangle"></span><span data-i18n="adminProjects.orphanWarning">This project has no owner. Assign one to restore normal access.</span></div>
-      <div class="login-error inline" id="adminProjectError" role="alert" style="display:none"></div>
+      <div class="adminproj-orphan" id="adminProjectOrphan" hidden><span data-icon="alert-triangle"></span><span data-i18n="adminProjects.orphanWarning">This project has no owner. Assign one to restore normal access.</span></div>
+      <div class="login-error inline" id="adminProjectError" role="alert" hidden></div>
       <div class="adminproj-modal-status" id="adminProjectModalStatus" role="status" aria-live="polite"></div>
       <h4 class="set-title" data-i18n="adminProjects.members">Members</h4>
       <p class="hint adminproj-owner-hint" id="adminProjectOwnerHint" data-i18n="adminProjects.ownerHint">Every project must keep at least one owner.</p>
@@ -1288,7 +1289,7 @@
       <p class="confirm-txt" id="adminProjectDeleteText"></p>
       <label class="label" id="adminProjectDeleteLabel" for="adminProjectDeleteConfirm"></label>
       <input class="input" id="adminProjectDeleteConfirm" spellcheck="false" autocomplete="off" aria-describedby="adminProjectDeleteError">
-      <div class="login-error inline modal-error-after" id="adminProjectDeleteError" role="alert" style="display:none"></div>
+      <div class="login-error inline modal-error-after" id="adminProjectDeleteError" role="alert" hidden></div>
     </div>
     <div class="m-foot">
       <button class="btn" type="button" data-admin-close data-i18n="common.cancel">Cancel</button>
@@ -1306,7 +1307,7 @@
     </div>
     <div class="m-body">
       <div class="admin-template-error-row">
-        <div class="login-error inline" id="adminTemplateError" role="alert" style="display:none"></div>
+        <div class="login-error inline" id="adminTemplateError" role="alert" hidden></div>
         <button class="status-retry" id="adminTemplateDetailRetry" type="button" hidden data-i18n="common.retry">Try again</button>
       </div>
       <div class="admin-template-modal-status" id="adminTemplateModalStatus" role="status" aria-live="polite"></div>
@@ -1362,7 +1363,7 @@
     </div>
     <div class="m-body">
       <p class="confirm-txt" id="adminTemplateDeleteText"></p>
-      <div class="login-error inline modal-error-after" id="adminTemplateDeleteError" role="alert" style="display:none"></div>
+      <div class="login-error inline modal-error-after" id="adminTemplateDeleteError" role="alert" hidden></div>
     </div>
     <div class="m-foot">
       <button class="btn" id="adminTemplateDeleteCancel" type="button" data-i18n="common.cancel">Cancel</button>
@@ -1449,7 +1450,7 @@
     <h1 class="login-title" data-i18n="auth.title">Sign in to your workspace</h1>
     <p class="login-sub" data-i18n="auth.subtitle">Enter your credentials to continue</p>
 
-  <div class="login-error" id="loginError" role="alert" data-i18n="auth.invalidCredentials">Invalid credentials.</div>
+  <div class="login-error" id="loginError" role="alert" data-i18n="auth.invalidCredentials" hidden>Invalid credentials.</div>
 
     <div class="lfield">
       <label class="label" for="loginUser" data-i18n="auth.identity">Username or email</label>
@@ -1476,9 +1477,9 @@
 </div>
 
 <!-- hidden inputs -->
-<input type="file" id="attachInput" accept="image/*,application/pdf,.bib,.ris,.bst,.tex,.sty,.cls,.txt,.csv,.dat" style="display:none">
-<input type="file" id="fontInput" accept=".ttf,.otf,.woff,.woff2" style="display:none">
-<input type="file" id="projectImportInput" accept=".zip,application/zip" style="display:none">
+<input type="file" id="attachInput" accept="image/*,application/pdf,.bib,.ris,.bst,.tex,.sty,.cls,.txt,.csv,.dat" hidden>
+<input type="file" id="fontInput" accept=".ttf,.otf,.woff,.woff2" hidden>
+<input type="file" id="projectImportInput" accept=".zip,application/zip" hidden>
 
 <script src="iris-icons.js"></script>
 <script src="iris-i18n.js"></script>

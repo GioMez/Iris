@@ -240,6 +240,8 @@
     "failedWithoutLocation": "Compilation failed without a diagnostic message. Check the Log tab for details."
   },
   "preview": {
+    "hidePane": "Hide preview panel",
+    "showPane": "Show preview panel",
     "preview": "Preview",
     "log": "Log",
     "previousPage": "Previous page",

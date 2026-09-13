@@ -73,7 +73,7 @@
   function modalError(error, retry = false) {
     const output = $("adminTemplateError");
     output.textContent = error ? window.IrisI18n.error(error, "adminTemplates.detailLoadFailed") : "";
-    output.style.display = error ? "flex" : "none";
+    output.hidden = !error;
     $("adminTemplateDetailRetry").hidden = !retry;
   }
 
@@ -151,14 +151,14 @@
     const visible = filter ? templates.filter((template) => template.type === filter) : templates;
     body.replaceChildren();
     if (loadFailed) {
-      empty.style.display = "none";
+      empty.hidden = true;
       return;
     }
     if (!visible.length) {
-      empty.style.display = "";
+      empty.hidden = false;
       return;
     }
-    empty.style.display = "none";
+    empty.hidden = true;
 
     visible.forEach((template) => {
       const row = document.createElement("tr");
@@ -338,7 +338,7 @@
       id: editTarget.id,
       title: loadedDetail.title,
     };
-    $("adminTemplateDeleteError").style.display = "none";
+    $("adminTemplateDeleteError").hidden = true;
     updateDeleteText();
     openDialog("adminTemplateDeleteModal");
     setTimeout(() => $("adminTemplateDeleteOk").focus(), 50);
@@ -379,7 +379,7 @@
     } catch (error) {
       const output = $("adminTemplateDeleteError");
       output.textContent = window.IrisI18n.error(error);
-      output.style.display = "flex";
+      output.hidden = false;
     } finally {
       setDeleteBusy(false);
     }

@@ -146,9 +146,9 @@
     const body = $("adminRows");
     const empty = $("adminEmpty");
     body.innerHTML = "";
-    if (loadFailed) { empty.style.display = "none"; return; }
-    if (!users.length) { empty.style.display = ""; return; }
-    empty.style.display = "none";
+    if (loadFailed) { empty.hidden = true; return; }
+    if (!users.length) { empty.hidden = false; return; }
+    empty.hidden = true;
     for (const u of users) {
       const tr = document.createElement("tr");
       tr.dataset.userId = u.id;
@@ -170,7 +170,7 @@
 
   /* ---------------- create ---------------- */
   function openCreate() {
-    $("adminCreateError").style.display = "none";
+    $("adminCreateError").hidden = true;
     $("adminCreateForm").querySelectorAll("[aria-invalid]").forEach((field) => field.removeAttribute("aria-invalid"));
     $("adminCreateUsername").value = "";
     $("adminCreateEmail").value = "";
@@ -183,7 +183,7 @@
   function modalError(id, err) {
     const el = $(id);
     el.textContent = window.IrisI18n.error(err);
-    el.style.display = "flex";
+    el.hidden = false;
   }
 
   async function submitCreate() {
@@ -212,7 +212,7 @@
   /* ---------------- edit ---------------- */
   function openEdit(u) {
     editingId = u.id;
-    $("adminEditError").style.display = "none";
+    $("adminEditError").hidden = true;
     $("adminEditForm").querySelectorAll("[aria-invalid]").forEach((field) => field.removeAttribute("aria-invalid"));
     $("adminEditTitle").textContent = t("admin.editTitle", { name: u.username });
     $("adminEditIdentity").textContent = `${u.email} · ${u.authSource === "oidc" ? t("admin.sourceOidc") : t("admin.sourceLocal")}`;
@@ -226,19 +226,19 @@
     // back. The hint explains which is which.
     const isPending = u.status === "pending";
     $("adminEditStatusPending").hidden = !isPending;
-    $("adminEditPendingHint").style.display = isPending ? "" : "none";
+    $("adminEditPendingHint").hidden = !isPending;
     $("adminEditStatus").value = u.status;
     // Local accounts can have their password reset and be offered the one-time
     // SSO linking window; OIDC accounts (native or converted) can instead be
     // unlinked, reverting to local with a fresh temporary password.
     const isLocal = u.authSource === "local";
-    $("adminResetRow").style.display = isLocal ? "" : "none";
+    $("adminResetRow").hidden = !isLocal;
     $("adminEditLinkPending").checked = !!u.oidcLinkPending;
-    $("adminLinkRow").style.display = isLocal ? "" : "none";
-    $("adminUnlinkRow").style.display = isLocal ? "none" : "";
+    $("adminLinkRow").hidden = !isLocal;
+    $("adminUnlinkRow").hidden = isLocal;
     // Physical deletion is a distinct, protected step: offered only for an account
     // that has no access — disabled, or never approved — and never for oneself.
-    $("adminDeleteUserRow").style.display = (u.status !== "active" && u.id !== myId()) ? "" : "none";
+    $("adminDeleteUserRow").hidden = !(u.status !== "active" && u.id !== myId());
     openDialog("adminEditModal");
     setTimeout(() => $("adminEditName").focus(), 50);
   }
@@ -368,9 +368,9 @@
     const { username, soleOwnerProjects } = deleteUserTarget;
     const blocked = soleOwnerProjects.length > 0;
     $("adminDeleteUserTitle").textContent = t("admin.deleteUserTitle", { name: username });
-    $("adminDeleteUserError").style.display = "none";
+    $("adminDeleteUserError").hidden = true;
     const soleBox = $("adminDeleteUserSoleOwner");
-    soleBox.style.display = blocked ? "" : "none";
+    soleBox.hidden = !blocked;
     if (blocked) {
       const list = $("adminDeleteUserProjects");
       list.innerHTML = "";
@@ -380,7 +380,7 @@
         list.appendChild(li);
       }
     }
-    $("adminDeleteUserConfirmField").style.display = blocked ? "none" : "";
+    $("adminDeleteUserConfirmField").hidden = blocked;
     $("adminDeleteUserConfirmLabel").textContent = t("admin.deleteUserConfirmLabel", { username });
     const input = $("adminDeleteUserConfirm");
     input.value = "";
@@ -398,7 +398,7 @@
       input.classList.add("nomatch"); input.setAttribute("aria-invalid", "true"); input.focus();
       const error = $("adminDeleteUserError");
       error.textContent = t("api.ADMIN_DELETE_CONFIRMATION");
-      error.style.display = "flex";
+      error.hidden = false;
       return;
     }
     const btn = $("adminDeleteUserOk");
@@ -414,7 +414,7 @@
     } catch (err) {
       const el = $("adminDeleteUserError");
       el.textContent = window.IrisI18n.error(err);
-      el.style.display = "flex";
+      el.hidden = false;
     } finally {
       btn.disabled = false; btn.classList.remove("loading");
     }
@@ -471,12 +471,12 @@
     $("adminDeleteUserConfirm").addEventListener("input", () => {
       $("adminDeleteUserConfirm").classList.remove("nomatch");
       $("adminDeleteUserConfirm").removeAttribute("aria-invalid");
-      $("adminDeleteUserError").style.display = "none";
+      $("adminDeleteUserError").hidden = true;
     });
     ["adminCreateForm", "adminEditForm"].forEach((id) => {
       const clear = (event) => {
         event.target.removeAttribute("aria-invalid");
-        $(id === "adminCreateForm" ? "adminCreateError" : "adminEditError").style.display = "none";
+        $(id === "adminCreateForm" ? "adminCreateError" : "adminEditError").hidden = true;
       };
       $(id).addEventListener("input", clear);
       $(id).addEventListener("change", clear);

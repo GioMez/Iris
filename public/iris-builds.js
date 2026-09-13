@@ -61,7 +61,7 @@
     node.textContent = message || "";
     node.classList.toggle("error", !!error);
     node.setAttribute("role", error ? "alert" : "status");
-    node.style.display = message ? "" : "none";
+    node.hidden = !message;
   }
 
   function setNotice(message, error = false) {

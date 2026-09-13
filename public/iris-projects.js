@@ -148,9 +148,9 @@
   function setPickerLoading() {
     const grid = $("pkGrid"), empty = $("pkEmpty"), count = $("pkCount");
     if (count) count.textContent = "";
-    if (empty) empty.style.display = "none";
+    if (empty) empty.hidden = true;
     if (grid) {
-      grid.style.display = "";
+      grid.hidden = false;
       grid.setAttribute("aria-busy", "true");
       grid.innerHTML = `<div class="pcard loading" role="status" aria-live="polite" aria-label="${esc(t("projects.loading"))}"><div class="pcard-open"><span class="pcard-icon">${ti("file-code-2")}</span><span class="pcard-text"><span class="pcard-name">${esc(t("projects.loading"))}</span><span class="pcard-meta">${esc(t("projects.loadingDescription"))}</span></span></div><div class="pcard-tools" aria-hidden="true"><span class="pcard-tool-placeholder"></span><span class="pcard-tool-placeholder"></span><span class="pcard-tool-placeholder"></span></div></div>`;
     }
@@ -228,8 +228,8 @@
       const idx = (await loadIndex()).slice().sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
       if (count) count.textContent = idx.length ? t("projects.count", { count: idx.length }) : "";
       grid.innerHTML = "";
-      if (!idx.length) { empty.style.display = ""; grid.style.display = "none"; return; }
-      empty.style.display = "none"; grid.style.display = "";
+      if (!idx.length) { empty.hidden = false; grid.hidden = true; return; }
+      empty.hidden = true; grid.hidden = false;
       idx.forEach((m) => {
         const nfiles = Number.isFinite(m.fileCount) ? m.fileCount : countFiles(cache.get(m.id));
         const card = document.createElement("div");
@@ -276,8 +276,8 @@
         grid.appendChild(card);
       });
     } catch (err) {
-      grid.style.display = "";
-      empty.style.display = "none";
+      grid.hidden = false;
+      empty.hidden = true;
       grid.innerHTML = `<div class="picker-empty error"><div role="alert"><div class="pe-title">${esc(t("projects.loadFailed"))}</div><div class="pe-sub">${esc(window.IrisI18n.error(err))}</div></div><button class="btn" type="button" data-retry-projects>${esc(t("common.retry"))}</button></div>`;
       grid.querySelector("[data-retry-projects]").addEventListener("click", () => {
         $("projectPickerTitle").focus();
@@ -660,7 +660,7 @@
   function syncProjectTypeFields() {
     const projectType = $("projTypeSelect").value === "lilypond" ? "lilypond" : "latex";
     const hasTemplates = renderProjectTemplateOptions(projectType);
-    $("projTemplateField").style.display = "";
+    $("projTemplateField").hidden = false;
     $("projModalHint").textContent = hasTemplates
       ? t(projectType === "latex" ? "projects.newLatexHint" : "projects.newLilypondHint")
       : t("projects.noTemplates", { type: projectType === "latex" ? "LaTeX" : "LilyPond" });
@@ -679,7 +679,7 @@
     $("projModalTitle").textContent = t("projects.newTitle");
     $("projModalOk").textContent = t("projects.create");
     $("projModalHint").textContent = t("projects.newLatexHint");
-    $("projTypeField").style.display = "";
+    $("projTypeField").hidden = false;
     $("projTypeSelect").value = "latex";
     selectedTemplates.latex = null;
     selectedTemplates.lilypond = null;
@@ -688,7 +688,7 @@
     $("projNameInput").value = "";
     $("projNameInput").classList.remove("nomatch");
     $("projNameInput").removeAttribute("aria-invalid");
-    $("projModalError").style.display = "none";
+    $("projModalError").hidden = true;
     openModal("projModal");
     setTimeout(() => $("projNameInput").focus(), 40);
   }
@@ -698,13 +698,13 @@
     $("projModalTitle").textContent = t("projects.renameTitle");
     $("projModalOk").textContent = t("common.save");
     $("projModalHint").textContent = t("projects.renameHint");
-    $("projTypeField").style.display = "none";
-    $("projTemplateField").style.display = "none";
+    $("projTypeField").hidden = true;
+    $("projTemplateField").hidden = true;
     $("projModalOk").disabled = false;
     $("projNameInput").value = m ? m.name : "";
     $("projNameInput").classList.remove("nomatch");
     $("projNameInput").removeAttribute("aria-invalid");
-    $("projModalError").style.display = "none";
+    $("projModalError").hidden = true;
     openModal("projModal");
     setTimeout(() => { const i = $("projNameInput"); i.focus(); i.select(); }, 40);
   }
@@ -715,7 +715,7 @@
       i.classList.add("nomatch"); i.setAttribute("aria-invalid", "true"); i.focus();
       const error = $("projModalError");
       error.textContent = t("api.PROJECT_NAME_REQUIRED");
-      error.style.display = "flex";
+      error.hidden = false;
       return;
     }
     if (projMode === "new" && !$("projTemplateSelect").value) return;
@@ -742,7 +742,7 @@
       $("projNameInput").setAttribute("aria-invalid", "true");
       const error = $("projModalError");
       error.textContent = window.IrisI18n.error(err, "projects.operationFailed");
-      error.style.display = "flex";
+      error.hidden = false;
     } finally {
       ok.disabled = false;
       ok.classList.remove("loading");
@@ -752,7 +752,7 @@
     const m = metaOf(id);
     delTargetId = id;
     $("projDeleteText").textContent = t("projects.deleteConfirm", { name: m ? m.name : t("projects.thisProject") });
-    $("projDeleteError").style.display = "none";
+    $("projDeleteError").hidden = true;
     openModal("projDelModal");
   }
   async function confirmDelete() {
@@ -766,7 +766,7 @@
     } catch (err) {
       const error = $("projDeleteError");
       error.textContent = window.IrisI18n.error(err, "projects.deleteFailed");
-      error.style.display = "flex";
+      error.hidden = false;
     } finally {
       ok.disabled = false;
     }
@@ -784,11 +784,11 @@
     const node = $("projectShareError");
     if (!error) {
       node.textContent = "";
-      node.style.display = "none";
+      node.hidden = true;
       return;
     }
     node.textContent = window.IrisI18n.error(error, "sharing.loadFailed");
-    node.style.display = "flex";
+    node.hidden = false;
   }
 
   function shareStatus(message) {
@@ -1122,7 +1122,7 @@
     $("projNameInput").addEventListener("input", () => {
       $("projNameInput").classList.remove("nomatch");
       $("projNameInput").removeAttribute("aria-invalid");
-      $("projModalError").style.display = "none";
+      $("projModalError").hidden = true;
     });
     $("projTypeSelect").addEventListener("change", syncProjectTypeFields);
     $("projTemplateSelect").addEventListener("change", function () {

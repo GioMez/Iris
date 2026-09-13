@@ -55,6 +55,9 @@
     zoom: 1, fit: true,
     view: "preview",
     previewKind: "empty",
+    previewCollapsed: false,
+    previewRestoring: false,
+    pdfLayout: null,
     assets: {},           // path -> dataURL
     fonts: [],            // {family, name}
     previewFont: null,
@@ -183,7 +186,7 @@
     $("engineBtn").disabled = lilypond;
     $("btnFormat").title = t(lilypond ? "editor.formatLilypond" : "editor.formatLatex");
     document.querySelectorAll("#engineMenu .mi").forEach((item) => {
-      item.style.display = lilypond ? (item.dataset.engine === "lilypond" ? "" : "none") : (item.dataset.engine === "lilypond" ? "none" : "");
+      item.hidden = lilypond ? item.dataset.engine !== "lilypond" : item.dataset.engine === "lilypond";
     });
     const newFileButton = document.querySelector('[data-new-type="file"]');
     if (newFileButton) newFileButton.textContent = t(lilypond ? "tree.fileLy" : "tree.fileTex");
@@ -922,9 +925,9 @@
     $("projectTypeLabel").textContent = lilypond ? "LilyPond (.ly)" : "LaTeX (.tex)";
     $("compilerPathLabel").textContent = t(lilypond ? "settings.lilypondBinaryPath" : "settings.latexBinaryPath");
     $("compileSettingsDesc").textContent = t(lilypond ? "settings.compileDescriptionLilypond" : "settings.compileDescriptionLatex");
-    $("lilypondArgsField").style.display = lilypond ? "" : "none";
+    $("lilypondArgsField").hidden = !lilypond;
     $("lilypondArgs").value = state.lilypondArgs;
-    $("lilypondFormatField").style.display = lilypond ? "" : "none";
+    $("lilypondFormatField").hidden = !lilypond;
     $("lilypondFormat").value = state.lilypondFormat;
     const pathHint = locked
       ? t("settings.pathHintLocked")
@@ -1668,6 +1671,7 @@
   // change page dimensions. Hidden tabs and provisional image layouts have no
   // usable geometry and must not overwrite the last reading position.
   function rememberPreviewPosition() {
+    if (state.previewRestoring) return;
     if (!state.previewPagesReady || state.view !== "preview" || !state.pages.length) return;
     const stage = $("pvStage");
     if (!stage.clientWidth || !stage.clientHeight) return;
@@ -1714,6 +1718,7 @@
   }
 
   function releasePdfDocument() {
+    state.pdfLayout = null;
     cancelPdfRenders();
     const loadingTask = state.pdfLoadingTask;
     state.pdfLoadingTask = null;
@@ -1724,8 +1729,17 @@
     });
   }
 
-  async function layoutPdfPages() {
-    if (!state.pdfDocument) return;
+  async function layoutPdfPages(preservePosition = false) {
+    if (!state.pdfDocument || (state.previewRestoring && !preservePosition)) return;
+    const layoutKey = () => [state.pdfDocument, state.fit ? previewWidth() : 0, state.fit ? 0 : state.zoom,
+      Math.min(window.devicePixelRatio || 1, 2)];
+    const wanted = layoutKey();
+    if (state.previewPagesReady && state.pdfLayout?.every((value, index) => value === wanted[index])) {
+      restorePreviewPosition();
+      updateZoomLabel();
+      if (preservePosition) state.previewRestoring = false;
+      return;
+    }
     cancelPdfRenders();
     const generation = state.pdfRenderGeneration;
     const doc = state.pdfDocument;
@@ -1741,6 +1755,7 @@
 
     const availableWidth = previewWidth();
     const deviceScale = Math.min(window.devicePixelRatio || 1, 2);
+    const layout = layoutKey();
     const views = pages.map((page) => {
       const base = page.getViewport({ scale: 1 });
       const scale = state.fit ? availableWidth / base.width : PDF_CSS_UNITS * state.zoom;
@@ -1748,7 +1763,7 @@
     });
     state.effectiveZoom = views.length ? views[0].css.scale / PDF_CSS_UNITS : state.zoom;
 
-    rememberPreviewPosition();
+    if (!preservePosition) rememberPreviewPosition();
     state.previewPagesReady = false;
     wrap.innerHTML = "";
     state.pages = views.map(({ css }) => {
@@ -1762,10 +1777,12 @@
       return pageEl;
     });
     state.previewPagesReady = true;
+    state.pdfLayout = layout;
     $("pgTot").textContent = state.pages.length || "–";
-    $("pvEmpty").style.display = state.pages.length ? "none" : "";
+    $("pvEmpty").hidden = state.pages.length > 0;
     restorePreviewPosition();
     updateZoomLabel();
+    if (preservePosition) state.previewRestoring = false;
 
     for (let i = 0; i < views.length; i++) {
       if (generation !== state.pdfRenderGeneration || doc !== state.pdfDocument) return;
@@ -1778,23 +1795,26 @@
       try {
         await task.promise;
       } catch (err) {
-        if (err && err.name !== "RenderingCancelledException") throw err;
+        if (err && err.name !== "RenderingCancelledException") {
+          if (generation === state.pdfRenderGeneration) state.pdfLayout = null;
+          throw err;
+        }
       } finally {
         state.pdfRenderTasks = state.pdfRenderTasks.filter((item) => item !== task);
       }
     }
   }
 
-  function requestPdfLayout() {
-    layoutPdfPages().catch((err) => {
+  function requestPdfLayout(preservePosition = false) {
+    return layoutPdfPages(preservePosition).catch((err) => {
       console.error("PDF preview render failed", err);
       toast(t("preview.refreshFailed"), "err");
     });
   }
 
-  function layoutImagePages() {
-    if (state.previewKind !== "image" || !state.pages.length) return;
-    rememberPreviewPosition();
+  function layoutImagePages(preservePosition = false) {
+    if (state.previewKind !== "image" || !state.pages.length || (state.previewRestoring && !preservePosition)) return;
+    if (!preservePosition) rememberPreviewPosition();
     const availableWidth = previewWidth();
     const contentWidth = Math.max(1, availableWidth - 60);
     let firstScale = state.zoom;
@@ -1809,11 +1829,13 @@
     state.effectiveZoom = firstScale;
     restorePreviewPosition();
     updateZoomLabel();
+    if (preservePosition) state.previewRestoring = false;
   }
 
-  function requestPreviewLayout() {
-    if (state.pdfDocument) requestPdfLayout();
-    else layoutImagePages();
+  function requestPreviewLayout(preservePosition = false) {
+    if ($("previewPane").hidden || (state.previewRestoring && !preservePosition)) return;
+    if (state.pdfDocument) return requestPdfLayout(preservePosition);
+    return layoutImagePages(preservePosition);
   }
 
   function updateZoomLabel() {
@@ -1966,7 +1988,7 @@
         clearCompiledArtifacts();
         state.previewKind = "empty";
         updateZoomLabel();
-        $("pvEmpty").style.display = "";
+        $("pvEmpty").hidden = false;
         $("pvPages").innerHTML = "";
         state.pages = [];
         $("pgTot").textContent = "–";
@@ -2170,13 +2192,13 @@
     $("stTime").textContent = t("status.compiled", { time, seconds: ms });
     $("stMath").textContent = totalSize ? `${format || t("toolbar.output")} ${(totalSize / 1024).toFixed(0)} KB${artifacts.length > 1 ? t("status.artifacts", { count: artifacts.length }) : ""}` : "";
     const we = $("stWarn"), ee = $("stErr");
-    if (warnN) { we.style.display = ""; we.innerHTML = `${ti("alert-triangle")}<span>${esc(t("status.warnings", { count: warnN }))}</span>`; } else we.style.display = "none";
+    if (warnN) { we.hidden = false; we.innerHTML = `${ti("alert-triangle")}<span>${esc(t("status.warnings", { count: warnN }))}</span>`; } else we.hidden = true;
     if (!res.success || errN) {
-      ee.style.display = ""; ee.innerHTML = `${ti("circle-x")}<span>${esc(t("status.errors", { count: errN }))}</span>`;
+      ee.hidden = false; ee.innerHTML = `${ti("circle-x")}<span>${esc(t("status.errors", { count: errN }))}</span>`;
       $("stState").textContent = t("status.errors"); $("stDot").className = "doterr";
       $("stState").parentElement.classList.remove("accent"); $("stState").parentElement.classList.add("err");
     } else {
-      ee.style.display = "none";
+      ee.hidden = true;
       $("stState").textContent = t("status.ready"); $("stDot").className = "dotok";
       $("stState").parentElement.classList.add("accent"); $("stState").parentElement.classList.remove("err");
     }
@@ -2252,12 +2274,12 @@
       if (loadGeneration !== state.pdfLoadGeneration) return;
       layoutImagePages();
       state.previewPagesReady = true;
-      $("pvEmpty").style.display = "none";
+      $("pvEmpty").hidden = true;
       $("pgTot").textContent = state.pages.length || "–";
       restorePreviewPosition();
     } else {
       $("pvEmpty").innerHTML = `<div class="big success">${ti("circle-check")}</div><span>${esc(t("preview.generated", { count: artifacts.length, format: format.toUpperCase() }))}</span>`;
-      $("pvEmpty").style.display = "";
+      $("pvEmpty").hidden = false;
       $("pgTot").textContent = "–";
       $("pgCur").textContent = "–";
       updateZoomLabel();
@@ -2315,6 +2337,8 @@
   function setWorkspaceView(view) {
     const preview = view === "preview";
     if (!preview) rememberPreviewPosition();
+    if (preview) state.previewCollapsed = false;
+    syncPreviewPane();
     document.querySelector(".body").classList.toggle("workspace-preview", preview);
     $("workspaceSwitch").querySelectorAll("button").forEach((button) => {
       const selected = button.dataset.workspace === (preview ? "preview" : "editor");
@@ -2434,7 +2458,10 @@
     t.className = "toast" + (type === "err" ? " err" : "");
     t.innerHTML = `<span class="ic">${ti(type === "err" ? "circle-x" : "circle-check")}</span><span>${esc(msg)}</span>`;
     $("toasts").appendChild(t);
-    setTimeout(() => { t.style.transition = "opacity .3s"; t.style.opacity = "0"; setTimeout(() => t.remove(), 300); }, 2200);
+    setTimeout(() => {
+      t.classList.add("is-leaving");
+      void window.IrisMotion.afterMotion(t, "--motion-toast-exit", 300).then(() => t.remove());
+    }, 2200);
   }
 
   /* ---------------- attach ---------------- */
@@ -2464,7 +2491,7 @@
   }
   function clearAttach() {
     state.attachFile = null;
-    $("attachPicked").style.display = "none";
+    $("attachPicked").hidden = true;
     $("attachRename").value = "";
     $("attachUpload").disabled = true;
   }
@@ -2477,9 +2504,9 @@
       $("attachMeta").textContent = (file.size / 1024).toFixed(0) + " KB";
       $("attachRename").value = file.name;
       const thumb = $("attachThumb");
-      if (state.attachFile.isImg) { thumb.style.display = ""; thumb.src = reader.result; }
-      else thumb.style.display = "none";
-      $("attachPicked").style.display = "";
+      if (state.attachFile.isImg) { thumb.hidden = false; thumb.src = reader.result; }
+      else thumb.hidden = true;
+      $("attachPicked").hidden = false;
       $("attachUpload").disabled = false;
     };
     reader.readAsDataURL(file);
@@ -2638,7 +2665,7 @@
   }
   function renderFontList() {
     const box = $("fontList");
-    if (!state.fonts.length) { box.innerHTML = `<div class="hint" style="margin:0">${esc(t("settings.noCustomFonts"))}</div>`; return; }
+    if (!state.fonts.length) { box.innerHTML = `<div class="hint font-empty-hint">${esc(t("settings.noCustomFonts"))}</div>`; return; }
     box.innerHTML = "";
     state.fonts.forEach((fo) => {
       const el = document.createElement("div");
@@ -2696,13 +2723,13 @@
     $("pvPages").innerHTML = "";
     $("logView").innerHTML = "";
     $("pvEmpty").innerHTML = `<div class="big">${ti("file")}</div><span>${esc(t("preview.empty"))}</span>`;
-    $("pvEmpty").style.display = "";
+    $("pvEmpty").hidden = false;
     $("pgTot").textContent = "–";
     $("pgCur").textContent = "–";
     $("stTime").textContent = t("status.neverCompiled");
     $("stMath").textContent = "";
-    $("stWarn").style.display = "none";
-    $("stErr").style.display = "none";
+    $("stWarn").hidden = true;
+    $("stErr").hidden = true;
     $("stState").textContent = t("status.ready");
     $("stDot").className = "dotok";
     $("stState").parentElement.classList.add("accent");
@@ -2758,7 +2785,7 @@
       state.pages = [];
       $("pvPages").innerHTML = "";
       $("pvEmpty").innerHTML = `<div class="big">${ti("terminal-2")}</div><span>${esc(t("builds.noArtifacts"))}</span>`;
-      $("pvEmpty").style.display = "";
+      $("pvEmpty").hidden = false;
       $("pgTot").textContent = "–";
       $("pgCur").textContent = "–";
       setView("diagnostics");
@@ -2994,8 +3021,8 @@
         x.tabIndex = selected ? 0 : -1;
       });
       const which = tab.dataset.side;
-      document.querySelector('[data-panel="files"]').style.display = which === "files" ? "" : "none";
-      document.querySelector('[data-panel="outline"]').style.display = which === "outline" ? "" : "none";
+      document.querySelector('[data-panel="files"]').hidden = which !== "files";
+      document.querySelector('[data-panel="outline"]').hidden = which !== "outline";
       if (which === "outline") renderOutline();
     };
     sideTabs.forEach((tab, index) => {
@@ -3122,6 +3149,7 @@
 
     let previewResizeTimer;
     window.addEventListener("resize", () => {
+      syncPreviewPane();
       if (state.previewKind !== "pdf" && state.previewKind !== "image") return;
       if (!state.fit) return;
       clearTimeout(previewResizeTimer);
@@ -3154,6 +3182,7 @@
     setupResizer($("rz1"), "side");
     setupResizer($("rz2"), "pv");
     $("btnSidebar").addEventListener("click", toggleSidebar);
+    $("btnPreviewPane").addEventListener("click", togglePreviewPane);
     $("sideBackdrop").addEventListener("click", closeResponsiveSidebar);
     drawerMedia.addEventListener("change", syncResponsiveLayout);
 
@@ -3188,7 +3217,8 @@
     n = Math.max(1, Math.min(state.pages.length, n));
     state.curPage = n;
     const p = state.pages[n - 1];
-    if (p) $("pvStage").scrollTo({ top: p.offsetTop - 26, behavior: "smooth" });
+    if (p) $("pvStage").scrollTo({ top: p.offsetTop - 26,
+      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" });
     $("pgCur").textContent = n;
   }
   function onStageScroll() {
@@ -3201,7 +3231,7 @@
     const generation = ++state.pdfLoadGeneration;
     void releasePdfDocument();
     state.previewKind = "image";
-    $("pvEmpty").style.display = "none";
+    $("pvEmpty").hidden = true;
     const page = document.createElement("div");
     page.className = "image-preview";
     const img = document.createElement("img");
@@ -3223,6 +3253,62 @@
   /* ---------------- layout: resize + collapse ---------------- */
   const LS_LAYOUT = "iris_layout";
   const drawerMedia = window.matchMedia("(max-width: 1180px)");
+  const compactMedia = window.matchMedia("(max-width: 820px)");
+  let previewRestoreGeneration = 0;
+  function settlePreviewReveal() {
+    const generation = ++previewRestoreGeneration;
+    state.previewRestoring = true;
+    void window.IrisMotion.afterMotion(document.querySelector(".body"), "--motion-layout", 180).then(async () => {
+      if (generation !== previewRestoreGeneration || $("previewPane").hidden) return;
+      try {
+        // Preserve the saved anchor while hidden/transitioning geometry clamps
+        // scroll. Only the final layout may resume recording reading positions.
+        await requestPreviewLayout(true);
+      } finally {
+        if (generation === previewRestoreGeneration && state.previewRestoring) {
+          state.previewRestoring = false;
+          // A newer output may have replaced a pending PDF layout.
+          requestPreviewLayout(true);
+        }
+      }
+    });
+  }
+  function syncPreviewPane() {
+    const collapsed = state.previewCollapsed && !compactMedia.matches;
+    const pane = $("previewPane"), button = $("btnPreviewPane");
+    const hadToggleFocus = document.activeElement === button;
+    const revealing = pane.hidden && !collapsed;
+    if (collapsed) {
+      ++previewRestoreGeneration;
+      state.previewRestoring = false;
+    } else if (revealing) state.previewRestoring = true;
+    document.querySelector(".body").classList.toggle("preview-collapsed", collapsed);
+    pane.hidden = collapsed;
+    $("rz2").hidden = collapsed;
+    button.hidden = compactMedia.matches;
+    button.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    button.classList.toggle("on", !collapsed);
+    const label = collapsed ? "preview.showPane" : "preview.hidePane";
+    button.setAttribute("data-i18n-title", label);
+    button.setAttribute("data-i18n-aria-label", label);
+    button.title = t(label);
+    button.setAttribute("aria-label", t(label));
+    const iconHost = button.querySelector("[data-icon]");
+    const icon = collapsed ? "layout-sidebar-right-expand" : "layout-sidebar-right-collapse";
+    if (iconHost && iconHost.dataset.icon !== icon) {
+      iconHost.dataset.icon = icon;
+      iconHost.innerHTML = ti(icon);
+    }
+    if (button.hidden && hadToggleFocus) {
+      $("workspaceSwitch").querySelector('[aria-selected="true"]')?.focus();
+    }
+    if (!collapsed && state.previewRestoring) settlePreviewReveal();
+  }
+  function togglePreviewPane() {
+    rememberPreviewPosition();
+    state.previewCollapsed = !state.previewCollapsed;
+    syncPreviewPane();
+  }
   function loadLayout() {
     let L = {};
     try { L = JSON.parse(localStorage.getItem(LS_LAYOUT) || "{}") || {}; } catch (e) {}
@@ -3292,7 +3378,9 @@
       saveLayout();
     }
     updateSidebarToggle();
-    setTimeout(() => { if (state.fit) { requestPreviewLayout(); updateZoomLabel(); } }, 200);
+    void window.IrisMotion.afterMotion(body, "--motion-layout", 180).then(() => {
+      if (state.fit) { requestPreviewLayout(); updateZoomLabel(); }
+    });
   }
   function closeResponsiveSidebar() {
     if (!drawerMedia.matches) return;
@@ -3316,6 +3404,7 @@
     const body = document.querySelector(".body");
     if (!drawerMedia.matches) body.classList.remove("drawer-open");
     updateSidebarToggle();
+    syncPreviewPane();
     if (state.fit) requestPreviewLayout();
   }
 
@@ -3435,7 +3524,7 @@
   function setVersionsListState(html) {
     const el = $("versionsListState");
     el.innerHTML = html || "";
-    el.style.display = html ? "" : "none";
+    el.hidden = !html;
   }
 
   async function openFileHistory(node) {
@@ -3459,7 +3548,7 @@
     verState.view = "preview";
     verState.confirm = null;
     $("versionsSubtitle").textContent = node.name || node.path || "";
-    $("versionsSnapshot").style.display = isReadOnly() ? "none" : "";
+    $("versionsSnapshot").hidden = isReadOnly();
     openDialog("versionsModal");
     await loadVersionsList({ selectFirst: true });
   }
@@ -3685,7 +3774,7 @@
   function refreshVersionsUi() {
     if (!$("versionsModal").classList.contains("on")) return;
     if (verState.node) $("versionsSubtitle").textContent = verState.node.name || verState.node.path || "";
-    $("versionsSnapshot").style.display = isReadOnly() ? "none" : "";
+    $("versionsSnapshot").hidden = isReadOnly();
     if (!verState.versions.length) {
       setVersionsListState(`<div class="ve-title">${esc(t("versions.empty"))}</div><div class="ve-sub">${esc(t("versions.emptyHint"))}</div>`);
     }
@@ -3819,9 +3908,9 @@
       // reset preview / status
       $("pvPages").innerHTML = ""; $("logView").innerHTML = "";
       $("pvEmpty").innerHTML = `<div class="big">${ti("file")}</div><span>${esc(t("preview.empty"))}</span>`;
-      $("pvEmpty").style.display = ""; $("pgTot").textContent = "–"; $("pgCur").textContent = "–";
+      $("pvEmpty").hidden = false; $("pgTot").textContent = "–"; $("pgCur").textContent = "–";
       $("stTime").textContent = t("status.neverCompiled");
-      $("stWarn").style.display = "none"; $("stErr").style.display = "none"; $("stMath").textContent = "";
+      $("stWarn").hidden = true; $("stErr").hidden = true; $("stMath").textContent = "";
       setView("preview");
 
       if (active) openFile(active);
@@ -3881,6 +3970,7 @@
 
   /* ---------------- boot ---------------- */
   function refreshLocalizedUi() {
+    syncPreviewPane();
     bibliographyView?.refresh();
     updateProjectTypeUi();
     renderCursorStatus();

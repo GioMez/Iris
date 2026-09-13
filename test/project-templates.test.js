@@ -60,7 +60,7 @@ test("the new-project dialog populates one template selector for both project ty
   assert.match(projects, /option\.textContent = projectTemplateLabel/);
   assert.match(projects, /return template\.label \|\| template\.title \|\| template\.id/);
   assert.doesNotMatch(projects, /BUILTIN_TEMPLATE_KEYS/);
-  assert.match(projects, /\$\("projTemplateField"\)\.style\.display = ""/);
+  // New/rename template-field visibility is exercised through the real UI.
   assert.doesNotMatch(projects, /LATEX_TEMPLATES/);
   assert.match(projects, /fetch\(template\.url, \{ credentials: "same-origin", cache: "no-cache" \}\)/);
   assert.doesNotMatch(projects, /\\documentclass|\\version "2\.24\.0"/);

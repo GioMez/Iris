@@ -111,6 +111,70 @@ Borders, focus rings, icon dimensions, panel widths, breakpoints and motion
 distances describe other layout or rendering constraints. A pixel value alone
 does not make one of these an interface-spacing token.
 
+## Visibility, motion and layers
+
+Use `hidden` for an unavailable or inactive element. CSS defines its visible
+layout; JavaScript does not set `style.display`. Whole application surfaces and
+animated transitions use their existing state classes. Dynamic widths, menu
+coordinates, document-font samples, peer colors and dialog-stack indices remain
+data-driven styles.
+
+The `--motion-*` and `--ease-*` tokens describe control feedback, layout changes,
+surface entry/exit and progress indicators. `IrisMotion.afterMotion()` waits for
+finite animations/transitions on the element and its dialog surface, with a
+timer fallback derived from the CSS token and actual animation timing plus a
+50 ms allowance. It clears that timer on completion and tolerates cancellation.
+Generation guards still prevent an older close from hiding a reopened dialog.
+
+One reduced-motion block suppresses CSS transitions and animations, including
+progress spinners. Dialog/project changes complete immediately in that mode,
+and programmatic preview page navigation uses instant scrolling. Toasts retain
+their reading interval and leave through a CSS state class.
+
+Opacity tokens distinguish disabled controls, busy surfaces, secondary details,
+icons, decorations and persistent actions. Keyframes retain their own entry,
+pulse and endpoint values.
+
+The `--layer-*` tokens name local editor layers and the global surface order:
+workspace overlays, home, administration, login, account menu, dialogs, then
+non-interactive toasts. Dialogs add the current `--iris-dialog-layer` index to
+their base, matching the focus/inert stack. Toasts do not intercept pointer input.
+
+## Responsive map
+
+Viewport rules stay with the component whose available space they describe.
+Equal thresholds in separate component sections are intentional.
+
+| Maximum viewport width | Layout decision |
+| --- | --- |
+| 1180 px | Sidebar drawer; editor/preview split retained |
+| 820 px | Single-pane workspace; admin rows adapt to cards |
+| 760 px | Build history stacks its list and detail |
+| 720 px | File history stacks its list and detail |
+| 700 px | Settings tabs become an accordion |
+| 680 px | Compact toolbar action cluster |
+| 640 px | Project home, admin filters and forms become narrow layouts |
+| 600 px | Bibliography form becomes one column |
+| 520 px | Compact branding and status utilities |
+| 480 px | Build metadata/actions stack |
+| 430 px | Workspace controls use icon-only labels |
+
+Container queries are separate: bibliography uses its own 700 px width; the
+preview toolbar adapts at 660 px and 400 px. Panel percentage/viewport limits
+bound scrolling areas, while multiline descriptions and diagnostics can grow.
+
+## Collapsible preview
+
+In a split workspace, the right-panel toolbar button hides or shows the preview
+and its resizer. The editor takes the freed width. Hiding preserves the output,
+reading position and saved panel width. Starting a compilation or explicitly
+requesting a preview reveals the panel; background build notifications do not.
+Compact layouts use the Editor/Preview navigation instead of a second pane.
+Revealing waits for the grid to settle before refitting and protects the reading
+anchor from provisional scroll clamping. PDF pages/canvases are reused when the
+document, fit width or zoom, and pixel density are unchanged. New dimensions or
+documents still render through the normal generation-checked path.
+
 ## Verification
 
 `test/ui-visibility.browser.test.js` exercises token propagation with non-default

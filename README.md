@@ -341,6 +341,11 @@ This is useful when the deployment controls compiler locations centrally.
 
 ## Working with projects
 
+In the split workspace, use the right-panel button in the main toolbar to hide
+or show the compilation preview. The editor takes the freed space, and reopening
+restores the panel width and reading position. Starting a compilation opens the
+preview automatically. Compact screens use the Editor/Preview selector.
+
 ### Concurrent saves
 
 Projects expose a server-owned integer `revision`, starting at zero.

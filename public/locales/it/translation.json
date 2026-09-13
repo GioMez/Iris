@@ -240,6 +240,8 @@
     "failedWithoutLocation": "Compilazione fallita senza un messaggio diagnostico. Consulta la scheda Log per i dettagli."
   },
   "preview": {
+    "hidePane": "Nascondi pannello anteprima",
+    "showPane": "Mostra pannello anteprima",
     "preview": "Anteprima",
     "log": "Log",
     "previousPage": "Pagina precedente",

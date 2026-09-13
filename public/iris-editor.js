@@ -637,12 +637,12 @@
 
     const ruler = document.createElement("div");
     ruler.className = "cm-iris-ruler";
-    ruler.style.display = "none";
+    ruler.hidden = true;
     host.appendChild(ruler);
     function clearRuler() {
       rulerRanges = [];
       ruler.replaceChildren();
-      ruler.style.display = "none";
+      ruler.hidden = true;
     }
     function scheduleRulerUpdate() {
       view.requestMeasure({
@@ -668,8 +668,8 @@
         },
         write(ticks) {
           ruler.replaceChildren();
-          if (!ticks.length) { ruler.style.display = "none"; return; }
-          ruler.style.display = "";
+          if (!ticks.length) { ruler.hidden = true; return; }
+          ruler.hidden = false;
           ticks.forEach((tick) => {
             const mark = document.createElement("div");
             mark.className = "cm-iris-ruler-mark" + (tick.active ? " cm-iris-ruler-mark-active" : "");

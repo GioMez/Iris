@@ -56,7 +56,8 @@ test.before(async (t) => {
 
 async function pageFor(t, variant, { openProject = true, authenticated = true, projects = [], extraFiles = [], documentSource = source } = {}) {
   const context = await browser.newContext({ viewport: variant.viewport, deviceScaleFactor: variant.scale || 1,
-    hasTouch: !!variant.touch, reducedMotion: "reduce" });
+    hasTouch: !!variant.touch, reducedMotion: variant.motion || "reduce" });
+  if (variant.layout) await context.addInitScript((layout) => localStorage.setItem("iris_layout", JSON.stringify(layout)), variant.layout);
   const sockets = new Set(), gates = new Set(), errors = [];
   let page, closing = false;
   t.after(async () => {
@@ -90,7 +91,13 @@ async function pageFor(t, variant, { openProject = true, authenticated = true, p
     ] }, assets: {}, fonts: [], autoSave: false, autoSaveDelay: 600, engine: "pdflatex",
     lilypondArgs: "", lilypondFormat: "pdf",
     compileProfile: { mode: "quick", steps: [{ tool: "[engine]", args: ["[main]"] }] } };
-  const fixture = { versions: [], socket: null, detail: null,
+  const fixture = { versions: [], socket: null, detail: null, compile: null, compileRequests: [], responses: {},
+    holdCompile() {
+      const gate = deferred();
+      gates.add(gate);
+      this.compile = gate.promise;
+      return gate;
+    },
     holdDetail() {
       const gate = deferred();
       gates.add(gate);
@@ -117,6 +124,17 @@ async function pageFor(t, variant, { openProject = true, authenticated = true, p
         "/api/admin/users": { users: [] },
         "/api/admin/templates": { templates: { latex: [template], lilypond: [] } },
       };
+      if (route.request().method() === "POST" && url.pathname === `/api/projects/${projectId}/compile` && fixture.compile) {
+        const request = JSON.parse(route.request().postData());
+        fixture.compileRequests.push(request);
+        const response = await bounded(() => fixture.compile, "held compilation", 10000);
+        return await json(route, { revision: request.baseRevision + 1, data: request.data, ...response.body }, response.status || 200);
+      }
+      const responseKey = `${route.request().method()} ${url.pathname}`;
+      if (Object.hasOwn(fixture.responses, responseKey)) {
+        const response = fixture.responses[responseKey];
+        return await json(route, response.body, response.status || 200);
+      }
       if (route.request().method() === "GET" && url.pathname === "/api/admin/templates/latex/visibility") {
         const response = fixture.detail ? await bounded(() => fixture.detail, "held template response", 10000)
           : { body: { template } };
@@ -412,6 +430,8 @@ for (const variant of layoutVariants) {
     const { page } = await pageFor(t, variant, { openProject: false, projects });
     await surfaceFits(page, "#pickerScreen .picker-wrap");
     await surfaceFits(page, ".pcard");
+    assert.ok(await page.locator(".pcard-tools").evaluate((node) => Number(getComputedStyle(node).opacity)) >= .5,
+      "card actions remain visible before hover");
     const homeInset = await page.locator("#pickerScreen").evaluate((node) => getComputedStyle(node).padding);
     await page.locator("#pkAdmin").click();
     await surfaceFits(page, "#adminScreen .picker-wrap");
@@ -781,4 +801,227 @@ test("bibliography native-field input aligns with its action", options, async (t
     return [box.top, box.height];
   }));
   assert.deepEqual(pair[0], pair[1]);
+});
+
+for (const variant of [variants[0], { ...variants[1], name: "tablet / IT", viewport: { width: 1024, height: 768 } },
+  { ...variants[0], name: "desktop / normal motion", motion: "no-preference" }]) {
+  test(`preview pane toggles without losing width, output or editor state: ${variant.name}`, options, async (t) => {
+    const { page, fixture } = await pageFor(t, variant);
+    const toggle = page.locator("#btnPreviewPane");
+    assert.equal(await toggle.count(), 1, "the preview control is in the persistent toolbar");
+    await page.locator(".app").evaluate((node) => Promise.allSettled(node.getAnimations().map((animation) => animation.finished)));
+    const text = await page.locator(".cm-content").textContent();
+    const resizer = await page.locator("#rz2").boundingBox();
+    await page.mouse.move(resizer.x + resizer.width / 2, resizer.y + 100);
+    await page.mouse.down();
+    await page.mouse.move(resizer.x + 60, resizer.y + 100);
+    await page.mouse.up();
+    await page.evaluate(async () => {
+      await IrisApp.showBuildOutput({ build: { id: "retained-output", status: "succeeded", format: "svg", mainPath: "main.ly",
+        completedAt: "2026-09-13T10:00:00Z", warnings: [], errors: [] },
+      artifacts: [{ name: "score.svg", mimeType: "image/svg+xml",
+        base64: btoa('<svg xmlns="http://www.w3.org/2000/svg" width="100" height="800"><rect width="100" height="800"/></svg>') }] });
+      window.retainedPreviewImage = document.querySelector(".image-preview img");
+      document.querySelector("#pvStage").scrollTop = 240;
+    });
+    await page.waitForFunction(() => document.querySelector("#pvStage").scrollTop === 240);
+    const width = (await page.locator("#previewPane").boundingBox()).width;
+    const savedWidth = await page.locator(".body").evaluate((node) => node.style.getPropertyValue("--pv-w"));
+    const editorWidth = (await page.locator(".edpane").boundingBox()).width;
+    await toggle.click();
+    await page.locator("#previewPane").waitFor({ state: "hidden" });
+    assert.equal(await toggle.getAttribute("aria-expanded"), "false");
+    assert.equal(await toggle.getAttribute("aria-label"), variant.language === "it" ? "Mostra pannello anteprima" : "Show preview panel");
+    await page.waitForFunction((width) => document.querySelector(".edpane").getBoundingClientRect().width > width + 200, editorWidth);
+    assert.equal(await page.locator("#rz2").isVisible(), false);
+    send(fixture, { t: "build", projectId, buildId: "remote-while-hidden", status: "succeeded", by: "Ada" });
+    await page.waitForFunction(() => !document.querySelector("#pvNewer").hidden);
+    assert.equal(await page.locator("#previewPane").isVisible(), false, "a remote notification does not interrupt source editing");
+    await toggle.focus();
+    await page.keyboard.press("Enter");
+    await page.locator("#previewPane").waitFor({ state: "visible" });
+    await page.waitForFunction((width) => document.querySelector("#previewPane").getBoundingClientRect().width === width, width);
+    assert.equal(await toggle.getAttribute("aria-expanded"), "true");
+    assert.equal((await page.locator("#previewPane").boundingBox()).width, width);
+    assert.equal(await page.locator(".body").evaluate((node) => node.style.getPropertyValue("--pv-w")), savedWidth);
+    assert.equal(await page.locator(".cm-content").textContent(), text);
+    assert.equal(await page.evaluate(() => document.querySelector(".image-preview img") === window.retainedPreviewImage), true);
+    assert.ok(Math.abs(await page.locator("#pvStage").evaluate((node) => node.scrollTop) - 240) <= 1, "reading position survives hide/show");
+    await toggle.click();
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.locator('[data-workspace="preview"]').click();
+    await page.locator("#previewPane").waitFor({ state: "visible" });
+    await page.setViewportSize(variant.viewport);
+    await page.locator("#previewPane").waitFor({ state: "visible" });
+  });
+
+  test(`starting compilation reopens the collapsed preview before the response: ${variant.name}`, options, async (t) => {
+    const { page, fixture } = await pageFor(t, variant);
+    assert.equal(await page.locator("#btnPreviewPane").count(), 1);
+    await page.locator("#btnPreviewPane").click();
+    const gate = fixture.holdCompile();
+    await page.locator("#btnCompile").click();
+    await page.waitForFunction(() => document.querySelector("#btnCompile").disabled);
+    await page.locator("#previewPane").waitFor({ state: "visible" });
+    assert.equal(await page.locator("#btnPreviewPane").getAttribute("aria-expanded"), "true");
+    gate.resolve({ body: { success: false, log: "Controlled compiler failure", errors: ["Controlled compiler failure"], warnings: [], durationMs: 1 } });
+    await page.waitForFunction(() => !document.querySelector("#btnCompile").disabled);
+    assert.equal(fixture.compileRequests.length, 1);
+    assert.equal(await page.locator("#previewPane").isVisible(), true, "failure diagnostics stay available after compilation");
+  });
+}
+
+test("error visibility is independent of the component's display layout", options, async (t) => {
+  const { page, fixture } = await pageFor(t, variants[0], { openProject: false, authenticated: false });
+  await page.addStyleTag({ content: ".login-error{display:flex}" });
+  assert.equal(await page.locator("#loginError").isVisible(), false, "layout rules cannot expose an inactive error");
+  fixture.responses["POST /api/auth/login"] = { status: 401, body: { errorCode: "NOT_AUTHENTICATED" } };
+  await page.locator("#loginUser").fill("fixture-user");
+  await page.locator("#loginPass").fill("fixture-wrong-password");
+  await page.locator("#loginCard").evaluate((node) => node.requestSubmit());
+  await page.locator("#loginError").waitFor({ state: "visible" });
+  await page.locator("#loginUser").fill("another-fixture-user");
+  await page.locator("#loginError").waitFor({ state: "hidden" });
+});
+
+test("dialog closure follows the rendered animation rather than a fixed timer", options, async (t) => {
+  const { page } = await pageFor(t, { ...variants[0], motion: "no-preference" });
+  const completed = await page.evaluate(async () => {
+    const dialog = document.querySelector("#attachModal");
+    dialog.style.animationDuration = "400ms";
+    IrisMotion.openDialog(dialog);
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    const closing = IrisMotion.closeDialog(dialog);
+    const animation = dialog.getAnimations()[0];
+    if (!animation) throw new Error("the fixture must exercise an actual closing animation");
+    let finished = false;
+    animation.finished.then(() => { finished = true; }, () => {});
+    await closing;
+    return finished;
+  });
+  assert.equal(completed, true, "the dialog remains mounted until its actual exit animation completes");
+  await page.locator("#attachModal").waitFor({ state: "hidden" });
+});
+
+test("reduced motion suppresses the active compilation spinner", options, async (t) => {
+  const { page, fixture } = await pageFor(t, variants[0]);
+  await page.evaluate(() => IrisMotion.openProject());
+  assert.equal(await page.locator(".app").evaluate((node) => node.getAnimations().length), 0);
+  const gate = fixture.holdCompile();
+  await page.locator("#btnCompile").click();
+  await page.locator("#compiling").waitFor({ state: "visible" });
+  const animations = await page.locator("#compiling .spinner").evaluate((node) => node.getAnimations().length);
+  gate.resolve({ body: { success: false, log: "Controlled completion", errors: [], warnings: [], durationMs: 1 } });
+  await page.waitForFunction(() => !document.querySelector("#btnCompile").disabled);
+  assert.equal(animations, 0, "a visible progress indication does not require animation when motion is reduced");
+});
+
+test("failed admin loading and a successful empty retry have distinct visible states", options, async (t) => {
+  const { page, fixture } = await pageFor(t, variants[0], { openProject: false });
+  fixture.responses["GET /api/admin/users"] = { status: 503, body: { errorCode: "NOT_FOUND" } };
+  await page.locator("#pkAdmin").click();
+  await page.locator("#adminStatusRetry").waitFor({ state: "visible" });
+  assert.equal(await page.locator("#adminEmpty").isVisible(), false);
+  assert.equal(await page.locator("#adminStatusMsg").getAttribute("role"), "alert");
+  fixture.responses["GET /api/admin/users"] = { body: { users: [] } };
+  await page.locator("#adminStatusRetry").click();
+  await page.locator("#adminEmpty").waitFor({ state: "visible" });
+  assert.equal(await page.locator("#adminStatusRetry").isVisible(), false);
+  assert.equal(await page.locator("#adminStatusMsg").getAttribute("role"), "status");
+});
+
+test("new-project fields return after the rename dialog hides them", options, async (t) => {
+  const { page } = await pageFor(t, variants[0], { openProject: false,
+    projects: [{ id: projectId, name: "Fixture project", role: "owner", projectType: "latex", updatedAt: "2026-09-13T10:00:00Z" }] });
+  await page.locator("#pkNew").click();
+  await page.locator("#projTemplateField").waitFor({ state: "visible" });
+  await page.evaluate(() => IrisMotion.closeDialog("projModal"));
+  await page.locator('.pcard [data-act="rename"]').click();
+  await page.locator("#projModal").waitFor({ state: "visible" });
+  assert.equal(await page.locator("#projTemplateField").isVisible(), false);
+  assert.equal(await page.locator("#projTypeField").isVisible(), false);
+  await page.evaluate(() => IrisMotion.closeDialog("projModal"));
+  await page.locator("#pkNew").click();
+  await page.locator("#projTemplateField").waitFor({ state: "visible" });
+  assert.equal(await page.locator("#projTypeField").isVisible(), true);
+});
+
+for (const savedSidebar of [false, true]) {
+  test(`both collapsed panels retain a usable editor across tablet widths (saved sidebar: ${savedSidebar})`, options, async (t) => {
+    const { page } = await pageFor(t, { ...variants[0], ...(savedSidebar ? { layout: { sideCollapsed: true } } : {}) });
+    if (!savedSidebar) await page.locator("#btnSidebar").click();
+    await page.locator("#btnPreviewPane").click();
+    const widths = [];
+    for (const width of [1181, 1180, 1024, 821]) {
+      await page.setViewportSize({ width, height: 900 });
+      widths.push({ viewport: width, editor: (await page.locator(".edpane").boundingBox()).width });
+    }
+    assert.ok(widths.every((item) => item.editor > 300), JSON.stringify(widths));
+  });
+}
+
+test("pane disclosures announce their actual initial state after project entry", options, async (t) => {
+  const { page } = await pageFor(t, variants[0]);
+  assert.equal(await page.locator("#previewPane").isVisible(), true);
+  assert.equal(await page.locator("#btnPreviewPane").getAttribute("aria-expanded"), "true");
+  assert.equal(await page.locator("#btnSidebar").getAttribute("aria-expanded"), "true");
+});
+
+test("preview toggle hands focus to compact navigation when it disappears", options, async (t) => {
+  const { page } = await pageFor(t, { ...variants[0], viewport: { width: 821, height: 900 } });
+  await page.locator("#btnPreviewPane").focus();
+  await page.setViewportSize({ width: 820, height: 900 });
+  await page.locator("#btnPreviewPane").waitFor({ state: "hidden" });
+  assert.equal(await page.evaluate(() => document.activeElement === document.querySelector('#workspaceSwitch [aria-selected="true"]')), true);
+});
+
+async function showTallOutput(page, format) {
+  await page.evaluate(async (format) => {
+    let bytes;
+    if (format === "pdf") {
+      const stream = "0 0 100 100 re 0.5 g f\n";
+      const objects = ["<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [3 0 R 4 0 R 5 0 R] /Count 3 >>",
+        ...Array(3).fill("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 1800] /Resources << >> /Contents 6 0 R >>"),
+        `<< /Length ${stream.length} >>\nstream\n${stream}endstream`];
+      let pdf = "%PDF-1.4\n";
+      const offsets = [0];
+      objects.forEach((object, index) => { offsets.push(pdf.length); pdf += `${index + 1} 0 obj\n${object}\nendobj\n`; });
+      const xref = pdf.length;
+      pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+      offsets.slice(1).forEach((offset) => { pdf += `${String(offset).padStart(10, "0")} 00000 n \n`; });
+      bytes = `${pdf}trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`;
+    } else bytes = '<svg xmlns="http://www.w3.org/2000/svg" width="600" height="1800"><rect width="600" height="1800"/></svg>';
+    await IrisApp.showBuildOutput({ build: { id: "tall-output", status: "succeeded", format, mainPath: "main.tex", warnings: [], errors: [] },
+      artifacts: [{ name: `tall.${format}`, mimeType: format === "pdf" ? "application/pdf" : "image/svg+xml", base64: btoa(bytes) }] });
+  }, format);
+}
+
+for (const format of ["svg", "pdf"]) {
+  test(`normal-motion ${format} reopening after a hidden resize preserves the reading anchor`, options, async (t) => {
+    const { page } = await pageFor(t, { ...variants[0], motion: "no-preference" });
+    await page.locator(".app").evaluate((node) => Promise.allSettled(node.getAnimations().map((animation) => animation.finished)));
+    await showTallOutput(page, format);
+    await page.locator("#pvStage").evaluate((node) => { node.scrollTop = 500; });
+    const anchor = () => page.evaluate(() => {
+      const stage = document.querySelector("#pvStage"), first = document.querySelector("#pvPages>div");
+      return (stage.scrollTop + parseFloat(getComputedStyle(stage).paddingTop) - first.offsetTop) / first.offsetHeight;
+    });
+    const before = await anchor();
+    await page.locator("#btnPreviewPane").click();
+    await page.setViewportSize({ width: 1024, height: 900 });
+    await page.locator("#btnPreviewPane").click();
+    await page.locator(".body").evaluate((node) => Promise.allSettled(node.getAnimations().map((animation) => animation.finished)));
+    assert.ok(Math.abs(await anchor() - before) < .005, "refitting must not adopt an intermediate clamped scroll position");
+  });
+}
+
+test("same-width PDF reveal retains its pages and canvases", options, async (t) => {
+  const { page } = await pageFor(t, variants[0]);
+  await showTallOutput(page, "pdf");
+  await page.evaluate(() => { window.savedPdfPage = document.querySelector(".pdf-page"); window.savedPdfCanvas = window.savedPdfPage.querySelector("canvas"); });
+  await page.locator("#btnPreviewPane").click();
+  await page.locator("#btnPreviewPane").click();
+  await page.locator("#previewPane").waitFor({ state: "visible" });
+  assert.equal(await page.evaluate(() => document.querySelector(".pdf-page") === window.savedPdfPage
+    && document.querySelector(".pdf-page canvas") === window.savedPdfCanvas), true);
 });
