@@ -54,8 +54,9 @@ test.before(async (t) => {
   t.diagnostic(`Browser: ${browser.version()}; isolated fixture: ${base.origin}`);
 }, { timeout: 30000 });
 
-async function pageFor(t, variant, { openProject = true, authenticated = true, projects = [] } = {}) {
-  const context = await browser.newContext({ viewport: variant.viewport, deviceScaleFactor: variant.scale || 1, reducedMotion: "reduce" });
+async function pageFor(t, variant, { openProject = true, authenticated = true, projects = [], extraFiles = [], documentSource = source } = {}) {
+  const context = await browser.newContext({ viewport: variant.viewport, deviceScaleFactor: variant.scale || 1,
+    hasTouch: !!variant.touch, reducedMotion: "reduce" });
   const sockets = new Set(), gates = new Set(), errors = [];
   let page, closing = false;
   t.after(async () => {
@@ -81,10 +82,11 @@ async function pageFor(t, variant, { openProject = true, authenticated = true, p
     if (message.type() === "error" && !message.text().startsWith("Failed to load resource:")) errors.push(message.text());
   });
   const data = { id: projectId, role: "owner", revision: 1, projectType: "latex", language: variant.language,
-    activeId: fileId, openTabs: [fileId, "draft"],
+    activeId: fileId, openTabs: [fileId, "draft", ...extraFiles.map((file) => file.id)],
     project: { name: "Visibility test", nodes: [
-      { id: fileId, type: "file", name: "main.tex", path: "main.tex", kind: "tex", content: source },
+      { id: fileId, type: "file", name: "main.tex", path: "main.tex", kind: "tex", content: documentSource },
       { id: "draft", type: "file", name: "draft.txt", path: "draft.txt", kind: "tex", content: "Local draft\n" },
+      ...extraFiles,
     ] }, assets: {}, fonts: [], autoSave: false, autoSaveDelay: 600, engine: "pdflatex",
     lilypondArgs: "", lilypondFormat: "pdf",
     compileProfile: { mode: "quick", steps: [{ tool: "[engine]", args: ["[main]"] }] } };
@@ -139,7 +141,7 @@ async function pageFor(t, variant, { openProject = true, authenticated = true, p
       try {
         const message = JSON.parse(raw);
         if (message.t === "open") socket.send(JSON.stringify({ t: "opened", fileId: message.fileId,
-          role: "owner", version: 0, doc: source }));
+          role: "owner", version: 0, doc: documentSource }));
         else if (!["project", "close", "presence"].includes(message.t)) errors.push(`Unexpected WS frame: ${message.t}`);
       } catch (error) { if (!closing) errors.push(error.message); }
     });
@@ -580,3 +582,203 @@ for (const format of ["png", "svg"]) {
     assert.deepEqual(await size(), { natural: [100, 200], rendered: [110, 220], label: "110%" });
   });
 }
+
+for (const variant of variants) {
+  test(`form controls share a row size and text role: ${variant.name}`, options, async (t) => {
+    const { page } = await pageFor(t, variant);
+    await page.evaluate(() => IrisMotion.openDialog("adminProjectModal"));
+    const actual = await page.evaluate(() => {
+      const fields = ["adminProjectAddIdentifier", "adminProjectAddRole", "adminProjectAddBtn"].map((id) => {
+        const node = document.getElementById(id), style = getComputedStyle(node);
+        return { height: node.getBoundingClientRect().height, font: style.fontFamily, size: style.fontSize };
+      });
+      return { heights: fields.map((field) => field.height), sameFont: fields.every((field) => field.font === fields[0].font),
+        sameSize: fields.every((field) => field.size === fields[0].size) };
+    });
+    assert.equal(new Set(actual.heights).size, 1, `fields and action align: ${JSON.stringify(actual)}`);
+    assert.equal(actual.sameFont, true, "a username field and a role select use the same interface font");
+    assert.equal(actual.sameSize, true);
+    await page.evaluate(() => IrisMotion.closeDialog("adminProjectModal"));
+    await openSettings(page);
+    await page.locator(variant.viewport.width <= 700 ? '.set-accordion-trigger[data-set="editor"]' : "#settingsTabEditor").click();
+    assert.equal(await page.locator("#completionTex").evaluate((node) => getComputedStyle(node).fontFamily.includes("IBM Plex Mono")), true,
+      "source-code fields retain their code font");
+  });
+
+  test(`card and modal contents align with their actions: ${variant.name}`, options, async (t) => {
+    const { page } = await pageFor(t, variant, { openProject: false,
+      projects: [{ id: projectId, name: "Aligned project", role: "owner", projectType: "latex", updatedAt: "2026-09-13T10:00:00Z" }] });
+    const card = await page.evaluate(() => [".pcard-open", ".pcard-tools"].map((selector) => {
+      const style = getComputedStyle(document.querySelector(selector));
+      return [style.paddingLeft, style.paddingRight];
+    }));
+    assert.deepEqual(card[0], card[1], "source summary and card actions use the same horizontal inset");
+    await page.evaluate((id) => IrisProjects.openProject(id), projectId);
+    await openSettings(page);
+    const modal = await page.evaluate(() => [".settings-modal .m-head", "#settingsPanelFonts", ".settings-modal .m-foot"].map((selector) => {
+      const style = getComputedStyle(document.querySelector(selector));
+      return [style.paddingLeft, style.paddingRight];
+    }));
+    assert.deepEqual(modal[0], modal[1]);
+    assert.deepEqual(modal[1], modal[2]);
+  });
+
+  test(`admin focus remains distinct from validation errors: ${variant.name}`, options, async (t) => {
+    const { page } = await pageFor(t, variant, { openProject: false });
+    await page.locator("#pkAdmin").click();
+    await page.waitForFunction(() => document.activeElement.id === "adminUsersTitle");
+    await page.keyboard.press("Tab");
+    for (const selector of ["#adminSearch", ".admin-filters select"]) {
+      const control = page.locator(selector).first();
+      await control.focus();
+      await control.evaluate(async (node) => {
+        getComputedStyle(node).outlineWidth;
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+        await Promise.all(node.getAnimations().map((animation) => animation.finished));
+      });
+      const normal = await control.evaluate((node) => {
+        const style = getComputedStyle(node);
+        return { visible: node.matches(":focus-visible"), width: parseFloat(style.outlineWidth), color: style.outlineColor };
+      });
+      assert.equal(normal.visible, true);
+      assert.ok(normal.width >= 2, `${selector} has a visible keyboard outline: ${JSON.stringify(normal)}`);
+      const invalid = await control.evaluate((node) => {
+        node.setAttribute("aria-invalid", "true");
+        const style = getComputedStyle(node);
+        return { outline: style.outlineColor, border: style.borderTopColor, width: parseFloat(style.outlineWidth) };
+      });
+      assert.equal(invalid.outline, normal.color);
+      assert.ok(invalid.width >= 2);
+      assert.notEqual(invalid.outline, invalid.border, "focus and validation remain separate indicators");
+    }
+  });
+
+  test(`status and retry occupy an ordinary flow row: ${variant.name}`, options, async (t) => {
+    const { page } = await pageFor(t, variant, { openProject: false });
+    await page.locator("#pkAdmin").click();
+    const result = await page.evaluate(() => {
+      const status = document.querySelector("#adminStatusMsg"), retry = document.querySelector("#adminStatusRetry");
+      status.textContent = "A long recoverable error message that needs to wrap without overlapping its retry control.";
+      retry.hidden = false;
+      const a = status.getBoundingClientRect(), b = retry.getBoundingClientRect();
+      return { margins: [getComputedStyle(status).marginTop, getComputedStyle(retry).marginTop],
+        separate: a.right <= b.left + 1 || a.bottom <= b.top + 1 };
+    });
+    assert.ok(result.margins.every((value) => parseFloat(value) >= 0), JSON.stringify(result));
+    assert.equal(result.separate, true);
+    await surfaceFits(page, "#adminScreen .picker-wrap");
+  });
+}
+
+for (const language of ["en", "it"]) {
+  test(`touch workspace controls have reachable 44px targets: ${language}`, options, async (t) => {
+    const { page } = await pageFor(t, { viewport: { width: 375, height: 844 }, language, touch: true });
+    assert.equal(await page.evaluate(() => matchMedia("(any-pointer:coarse)").matches), true);
+    const failures = [];
+    const measure = async (selector) => failures.push(...await page.locator(selector).evaluateAll((nodes) => nodes.flatMap((node) => {
+      const box = node.getBoundingClientRect();
+      if (!box.width || !box.height || node.closest("[hidden]")) return [];
+      return box.width < 44 || box.height < 44 ? [{ id: node.id || node.className, width: box.width, height: box.height }] : [];
+    })));
+    await measure(".topbar button,.statusbar button,#ftabs [role=tab],#ftabs button");
+    await page.locator("#btnCompile").scrollIntoViewIfNeeded();
+    for (const selector of ["#userChip", "#btnShareProject"]) {
+      const box = await page.locator(selector).boundingBox();
+      assert.ok(box.x >= 0 && box.x + box.width <= 375, `${selector} stays pinned and visible`);
+    }
+    await page.locator("#btnSidebar").click();
+    await measure(".side-tab,.side .iconbtn,#tree .node,#tree .node-act");
+    await page.locator("#btnSidebar").click();
+    await page.locator("#btnFind").click();
+    await measure("#findBar button,#findBar input");
+    await surfaceFits(page, "#findBar");
+    await page.locator("#findClose").click();
+    await page.locator('[data-workspace="preview"]').click();
+    await measure(".pvbar button");
+    assert.deepEqual(failures, [], "touch controls use at least 44px in both dimensions");
+  });
+}
+
+const referenceFile = { id: "references", type: "file", name: "references.bib", path: "references.bib",
+  kind: "bib", content: "@article{known, title={A known reference}}\n" };
+
+for (const language of ["en", "it"]) {
+  test(`touch close buttons remain hittable with six open files: ${language}`, options, async (t) => {
+    const extraFiles = Array.from({ length: 4 }, (_, index) => ({ id: `chapter-${index}`, type: "file",
+      name: `chapter-${index}.tex`, path: `chapter-${index}.tex`, kind: "tex", content: "Chapter\n" }));
+    const { page } = await pageFor(t, { viewport: { width: 375, height: 844 }, language, touch: true }, { extraFiles });
+    const closeButtons = page.locator("#ftabs .ftab .x");
+    assert.equal(await closeButtons.count(), 6);
+    const failures = [];
+    for (let index = 0; index < 6; index++) {
+      const button = closeButtons.nth(index);
+      await button.scrollIntoViewIfNeeded();
+      const result = await button.evaluate((node) => {
+        const box = node.getBoundingClientRect(), parent = node.closest(".ftab").getBoundingClientRect();
+        const hits = [box.left + 2, box.left + box.width / 2, box.right - 2].every((x) => {
+          const target = document.elementFromPoint(x, box.top + box.height / 2);
+          return target === node || node.contains(target);
+        });
+        return { hits, contained: box.left >= parent.left && box.right <= parent.right, width: box.width, height: box.height };
+      });
+      if (!result.hits || !result.contained || result.width < 44 || result.height < 44) failures.push({ index, ...result });
+    }
+    assert.deepEqual(failures, [], "each close target belongs to its own tab, including its edges");
+  });
+
+  test(`touch outline, notices, menus and bibliography navigation use full targets: ${language}`, options, async (t) => {
+    const { page, fixture } = await pageFor(t, { viewport: { width: 375, height: 844 }, language, touch: true },
+      { extraFiles: [referenceFile], documentSource: "\\documentclass{article}\n\\begin{document}\n\\section{Intro}\nText\n\\end{document}" });
+    const sizes = [];
+    const measure = async (selector) => sizes.push(...await page.locator(selector).evaluateAll((nodes) => nodes.map((node) => {
+      const box = node.getBoundingClientRect();
+      return { name: node.id || node.className || node.tagName, width: box.width, height: box.height };
+    })));
+    await page.locator("#btnSidebar").click();
+    await page.locator("#sideTabOutline").click();
+    await page.locator("#outline .ol-item").first().waitFor({ state: "visible" });
+    await measure("#outline .ol-item");
+    await page.locator("#btnSidebar").click();
+    await page.locator('[data-workspace="preview"]').click();
+    send(fixture, { t: "build", projectId, buildId: "newer-build", status: "succeeded", by: "Ada" });
+    await page.locator("#pvNewer").waitFor({ state: "visible" });
+    await measure("#pvNewerDismiss");
+    await page.locator("#pvNewerDismiss").click();
+    await page.locator("#userChip").click();
+    await page.locator("#userMenu").waitFor({ state: "visible" });
+    await measure("#userMenu .mi:not([hidden])");
+    await page.locator("#userChip").click();
+    await page.locator('[data-workspace="editor"]').click();
+    await page.getByRole("tab", { name: "references.bib", exact: true }).click();
+    await page.locator("#bibliographyPanel").waitFor({ state: "visible" });
+    await measure("#bibliographyTabs button,#bibliographyFilters>summary");
+    assert.deepEqual(sizes.filter((item) => item.width < 44 || item.height < 44), [], "navigation and disclosures are touch controls too");
+  });
+
+  test(`status action focus is inside the touch scroller: ${language}`, options, async (t) => {
+    const { page } = await pageFor(t, { viewport: { width: 375, height: 844 }, language, touch: true });
+    await page.keyboard.press("Tab");
+    await page.locator("#btnSettings").focus();
+    await page.locator("#btnSettings").scrollIntoViewIfNeeded();
+    const visible = await page.locator("#btnSettings").evaluate((node) => {
+      const box = node.getBoundingClientRect(), clip = node.closest(".sb-actions").getBoundingClientRect();
+      const style = getComputedStyle(node), extent = parseFloat(style.outlineWidth) + parseFloat(style.outlineOffset);
+      return node.matches(":focus-visible") && box.top - extent >= clip.top && box.bottom + extent <= clip.bottom
+        && box.left - extent >= clip.left && box.right + extent <= clip.right;
+    });
+    assert.equal(visible, true, "all four outline strokes remain inside the scroll clip");
+  });
+}
+
+test("bibliography native-field input aligns with its action", options, async (t) => {
+  const { page } = await pageFor(t, variants[0], { extraFiles: [referenceFile] });
+  await page.getByRole("tab", { name: "references.bib", exact: true }).click();
+  await page.waitForFunction(() => !document.querySelector("#bibliographyAdd").disabled);
+  await page.locator("#bibliographyAdd").click();
+  await page.locator("#bibliographyFormMore>summary").click();
+  const pair = await page.evaluate(() => ["bibliographyFormNativeName", "bibliographyFormAddField"].map((id) => {
+    const box = document.getElementById(id).getBoundingClientRect();
+    return [box.top, box.height];
+  }));
+  assert.deepEqual(pair[0], pair[1]);
+});

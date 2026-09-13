@@ -573,6 +573,6 @@ test("interface semantics, syntax colors and font roles are independent", () => 
   assert.match(css, /--font-ui:/);
   assert.match(css, /--font-code:/);
   assert.match(css, /--font-document:/);
-  assert.match(css, /\.node-act\{width:30px;height:30px/);
-  assert.match(css, /\.m-x\{[^}]*width:36px;height:36px/);
+  // Control sizes and code/interface font roles are exercised in the browser,
+  // including touch targets; fixed pixel literals are not their contract.
 });

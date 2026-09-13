@@ -56,6 +56,39 @@ cards and panels, and `--radius-dialog` (16 px) for dialogs.
 Keep these roles distinct. Joined controls can use the appropriate token on
 their outside corners and zero on their shared edge.
 
+## Controls and input methods
+
+Use `--control-sm` (32 px) for compact actions, `--control-md` (36 px) for
+ordinary actions and `--control-form` (40 px) for form fields. An action beside
+a form field uses the same form height. Multiline buttons use a minimum height
+and grow with their text. The segmented preview and admin controls retain their
+inner-box geometry.
+
+Ordinary text fields use `--font-ui`. Add `code` to an `input` with class `input`
+for a filename, command, path or native bibliography identifier. Source editors
+and completion-command textareas retain `--font-code`.
+
+Action icons use `--icon-md` (16 px), dense utilities use `--icon-sm` (14 px),
+and section navigation uses `--icon-lg` (18 px). Font specimens and decorative
+marks have separate dimensions.
+
+Keyboard outlines use `--focus-width`, `--focus-color` and `--focus-offset`.
+Validation changes the border without removing the focus outline. Scrollers
+draw focus inside their clipping boundary; a grouped number field draws it on
+the outer group.
+
+With a coarse pointer, the three control-height tokens resolve to
+`--control-touch` (44 px). Workspace actions scroll when space is limited,
+sharing/account controls remain pinned, and an active tree row places its
+actions below the filename. Preview controls and file-tab close buttons also
+provide 44 px targets. The file-tab strip scrolls instead of shrinking tabs until
+their close buttons overlap. Outline rows, notices, menus and bibliography
+navigation/disclosures use the same minimum target. Touch checks use browser
+emulation and include hit-testing, not just rectangle sizes.
+
+Card content and actions share horizontal insets. Status/retry rows reserve
+ordinary layout space and wrap text, without negative-margin compensation.
+
 ## Geometry exceptions
 
 - CodeMirror has its own `--editor-font-size`, `--editor-line-height`, editor
@@ -68,8 +101,8 @@ their outside corners and zero on their shared edge.
   and gaps within their explicit width/height budgets.
 - `--field-icon-inset` (34 px) and `--field-password-inset` (52 px) reserve room
   for an overlaid search/select icon or password visibility button.
-- Negative margins center a fixed-size spinner, overlap presence dots, or pair
-  the project import status with its retry action. Adjust those as a layout unit.
+- Negative margins center a fixed-size spinner or overlap presence dots.
+  Adjust those as a layout unit.
 - Document-font specimens, initials inside 18 px presence dots and a decorative
   SVG fallback keep their own font sizes. Inline code can scale relative to its
   surrounding paragraph.

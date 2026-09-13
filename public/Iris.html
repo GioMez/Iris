@@ -307,7 +307,7 @@
       </div>
       <div class="field">
         <label class="label" for="attachRename" data-i18n="attach.fileName">File name</label>
-        <input class="input" id="attachRename" placeholder="file-name.png" data-i18n-placeholder="attach.fileNamePlaceholder">
+        <input class="input code" id="attachRename" placeholder="file-name.png" data-i18n-placeholder="attach.fileNamePlaceholder">
       </div>
     </div>
     <div class="m-foot">
@@ -406,12 +406,12 @@
         </div>
         <div class="field">
           <label class="label" id="compilerPathLabel" for="texPath" data-i18n="settings.latexBinaryPath">LaTeX binaries path</label>
-          <input class="input" id="texPath" placeholder="optional, e.g. /opt/homebrew/bin" data-i18n-placeholder="common.optionalExample" spellcheck="false" autocomplete="off">
+          <input class="input code" id="texPath" placeholder="optional, e.g. /opt/homebrew/bin" data-i18n-placeholder="common.optionalExample" spellcheck="false" autocomplete="off">
           <div class="hint" id="texPathHint"><span data-icon="info-circle"></span><span>When empty, the backend PATH is used.</span></div>
         </div>
         <div class="field" id="lilypondArgsField" style="display:none">
           <label class="label" for="lilypondArgs" data-i18n="settings.lilypondArgs">LilyPond arguments</label>
-          <input class="input" id="lilypondArgs" placeholder='e.g. --loglevel=WARNING -I "music includes"' data-i18n-placeholder="settings.lilypondArgsPlaceholder" spellcheck="false" autocomplete="off" maxlength="2000">
+          <input class="input code" id="lilypondArgs" placeholder='e.g. --loglevel=WARNING -I "music includes"' data-i18n-placeholder="settings.lilypondArgsPlaceholder" spellcheck="false" autocomplete="off" maxlength="2000">
           <div class="hint"><span data-icon="info-circle"></span><span data-i18n="settings.lilypondArgsHint">Inserted between lilypond and the .ly file; quoted values are supported. Iris still manages the destination.</span></div>
         </div>
         <div class="field" id="lilypondFormatField" style="display:none">
@@ -516,7 +516,7 @@
       </div>
       <div class="field">
         <label class="label" id="newItemLabel" for="newItemInput" data-i18n="tree.fileName">File name</label>
-        <input class="input" id="newItemInput" spellcheck="false" autocomplete="off" maxlength="120">
+        <input class="input code" id="newItemInput" spellcheck="false" autocomplete="off" maxlength="120">
         <div class="hint" id="newItemHint" data-i18n="tree.destinationHint">Choose the destination folder.</div>
       </div>
     </div>
@@ -536,7 +536,7 @@
     <div class="m-body">
       <div class="field">
         <label class="label" id="treeRenameLabel" for="treeRenameInput" data-i18n="tree.fileName">File name</label>
-        <input class="input" id="treeRenameInput" spellcheck="false" autocomplete="off" maxlength="120">
+        <input class="input code" id="treeRenameInput" spellcheck="false" autocomplete="off" maxlength="120">
         <div class="hint" id="treeRenameHint" data-i18n="tree.nameHint">Use a name without folder separators.</div>
       </div>
     </div>
@@ -716,7 +716,7 @@
           </div>
           <div class="field" id="bibliographyFormKeyRow">
             <label class="label" for="bibliographyFormKey" data-i18n="bibliography.fields.key">Citation key</label>
-            <input class="input" id="bibliographyFormKey" type="text" autocomplete="off" spellcheck="false" aria-describedby="bibliographyFormWarning bibliographyFormError">
+            <input class="input code" id="bibliographyFormKey" type="text" autocomplete="off" spellcheck="false" aria-describedby="bibliographyFormWarning bibliographyFormError">
           </div>
         </div>
         <div class="bibliography-form-grid" id="bibliographyFormFields"></div>
@@ -727,7 +727,7 @@
         <div class="bibliography-field-add">
           <div class="field">
             <label class="label" for="bibliographyFormNativeName" data-i18n="bibliography.form.nativeName">Native field name</label>
-            <input class="input" id="bibliographyFormNativeName" type="text" list="bibliographyFormNames" autocomplete="off" spellcheck="false">
+            <input class="input code" id="bibliographyFormNativeName" type="text" list="bibliographyFormNames" autocomplete="off" spellcheck="false">
             <datalist id="bibliographyFormNames"></datalist>
           </div>
           <button class="btn sm" id="bibliographyFormAddField" type="button" data-i18n="bibliography.form.addField">Add field</button>
@@ -1250,6 +1250,7 @@
     <div class="m-body">
       <div class="adminproj-orphan" id="adminProjectOrphan" style="display:none"><span data-icon="alert-triangle"></span><span data-i18n="adminProjects.orphanWarning">This project has no owner. Assign one to restore normal access.</span></div>
       <div class="login-error inline" id="adminProjectError" role="alert" style="display:none"></div>
+      <div class="adminproj-modal-status" id="adminProjectModalStatus" role="status" aria-live="polite"></div>
       <h4 class="set-title" data-i18n="adminProjects.members">Members</h4>
       <p class="hint adminproj-owner-hint" id="adminProjectOwnerHint" data-i18n="adminProjects.ownerHint">Every project must keep at least one owner.</p>
       <div class="adminproj-members" id="adminProjectMembers"></div>
@@ -1263,7 +1264,6 @@
         </select>
         <button class="btn" type="submit" id="adminProjectAddBtn" data-i18n="adminProjects.addButton">Add</button>
       </form>
-      <div class="adminproj-modal-status" id="adminProjectModalStatus" role="status" aria-live="polite"></div>
       <div class="adminproj-danger">
         <div>
           <button class="btn danger" type="button" id="adminProjectDeleteBtn"><span class="ic" data-icon="trash"></span><span data-i18n="adminProjects.deleteProject">Delete project</span></button>
@@ -1318,7 +1318,7 @@
         <div class="field">
           <label class="label" for="adminTemplateId" data-i18n="adminTemplates.internalId">Internal ID</label>
           <div class="admin-template-id-control">
-            <input class="input" id="adminTemplateId" required spellcheck="false" autocomplete="off" maxlength="80" aria-describedby="adminTemplateIdHint adminTemplateError">
+            <input class="input code" id="adminTemplateId" required spellcheck="false" autocomplete="off" maxlength="80" aria-describedby="adminTemplateIdHint adminTemplateError">
             <code id="adminTemplateExtension">.tex</code>
           </div>
           <span class="hint" id="adminTemplateIdHint" data-i18n="adminTemplates.idHint">Use a file-safe name without the extension.</span>
