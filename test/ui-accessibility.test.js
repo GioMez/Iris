@@ -19,9 +19,14 @@ const en = fs.readFileSync(path.join(root, "public/locales/en/translation.json")
 const it = fs.readFileSync(path.join(root, "public/locales/it/translation.json"), "utf8");
 const server = fs.readFileSync(path.join(root, "src/server.js"), "utf8");
 
-function token(name) {
-  const match = css.match(new RegExp(`--${name}:\\s*(#[0-9a-f]{6})`, "i"));
+function token(name, seen = new Set()) {
+  assert.ok(!seen.has(name), `Cyclic color token --${name}`);
+  seen.add(name);
+  const match = css.match(new RegExp(`--${name}:\\s*([^;]+);`, "i"));
   assert.ok(match, `Missing color token --${name}`);
+  const alias = match[1].match(/^var\(--([\w-]+)\)$/);
+  if (alias) return token(alias[1], seen);
+  assert.match(match[1], /^#[0-9a-f]{6}$/i, `Expected opaque color for contrast: --${name}`);
   return match[1];
 }
 
@@ -44,6 +49,24 @@ test("muted interface and syntax text keep at least 4.5:1 contrast", () => {
   });
   assert.ok(contrast(token("syntax-comment"), token("editor-bg")) >= 4.5);
   assert.ok(contrast(token("syntax-bracket"), token("editor-bg")) >= 4.5);
+});
+
+test("syntax remains readable inside active and inactive editor selections", () => {
+  const failures = [];
+  for (const role of ["command", "environment", "bracket", "argument", "math", "comment", "text", "special", "number"]) {
+    for (const background of ["editor-bg", "editor-selection", "editor-selection-idle"]) {
+      const ratio = contrast(token(`syntax-${role}`), token(background));
+      if (ratio < 4.5) failures.push(`${role} on ${background}: ${ratio.toFixed(3)}:1`);
+    }
+  }
+  assert.deepEqual(failures, [], "selection bands must not wash out syntax");
+});
+
+test("filled action labels and switch thumbs keep their contrast", () => {
+  for (const [foreground, background, minimum] of [["on-accent", "accent", 4.5], ["on-accent", "accent-press", 4.5],
+    ["on-danger", "semantic-danger", 4.5], ["switch-thumb", "switch-track", 3], ["switch-compact-thumb", "switch-compact-track", 3]]) {
+    assert.ok(contrast(token(foreground), token(background)) >= minimum, `${foreground} on ${background}`);
+  }
 });
 
 test("keyboard focus and persistent contextual actions are styled", () => {
@@ -568,7 +591,7 @@ test("interface semantics, syntax colors and font roles are independent", () => 
   ["semantic-success", "semantic-danger", "semantic-warning", "semantic-info"].forEach((name) => token(name));
   ["syntax-command", "syntax-environment", "syntax-comment", "syntax-text"].forEach((name) => token(name));
   assert.doesNotMatch(html + app, /var\(--syntax-/);
-  assert.doesNotMatch(css + html + app, /var\(--(?:green|danger|warn|purple|s-[a-z]+)/);
+  assert.doesNotMatch(css + html + app, /var\(--(?:green|danger|warn|purple|s-[a-z]+)\)/);
   assert.match(css, /--font-ui:/);
   assert.match(css, /--font-code:/);
   assert.match(css, /--font-document:/);

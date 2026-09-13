@@ -442,7 +442,7 @@
           class: "cm-iris-peer-region",
           // Its own property: this decoration can land on the same line as the
           // caret tint, and the two must not overwrite each other's colour.
-          attributes: { style: `--region-color:${region.color || "#e0af68"}` },
+          attributes: { style: `--region-color:${region.color || "var(--region-fallback)"}` },
         }).range(state.doc.line(number).from));
       }
       return V.Decoration.set(marks, true);
@@ -809,7 +809,7 @@
             userId: String(peer.userId || ""),
             name: peer.name || peer.username || "",
             username: peer.username || "",
-            color: peer.color || "#7aa2f7",
+            color: peer.color || "var(--peer-fallback)",
             role: peer.role || "viewer",
             anchor: place(peer.anchor, version),
             head: place(peer.head, version),

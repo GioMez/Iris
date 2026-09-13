@@ -705,7 +705,7 @@
     slot.setAttribute("aria-label", title);
     const extra = peers.length - PEER_PINS;
     slot.innerHTML = peers.slice(0, PEER_PINS).map((peer) =>
-      `<span class="node-peer-dot" style="--peer-color:${esc(peer.color || "#7aa2f7")}"></span>`).join("")
+      `<span class="node-peer-dot" style="--peer-color:${esc(peer.color || "var(--peer-fallback)")}"></span>`).join("")
       + (extra > 0 ? `<span class="node-peer-more">+${extra}</span>` : "");
   }
 

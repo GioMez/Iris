@@ -1,5 +1,9 @@
 # Interface measurement tokens
 
+Color primitives, semantic roles, transparency strengths and document/brand
+exceptions are documented in [Interface color contract](ui-colors.md). Keep
+color changes in that two-level system when adjusting the geometry below.
+
 Iris defines its interface scales in `public/iris.css`, under `:root`. Use these
 tokens for spacing, text and corners when editing a component. Choose by role:
 an inset around a panel and clearance for an icon inside a field serve different
