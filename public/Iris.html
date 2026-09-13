@@ -9,6 +9,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <link href="https://fonts.cdnfonts.com/css/cmu-serif" rel="stylesheet">
+<script src="iris-theme.js"></script>
 <link rel="stylesheet" href="iris.css">
 <script type="importmap">
 {
@@ -353,6 +354,14 @@
       <section class="set-pane" id="settingsPanelEditor" role="tabpanel" aria-labelledby="settingsTabEditor" tabindex="0" data-setpane="editor" hidden>
         <h4 class="set-title"><span data-icon="code"></span><span data-i18n="settings.editor">Editor</span></h4>
         <p class="desc" data-i18n="settings.editorDescription">LaTeX source editing and formatting preferences.</p>
+        <div class="field">
+          <label class="label" for="settingsTheme" data-i18n="settings.theme">Theme</label>
+          <select class="input" id="settingsTheme">
+            <option value="system" data-i18n="settings.themeSystem">System</option>
+            <option value="light" data-i18n="settings.themeLight">Light</option>
+            <option value="dark" data-i18n="settings.themeDark">Dark</option>
+          </select>
+        </div>
         <div class="set-row">
           <div class="set-row-txt">
             <div class="set-row-title" data-i18n="settings.autoIndent">Auto-indent</div>

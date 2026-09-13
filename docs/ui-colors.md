@@ -1,12 +1,13 @@
-# Interface color contract (R8)
+# Interface color contract (R8/R10)
 
 Iris `1.0.0-beta2` defines interface colors in `public/iris.css`. Choose a token
 by its purpose. Components consume role tokens; role definitions consume named
 `--palette-*` primitives. Keep syntax, status, category and action-label roles
 separate even when they share a primitive.
 
-R8 supplies the dark palette and the abstraction for R10. A future theme can
-override primitives and derived roles without copying component rules.
+R8 supplies the dark palette and role contract. R10 defines the light palette
+under `:root[data-theme="light"]`, overriding primitives and derived roles
+without copying component rules.
 
 ## Inventory
 
@@ -15,7 +16,8 @@ runtime CSS, JavaScript, HTML and SVG under `public/` and `src/`, including inli
 encoded SVG colors and collaboration fallbacks. Exclude `public/vendor/` and
 the prototype `public/Iris Wireframes.html`.
 
-Counts represent occurrences, not distinct RGB values. The baseline CSS had
+The table records the R8 audit; the R10 additions appear below. Counts represent
+occurrences, not distinct RGB values. The baseline CSS had
 252 plain hex/functional literals and two encoded SVG literals, for 254 total.
 Its initial color-token block contained 34 of those literals.
 
@@ -118,10 +120,11 @@ and 90% coverages; scroll edges retain 80%.
   the visible icon with `currentColor`, inherited from the danger role.
 - **Brand assets:** the six color uses in `iris_logo.svg`, the white path in
   `iris_logo_w.svg`, and four white paths in `iris_text_logo_w.svg` belong to
-  brand artwork. R8 preserves them. The white wordmark remains visible on the
-  dark surfaces; the white emblem over its accent gradient is a logotype,
-  not a required state indicator. R10 needs a suitable wordmark variant on
-  light surfaces.
+  brand artwork. The white emblem sits over the accent gradient in both themes.
+  R10 reuses the wordmark SVG as a CSS mask, with `--brand-wordmark` supplying
+  white in dark mode and `--txt` in light mode. The existing image retains its
+  intrinsic size and `alt="Iris"`; object positioning moves its original white
+  paint outside the box. The mask paints the same silhouette with the role color.
 - **CSS keywords:** `transparent`, `currentColor`, `inherit`, `none`, and native
   control styling retain their CSS/browser meanings. CodeMirror's transparent
   gutter spacer does not represent a participant.
@@ -144,8 +147,9 @@ with `--txt-dim` text. Iris does not enable CodeMirror's active-line background,
 placeholder, search panel, tooltip-info or snippet-field UI. Those unused vendor
 defaults remain in the package. Audit a vendor surface when enabling it; vendor
 source exclusion does not exempt a newly mounted UI from the color contract.
-R10 also needs to revisit `EditorView.darkTheme.of(true)` and native control
-color schemes when resolving a light theme.
+R10 removes the forced `EditorView.darkTheme.of(true)`. Iris supplies the paints
+for the mounted extensions through CSS, so theme switching needs no CodeMirror
+state transaction. The root `color-scheme` controls native fields and scrollbars.
 
 CodeMirror's enabled bracket extension adds focused-editor background rules.
 Iris's bracket selectors include the host, editor and content classes to outrank
@@ -200,6 +204,8 @@ RGB values.
 ## Verification
 
 - `test/ui-colors.test.js`: palette/exception contract and scanner mutation cases.
+- `test/ui-theme.test.js`: synchronous preference initialization, normalization,
+  persistence, blocked storage, live OS following and light role contrast.
 - `test/ui-accessibility.test.js`: role-alias resolution, UI text contrast,
   all nine syntax roles on normal/active/idle backgrounds, action labels and
   switch indicators, plus the existing accessibility contracts.
@@ -212,3 +218,79 @@ fixture, capture before/after PNGs, and save computed-color and pixel-difference
 JSON in the isolated runner's `TMPDIR`. They permit the documented syntax/overlay
 contrast corrections and bound screenshot differences. The task report records
 the concrete artifact paths and test counts.
+
+## R10 preference and palette
+
+`public/iris-theme.js` runs in the head before `iris.css`, with no body or app
+dependency. Its external script works with the existing CSP. The module reads
+`iris_theme` and normalizes missing or invalid values to `system`.
+
+```js
+IrisTheme.preference();          // "system" | "dark" | "light"
+IrisTheme.resolved();            // "dark" | "light"
+IrisTheme.setPreference("light"); // apply, then attempt local persistence
+```
+
+One `matchMedia('(prefers-color-scheme: dark)')` listener follows OS changes in
+system mode. Manual overrides stay authoritative. The setter applies the choice
+before attempting storage, retaining it in memory if reads or writes fail.
+The module sets `html[data-theme]` and inline `color-scheme`; the stylesheet
+provides a dark fallback. The localized `settingsTheme` field updates on change,
+settings entry and language refresh, independently of project persistence.
+
+Light surfaces use neutral whites and blue-grays. Text, syntax, status and
+category hues use darker primitives. Neutral interaction overlays switch from
+white to black pigment, shadows use lower opacity, thumbnails use a light panel,
+and the preview workspace changes while document paper/ink stay fixed. Light
+native selection uses the opaque editor selection band. The editor focus ring
+uses the full focus color in light mode; R8's measured dark ring stays at 50%.
+
+The light palette adds 41 primitive declarations. A separate `--palette-peer`
+retains the original blue fallback in both themes: darkening it with syntax blue
+made badge initials measure only 2.291:1. Incoming server peer colors remain
+identity data. `--peer-marker-edge`, `--peer-badge-edge` and `--peer-tree-edge`
+add neutral boundaries in light mode so bright markers remain distinguishable
+against light surfaces. Opaque peer/search/bracket fills retain R8's protection
+against stacked overlays. Semantic, syntax, permission and compile-history roles
+remain independent.
+
+Browser checks cover head initialization before body/app, blocked storage,
+keyboard EN/IT selection, OS changes, reload persistence, editor state identity,
+focus, PDF node identity and reading position. Rendered contrast checks cover
+native and editor selections, completion details, layered peer/search/bracket
+decorations, peer initials/boundaries, diagnostics, diff signs/text and primary
+login/home/admin/settings/editor/preview/bibliography surfaces. Screenshots include
+LaTeX and LilyPond at desktop EN and compact IT sizes in both themes. Reflow gates
+also run tablet, compact EN and 200%-equivalent layouts in both palettes.
+
+Thresholds are 4.5:1 for ordinary text and syntax, and 3:1 for required UI/focus
+indicators. Disabled controls, grid dots, scrims and shadows are decorative or
+inactive exceptions. The tests exercise the server's eight peer colors, the
+fallback and a white-peer stress case; arbitrary external identity colors are
+outside that fixed palette. The task report records final counts and artifacts.
+
+### Final review: selected metadata
+
+Mounted controller tests reproduced insufficient dark contrast in selected
+file-history authors, build author/compiler/format labels and sharing-search
+username/email labels. These selected metadata leaves now use `--txt-dim`.
+Sharing hover metadata and the nested external-account badge use that role too.
+
+| Metadata | Dark before | Dark after | Light after |
+| --- | ---: | ---: | ---: |
+| Selected file-history author | 4.101952 | 5.792537 | 6.308716 |
+| Selected build author/compiler/format | 4.241934 | 5.990211 | 6.217155 |
+| Selected sharing username/email and external badge | 3.808051 | 5.377507 | 6.889073 |
+| Hovered sharing username/email and external badge | 4.292100 | 6.061053 | 7.921631 |
+
+The same tests check history dates and all four reason badges, build dates,
+checked-but-unopened build metadata and sharing candidate names. They exposed a
+light selected Snapshot badge at 4.115847:1. Its `--history-manual-selected`
+role uses the darker accent in light mode, reaching 5.651024:1, while dark keeps
+its original accent at 6.305319:1. The role is independent of syntax, music and
+compile-history colors. Selected row backgrounds retain their existing tints.
+
+`test/ui-visibility.browser.test.js` opens the actual dialogs, selects rows
+through their controllers and composites the computed ancestor backgrounds for
+25 text samples per palette. The task report includes full-precision ratios and
+RED/GREEN evidence. The existing dark-comparison bounds remain in force.

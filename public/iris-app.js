@@ -2436,6 +2436,7 @@
   }
 
   function openSettings() {
+    $("settingsTheme").value = window.IrisTheme?.preference() || "system";
     renderFontList();
     updateTexPathControl();
     renderCompileProfile();
@@ -2868,6 +2869,7 @@
     $("btnAttach").addEventListener("click", openAttach);
     $("dlBtn").addEventListener("click", downloadPdf);
     $("btnSettings").addEventListener("click", openSettings);
+    $("settingsTheme").addEventListener("change", (event) => window.IrisTheme?.setPreference(event.target.value));
 
     // If the backend refuses a write mid-session (role downgraded to viewer),
     // the projects layer emits this; drop the workspace to read-only in place.
@@ -3970,6 +3972,7 @@
 
   /* ---------------- boot ---------------- */
   function refreshLocalizedUi() {
+    $("settingsTheme").value = window.IrisTheme?.preference() || "system";
     syncPreviewPane();
     bibliographyView?.refresh();
     updateProjectTypeUi();

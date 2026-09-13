@@ -78,9 +78,27 @@ the Node.js service handles authentication, persistence, and compilation.
 - Project-local font uploads, including XeLaTeX and LuaLaTeX font discovery.
 - Local password authentication and optional OAuth 2.0/OpenID Connect SSO.
 - Localized interface with English as the default and Italian included.
+- System-aware light and dark themes, with a browser-local override.
 
 Iris does not currently provide Git integration or a hosted compilation service.
 It is designed to run on infrastructure you control.
+
+## Interface theme
+
+Choose **System**, **Light**, or **Dark** under **Settings → Editor → Theme**.
+System is the default and follows changes to your operating system's color
+scheme. A manual choice takes effect on change and persists in this browser,
+including on the sign-in page, project dashboard and administration screens.
+Returning to System restores live OS following.
+
+Iris stores this preference under `iris_theme` in local storage, independently
+of project settings. If the browser blocks storage, you can still change the
+theme for the current page session. Switching themes retains your source
+selection, editor focus and preview reading position. PDF pages keep their
+document colors.
+
+See [the interface color contract](docs/ui-colors.md) for palette roles and
+contrast checks.
 
 ## Editor completion
 

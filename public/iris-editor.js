@@ -562,9 +562,8 @@
               return false;
             },
           }),
-          // Without this CodeMirror resolves its own defaults as a light
-          // theme: the drawn selection came out lavender over a dark editor.
-          V.EditorView.darkTheme.of(true),
+          // All mounted editor paints, including drawn selections, consume Iris
+          // CSS roles. Theme changes need no state transaction or editor rebuild.
           V.lineNumbers(),
           diagnostics.extension,
           V.highlightActiveLineGutter(),

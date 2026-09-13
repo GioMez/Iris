@@ -58,8 +58,12 @@ test.before(async (t) => {
 
 async function pageFor(t, variant, { openProject = true, authenticated = true, projects = [], extraFiles = [], documentSource = source } = {}) {
   const context = await browser.newContext({ viewport: variant.viewport, deviceScaleFactor: variant.scale || 1,
-    hasTouch: !!variant.touch, reducedMotion: variant.motion || "reduce" });
+    hasTouch: !!variant.touch, reducedMotion: variant.motion || "reduce", colorScheme: variant.theme || "dark" });
   if (variant.layout) await context.addInitScript((layout) => localStorage.setItem("iris_layout", JSON.stringify(layout)), variant.layout);
+  if (variant.storedTheme !== undefined) await context.addInitScript((value) => localStorage.setItem("iris_theme", value), variant.storedTheme);
+  if (variant.blockedStorage) await context.addInitScript(() => {
+    Object.defineProperty(window, "localStorage", { get() { throw new DOMException("Fixture storage blocked", "SecurityError"); } });
+  });
   const sockets = new Set(), gates = new Set(), errors = [];
   let page, closing = false;
   t.after(async () => {
@@ -111,6 +115,10 @@ async function pageFor(t, variant, { openProject = true, authenticated = true, p
     try {
       const url = new URL(route.request().url());
       if (url.origin !== base.origin) return await route.abort();
+      if (url.pathname === "/iris-theme.js") {
+        const response = await route.fetch();
+        return await route.fulfill({ response, body: `${await response.text()}\nwindow.themeAtHead = { body: !!document.body, app: typeof window.IrisApp, theme: document.documentElement.dataset.theme, scheme: document.documentElement.style.colorScheme };` });
+      }
       if (!url.pathname.startsWith("/api/")) return await route.continue();
       const responses = {
         "/api/config": { auth: { ssoEnabled: false } },
@@ -210,8 +218,9 @@ test("color roles propagate to switches, actions, scrollbars and collaboration f
   await page.waitForFunction(() => getComputedStyle(document.querySelector('.cm-iris-peer-mark[title="Ada"]')).backgroundColor === "rgb(158, 206, 106)");
 });
 
-test("computed dark contrast covers syntax selections, filled actions, focus and switch indicators", options, async (t) => {
-  const { page, fixture } = await pageFor(t, variants[0], { documentSource: "% A comment\n" + source });
+for (const theme of ["dark", "light"]) {
+test(`computed ${theme} contrast covers syntax selections, filled actions, focus and switch indicators`, options, async (t) => {
+  const { page, fixture } = await pageFor(t, { ...variants[0], theme }, { documentSource: "% A comment\n" + source });
   await page.locator(".cm-content").focus();
   await page.keyboard.press("ControlOrMeta+a");
   await page.waitForFunction(() => !!document.querySelector(".cm-selectionBackground"));
@@ -271,16 +280,87 @@ test("computed dark contrast covers syntax selections, filled actions, focus and
     "the mounted CodeMirror editor inherits document tokens rather than an unstyled shadow root");
 });
 
+}
+
 async function selectFile(page, id) {
   await page.locator("#ftabs").getByRole("tab", { name: id === "draft" ? "draft.txt" : "main.tex", exact: true }).click();
   await page.waitForFunction((id) => IrisCollab.fileId() === (id === "draft" ? null : id)
     && IrisCollab.status() === (id === "draft" ? "off" : "live"), id);
 }
 
+for (const theme of ["dark", "light"]) {
+  test(`final review: selected history, build and sharing metadata contrast / ${theme}`, options, async (t) => {
+    const { page, fixture } = await pageFor(t, { ...variants[0], theme });
+    const samples = [];
+    async function measure(state, selectors) {
+      for (const selector of selectors) {
+        await page.locator(selector).first().waitFor({ state: "visible" });
+        samples.push({ state, selector, text: await page.locator(selector).first().textContent(),
+          ...await renderedContrast(page, selector) });
+      }
+    }
+    // Real history controller rows: all reason badges and the author/date leaves.
+    fixture.versions = ["initial", "manual", "compile", "rollback"].map((reason, i) => ({
+      ...version, id: `22222222-2222-4222-8222-22222222222${i}`, reason,
+    }));
+    for (const item of fixture.versions) fixture.responses[`GET /api/projects/${projectId}/files/${fileId}/versions/${item.id}`] = {
+      body: { ...item, content: source },
+    };
+    await openHistory(page, variants[0]);
+    for (const reason of ["initial", "manual", "compile", "rollback"]) {
+      await page.locator(`.ver-item:has(.reason-${reason})`).click();
+      await page.locator(`.ver-item.on .reason-${reason}`).waitFor({ state: "visible" });
+      await page.mouse.move(0, 0);
+      await measure(`history selected ${reason}`, [".ver-item.on .ver-who", ".ver-item.on .ver-when", ".ver-item.on .ver-reason"]);
+    }
+    assert.match(await page.locator(".ver-item.on .ver-who").textContent(), /Browser fixture/);
+    await page.locator("#versionsModal [data-close]").click();
+
+    const builds = ["failed", "succeeded"].map((status, i) => ({ id: `22222222-2222-4222-8222-22222222223${i}`,
+      status, format: "pdf", compiler: "pdflatex", projectType: "latex", author: "Metadata Author",
+      createdAt: version.createdAt, completedAt: version.createdAt, mainPath: "main.tex", warnings: [], errors: [] }));
+    fixture.responses[`GET /api/projects/${projectId}/builds`] = { body: { builds, nextOffset: null } };
+    for (const build of builds) fixture.responses[`GET /api/projects/${projectId}/builds/${build.id}`] = { body: { build, files: [] } };
+    await page.locator("#btnBuilds").click();
+    await page.locator(".build-item.on").waitFor({ state: "visible" });
+    assert.equal(await page.locator(".build-item.on .build-who").textContent(), "Metadata Author · pdflatex · PDF");
+    await page.mouse.move(0, 0);
+    await measure("build selected", [".build-item.on .build-who", ".build-item.on .build-when"]);
+    await page.locator(".build-item:not(.on) .build-select").check();
+    await page.mouse.move(0, 0);
+    await measure("build checked", [".build-item.checked:not(.on) .build-who", ".build-item.checked:not(.on) .build-when"]);
+    await page.locator(".build-item.checked:not(.on)").hover();
+    await measure("build checked hover", [".build-item.checked:not(.on) .build-who"]);
+    await page.locator("#buildsModal [data-close]").first().click();
+
+    fixture.responses[`GET /api/projects/${projectId}/members`] = { body: { members: [] } };
+    fixture.responses[`GET /api/projects/${projectId}/members/search`] = { body: { users: [
+      { userId: "candidate", name: "Candidate User", username: "candidate", email: "candidate@example.invalid", external: true },
+    ] } };
+    await page.locator("#btnShareProject").click();
+    await page.locator("#projectShareSearch").fill("candidate");
+    await page.locator(".project-share-result").waitFor({ state: "visible" });
+    await page.mouse.move(0, 0);
+    await measure("sharing ordinary", [".project-share-result > b", ".project-share-result > span", ".project-share-result .project-share-external"]);
+    await page.locator(".project-share-result").hover();
+    await measure("sharing hover", [".project-share-result > span", ".project-share-result .project-share-external"]);
+    await page.locator(".project-share-result").click();
+    await page.mouse.move(0, 0);
+    assert.equal(await page.locator(".project-share-result.selected").getAttribute("aria-pressed"), "true");
+    assert.equal(await page.locator(".project-share-result.selected > span").textContent(), "@candidate · candidate@example.invalid");
+    await measure("sharing selected", [".project-share-result.selected > b", ".project-share-result.selected > span", ".project-share-result.selected .project-share-external"]);
+    const directory = await fs.mkdtemp(path.join(process.env.TMPDIR, `iris-final-metadata-${theme}-`));
+    await fs.writeFile(path.join(directory, "contrast.json"), JSON.stringify(samples, null, 2));
+    t.diagnostic(`Selected metadata ${theme}: ${JSON.stringify(samples.map(({ state, selector, ratio }) => ({ state, selector, ratio })))}`);
+    t.diagnostic(`Selected metadata evidence: ${directory}`);
+    assert.deepEqual(samples.filter(sample => sample.ratio < sample.minimum), []);
+  });
+}
+
 // Read the mounted consumer and composite its actual ancestor backgrounds in
 // paint order. In particular, a match's background can sit on a peer line.
-async function renderedContrast(page, selector, { pseudo = null, shadow = false, minimum = 4.5 } = {}) {
-  return page.locator(selector).first().evaluate((node, { pseudo, shadow, minimum }) => {
+async function renderedContrast(page, selector, { pseudo = null, shadow = false, minimum = 4.5, surrounding = false, paintProperty = "color" } = {}) {
+  return page.locator(selector).first().evaluate((node, { pseudo, shadow, minimum, surrounding, paintProperty }) => {
     // CodeMirror can wrap a syntax span in a decoration span. Measure the
     // actual text leaf rather than its outer wrapper's inherited text color.
     if (!pseudo && !shadow) {
@@ -296,19 +376,38 @@ async function renderedContrast(page, selector, { pseudo = null, shadow = false,
     };
     const ancestors = [];
     for (let current = node; current; current = current.parentElement) ancestors.unshift(getComputedStyle(current).backgroundColor);
+    if (surrounding) ancestors.pop();
     const style = getComputedStyle(node, pseudo);
-    const pigment = shadow ? style.boxShadow.match(/(?:rgba?|color)\([^)]*\)/)?.[0] : style.color;
+    if (pseudo === "::selection") ancestors.push(style.backgroundColor);
+    const pigment = shadow ? style.boxShadow.match(/(?:rgba?|color)\([^)]*\)/)?.[0] : style[paintProperty];
     const bg = paint(ancestors), fg = paint([...ancestors, pigment]);
     const luminance = (rgb) => rgb.map((c) => c / 255).map((c) => c <= .04045 ? c / 12.92 : ((c + .055) / 1.055) ** 2.4)
       .reduce((sum, c, i) => sum + c * [.2126, .7152, .0722][i], 0);
     const a = luminance(fg), b = luminance(bg);
     return { foreground: fg, background: bg, ratio: (Math.max(a, b) + .05) / (Math.min(a, b) + .05), minimum,
       pigment, content: style.content, shadow: style.boxShadow, focusVisible: node.matches(":focus-visible") || !!node.querySelector(":focus-visible") };
-  }, { pseudo, shadow, minimum });
+  }, { pseudo, shadow, minimum, surrounding, paintProperty });
 }
 
-test("R8 review: editor focus paints a visible ring with at least 3:1 contrast", options, async (t) => {
-  const { page } = await pageFor(t, variants[0]);
+test("R10 light peer initials and marker boundaries remain readable for fallback and bright identities", options, async (t) => {
+  const { page, fixture } = await pageFor(t, { ...variants[0], theme: "light" });
+  const samples = [];
+  for (const color of [null, "#ffffff", "#9ece6a", "#7aa2f7", "#f7768e", "#e0af68", "#bb9af7", "#2ac3de", "#ff9e64", "#b4f9f8"]) {
+    const name = `Ada ${color || 'fallback'}`;
+    send(fixture, { t: "peers", fileId, peers: [{ ...peer, id: name, name, color }] });
+    await page.waitForFunction((name) => document.querySelector('#stPeers .peer-count')?.textContent === name, name);
+    await page.locator("#stPeers .peer-dot").waitFor({ state: "visible" });
+    samples.push({ color, name: "initials", ...await renderedContrast(page, "#stPeers .peer-dot") });
+    samples.push({ color, name: "marker boundary", ...await renderedContrast(page, ".cm-iris-peer-mark", { shadow: true, surrounding: true, minimum: 3 }) });
+    samples.push({ color, name: "badge boundary", ...await renderedContrast(page, "#stPeers .peer-dot", { shadow: true, surrounding: true, minimum: 3 }) });
+  }
+  t.diagnostic(`Peer indicator audit: ${JSON.stringify(samples)}`);
+  assert.deepEqual(samples.filter(s => s.ratio < s.minimum), []);
+});
+
+for (const theme of ["dark", "light"]) {
+test(`${theme}: editor focus paints a visible ring with at least 3:1 contrast`, options, async (t) => {
+  const { page } = await pageFor(t, { ...variants[0], theme });
   await page.keyboard.press("Tab");
   await page.locator(".cm-content").focus();
   await page.waitForFunction(() => document.querySelector(".cm-content").matches(":focus-visible"));
@@ -322,9 +421,9 @@ test("R8 review: editor focus paints a visible ring with at least 3:1 contrast",
   assert.equal(await page.locator(".cm-host").evaluate((node) => getComputedStyle(node, "::after").content), "none");
 });
 
-test("R8 review: selected autocomplete source details remain readable", options, async (t) => {
+test(`${theme}: selected autocomplete source details remain readable`, options, async (t) => {
   const text = "\\label{review-label}\n\\ref{";
-  const { page } = await pageFor(t, variants[0], { documentSource: text });
+  const { page } = await pageFor(t, { ...variants[0], theme }, { documentSource: text });
   await page.evaluate((end) => { IrisEditor.select(end); IrisEditor.focus(); }, text.length);
   await page.keyboard.press("Control+Space");
   const selector = '.cm-tooltip-autocomplete li[aria-selected="true"] .cm-completionDetail';
@@ -335,9 +434,9 @@ test("R8 review: selected autocomplete source details remain readable", options,
   assert.ok(measured.ratio >= measured.minimum, `selected source path: ${measured.ratio}:1`);
 });
 
-test("R8 review: enabled editor decorations keep text readable over a peer caret line", options, async (t) => {
+test(`${theme}: enabled editor decorations keep text readable over a peer caret line`, options, async (t) => {
   const text = "% needle comment\n{pair}\n}\n\u00a0\nneedle\n";
-  const { page, fixture } = await pageFor(t, variants[0], { documentSource: text });
+  const { page, fixture } = await pageFor(t, { ...variants[0], theme }, { documentSource: text });
   const samples = [];
   async function caret(position) {
     send(fixture, { t: "peers", fileId, peers: [{ ...peer, color: "#ffffff", anchor: position, head: position }] });
@@ -362,8 +461,8 @@ test("R8 review: enabled editor decorations keep text readable over a peer caret
   assert.deepEqual(samples.filter((sample) => sample.ratio < sample.minimum), []);
 });
 
-test("R8 review: music categorization is isolated from permissions and compilation history", options, async (t) => {
-  const { page, fixture } = await pageFor(t, variants[0], { openProject: false,
+test(`${theme}: music categorization is isolated from permissions and compilation history`, options, async (t) => {
+  const { page, fixture } = await pageFor(t, { ...variants[0], theme }, { openProject: false,
     projects: [{ id: projectId, name: "Role isolation", projectType: "lilypond", role: "editor", updatedAt: "2026-09-13T10:00:00Z" }],
     extraFiles: [{ id: "score", type: "file", name: "score.ly", path: "score.ly", kind: "ly", content: "{ c4 }" }] });
   await page.locator(".pcard-role.role-editor").waitFor({ state: "visible" });
@@ -394,6 +493,129 @@ test("R8 review: music categorization is isolated from permissions and compilati
     assert.equal(await page.locator(selector).first().evaluate((node) => getComputedStyle(node).color), "rgb(44, 55, 66)");
   }
 });
+
+}
+
+for (const variant of variants) for (const theme of ["dark", "light"]) {
+  test(`R10 preference, selector and retained editor: ${variant.name} / ${theme}`, options, async (t) => {
+    const { page } = await pageFor(t, { ...variant, theme });
+    assert.equal(await page.evaluate(() => typeof window.IrisTheme), "object", "theme API loaded");
+    assert.equal(await page.locator("html").getAttribute("data-theme"), theme);
+    await showTallOutput(page, "pdf");
+    if (variant.viewport.width < 820) await page.locator('[data-workspace="editor"]').click();
+    await page.evaluate(async () => {
+      IrisEditor.select(2, 12); IrisEditor.focus();
+      window.themeView = (await import('@codemirror/view')).EditorView.findFromDOM(document.querySelector('.cm-editor'));
+      document.querySelector("#pvStage").scrollTop = 300;
+      window.themeRetained = { view: window.themeView, state: window.themeView.state,
+        focus: document.activeElement, project: JSON.stringify(IrisApp.serialize()),
+        page: document.querySelector(".pdf-page"), scroll: document.querySelector("#pvStage").scrollTop };
+    });
+    await page.evaluate(() => IrisTheme.setPreference(IrisTheme.resolved() === "dark" ? "light" : "dark"));
+    assert.equal(await page.evaluate(() => {
+      const before = window.themeRetained;
+      return before.view.dom === document.querySelector('.cm-editor') && before.state === window.themeView.state
+        && before.focus === document.activeElement && before.project === JSON.stringify(IrisApp.serialize())
+        && before.page === document.querySelector(".pdf-page") && before.scroll === document.querySelector("#pvStage").scrollTop;
+    }), true, "theme switching retains state, focus, document and reading position");
+    await openSettings(page);
+    await page.locator(variant.viewport.width <= 700 ? '.set-accordion-trigger[data-set="editor"]' : '#settingsTabEditor').click();
+    const select = page.getByLabel(variant.language === "it" ? "Tema" : "Theme", { exact: true });
+    assert.equal(await select.getAttribute("id"), "settingsTheme");
+    // Native select type-ahead works in headless macOS Chrome; Home/arrow keys
+    // are handled by its OS popup and do not commit a DOM value in this harness.
+    await select.focus(); await page.keyboard.press("s");
+    await page.keyboard.press(variant.language === "it" ? "i" : "y");
+    await page.keyboard.press("Tab");
+    assert.equal(await select.inputValue(), "system");
+    await page.emulateMedia({ colorScheme: "light" });
+    await page.waitForFunction(() => document.documentElement.dataset.theme === "light");
+    await select.selectOption("dark");
+    await page.emulateMedia({ colorScheme: "dark" }); await page.emulateMedia({ colorScheme: "light" });
+    assert.equal(await page.locator("html").getAttribute("data-theme"), "dark");
+    await page.evaluate(async () => { await IrisI18n.setLanguage("it"); });
+    assert.equal(await page.getByLabel("Tema", { exact: true }).inputValue(), "dark");
+    await page.reload({ waitUntil: "networkidle" });
+    assert.equal(await page.locator("html").getAttribute("data-theme"), "dark");
+    assert.equal(await page.evaluate(() => IrisTheme.preference()), "dark");
+  });
+}
+
+for (const initial of [
+  { theme: "light", want: "light" }, { theme: "dark", want: "dark" },
+  { theme: "light", storedTheme: "dark", want: "dark" }, { theme: "dark", storedTheme: "light", want: "light" },
+  { theme: "light", storedTheme: "invalid", want: "light" }, { theme: "light", blockedStorage: true, want: "light" },
+]) test(`R10 head initialization: ${JSON.stringify(initial)}`, options, async (t) => {
+  const { page } = await pageFor(t, { ...variants[0], ...initial }, { authenticated: false, openProject: false });
+  assert.deepEqual(await page.evaluate(() => window.themeAtHead), { body: false, app: "undefined", theme: initial.want, scheme: initial.want });
+  await page.evaluate(() => IrisTheme.setPreference("dark"));
+  assert.equal(await page.locator("html").getAttribute("data-theme"), "dark");
+  await page.evaluate(() => IrisTheme.setPreference("system"));
+  await page.emulateMedia({ colorScheme: "light" });
+  await page.waitForFunction(() => document.documentElement.dataset.theme === "light");
+});
+
+for (const variant of variants) for (const theme of ["dark", "light"]) {
+  test(`R10 rendered surfaces and branding: ${variant.name} / ${theme}`, options, async (t) => {
+    const directory = await fs.mkdtemp(path.join(process.env.TMPDIR, "iris-r10-theme-"));
+    t.diagnostic(`Theme screenshots and contrast: ${directory}`);
+    const samples = [];
+    async function capture(page, name, selectors) {
+      await page.evaluate(async () => { await document.fonts.ready; await new Promise(requestAnimationFrame); });
+      assert.equal(await page.locator("html").getAttribute("data-theme"), theme);
+      for (const selector of selectors) {
+        const measured = await renderedContrast(page, selector);
+        samples.push({ name, selector, ...measured });
+      }
+      await page.screenshot({ path: path.join(directory, `${name}.png`), animations: "disabled" });
+      await fs.writeFile(path.join(directory, "contrast.json"), JSON.stringify(samples, null, 2));
+    }
+    const login = await pageFor(t, { ...variant, theme }, { authenticated: false, openProject: false });
+    await capture(login.page, "login", [".login-sub", "#loginUser", "#loginBtn"]);
+    await login.page.locator('#loginUser').fill('Selected username');
+    await login.page.locator('#loginUser').evaluate(node => node.select());
+    samples.push({ name: 'native selection', ...await renderedContrast(login.page, '#loginUser', { pseudo: '::selection' }) });
+    samples.push({ name: 'wordmark', ...await renderedContrast(login.page, '#loginCard .brand-wordmark', { surrounding: true, paintProperty: 'backgroundColor' }) });
+    assert.match(await login.page.locator('#loginCard .brand-wordmark').evaluate(n => getComputedStyle(n).maskImage), /iris_text_logo_w\.svg/);
+    login.fixture.responses['POST /api/auth/login'] = { status: 401, body: { errorCode: 'NOT_AUTHENTICATED' } };
+    await login.page.locator('#loginPass').fill('fixture-password');
+    await login.page.locator('#loginCard').evaluate(n => n.requestSubmit());
+    await login.page.locator('#loginError').waitFor({ state: 'visible' });
+    await capture(login.page, 'login-error', ['#loginError']);
+    const score = { id: 'score', type: 'file', name: 'score.ly', path: 'score.ly', kind: 'ly', content: '% Music comment\n\\relative c\' { c4 d e f }\n' };
+    const { page, fixture } = await pageFor(t, { ...variant, theme }, { openProject: false, extraFiles: [referenceFile, score], documentSource: source + '% New line\n' });
+    await capture(page, "home", ["#pickerScreen .picker-sub"]);
+    await page.locator("#pkAdmin").click();
+    await capture(page, "admin", ["#adminSearch", "#adminEmpty"]);
+    await page.locator("#adminTabTemplates").click(); await page.locator("#adminTemplateNew").click();
+    await capture(page, "admin-dialog", ["#adminTemplateTitle", "#adminTemplateContent"]);
+    await page.locator("#adminTemplateCancel").click(); await page.locator("#adminBack").click();
+    await page.evaluate((id) => IrisProjects.openProject(id), projectId);
+    await page.waitForFunction(() => IrisCollab.status() === "live");
+    await capture(page, "editor", [".cm-content", ".t-cmd", ".t-env", ".t-brace", "#btnCompile"]);
+    await page.evaluate(() => IrisEditor.setDiagnostics([{ line: 1, severity: 'error', message: 'Fixture error' }, { line: 2, severity: 'warning', message: 'Fixture warning' }]));
+    await capture(page, 'diagnostics', ['.cm-iris-diagnostic-mark.error', '.cm-iris-diagnostic-mark.warning']);
+    await showTallOutput(page, "pdf");
+    await capture(page, "preview", [".pvbar .mini"]);
+    assert.equal(await page.locator(".pdf-page").first().evaluate(n => getComputedStyle(n).backgroundColor), "rgb(255, 255, 255)");
+    if (variant.viewport.width < 820) await page.locator('[data-workspace="editor"]').click();
+    fixture.versions = [version]; await openHistory(page, variant);
+    await page.locator("#versionsDiffTab").click();
+    await capture(page, "diff", ["#versionsView", '.diff-add .diff-text', '.diff-add .diff-sign']);
+    await page.locator("#versionsModal [data-close]").click();
+    if (variant.viewport.width < 1180 && await page.locator(".body").evaluate(n => n.classList.contains("drawer-open"))) await page.locator("#btnSidebar").click();
+    await page.getByRole('tab', { name: 'score.ly', exact: true }).click();
+    await capture(page, 'lilypond', ['.t-comment', '.t-cmd', '.t-brace', '.cm-content']);
+    await page.getByRole("tab", { name: "references.bib", exact: true }).click();
+    await page.waitForFunction(() => !document.querySelector("#bibliographyAdd").disabled);
+    await capture(page, "bibliography", ["#bibliographyPanel"]);
+    await openSettings(page);
+    await page.locator(variant.viewport.width <= 700 ? '.set-accordion-trigger[data-set="editor"]' : '#settingsTabEditor').click();
+    await capture(page, "settings", ["#settingsTheme", "#settingsPanelEditor .desc", "#settingsPanelEditor .set-row-sub"]);
+    await surfaceFits(page, ".settings-modal");
+    assert.deepEqual(samples.filter(sample => sample.ratio < sample.minimum), []);
+  });
+}
 
 async function visible(page, selector, display) {
   const actual = await page.locator(selector).evaluate((node) => {
@@ -592,7 +814,7 @@ const layoutVariants = [
   { name: "compact EN", viewport: { width: 390, height: 844 }, language: "en" },
   { name: "compact IT", viewport: { width: 390, height: 844 }, language: "it" },
   { name: "200% equivalent IT", viewport: { width: 720, height: 450 }, scale: 2, language: "it" },
-];
+].flatMap(variant => ['dark', 'light'].map(theme => ({ ...variant, theme, name: `${variant.name} / ${theme}` })));
 
 async function surfaceFits(page, selector) {
   const surface = page.locator(selector);
@@ -987,6 +1209,7 @@ for (const variant of variants) {
       t.diagnostic(`${name}: ${JSON.stringify({ elements: after.length, computedDifferences: differences.length, pixels })}`);
       await fs.writeFile(path.join(directory, "comparison.json"), JSON.stringify(evidence, null, 2));
       assert.deepEqual(differences.filter((difference) => !/\bt-(brace|comment)\b/.test(difference.after.name)
+        && difference.after.name !== "brand-wordmark"
         && !(name === "editor-overlays" && /\bcm-iris-(peer-selection|match-active)\b/.test(difference.after.name))), [],
         `${name}: computed dark colors are preserved except the measured muted-syntax contrast correction`);
       // Small raster rounding and the token-colored select chevron are bounded;
