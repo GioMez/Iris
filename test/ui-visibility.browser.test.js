@@ -1176,7 +1176,13 @@ for (const variant of variants) {
         return { left, top, right, bottom, viewportWidth: innerWidth };
       });
       const current = await page.screenshot({ path: path.join(directory, `${name}-after.png`), animations: "disabled", caret: "hide" });
-      const style = await page.addStyleTag({ content: baseline });
+      // This action did not exist in the R8 baseline. Keep its current geometry
+      // while comparing the unchanged shared color roles on the same DOM.
+      const navigationLayout = await page.locator("#btnShowInPdf").evaluate((node) => {
+        const style = getComputedStyle(node), label = getComputedStyle(node.querySelector(".sb-btn-label"));
+        return `#btnShowInPdf{width:${style.width};padding:${style.padding};justify-content:${style.justifyContent}}#btnShowInPdf .sb-btn-label{display:${label.display}}`;
+      });
+      const style = await page.addStyleTag({ content: baseline + navigationLayout });
       await page.evaluate(() => { document.querySelector('link[href="iris.css"]').disabled = true; });
       await page.evaluate(() => new Promise(requestAnimationFrame));
       const before = await computed();

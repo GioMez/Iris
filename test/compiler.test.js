@@ -355,7 +355,7 @@ test("LaTeX custom pipelines retain safe options before the source operand", () 
   assert.deepEqual(profile.steps, [{ tool: "pdflatex", args: [
     "-interaction=nonstopmode", "-halt-on-error", "-file-line-error",
     "-no-shell-escape", "-output-directory=output",
-    "--synctex=-1", "-recorder", "-draftmode", "-8bit", "--no-shell-escape",
+    "-recorder", "-draftmode", "-8bit", "--no-shell-escape", "-synctex=1",
     "chapters/part one.tex",
   ] }]);
 });
@@ -383,10 +383,19 @@ test("LaTeX presets retain their bibliography and index steps", () => {
       for (const step of profile.steps.filter((step) => step.tool === engine)) {
         assert.deepEqual(step.args, [
           "-interaction=nonstopmode", "-halt-on-error", "-file-line-error",
-          "-no-shell-escape", "-output-directory=output", "main.tex",
+          "-no-shell-escape", "-output-directory=output", "-synctex=1", "main.tex",
         ]);
       }
     }
+  }
+});
+
+test("the source mapping checkbox overrides every duplicate SyncTeX option before the source", () => {
+  for (const enabled of [true, false]) {
+    const profile = normalizeCompileProfile({ mode: "custom", steps: [{ tool: "[engine]", args: ["-synctex=-1", "[main]", "--synctex=0", "-recorder"] }] }, "pdflatex", "main.tex", "latex", [], "pdf", enabled);
+    const args = profile.steps[0].args;
+    assert.deepEqual(args.filter((a) => /synctex/.test(a)), [enabled ? "-synctex=1" : "-synctex=0"]);
+    assert.equal(args.at(-1), "main.tex");
   }
 });
 

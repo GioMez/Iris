@@ -210,6 +210,10 @@
         <button class="btn sm cta" type="button" id="pvNewerLoad"><span data-icon="refresh"></span><span data-i18n="preview.newerLoad">Load</span></button>
         <button class="pv-newer-x" type="button" id="pvNewerDismiss" aria-label="Dismiss" title="Dismiss" data-i18n-title="preview.newerDismiss" data-i18n-aria-label="preview.newerDismiss"><span data-icon="x"></span></button>
       </div>
+      <div class="pdf-artifact-control" id="pdfArtifactControl" hidden>
+        <label for="pdfArtifact" data-i18n="navigation.artifact">PDF document</label>
+        <select class="select" id="pdfArtifact"></select>
+      </div>
       <div class="pv-stage" id="pvStage">
         <div class="pv-empty" id="pvEmpty">
           <div class="big" data-icon="file"></div>
@@ -247,6 +251,7 @@
       <span class="st" id="stTime" data-i18n="status.neverCompiled">not compiled yet</span>
     </div>
     <div class="sb-actions">
+      <button class="sb-btn" id="btnShowInPdf" type="button" title="Show in PDF" aria-label="Show in PDF" data-i18n-title="navigation.show" data-i18n-aria-label="navigation.show"><span class="ic" data-icon="file-type-pdf"></span><span class="sb-btn-label" data-i18n="navigation.show">Show in PDF</span></button>
       <button class="sb-btn" id="btnFormat" type="button" title="Format" aria-label="Format" data-i18n-title="status.format" data-i18n-aria-label="status.format"><span class="ic" data-icon="align-left-2"></span><span class="sb-btn-label" data-i18n="status.format">Format</span></button>
       <button class="sb-btn" id="btnFind" type="button" title="Find" aria-label="Find" data-i18n-title="find.find" data-i18n-aria-label="find.find"><span class="ic" data-icon="search"></span><span class="sb-btn-label" data-i18n="find.find">Find</span></button>
       <button class="sb-wrap" id="btnWrap" type="button" role="switch" aria-checked="false" aria-label="Enable word wrap" data-i18n-aria-label="status.wrapEnable" title="Enable word wrap" data-i18n-title="status.wrapEnable"><span class="sb-wrap-label" data-i18n="status.wrap">Wrap</span><span class="sb-switch" aria-hidden="true"></span></button>
@@ -413,6 +418,10 @@
           <label class="label" for="compileMainPath" data-i18n="settings.mainFile">Main file</label>
           <select class="select" id="compileMainPath"></select>
           <div class="hint" id="compileMainPathHint"><span data-icon="info-circle"></span><span data-i18n="settings.mainFileHint">The file passed to the compiler. When automatic, Iris picks it from the sources.</span></div>
+        </div>
+        <div class="field">
+          <label class="source-mapping-label" for="compileSourceMapping"><input type="checkbox" id="compileSourceMapping" checked aria-describedby="compileSourceMappingHint"><span data-i18n="navigation.enable">Enable PDF–source mapping</span></label>
+          <div class="hint" id="compileSourceMappingHint" data-i18n="navigation.enableHint">Move between PDF and source with Ctrl/Cmd-click. Disable to reduce compilation work and map storage.</div>
         </div>
         <div class="field">
           <label class="label" id="compilerPathLabel" for="texPath" data-i18n="settings.latexBinaryPath">LaTeX binaries path</label>
@@ -1507,6 +1516,7 @@
 <script src="iris-bibliography-view.js"></script>
 <script src="iris-editor.js"></script>
 <script src="iris-collab.js"></script>
+<script src="iris-source-navigation.js"></script>
 <script src="iris-app.js"></script>
 <script src="iris-projects.js"></script>
 <script src="iris-builds.js"></script>

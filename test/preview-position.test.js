@@ -70,6 +70,7 @@ function harness() {
     window: { devicePixelRatio: 1, matchMedia: () => ({ matches: false }),
       IrisI18n: { t: (key) => key, ready: new Promise(() => {}), formatDate: () => "today" },
       IrisIcons: { icon: () => "" }, IrisDiagnostics: { renderList() {} },
+      IrisSourceNavigation: require("../public/iris-source-navigation"),
       IrisEditor: { getValue: () => "", setDiagnostics() {} },
       IrisCollab: { disconnect() {} },
     },

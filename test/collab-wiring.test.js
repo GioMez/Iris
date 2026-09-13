@@ -285,7 +285,7 @@ test("the index is rebuilt when the text settles, never when a caret moves", () 
   const cursor = app.slice(app.indexOf("ed().onCursor("), app.indexOf("ed().onPeers("));
   assert.doesNotMatch(cursor, /rebuildStructure|scheduleStructure/);
   // Opening a different document has no typing to wait for.
-  const open = app.slice(app.indexOf("function openFile(id)"), app.indexOf("/* ---------------- file tree"));
+  const open = app.slice(app.indexOf("function openFile("), app.indexOf("/* ---------------- file tree"));
   assert.match(open, /rebuildStructure\(\)/);
   // The parsing itself never reaches the server: it stays language-agnostic.
   assert.doesNotMatch(server, /IrisStructure|\\\\begin\{/);

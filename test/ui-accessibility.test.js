@@ -98,7 +98,8 @@ test("save, compile and output form one ordered workflow", () => {
 });
 
 test("preview controls support PDFs and image artifacts without format-specific branding", () => {
-  assert.doesNotMatch(html, /data-icon="file-type-pdf"/);
+  const genericPreview = html.slice(html.indexOf('<section class="pane pvpane"'), html.indexOf('<!-- ===================== STATUSBAR'));
+  assert.doesNotMatch(genericPreview, /data-icon="file-type-pdf"/);
   assert.doesNotMatch(app, /ti\("file-type-pdf"\)/);
   // Three columns, two 2px gaps, 2px padding and a 1px border either side, all
   // inside the box: the control keeps a fixed width so the bar cannot reflow.

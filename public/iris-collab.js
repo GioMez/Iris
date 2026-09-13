@@ -28,6 +28,9 @@
   const peerListeners = [];
   const filePeerListeners = [];
   const buildListeners = [];
+  // A preflight room shares the transport but cannot replace the editor until
+  // navigation has checked its authoritative text and the current UI context.
+  let preparedSource = null;
   const state = {
     socket: null,
     // The project this tab has open. Watched independently of any document, so
@@ -124,11 +127,11 @@
     emit();
   }
 
-  function send(message) {
+  function send(message, opening = state.desired) {
     const socket = state.socket;
     if (!socket || socket.readyState !== WebSocket.OPEN) return false;
     socket.send(JSON.stringify(message));
-    if (message.t === "open") state.opening.push(state.desired);
+    if (message.t === "open") state.opening.push(opening);
     return true;
   }
 
@@ -168,6 +171,7 @@
     });
     socket.addEventListener("close", (event) => {
       if (state.socket !== socket) return;
+      preparedSource?.dispose();
       state.socket = null;
       state.opening = [];
       state.joined = null;
@@ -226,6 +230,9 @@
   }
 
   function handle(message) {
+    if (preparedSource?.fileId === message.fileId && ["updates", "resync", "file-closed", "revoked", "role"].includes(message.t)) {
+      preparedSource.dispose();
+    }
     if (message.t === "maintenance") {
       // A notice never acknowledges a push, even if its echo arrived already.
       setPaused(message.active);
@@ -241,6 +248,7 @@
     if (message.t === "opened") {
       if (!state.opening.length || state.opening[0].fileId !== message.fileId) return;
       const desired = state.opening.shift();
+      if (desired.prepare) { desired.prepare(message); return; }
       // Even A -> B -> A must wait for the last open. Earlier rooms already
       // have a close queued; adopting their replies could reset newer edits.
       if (desired !== state.desired) return;
@@ -380,6 +388,7 @@
       if (message.request === "open") {
         if (!state.opening.length || state.opening[0].fileId !== message.fileId) return;
         const desired = state.opening.shift();
+        if (desired.prepare) { desired.prepare(null); return; }
         if (desired !== state.desired) return;
       }
       if (message.fileId && !isCurrent(message.fileId)) return;
@@ -467,7 +476,45 @@
     if (Number.isFinite(config.presenceDebounceMs)) pacing.presence = Math.max(0, config.presenceDebounceMs);
   }
 
+  function prepareSource(fileId, kind, { signal } = {}) {
+    preparedSource?.dispose();
+    if (signal?.aborted || !state.socket || state.socket.readyState !== WebSocket.OPEN || state.pending) return Promise.resolve(null);
+    return new Promise((resolve) => {
+      let frame = null, valid = true, timer;
+      const socket = state.socket;
+      const cleanup = () => { clearTimeout(timer); signal?.removeEventListener("abort", dispose); };
+      function dispose() {
+        if (!valid) return;
+        valid = false; cleanup();
+        if (preparedSource === prepared) preparedSource = null;
+        if (state.socket === socket) send({ t: "close", fileId });
+        resolve(null);
+      }
+      const prepared = { fileId, text: "", dispose,
+        current: () => valid && frame !== null && state.socket === socket && socket.readyState === WebSocket.OPEN,
+        activate() {
+          if (!prepared.current()) return false;
+          valid = false; cleanup(); preparedSource = null;
+          window.IrisCollab.leave();
+          state.desired = { fileId, kind };
+          state.opening.unshift(state.desired);
+          handle(frame);
+          return true;
+        },
+      };
+      preparedSource = prepared;
+      timer = setTimeout(dispose, 5000);
+      signal?.addEventListener("abort", dispose, { once: true });
+      send({ t: "open", fileId }, { fileId, prepare(message) {
+        if (!valid) return;
+        if (!message || typeof message.doc !== "string") { dispose(); return; }
+        frame = message; prepared.text = message.doc; resolve(prepared);
+      } });
+    });
+  }
+
   window.IrisCollab = {
+    prepareSource,
     // Follows a project for as long as it is open, which is what makes build
     // notifications arrive even with no document in a room.
     watchProject(projectId) {
@@ -516,6 +563,7 @@
     },
     // Closes the transport entirely (leaving the project, signing out).
     disconnect() {
+      preparedSource?.dispose();
       this.leave();
       state.project = null;
       setFilePeers([]);

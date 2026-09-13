@@ -118,7 +118,7 @@ function harness(language = "en", realtime = false) {
     value: "", revision: 0, ready: new Promise(() => {}),
     load(value) { this.value = value; this.revision++; load(); }, getValue() { return this.value; },
     snapshot() { return { text: this.value, revision: this.revision }; }, setLanguage() {}, requestMeasure() {},
-    onChange(fn) { change = fn; }, onCursor() {}, onPeers() {},
+    onChange(fn) { change = fn; }, onCursor() {}, onPeers() {}, onSourceNavigate() {},
     setReadOnly() {}, setWordWrap() {}, setSharedRegion() {}, setDiagnostics() {}, setCompletionContext() {}, onLoad(fn) { load = fn; }, focus() {},
   };
   const sockets = [];
@@ -168,7 +168,7 @@ function harness(language = "en", realtime = false) {
     IrisLilyPond: { outline() { return []; } },
     fetch(url, init = {}) {
       return new Promise((resolve, reject) => requests.push({
-        url, method: init.method || "GET", body: init.body ? JSON.parse(init.body) : undefined,
+        url, method: init.method || "GET", body: init.body ? JSON.parse(init.body) : undefined, signal: init.signal,
         reply(data, status = 200) { resolve({ ok: status < 400, status, json: async () => clone(data) }); }, reject,
       }));
     },
@@ -207,6 +207,7 @@ function harness(language = "en", realtime = false) {
     source = source.slice(0, end) + exposure + source.slice(end);
     vm.runInContext(source, context, { filename: name });
   }
+  vm.runInContext(read("iris-source-navigation.js"), context, { filename: "iris-source-navigation.js" });
   run("iris-net.js");
   run("iris-diagnostics.js");
   run("iris-completion.js");
@@ -312,7 +313,7 @@ function harness(language = "en", realtime = false) {
     editor.carets = () => view.state.selection.ranges.map((range) => range.from);
     run("iris-collab.js");
   }
-  run("iris-app.js", "window.appTest = { state, findFile, wire, wireEditorEvents, openFile, syncRealtimeSession, canonicalFileId, refreshFileTree, saveProject, openFileHistory, snapshotProject, confirmRestore, verState, openTreeRename, confirmTreeRename, folderNodeByPath, docFileForCompile, openExternal, openExternalPicker, pickAttach, doUpload, openNewItem, confirmNewItem, findOpen, findSelect, activateDiagnostic, compile, skipArtifactRendering() { renderCompiledOutput = async () => {}; }, get bibliography() { return bibliographyView; } };\n");
+  run("iris-app.js", "window.appTest = { state, findFile, wire, wireEditorEvents, openFile, navigationSource, syncRealtimeSession, canonicalFileId, refreshFileTree, saveProject, openFileHistory, snapshotProject, confirmRestore, verState, openTreeRename, confirmTreeRename, folderNodeByPath, docFileForCompile, openExternal, openExternalPicker, pickAttach, doUpload, openNewItem, confirmNewItem, findOpen, findSelect, activateDiagnostic, compile, skipArtifactRendering() { renderCompiledOutput = async () => {}; }, get bibliography() { return bibliographyView; } };\n");
   run("iris-projects.js", "window.projectsTest = { renameProject, cache, metaOf, finishDiscardDecision };\n");
   context.window.appTest.wireEditorEvents();
   return {
@@ -2881,6 +2882,136 @@ async function openShared(h) {
   h.socket().fire("open");
   h.socket().deliver({ t: "opened", fileId: mainFileId, version: 0, doc: "original", role: "owner" });
 }
+
+test("navigation refuses the active cached text until the authoritative room is live", options, async () => {
+  const h = harness("en", true); await h.open(sharedProject());
+  assert.equal(await h.a.navigationSource(mainFileId, {}), null);
+  h.socket().fire("open");
+  h.socket().deliver({ t: "opened", fileId: mainFileId, version: 0, doc: "authority", role: "owner" });
+  const source = await h.a.navigationSource(mainFileId, {});
+  assert.equal(source.text, "authority"); assert.equal(source.current(), true);
+  h.socket().fire("close", { code: 1006 });
+  assert.equal(source.current(), false, "a lost authority cannot authorize a cached navigation");
+});
+
+test("prepared navigation waits for authority without replacing the editor, then activates the same subscribed version", options, async () => {
+  const h = harness("en", true); await openShared(h); h.editor.select(2, 4);
+  const before = h.editor.snapshot(), selected = clone(h.editor.selection());
+  const pending = h.window.IrisCollab.prepareSource(otherFileId, "tex");
+  assert.deepEqual(clone(h.editor.snapshot()), clone(before));
+  h.socket().deliver({ t: "opened", fileId: otherFileId, version: 8, doc: "fresh authority", role: "viewer" });
+  const prepared = await pending;
+  assert.deepEqual(clone(h.editor.snapshot()), clone(before));
+  assert.deepEqual(clone(h.editor.selection()), selected);
+  assert.equal(prepared.text, "fresh authority"); assert.equal(prepared.current(), true);
+  h.a.openFile(otherFileId, prepared);
+  assert.equal(h.editor.getValue(), "fresh authority"); assert.equal(h.editor.collabVersion(), 8);
+  assert.equal(h.window.IrisCollab.fileId(), otherFileId); assert.equal(h.editor.isReadOnly(), true);
+  assert.equal(h.socket().of("open").filter((frame) => frame.fileId === otherFileId).length, 1);
+  prepared.dispose();
+  assert.equal(h.socket().of("close").filter((frame) => frame.fileId === otherFileId).length, 0);
+});
+
+for (const [name, local, authority, allowed] of [
+  ["build-equal cache and different authority", "other", "peer changed it", false],
+  ["different local work and build-equal authority", "unsaved local work", "other", false],
+  ["equal dirty and authoritative text", "other", "other", true],
+]) test(`inactive dirty navigation checks both texts and preserves local edits: ${name}`, options, async () => {
+  const h = harness("en", true); await openShared(h);
+  h.a.findFile(otherFileId).content = local;
+  h.a.state.dirtyFiles.set(otherFileId, 3);
+  h.editor.select(1, 3);
+  const before = clone(h.editor.snapshot()), selection = clone(h.editor.selection());
+  let settled = false;
+  const pending = h.a.navigationSource(otherFileId, {}).then((source) => { settled = true; return source; });
+  await tick();
+  assert.equal(settled, false, "dirty text cannot replace an authoritative room response");
+  assert.equal(h.socket().of("open").at(-1).fileId, otherFileId);
+  h.socket().deliver({ t: "opened", fileId: otherFileId, version: 8, doc: authority, role: "owner" });
+  const source = await pending;
+  assert.equal(source.text, authority);
+  assert.equal(source.current(), allowed);
+  assert.deepEqual(clone(h.editor.snapshot()), before); assert.deepEqual(clone(h.editor.selection()), selection);
+  if (allowed) {
+    h.a.openFile(otherFileId, source);
+    assert.equal(h.editor.getValue(), local);
+    assert.equal(h.window.IrisCollab.active(), false, "dirty text must stay outside the shared room");
+    h.edit(local + " newer local work");
+    assert.equal(h.a.findFile(otherFileId).content, local + " newer local work");
+    assert.equal(h.socket().of("push").length, 0);
+  }
+  source.dispose();
+  assert.equal(h.a.state.dirtyFiles.has(otherFileId), true);
+  assert.equal(h.app.serialize().project.nodes.find((file) => file.id === otherFileId).content, allowed ? local + " newer local work" : local);
+  assert.equal(h.socket().of("close").filter((frame) => frame.fileId === otherFileId).length, 1);
+});
+
+test("a local edit during inactive authority preparation invalidates the navigation without losing the edit", options, async () => {
+  const h = harness("en", true); await openShared(h);
+  h.a.state.dirtyFiles.set(otherFileId, 1);
+  const pending = h.a.navigationSource(otherFileId, {});
+  h.a.findFile(otherFileId).content = "later unsaved text"; h.a.state.dirtyFiles.set(otherFileId, 2);
+  h.socket().deliver({ t: "opened", fileId: otherFileId, version: 8, doc: "other", role: "owner" });
+  const source = await pending;
+  assert.equal(source.current(), false);
+  source.dispose();
+  assert.equal(h.a.findFile(otherFileId).content, "later unsaved text");
+  assert.equal(h.a.state.dirtyFiles.get(otherFileId), 2);
+  assert.equal(h.editor.getValue(), "original");
+});
+
+for (const event of ["updates", "resync", "role", "file-closed", "revoked", "disconnect", "abort", "timeout"]) {
+  test(`prepared navigation retires its room on ${event} without touching the active document`, options, async () => {
+    const h = harness("en", true); await openShared(h); h.editor.select(1, 3);
+    const before = h.editor.snapshot(), selection = clone(h.editor.selection()), abort = new AbortController();
+    const pending = h.window.IrisCollab.prepareSource(otherFileId, "tex", { signal: abort.signal });
+    h.socket().deliver({ t: "opened", fileId: otherFileId, version: 8, doc: "fresh authority", role: "owner" });
+    const prepared = await pending;
+    if (event === "disconnect") h.window.IrisCollab.disconnect();
+    else if (event === "abort") abort.abort();
+    else if (event === "timeout") h.timers.findLast((timer) => timer.delay === 5000 && !timer.cleared).fn();
+    else h.socket().deliver({ t: event, fileId: otherFileId, version: 9, doc: "newer", updates: [] });
+    assert.equal(prepared.current(), false); assert.equal(prepared.activate(), false);
+    assert.deepEqual(clone(h.editor.snapshot()), clone(before)); assert.deepEqual(clone(h.editor.selection()), selection);
+    assert.equal(h.socket().of("close").filter((frame) => frame.fileId === otherFileId).length, 1);
+  });
+}
+
+test("cancelled preflight replies cannot consume a newer same-file open", options, async () => {
+  const h = harness("en", true); await openShared(h); const abort = new AbortController();
+  const old = h.window.IrisCollab.prepareSource(otherFileId, "tex", { signal: abort.signal }); abort.abort();
+  assert.equal(await old, null);
+  const latest = h.window.IrisCollab.prepareSource(otherFileId, "tex");
+  h.socket().deliver({ t: "opened", fileId: otherFileId, version: 1, doc: "old", role: "owner" });
+  h.socket().deliver({ t: "opened", fileId: otherFileId, version: 4, doc: "latest", role: "owner" });
+  const prepared = await latest;
+  assert.equal(prepared.text, "latest"); assert.equal(h.editor.getValue(), "original"); prepared.dispose();
+});
+
+test("mapping false survives client load, refresh, save and the captured running compilation", options, async () => {
+  const h = harness(); await h.open({ ...projectData(), sourceMapping: false }); h.a.wire();
+  assert.equal(h.app.serialize().sourceMapping, false); assert.equal(h.get("compileSourceMapping").checked, false);
+  const save = h.app.persistChanges(); await tick(); assert.equal(h.requests.at(-1).body.data.sourceMapping, false);
+  h.ack(h.requests.at(-1), 5); await save;
+  const refreshing = h.a.refreshFileTree(); await tick(); h.requests.at(-1).reply({ ...projectData(5), sourceMapping: false }); await refreshing;
+  const compiling = h.projects.compileCurrent({}); await tick(); const request = h.requests.at(-1);
+  h.get("compileSourceMapping").checked = true; h.get("compileSourceMapping").dispatchEvent({ type: "change" });
+  assert.equal(request.body.data.sourceMapping, false); h.ack(request, 6); await compiling;
+  assert.equal(h.app.serialize().sourceMapping, true);
+  await tick(); h.ack(h.requests.at(-1), 7); await h.app.waitForPersistence();
+});
+
+test("navigation transport preserves the HTTP query and signal and rejects same-project session replacement", options, async () => {
+  const h = harness(); await h.open(); const abort = new AbortController();
+  const query = { direction: "forward", sourceFileId: mainFileId, line: 2, column: 0 };
+  const pending = h.projects.navigateBuild("build-1", query, { signal: abort.signal }); await tick();
+  const request = h.requests.at(-1);
+  assert.equal(request.url, "/api/projects/p1/builds/build-1/navigation"); assert.equal(request.method, "POST");
+  assert.deepEqual(request.body, query); assert.equal(request.signal, abort.signal);
+  const reopening = h.projects.openProject("p1"); await tick(); h.requests.at(-1).reply(projectData(5)); await reopening;
+  const rejected = assert.rejects(pending, (error) => error.stale === true);
+  request.reply({ status: "missing", matches: [] }); await rejected;
+});
 
 for (const language of ["en", "it"]) {
   test(`maintenance locks the real editor and preserves pending text, preferences and status (${language})`, options, async () => {

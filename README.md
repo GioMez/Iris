@@ -442,6 +442,43 @@ The files in `public/templates` seed a new instance once and are not used as its
 mutable catalog afterward. See [`public/templates/README.md`](public/templates/README.md)
 for placeholders, limits and storage details.
 
+### PDF–source navigation
+
+For LaTeX and LilyPond PDF builds, **Ctrl-click** on Windows/Linux or
+**Cmd-click** on macOS moves between the source editor and the PDF:
+
+- Click a source position to reveal its PDF area. The keyboard-accessible
+  **Show in PDF** footer action uses the current caret.
+- Click a PDF position to open the corresponding source file. LilyPond maps
+  character positions; the verified SyncTeX engine supplies row precision.
+- Choose **PDF document** above the preview when a build contains several PDFs.
+  A source jump can select another PDF in the same build. Page numbers refer to
+  physical pages, regardless of printed numbering.
+
+**Settings → Compilation → Enable PDF–source mapping** defaults to checked.
+Owners and editors can change this shared project preference; viewers can
+navigate. Unchecking it stops navigation in the current session and disables map
+generation for subsequent builds. An in-progress compilation keeps its captured
+choice. Re-enable it to reuse a compatible historical map, or recompile if the
+build has none. Other output formats retain the preference but offer no source
+navigation.
+
+Iris checks the current source against the compiled text before jumping. If you
+or a collaborator changed the content, recompile first. Renaming a file keeps
+its identity and does not require a rebuild for navigation. An unavailable or
+deleted source leaves the current editor selection and PDF reading position in
+place.
+
+LaTeX navigation requires the `synctex` executable beside the selected TeX
+binaries or on PATH. Runtime verification covers pdfLaTeX from TeX Live 2026
+(pdfTeX 1.40.29, SyncTeX utility 1.5) and LilyPond 2.26.0's PS backend with Guile
+3.0. LilyPond uses Iris's final-stencil collector, independent of `pointAndClick`.
+Navigation uses the original page's MediaBox origin, including when the PDF has
+a cropped display area. Iris reads original page geometry on demand with
+pdf-lib 1.17.1 in a cancellable worker and preserves the compiler's PDF bytes.
+See [PDF–source navigation](docs/source-navigation.md) for the API, native
+requirements, resource limits and browser verification scope.
+
 ### LaTeX projects
 
 A new LaTeX project starts with `main.tex` generated from the selected instance

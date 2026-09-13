@@ -6,6 +6,7 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const { spawn } = require("node:child_process");
 const { URL } = require("node:url");
+const { pipeline } = require("node:stream/promises");
 const argon2 = require("argon2");
 const { createDatabase } = require("./database");
 const { loadDotEnv } = require("./env");
@@ -41,6 +42,7 @@ const {
 } = require("./project-templates");
 const { createZip, extractZip } = require("./zip");
 const { parseCompileLog, compileDiagnosticsView, selectCompileDiagnostics } = require("./compile-diagnostics");
+const SourceMapping = require("./source-mapping");
 const { normalizeCustomCommands } = require("../public/iris-completion");
 const Bibliography = require("../public/iris-bibliography");
 const {
@@ -53,6 +55,7 @@ const {
   listBuildFiles,
   collectBuildArchiveEntries,
   resolveBuildFile,
+  isPrivateBuildFile,
 } = require("./builds");
 const { RateLimiter, ConcurrencyGate, GateRejectedError } = require("./throttle");
 const {
@@ -173,6 +176,7 @@ const LATEX_COMPILE_TOOLS = new Set(["pdflatex", "xelatex", "lualatex", "xetex",
 const LILYPOND_COMPILE_TOOLS = new Set(["lilypond"]);
 const LILYPOND_OUTPUT_FORMATS = new Set(["pdf", "png", "svg", "ps", "eps"]);
 const PDFJS_BUILD_DIR = path.join(path.dirname(require.resolve("pdfjs-dist/package.json")), "build");
+const PDF_LIB_DIR = path.join(path.dirname(require.resolve("pdf-lib/package.json")), "dist");
 // CodeMirror 6 is served as native ES modules resolved through the import map
 // in Iris.html; the whitelist below maps public vendor names to each package's
 // ESM entry inside node_modules (require.resolve anchors on the CJS entry).
@@ -216,6 +220,7 @@ const apiLimiter = new RateLimiter({ limit: API_RATE_LIMIT, windowMs: API_RATE_W
 const compileLimiter = new RateLimiter({ limit: COMPILE_RATE_LIMIT, windowMs: COMPILE_RATE_WINDOW_MS });
 const passwordHashGate = new ConcurrencyGate({ limit: PASSWORD_HASH_CONCURRENCY, queueLimit: PASSWORD_HASH_QUEUE });
 const compileGate = new ConcurrencyGate({ limit: COMPILE_CONCURRENCY, queueLimit: COMPILE_QUEUE });
+const navigationGate = new ConcurrencyGate({ limit: 2, queueLimit: 0 });
 
 // Retention thresholds an owner may choose between, and the instance ceiling
 // they cannot pass. Read once: changing them is an operator action that takes
@@ -1413,6 +1418,7 @@ async function syncNodesWithFilesystem(storagePath, data, strictRead = false) {
 async function readProjectFile(storagePath, { strictRead = false } = {}) {
   const metaFile = path.join(storagePath, ".iris", "project.json");
   const data = JSON.parse(await fs.readFile(metaFile, "utf8")) || {};
+  data.sourceMapping = SourceMapping.normalizeSourceMapping(data.sourceMapping);
   if (!data.project) data.project = { nodes: [] };
   data.assets = data.assets || {};
   // Missing stale manifest entries are reconciled by the scan below. Compile
@@ -1468,7 +1474,9 @@ async function readProjectFile(storagePath, { strictRead = false } = {}) {
 
 async function readProjectManifest(storagePath) {
   const metaFile = path.join(storagePath, ".iris", "project.json");
-  return JSON.parse(await fs.readFile(metaFile, "utf8"));
+  const data = JSON.parse(await fs.readFile(metaFile, "utf8"));
+  data.sourceMapping = SourceMapping.normalizeSourceMapping(data.sourceMapping);
+  return data;
 }
 
 async function writeProjectManifest(storagePath, data) {
@@ -2041,6 +2049,10 @@ function requireProjectRevision(body, row) {
 // The caller holds the project gate and transaction, including any follow-up
 // checkpoint. Name-only saves change the current manifest without reconciling it.
 async function saveProjectTree(id, row, body, data, client, protect, { manifestOnly = false, user } = {}) {
+  const mappingSetting = Object.hasOwn(body, "sourceMapping") ? body.sourceMapping
+    : Object.hasOwn(data, "sourceMapping") ? data.sourceMapping
+      : (await readProjectManifest(row.storageDir)).sourceMapping;
+  data.sourceMapping = SourceMapping.normalizeSourceMapping(mappingSetting);
   data.project = data.project && Array.isArray(data.project.nodes) ? data.project : { nodes: [] };
   data.project.name = body.name == null ? row.name : cleanName(body.name);
   data.projectType = inferProjectType(data);
@@ -3257,6 +3269,7 @@ async function createProject(req, res, user) {
   const storagePath = resolveProjectStorageDir(DATA_DIR, storageKey);
   const now = Date.now();
   const data = body.data && typeof body.data === "object" ? body.data : {};
+  data.sourceMapping = SourceMapping.normalizeSourceMapping(Object.hasOwn(body, "sourceMapping") ? body.sourceMapping : data.sourceMapping);
   data.project = data.project && Array.isArray(data.project.nodes) ? data.project : { nodes: [] };
   data.project.name = name;
   data.projectType = inferProjectType(data);
@@ -3513,6 +3526,7 @@ function parseProjectArchive(body) {
 
 function normalizeImportedProject(data, name, now) {
   if (!data || typeof data !== "object" || Array.isArray(data)) throw invalidProjectArchive();
+  data.sourceMapping = SourceMapping.normalizeSourceMapping(data.sourceMapping);
   delete data.irisArchive;
   delete data.id;
   data.project = data.project && typeof data.project === "object" && Array.isArray(data.project.nodes)
@@ -3852,7 +3866,8 @@ function lilypondArgs(args, vars, additionalArgs = [], outputFormat = "pdf") {
   return [`--${format}`, `--output=output/${vars.jobname}`, ...clean];
 }
 
-function normalizeCompileProfile(profile, engine, mainPath, projectType = "latex", additionalArgs = [], outputFormat = "pdf") {
+function normalizeCompileProfile(profile, engine, mainPath, projectType = "latex", additionalArgs = [], outputFormat = "pdf", sourceMapping = true) {
+  sourceMapping = SourceMapping.normalizeSourceMapping(sourceMapping);
   const requested = projectType === "lilypond"
     ? defaultCompileProfile("lilypond")
     : (profile && typeof profile === "object" ? profile : defaultCompileProfile(projectType));
@@ -3887,7 +3902,8 @@ function normalizeCompileProfile(profile, engine, mainPath, projectType = "latex
           "-file-line-error",
           "-no-shell-escape",
           "-output-directory=output",
-          ...options,
+          ...options.filter((arg) => !/^--?synctex=/.test(arg)),
+          sourceMapping && outputFormat === "pdf" ? "-synctex=1" : "-synctex=0",
           // Anything after the source operand is interpreted as TeX input.
           inputs[0],
         ];
@@ -4037,10 +4053,10 @@ function compileArtifactNameMatches(fileName, jobname, format) {
   return boundary === "." || boundary === "-";
 }
 
-async function readCompileArtifacts(outputDir, jobname, format) {
+async function readCompileArtifacts(outputDir, jobname, format, allOutputNames = false) {
   const entries = await fs.readdir(outputDir, { withFileTypes: true }).catch(() => []);
   const names = entries
-    .filter((entry) => entry.isFile() && compileArtifactNameMatches(entry.name, jobname, format))
+    .filter((entry) => entry.isFile() && (allOutputNames ? entry.name.toLowerCase().endsWith(`.${format}`) : compileArtifactNameMatches(entry.name, jobname, format)))
     .map((entry) => entry.name)
     .sort((a, b) => {
       const exact = `${jobname}.${format}`;
@@ -4256,8 +4272,31 @@ async function getBuildOutput(req, res, user, projectId, buildId) {
   });
 }
 
+// Own the resolved handle before doing anything that can throw (including
+// headers/stream construction). A destination close must destroy the source;
+// unpipe alone leaves a paused FileHandle stream open indefinitely.
+async function streamBuildDownload(req, res, file, headers) {
+  let stream;
+  try {
+    if (req.aborted || res.destroyed) return;
+    res.writeHead(200, headers());
+    stream = file.handle.createReadStream({ autoClose: true });
+    await pipeline(stream, res);
+  } finally {
+    if (stream && !stream.closed) {
+      await new Promise((resolve) => {
+        stream.once("close", resolve);
+        stream.destroy();
+      });
+    }
+    await file.handle.close();
+  }
+}
+
 async function downloadBuildArtifact(req, res, user, projectId, buildId, artifactId, url) {
+  if (req.aborted || res.destroyed) return;
   const project = await authorizeProject(projectId, user, "read");
+  if (req.aborted || res.destroyed) return;
   const { rows } = await db.query(
     `SELECT a.name, a.storage_path, a.mime_type, a.size,
             b.storage_path AS build_storage_path
@@ -4265,36 +4304,125 @@ async function downloadBuildArtifact(req, res, user, projectId, buildId, artifac
      WHERE a.id = $1 AND a.build_id = $2 AND b.project_id = $3 AND b.status = 'succeeded'`,
     [artifactId, buildId, projectId]
   );
+  if (req.aborted || res.destroyed) return;
   if (!rows.length) throw requestError("BUILD_ARTIFACT_NOT_FOUND", 404);
   const artifact = rows[0];
   const file = await resolveBuildArtifact(
     project.storageDir, buildId, artifact.build_storage_path, artifact.storage_path
   );
   if (!file) throw requestError("BUILD_ARTIFACT_NOT_FOUND", 404);
-  const fallbackName = artifact.name.replace(/[^A-Za-z0-9._-]/g, "_") || "download";
-  const disposition = url.searchParams.get("download") === "1" ? "attachment" : "inline";
-  res.writeHead(200, {
-    "content-type": artifact.mime_type,
-    "content-length": file.size,
-    "content-disposition": `${disposition}; filename="${fallbackName}"; filename*=UTF-8''${encodeDispositionValue(artifact.name)}`,
-    "cache-control": "private, no-store",
-  });
-  await new Promise((resolve, reject) => {
-    const stream = file.handle.createReadStream({ autoClose: true });
-    stream.on("error", reject);
-    res.on("finish", resolve);
-    res.on("close", resolve);
-    stream.pipe(res);
+  await streamBuildDownload(req, res, file, () => {
+    const fallbackName = artifact.name.replace(/[^A-Za-z0-9._-]/g, "_") || "download";
+    const disposition = url.searchParams.get("download") === "1" ? "attachment" : "inline";
+    return {
+      "content-type": artifact.mime_type,
+      "content-length": file.size,
+      "content-disposition": `${disposition}; filename="${fallbackName}"; filename*=UTF-8''${encodeDispositionValue(artifact.name)}`,
+      "cache-control": "private, no-store",
+    };
   });
 }
 
+async function navigateBuildOutput(req, res, user, projectId, buildId) {
+  const controller = new AbortController();
+  const cancel = () => { if (!res.writableEnded) controller.abort(); };
+  const checkCancelled = () => {
+    if (req.aborted || res.destroyed) cancel();
+    controller.signal.throwIfAborted();
+  };
+  req.once("aborted", cancel);
+  res.once("close", cancel);
+  let release;
+  try {
+    checkCancelled();
+    try { release = await navigationGate.acquire(); }
+    catch (error) {
+      if (!(error instanceof GateRejectedError)) throw error;
+      checkCancelled();
+      return json(res, 200, SourceMapping.envelope("unavailable", "busy"));
+    }
+    checkCancelled();
+    const query = SourceMapping.validateNavigationQuery(await readBody(req));
+    checkCancelled();
+    const inspect = async (project) => {
+      checkCancelled();
+      const { rows } = await db.query("SELECT id, status, format, storage_path FROM build_outputs WHERE id = $1 AND project_id = $2", [buildId, projectId]);
+      checkCancelled();
+      if (!rows.length) throw requestError("BUILD_NOT_FOUND", 404);
+      const build = rows[0];
+      const { rows: artifacts } = await db.query("SELECT id, name, storage_path, mime_type, size, content_hash FROM build_artifacts WHERE build_id = $1 ORDER BY name", [buildId]);
+      checkCancelled();
+      if (query.artifactId && !artifacts.some((a) => a.id === query.artifactId)) throw requestError("BUILD_ARTIFACT_NOT_FOUND", 404);
+      if (query.sourceFileId) {
+        const file = await fileForProject(projectId, query.sourceFileId);
+        checkCancelled();
+        if (file.deleted_at) return { state: "missing" };
+      }
+      const data = await readProjectManifest(project.storageDir);
+      checkCancelled();
+      if (!data.sourceMapping) return { state: "disabled" };
+      if (build.format !== "pdf") return { state: "unsupported" };
+      if (build.status !== "succeeded") return { state: "missing" };
+      if (artifacts.some((a) => a.storage_path !== `${build.storage_path}/${a.name}` || a.mime_type !== "application/pdf")) return { state: "unavailable" };
+      return { projectStorageDir: project.storageDir, projectId, buildId, storagePath: build.storage_path,
+        artifacts: artifacts.map((a) => ({ id: a.id, fileName: a.name, size: Number(a.size), contentHash: a.content_hash })) };
+    };
+    const initial = await authorizedProjectGate(projectId, user, "read", inspect);
+    checkCancelled();
+    if (initial.state) return json(res, 200, SourceMapping.envelope(initial.state));
+    const result = await SourceMapping.navigateBuild({ ...initial, enabled: true, query, signal: controller.signal,
+      binPath: TEX_PATH_LOCKED ? TEX_BIN_PATH : undefined, spawnChild: trackedSpawn });
+    checkCancelled();
+    const actor = await requireUser(req);
+    checkCancelled();
+    return await authorizedProjectGate(projectId, actor, "read", async (project) => {
+      const current = await inspect(project);
+      if (current.state) return json(res, 200, SourceMapping.envelope(current.state));
+      if (current.storagePath !== initial.storagePath || JSON.stringify(current.artifacts) !== JSON.stringify(initial.artifacts)) {
+        return json(res, 200, SourceMapping.envelope("unavailable", "stale-artifact"));
+      }
+      if (result.status === "ready") {
+        const ids = [...new Set(result.matches.map((m) => m.sourceFileId))];
+        const { rows } = await db.query("SELECT id FROM project_files WHERE project_id = $1 AND id = ANY($2::uuid[]) AND deleted_at IS NULL", [projectId, ids]);
+        checkCancelled();
+        const live = new Set(rows.map((r) => r.id));
+        result.matches = result.matches.filter((m) => live.has(m.sourceFileId));
+        if (!result.matches.length) result.status = "missing";
+        const directory = await resolveBuildDirectory(current.projectStorageDir, buildId, current.storagePath);
+        checkCancelled();
+        if (!directory) return json(res, 200, SourceMapping.envelope("missing"));
+      }
+      // Keep the save/file gate through response publication; recheck revocation
+      // after the asynchronous file checks as well as after the native query.
+      const finalActor = await requireUser(req);
+      checkCancelled();
+      await authorizeProject(projectId, finalActor, "read");
+      checkCancelled();
+      json(res, 200, result);
+    });
+  } catch (error) {
+    if (!controller.signal.aborted) throw error;
+  } finally {
+    req.removeListener("aborted", cancel);
+    res.removeListener("close", cancel);
+    // Keep cancelled gate waiters reserved until their queued callback drains;
+    // early release would permit an unbounded chain of cancelled callbacks.
+    // Native work also settles only after the child has closed.
+    release?.();
+  }
+}
+
 async function downloadBuildFile(req, res, user, projectId, buildId, url) {
+  if (req.aborted || res.destroyed) return;
   const project = await authorizeProject(projectId, user, "read");
+  if (req.aborted || res.destroyed) return;
+  if (isPrivateBuildFile(url.searchParams.get("path"))) throw requestError("BUILD_FILE_NOT_FOUND", 404);
   const { rows } = await db.query(
     `SELECT id, storage_path FROM build_outputs
      WHERE id = $1 AND project_id = $2 AND status = 'succeeded'`,
     [buildId, projectId]
   );
+  if (req.aborted || res.destroyed) return;
   if (!rows.length) throw requestError("BUILD_FILE_NOT_FOUND", 404);
   let file;
   try {
@@ -4305,20 +4433,15 @@ async function downloadBuildFile(req, res, user, projectId, buildId, url) {
     throw requestError("BUILD_FILE_NOT_FOUND", 404);
   }
   if (!file) throw requestError("BUILD_FILE_NOT_FOUND", 404);
-  const fallbackName = file.name.replace(/[^A-Za-z0-9._-]/g, "_") || "download";
-  res.writeHead(200, {
-    "content-type": mimeForProjectFile(file.relativePath),
-    "content-length": file.size,
-    "content-disposition": `attachment; filename="${fallbackName}"; filename*=UTF-8''${encodeDispositionValue(file.name)}`,
-    "cache-control": "private, no-store",
-    "x-content-type-options": "nosniff",
-  });
-  await new Promise((resolve, reject) => {
-    const stream = file.handle.createReadStream({ autoClose: true });
-    stream.on("error", reject);
-    res.on("finish", resolve);
-    res.on("close", resolve);
-    stream.pipe(res);
+  await streamBuildDownload(req, res, file, () => {
+    const fallbackName = file.name.replace(/[^A-Za-z0-9._-]/g, "_") || "download";
+    return {
+      "content-type": mimeForProjectFile(file.relativePath),
+      "content-length": file.size,
+      "content-disposition": `attachment; filename="${fallbackName}"; filename*=UTF-8''${encodeDispositionValue(file.name)}`,
+      "cache-control": "private, no-store",
+      "x-content-type-options": "nosniff",
+    };
   });
 }
 
@@ -4477,6 +4600,7 @@ async function compileProject(req, res, user, id) {
           id: entry.node.id,
           path: entry.path,
           kind: entry.kind,
+          binary: fileIsBinaryNode(entry.node),
         }));
         // Select from effective saved bytes after renames and room authority,
         // preserving candidate DFS order without hydrating the response payload.
@@ -4490,7 +4614,11 @@ async function compileProject(req, res, user, id) {
         const requestedPath = (typeof body.mainPath === "string" ? normalizeProjectPath(body.mainPath.trim()) : null) || data.mainPath;
         const main = findCompileFile({ project: { nodes: candidates } }, requestedPath, projectType);
         const mainPath = safeProjectSourcePath(main.path);
-        const compileProfile = normalizeCompileProfile(storedCompileProfile, engine, mainPath, projectType, additionalArgs, outputFormat);
+        const compileProfile = normalizeCompileProfile(storedCompileProfile, engine, mainPath, projectType, additionalArgs, outputFormat, data.sourceMapping);
+        if (projectType === "lilypond") {
+          const args = compileProfile.steps[0].args;
+          args.splice(args.length - 1, 0, ...SourceMapping.lilypondMappingArgs(data.sourceMapping, outputFormat));
+        }
         return { row, data, projectType, engine, binPath, main, mainPath, storedLilypondArgs, outputFormat, compileProfile, buildFiles };
       });
       confirmedSetup = setup;
@@ -4544,6 +4672,11 @@ async function compileProject(req, res, user, id) {
     const texmfVar = path.join(stagingDir, ".iris", "texmf-var");
     await fs.mkdir(texmfVar, { recursive: true });
     const preLog = /^(xelatex|lualatex)$/i.test(engine) ? await refreshFontCache(fontDir) : "";
+    let mappingSources, mappingError;
+    if (data.sourceMapping && outputFormat === "pdf") {
+      try { mappingSources = await SourceMapping.captureMappingSources(stagingDir, buildFiles, sourceVersions); }
+      catch (error) { mappingError = error; }
+    }
     result = await runCompilePipeline({ profile: compileProfile, binPath, cwd: stagingDir, fontDir, texmfVar, preLog });
     const sourcesByPath = new Map(buildFiles.map((file) => [file.path, file]));
     result.diagnostics = result.diagnostics.map((item) => {
@@ -4551,10 +4684,15 @@ async function compileProject(req, res, user, id) {
       const revision = file && sourceVersions.get(file.id);
       return revision ? { ...item, sourceFileId: file.id, sourceRevisionId: revision } : item;
     });
-    const generatedArtifacts = await readCompileArtifacts(stagingOutputDir, jobname, outputFormat);
+    const generatedArtifacts = await readCompileArtifacts(stagingOutputDir, jobname, outputFormat, projectType === "lilypond");
     const success = result.code === 0 && generatedArtifacts.length > 0;
     const artifacts = success ? versionCompileArtifacts(generatedArtifacts, buildId, uuidv7) : [];
     const status = success ? "succeeded" : "failed";
+    if (success) await SourceMapping.publishSourceMapping({
+      outputDir: stagingOutputDir, snapshotRoot: stagingDir, sources: mappingSources,
+      projectId: id, buildId, artifacts, backend: projectType,
+      enabled: data.sourceMapping, format: outputFormat, mappingError, binPath,
+    });
     await authorizedProjectGate(id, user, "compile", async () => {
       if (success) publishedPath = await publishCompileOutput(stagingOutputDir, row.storageDir, buildId);
       await finalizeBuildOutput({ id: buildId, status, storagePath: publishedPath, artifacts, result });
@@ -4931,6 +5069,7 @@ const PROJECT_TEMPLATE_FILE_ROUTE = /^\/api\/project-templates\/(latex|lilypond)
 const PROJECT_COMPILE_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/compile$`);
 const PROJECT_BUILDS_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/builds$`);
 const PROJECT_BUILD_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/builds/(${UUID_PATTERN})$`);
+const PROJECT_BUILD_NAVIGATION_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/builds/(${UUID_PATTERN})/navigation$`);
 const PROJECT_BUILD_ARTIFACT_ROUTE = new RegExp(
   `^/api/projects/(${UUID_PATTERN})/builds/(${UUID_PATTERN})/artifacts/(${UUID_PATTERN})$`
 );
@@ -5871,6 +6010,9 @@ async function handleApi(req, res, url) {
     );
   }
 
+  const navigationMatch = url.pathname.match(PROJECT_BUILD_NAVIGATION_ROUTE);
+  if (navigationMatch && req.method === "POST") return navigateBuildOutput(req, res, user, navigationMatch[1], navigationMatch[2]);
+
   const buildFileMatch = url.pathname.match(PROJECT_BUILD_FILE_ROUTE);
   if (buildFileMatch && req.method === "GET") {
     return downloadBuildFile(req, res, user, buildFileMatch[1], buildFileMatch[2], url);
@@ -5946,8 +6088,9 @@ async function serveStatic(req, res, url) {
   const codemirrorFile = pathname.match(/^\/vendor\/codemirror\/([a-z0-9.-]+)$/);
   if (codemirrorFile && !CODEMIRROR_MODULES[codemirrorFile[1]]) return text(res, 404, "Not found");
   const pdfjsFile = pathname.match(/^\/vendor\/pdfjs\/(pdf(?:\.worker)?\.min\.mjs)$/);
-  const root = pdfjsFile ? PDFJS_BUILD_DIR : PUBLIC_DIR;
-  const relativePath = pdfjsFile ? pdfjsFile[1] : `.${pathname}`;
+  const pdfLibFile = pathname === "/vendor/pdf-lib/pdf-lib.esm.min.js";
+  const root = pdfjsFile ? PDFJS_BUILD_DIR : pdfLibFile ? PDF_LIB_DIR : PUBLIC_DIR;
+  const relativePath = pdfjsFile ? pdfjsFile[1] : pdfLibFile ? "pdf-lib.esm.min.js" : `.${pathname}`;
   const filePath = codemirrorFile
     ? CODEMIRROR_MODULES[codemirrorFile[1]]
     : path.resolve(root, relativePath);

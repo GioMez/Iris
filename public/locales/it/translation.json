@@ -1,4 +1,16 @@
 {
+  "navigation": {
+    "enable": "Abilita mappatura PDF–sorgente",
+    "enableHint": "Permette di passare tra PDF e sorgente con Ctrl/Cmd+clic. Disattivala per ridurre il lavoro di compilazione e lo spazio delle mappe.",
+    "show": "Mostra nel PDF",
+    "artifact": "Documento PDF",
+    "disabled": "La mappatura PDF–sorgente è disattivata nelle impostazioni di compilazione.",
+    "missing": "La mappa di questa build o del sorgente non è disponibile. Ricompila con la mappatura PDF–sorgente attiva.",
+    "unsupported": "La navigazione richiede un output PDF e un backend di mappatura supportato.",
+    "no-match": "Nessuna corrispondenza sorgente in questa posizione.",
+    "unavailable": "Navigazione sorgente non disponibile. Riprova o ricompila.",
+    "stale": "Il sorgente è cambiato dopo questa build. Ricompila prima di navigare."
+  },
   "bibliography": {
     "add": "Aggiungi",
     "edit": "Modifica",
@@ -977,6 +989,8 @@
     "COMPILE_NO_SOURCE": "Nel progetto non è stato trovato alcun file {{extension}} compilabile.",
     "COMPILE_TOOL_UNSUPPORTED": "Tool di compilazione non supportato.",
     "COMPILE_ARGUMENT_INVALID": "Parametro di compilazione non valido.",
+    "SOURCE_MAPPING_INVALID": "La mappatura sorgente deve essere abilitata o disabilitata.",
+    "SOURCE_NAVIGATION_INVALID": "Posizione o identificatore di navigazione sorgente non valido.",
     "LILYPOND_ARGUMENTS_INVALID": "Parametri LilyPond non validi.",
     "LILYPOND_ARGUMENTS_UNTERMINATED": "Virgolette o escape non terminati nei parametri LilyPond.",
     "LILYPOND_FORMAT_UNSUPPORTED": "Formato di output LilyPond non supportato.",

@@ -486,6 +486,16 @@
     return api(`/api/projects/${currentId}/builds/${buildId}`);
   }
 
+  async function navigateBuild(buildId, query, { signal } = {}) {
+    const projectId = currentId, generation = openGeneration;
+    if (!projectId) throw staleSession();
+    const result = await api(`/api/projects/${projectId}/builds/${buildId}/navigation`, {
+      method: "POST", body: JSON.stringify(query), signal,
+    });
+    if (projectId !== currentId || generation !== openGeneration) throw staleSession();
+    return result;
+  }
+
   async function loadBuildOutput(buildId) {
     const projectId = currentId;
     if (!projectId) throw new Error(t("projects.noneOpen"));
@@ -1096,7 +1106,7 @@
     showPicker, openProject, closeCurrent, persistCurrent, compileCurrent, waitForPersistence,
     downloadCurrentFile, refreshCurrent, renderPicker, onLogout, resolveFileId,
     listFileVersions, getFileVersion, restoreFileVersion, checkpointCurrent,
-    currentProjectId, currentRole, listBuildOutputs, getBuildOutput, loadBuildOutput,
+    currentProjectId, currentRole, listBuildOutputs, getBuildOutput, loadBuildOutput, navigateBuild,
     downloadBuildArtifact, downloadBuildFile, downloadBuildArchive, deleteBuildOutput,
   };
 

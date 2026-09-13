@@ -1,4 +1,16 @@
 {
+  "navigation": {
+    "enable": "Enable PDF–source mapping",
+    "enableHint": "Move between PDF and source with Ctrl/Cmd-click. Disable to reduce compilation work and map storage.",
+    "show": "Show in PDF",
+    "artifact": "PDF document",
+    "disabled": "PDF–source mapping is disabled in Compilation settings.",
+    "missing": "This build or source has no available map. Compile again with PDF–source mapping enabled.",
+    "unsupported": "Navigation requires PDF output and a supported mapping backend.",
+    "no-match": "No source match at this position.",
+    "unavailable": "Source navigation is unavailable. Try again or recompile.",
+    "stale": "The source has changed since this build. Recompile before navigating."
+  },
   "bibliography": {
     "add": "Add",
     "edit": "Edit",
@@ -977,6 +989,8 @@
     "COMPILE_NO_SOURCE": "No compilable {{extension}} file was found in the project.",
     "COMPILE_TOOL_UNSUPPORTED": "Unsupported compilation tool.",
     "COMPILE_ARGUMENT_INVALID": "Invalid compilation argument.",
+    "SOURCE_MAPPING_INVALID": "Source mapping must be enabled or disabled.",
+    "SOURCE_NAVIGATION_INVALID": "Invalid source navigation position or identifier.",
     "LILYPOND_ARGUMENTS_INVALID": "Invalid LilyPond arguments.",
     "LILYPOND_ARGUMENTS_UNTERMINATED": "Unterminated quote or escape in the LilyPond arguments.",
     "LILYPOND_FORMAT_UNSUPPORTED": "Unsupported LilyPond output format.",

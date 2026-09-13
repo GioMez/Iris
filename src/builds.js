@@ -7,6 +7,13 @@ function buildStoragePath(buildId) {
   return `output/${buildId}`;
 }
 
+// Navigation sidecars contain private compiler paths and snapshot text. The
+// navigation adapter may read them, but public file and archive views omit them.
+function isPrivateBuildFile(relative) {
+  return String(relative).split("/").some((name) => name.startsWith(".iris-navigation")
+    || name.endsWith(".iris-map.tsv") || /\.synctex(?:\.gz)?(?:\(busy\))?$/.test(name));
+}
+
 async function secureOutputRoot(projectStorageDir, create = false) {
   const projectReal = await fs.realpath(projectStorageDir);
   const output = path.join(projectStorageDir, "output");
@@ -107,6 +114,7 @@ async function walkBuildDirectory(directory, includeContents = false, limits = {
     for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
       if (!entry.name || entry.name.includes("\0") || entry.name.includes("\\")) continue;
       const relative = relativeBase ? path.posix.join(relativeBase, entry.name) : entry.name;
+      if (isPrivateBuildFile(relative)) continue;
       const absolute = path.join(absoluteBase, entry.name);
       const stat = await fs.lstat(absolute).catch(() => null);
       if (!stat || stat.isSymbolicLink()) continue;
@@ -196,6 +204,7 @@ async function resolveBuildArtifact(projectStorageDir, buildId, buildPath, artif
 }
 
 module.exports = {
+  isPrivateBuildFile,
   buildStoragePath,
   publishCompileOutput,
   versionCompileArtifacts,

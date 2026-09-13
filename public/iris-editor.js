@@ -39,7 +39,7 @@
   const INVISIBLE_SPACES = new RegExp(INVISIBLE_SPACE_CLASS, "g");
   const IS_INVISIBLE_SPACE = new RegExp(INVISIBLE_SPACE_CLASS);
   const codePointLabel = (code) => `U+${code.toString(16).toUpperCase().padStart(4, "0")}`;
-  const handlers = { change: [], cursor: [], sync: [], peers: [], load: [] };
+  const handlers = { change: [], cursor: [], sync: [], peers: [], load: [], sourceNavigate: [] };
   let impl = null;
   let revision = 0;
 
@@ -543,6 +543,24 @@
       return S.EditorState.create({
         doc: content,
         extensions: [
+          S.Prec.highest(V.EditorView.domEventHandlers({
+            contextmenu(event) {
+              if (!window.IrisSourceNavigation.isGesture(event)) return false;
+              // Some browser/OS combinations emit a primary-button context menu
+              // after Ctrl-mousedown, which otherwise changes the native selection.
+              event.preventDefault();
+              return true;
+            },
+            mousedown(event, view) {
+              if (!window.IrisSourceNavigation.isGesture(event)) return false;
+              const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
+              if (pos == null) return false;
+              const line = view.state.doc.lineAt(pos);
+              event.preventDefault();
+              emit("sourceNavigate", { line: line.number, column: pos - line.from });
+              return true;
+            },
+          })),
           // The authority splits on LF. Retained CRs keep raw UTF-16 offsets in
           // agreement for initial text, string edits and CodeMirror's paste path.
           lineSeparatorCompartment.of(rawLines ? S.EditorState.lineSeparator.of("\n") : []),
@@ -946,6 +964,7 @@
     onChange(fn) { handlers.change.push(fn); },
     onLoad(fn) { handlers.load.push(fn); },
     onCursor(fn) { handlers.cursor.push(fn); },
+    onSourceNavigate(fn) { handlers.sourceNavigate.push(fn); },
     // Fires when local edits are waiting for the realtime transport to push.
     onSync(fn) { handlers.sync.push(fn); },
     // Fires when the participants, or the lines they are on, change.

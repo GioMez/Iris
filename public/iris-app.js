@@ -33,6 +33,7 @@
     projectLanguage: "en",
     compileProfile: { mode: "quick", steps: [{ tool: "[engine]", args: ["[main]"] }] },
     mainPath: "",         // project's main source file (empty = detected by Iris)
+    sourceMapping: true,
     texPath: "",          // directory of the LaTeX binaries (empty = system PATH)
     texPathLocked: false,
     lilypondPath: "",     // directory of the LilyPond binary (empty = system PATH)
@@ -64,6 +65,8 @@
     selectedFolder: "",   // for attach destination
     pdfBlobUrl: null,
     pdfName: "",
+    pdfArtifactId: null,
+    navigationHighlight: null,
     pdfLoadingTask: null,
     pdfDocument: null,
     pdfRenderTasks: [],
@@ -289,6 +292,7 @@
     const ro = isReadOnly();
     document.documentElement.classList.toggle("iris-readonly", ro);
     applyEditorGate();
+    $("compileSourceMapping").disabled = ro;
     if (ro) { state.autoSave = false; clearTimeout(persistT); }
     updateAutoSaveControls();
     // Settings that can no longer be saved must not keep the project dirty.
@@ -304,6 +308,7 @@
   // outline and the compiler, but the file is not marked dirty and no autosave is
   // scheduled. Without a session, the ordinary save path is unchanged.
   function wireEditorEvents() {
+    ed().onSourceNavigate(navigateSource);
     bibliographyView = window.IrisBibliographyView.create({ root: $("bibliographyPanel"), editor: ed(), t, onSource: showSource,
       onFormat: (key, format) => bibliographyHints.set(key, format),
       actions: { canWrite: canWriteBibliography, add: () => bibliographyForm.openAdd(),
@@ -318,6 +323,7 @@
         return context ? { ...context, canWrite } : null;
       } });
     ed().onLoad(() => {
+      clearNavigationHighlight();
       // An authoritative reload may change main-file detection without an edit.
       const file = findFile(state.activeId);
       if (file && !file.sourceError && file.kind !== "img") file.content = ed().getValue();
@@ -327,6 +333,7 @@
       renderMainFileMarker();
     });
     ed().onChange(() => {
+      clearNavigationHighlight();
       pendingDiagnostic = null;
       const f = findFile(state.activeId);
       if (f?.sourceError) return;
@@ -889,6 +896,8 @@
     void persistWhenDocumentClean();
   }
   function updateMainPathControl() {
+    $("compileSourceMapping").checked = state.sourceMapping;
+    $("compileSourceMapping").disabled = isReadOnly();
     const select = $("compileMainPath");
     const hint = $("compileMainPathHint");
     if (!select || !hint) return;
@@ -1000,10 +1009,11 @@
     renderTabs();
   }
 
-  function openFile(id) {
+  function openFile(id, prepared = null) {
+    if (!prepared) sourceNavigation.cancel();
     pendingDiagnostic = null;
     const f = findFile(id);
-    if (!f) return;
+    if (!f || (prepared && !prepared.current())) return;
     if (f.generated || f.readOnly) { toast(t("tree.generatedFile"), "err"); return; }
     bibliographyForm?.invalidateContext();
     closeResponsiveSidebar();
@@ -1013,7 +1023,8 @@
     state.activeId = id;
     if (!state.openTabs.includes(id)) state.openTabs.push(id);
     // The error surface is not source text and must never enter the file model.
-    ed().load(f.sourceError ? t(`api.${f.sourceError}`) : (f.content || ""), f.sourceError ? null : editorLoadKind(f));
+    if (prepared) prepared.activate();
+    else ed().load(f.sourceError ? t(`api.${f.sourceError}`) : (f.content || ""), f.sourceError ? null : editorLoadKind(f));
     applyEditorGate();
     renderTabs();
     renderOutline();
@@ -1023,7 +1034,7 @@
     markTree(id);
     // Joining replaces the document just loaded with the authoritative one; the
     // local content stands in until the server answers.
-    syncRealtimeSession();
+    if (!prepared) syncRealtimeSession();
     focusDocument();
   }
 
@@ -1523,6 +1534,7 @@
     state.engine = data.engine || "pdflatex";
     state.compileProfile = normalizeCompileProfile(data.compileProfile);
     state.mainPath = String(data.mainPath || "");
+    state.sourceMapping = data.sourceMapping !== false;
     state.retention = data.retention && typeof data.retention === "object" ? data.retention : null;
     state.retentionPending = null;
     state.lilypondArgs = data.lilypondArgs || "";
@@ -1717,6 +1729,163 @@
     state.pdfRenderTasks = [];
   }
 
+  const pdfPageViews = new WeakMap();
+  const pdfGeometry = new WeakMap();
+  async function navigationGeometry(artifactId, options) {
+    const artifact = state.compiledArtifacts.find((item) => item.id === artifactId);
+    if (!artifact) throw new Error("PDF artifact unavailable");
+    let pages = pdfGeometry.get(artifact);
+    if (!pages) {
+      pages = await window.IrisSourceNavigation.loadPdfGeometry(artifact.bytes, options);
+      options?.signal?.throwIfAborted();
+      pdfGeometry.set(artifact, pages);
+    }
+    return pages;
+  }
+  let pendingNavigationReveal = null;
+  function clearNavigationHighlight() {
+    pendingNavigationReveal?.finish(false);
+    state.navigationHighlight = null;
+    document.querySelectorAll(".source-navigation-highlight").forEach((node) => node.remove());
+  }
+  function drawNavigationHighlight(reveal = false) {
+    document.querySelectorAll(".source-navigation-highlight").forEach((node) => node.remove());
+    const match = state.navigationHighlight;
+    if (!match || match.artifactId !== state.pdfArtifactId) return;
+    const page = state.pages[match.page - 1], view = page && pdfPageViews.get(page);
+    if (!view || view.generation !== state.pdfRenderGeneration) return;
+    const artifact = state.compiledArtifacts.find((item) => item.id === match.artifactId);
+    const box = window.IrisSourceNavigation.pdfBox(view.viewport, match, pdfGeometry.get(artifact)?.[match.page - 1]);
+    if (!box) return;
+    const mark = document.createElement("div");
+    mark.className = "source-navigation-highlight";
+    mark.style.left = `${100 * box.left / view.viewport.width}%`;
+    mark.style.top = `${100 * box.top / view.viewport.height}%`;
+    mark.style.width = `${100 * box.width / view.viewport.width}%`;
+    mark.style.height = `${100 * box.height / view.viewport.height}%`;
+    page.appendChild(mark);
+    if (reveal) {
+      mark.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" });
+      // For a box near the top, centering can leave the preceding page as the
+      // reading anchor. Keep the target's physical page at the top of the view.
+      const stage = $("pvStage"), padding = parseFloat(getComputedStyle(stage).paddingTop) || 0;
+      if (stage.scrollTop < page.offsetTop - padding) stage.scrollTop = Math.max(0, page.offsetTop - padding);
+      rememberPreviewPosition();
+    }
+  }
+
+  function navigationContext() {
+    return { projectId: window.IrisProjects?.currentProjectId(), projectGeneration: state.projectLoadGeneration,
+      buildId: state.previewBuildId, outputGeneration: state.outputGeneration, artifactId: state.pdfArtifactId,
+      fileId: state.activeId, revision: ed().snapshot().revision, page: state.curPage,
+      renderGeneration: state.pdfRenderGeneration, loadGeneration: state.pdfLoadGeneration,
+      enabled: state.sourceMapping, format: state.previewKind === "pdf" ? "pdf" : state.previewKind,
+      surface: window.IrisMotion.activeSurface() };
+  }
+  function navigationFile(id) {
+    let found = null;
+    walk(project.nodes, (file) => { if (canonicalFileId(file.id) === id) found = file; });
+    return found && !found.generated && !found.readOnly && !found.sourceError && !isFileUnavailable(found.id) ? found : null;
+  }
+  async function navigationSource(id, options) {
+    const file = navigationFile(id);
+    if (!file) return null;
+    const exists = () => navigationFile(id) === file;
+    if (file.id === state.activeId) {
+      const authoritative = () => isRealtimeFile(file.id) && ["live", "readonly"].includes(window.IrisCollab.status());
+      if (!authoritative()) return null;
+      const snapshot = ed().snapshot();
+      return { text: snapshot.text, current: () => exists() && authoritative() && file.id === state.activeId && ed().snapshot().revision === snapshot.revision };
+    }
+    const dirtyRevision = state.dirtyFiles.get(file.id), localText = file.content;
+    const prepared = await window.IrisCollab.prepareSource(id, editorLoadKind(file), options);
+    if (!prepared) return null;
+    const current = () => exists() && prepared.current() && state.dirtyFiles.get(file.id) === dirtyRevision &&
+      (dirtyRevision === undefined || (file.content === localText && localText.replace(/\r\n?/g, "\n") === prepared.text.replace(/\r\n?/g, "\n")));
+    return { ...prepared, current, activate() {
+      if (!current()) return false;
+      if (dirtyRevision === undefined) return prepared.activate();
+      // Equal authoritative text permits a jump, not replacement of local work.
+      // Keep the exact buffer and dirty revision on the ordinary save path.
+      window.IrisCollab.leave();
+      ed().load(localText, editorLoadKind(file));
+      prepared.dispose();
+      return true;
+    } };
+  }
+  function navigationStatus(status) { toast(t(`navigation.${status}`), "err"); }
+  function queueNavigationReveal(match, source, operation) {
+    pendingNavigationReveal?.finish(false);
+    const snapshot = navigationContext(), doc = state.pdfDocument;
+    // Artifact adoption above is synchronous. Subsequent reveal/refit may
+    // legitimately change page/layout generations, but not these identities.
+    const keys = ["projectId", "projectGeneration", "buildId", "outputGeneration", "artifactId", "fileId", "revision", "loadGeneration", "enabled", "format", "surface"];
+    return new Promise((resolve) => {
+      const cancel = () => target.finish(false);
+      const target = {
+        current() {
+          const now = navigationContext();
+          return operation.current() && source.current() && state.pdfDocument === doc && keys.every((key) => now[key] === snapshot[key]);
+        },
+        finish(accepted) {
+          if (pendingNavigationReveal !== target) return;
+          pendingNavigationReveal = null;
+          operation.signal.removeEventListener("abort", cancel);
+          resolve(accepted);
+        },
+      };
+      pendingNavigationReveal = target;
+      operation.signal.addEventListener("abort", cancel, { once: true });
+      state.navigationHighlight = match;
+      setWorkspaceView("preview");
+      setView("preview");
+      // A collapsed pane owns a separate motion/layout pass. Keep the target
+      // queued when this call is deferred to that pass instead of revealing now.
+      requestPreviewLayout();
+    });
+  }
+  function finishNavigationReveal(generation, doc) {
+    const target = pendingNavigationReveal;
+    if (!target || generation !== state.pdfRenderGeneration || doc !== state.pdfDocument) return;
+    if (!target.current() || state.view !== "preview" || $("previewPane").hidden) { target.finish(false); return; }
+    if (state.previewRestoring || !state.previewPagesReady || !$("pvStage").clientHeight) return;
+    const page = state.pages[state.navigationHighlight?.page - 1], view = page && pdfPageViews.get(page);
+    if (!view || view.generation !== generation) { target.finish(false); return; }
+    // Consume once, immediately before the synchronous scroll. Later resize,
+    // cache reuse and reopen passes only redraw the highlight.
+    target.finish(true);
+    drawNavigationHighlight(true);
+  }
+  const sourceNavigation = window.IrisSourceNavigation.create({
+    context: navigationContext,
+    request: (...args) => window.IrisProjects.navigateBuild(...args),
+    source: navigationSource,
+    async prepare(match, query, options) {
+      if (query.direction !== "forward") return null;
+      const pages = await navigationGeometry(match.artifactId, options);
+      if (!pages[match.page - 1]) throw new Error("PDF page unavailable");
+      if (match.artifactId === state.pdfArtifactId) return null;
+      return preparePdfArtifact(match.artifactId, options);
+    },
+    apply(match, source, prepared, query, operation) {
+      if (query.direction === "inverse") {
+        const file = navigationFile(match.sourceFileId);
+        if (file.id !== state.activeId) openFile(file.id, source.activate ? source : null);
+        showSource(window.IrisSourceNavigation.sourceRange(ed().getValue(), match), { align: "top", margin: 3 });
+      } else {
+        if (prepared) prepared.activate();
+        return queueNavigationReveal(match, source, operation);
+      }
+    },
+    status: navigationStatus,
+  });
+  function navigateSource({ line, column }) {
+    const fileId = canonicalFileId(state.activeId);
+    if (!fileId || window.IrisMotion.activeSurface() !== "app") return;
+    const hints = state.pdfArtifactId ? { artifactId: state.pdfArtifactId, page: state.curPage } : {};
+    void sourceNavigation.navigate({ direction: "forward", sourceFileId: fileId, line, column, ...hints });
+  }
+
   function releasePdfDocument() {
     state.pdfLayout = null;
     cancelPdfRenders();
@@ -1738,6 +1907,8 @@
       restorePreviewPosition();
       updateZoomLabel();
       if (preservePosition) state.previewRestoring = false;
+      drawNavigationHighlight();
+      if (!state.pdfRenderTasks.length) finishNavigationReveal(state.pdfRenderGeneration, state.pdfDocument);
       return;
     }
     cancelPdfRenders();
@@ -1769,6 +1940,8 @@
     state.pages = views.map(({ css }) => {
       const pageEl = document.createElement("div");
       pageEl.className = "pdf-page";
+      pageEl.dataset.page = String(wrap.children.length + 1);
+      pdfPageViews.set(pageEl, { viewport: css, generation, artifactId: state.pdfArtifactId });
       pageEl.style.width = `${Math.round(css.width)}px`;
       pageEl.style.height = `${Math.round(css.height)}px`;
       const canvas = document.createElement("canvas");
@@ -1783,6 +1956,7 @@
     restorePreviewPosition();
     updateZoomLabel();
     if (preservePosition) state.previewRestoring = false;
+    drawNavigationHighlight();
 
     for (let i = 0; i < views.length; i++) {
       if (generation !== state.pdfRenderGeneration || doc !== state.pdfDocument) return;
@@ -1803,10 +1977,12 @@
         state.pdfRenderTasks = state.pdfRenderTasks.filter((item) => item !== task);
       }
     }
+    finishNavigationReveal(generation, doc);
   }
 
   function requestPdfLayout(preservePosition = false) {
     return layoutPdfPages(preservePosition).catch((err) => {
+      pendingNavigationReveal?.finish(false);
       console.error("PDF preview render failed", err);
       toast(t("preview.refreshFailed"), "err");
     });
@@ -1897,6 +2073,7 @@
       engine: state.engine,
       compileProfile: state.compileProfile,
       mainPath: state.mainPath,
+      sourceMapping: state.sourceMapping,
       lilypondArgs: state.lilypondArgs,
       lilypondFormat: state.lilypondFormat,
       fonts: state.fonts,
@@ -2031,6 +2208,8 @@
   // Called by the projects layer whenever the open project goes away (closed,
   // deleted, left, or replaced), which is also when the realtime session must go.
   function cancelPendingProjectLoad() {
+    sourceNavigation.cancel();
+    clearNavigationHighlight();
     state.projectLoadGeneration += 1;
     // A queued replacement can be refused. Keep the current view until load is
     // accepted; close/logout clear currentId synchronously after this callback.
@@ -2210,12 +2389,15 @@
     return bytes;
   }
   function clearCompiledArtifacts() {
+    clearNavigationHighlight();
     const urls = new Set(state.compiledArtifacts.map((artifact) => artifact.blobUrl).filter(Boolean));
     if (state.pdfBlobUrl) urls.add(state.pdfBlobUrl);
     urls.forEach((url) => URL.revokeObjectURL(url));
     state.compiledArtifacts = [];
     state.pdfBlobUrl = null;
     state.pdfName = "";
+    state.pdfArtifactId = null;
+    $("pdfArtifactControl").hidden = true;
     $("dlBtn").classList.remove("output-ready");
     $("dlBtn").innerHTML = `${ti("download", "ic")}<span class="dl-label workflow-label">${esc(t("toolbar.output"))}</span>`;
   }
@@ -2234,6 +2416,9 @@
         blobUrl: URL.createObjectURL(blob),
       };
     });
+    const pdfs = state.compiledArtifacts.filter((artifact) => artifact.mimeType === "application/pdf" || /\.pdf$/i.test(artifact.fileName));
+    $("pdfArtifactControl").hidden = pdfs.length < 2;
+    $("pdfArtifact").innerHTML = pdfs.map((artifact) => `<option value="${esc(artifact.id)}">${esc(artifact.fileName)}</option>`).join("");
     const format = String(res.outputFormat || "output").toUpperCase();
     $("dlBtn").classList.add("output-ready");
     $("dlBtn").innerHTML = `${ti("download", "ic")}<span class="dl-label workflow-label">${state.compiledArtifacts.length > 1 ? `${state.compiledArtifacts.length} ` : ""}${format}</span>`;
@@ -2294,13 +2479,15 @@
       ? prepareCompiledArtifacts(res)
       : prepareCompiledArtifacts({ outputFormat: "pdf", artifacts: [{ name: res.pdfName || "output.pdf", base64: res.pdfBase64, size: res.pdfSize, mimeType: "application/pdf" }] });
     const primary = artifacts[0];
+    state.pdfArtifactId = primary.id || null;
+    $("pdfArtifact").value = state.pdfArtifactId || "";
     state.previewKind = "pdf";
     const bytes = primary.bytes;
     state.pdfBlobUrl = primary.blobUrl;
     state.pdfName = primary.fileName;
     const pdfjs = await pdfjsReady;
     if (loadGeneration !== state.pdfLoadGeneration) return;
-    const loadingTask = pdfjs.getDocument({ data: bytes });
+    const loadingTask = pdfjs.getDocument({ data: bytes.slice() });
     state.pdfLoadingTask = loadingTask;
     let doc;
     try {
@@ -2316,6 +2503,36 @@
     }
     state.pdfDocument = doc;
     await layoutPdfPages();
+  }
+
+  async function preparePdfArtifact(id, { signal } = {}) {
+    const artifact = state.compiledArtifacts.find((item) => item.id === id);
+    if (!artifact) throw new Error("PDF artifact unavailable");
+    const pdfjs = await pdfjsReady;
+    signal?.throwIfAborted();
+    const task = pdfjs.getDocument({ data: artifact.bytes.slice() });
+    let adopted = false;
+    const dispose = () => { if (!adopted) void task.destroy().catch(() => {}); };
+    signal?.addEventListener("abort", dispose, { once: true });
+    try {
+      const doc = await task.promise;
+      // Warm page proxies before any UI mutation; navigation can still be rejected.
+      await Promise.all(Array.from({ length: doc.numPages }, (_, index) => doc.getPage(index + 1)));
+      signal?.throwIfAborted();
+      return { dispose, activate() {
+        adopted = true;
+        void releasePdfDocument();
+        state.pdfLoadGeneration++;
+        state.pdfLoadingTask = task;
+        state.pdfDocument = doc;
+        state.pdfArtifactId = id;
+        state.pdfBlobUrl = artifact.blobUrl;
+        state.pdfName = artifact.fileName;
+        state.previewPagesReady = false;
+        $("pdfArtifact").value = id;
+      } };
+    } catch (error) { dispose(); throw error; }
+    finally { signal?.removeEventListener("abort", dispose); }
   }
 
   /* ---------------- view toggle ---------------- */
@@ -2848,6 +3065,42 @@
 
   /* ---------------- wiring ---------------- */
   function wire() {
+    $("compileSourceMapping").addEventListener("change", function () {
+      if (isReadOnly()) { this.checked = state.sourceMapping; return; }
+      state.sourceMapping = this.checked;
+      sourceNavigation.cancel();
+      if (!state.sourceMapping) clearNavigationHighlight();
+      void persistWhenDocumentClean();
+    });
+    $("btnShowInPdf").addEventListener("click", () => navigateSource({ line: lastCursor.line, column: lastCursor.column - 1 }));
+    $("pvPages").addEventListener("mousedown", (event) => {
+      if (!window.IrisSourceNavigation.isGesture(event)) return;
+      const page = event.target.closest(".pdf-page"), view = page && pdfPageViews.get(page);
+      if (!view || view.generation !== state.pdfRenderGeneration || view.artifactId !== state.pdfArtifactId) return;
+      const rect = page.getBoundingClientRect(), clientX = event.clientX, clientY = event.clientY, pageNumber = Number(page.dataset.page);
+      event.preventDefault();
+      void sourceNavigation.navigate(async (options) => {
+        const pages = await navigationGeometry(view.artifactId, options);
+        const point = window.IrisSourceNavigation.pdfPoint(view.viewport, rect, clientX, clientY, pages[pageNumber - 1]);
+        if (!point || point.x < 0 || point.y < 0) return null;
+        return { direction: "inverse", artifactId: view.artifactId, page: pageNumber, ...point };
+      });
+    });
+    $("pdfArtifact").addEventListener("change", async function () {
+      sourceNavigation.cancel();
+      const id = this.value, generation = ++state.pdfLoadGeneration, output = state.outputGeneration;
+      if (id === state.pdfArtifactId) return;
+      let prepared;
+      try {
+        prepared = await preparePdfArtifact(id);
+        if (generation !== state.pdfLoadGeneration || output !== state.outputGeneration) return;
+        clearNavigationHighlight();
+        prepared.activate();
+        state.previewPosition = { page: 1, offset: 0, horizontal: 0 };
+        await requestPreviewLayout(true);
+      } catch (error) { if (generation === state.pdfLoadGeneration) navigationStatus("unavailable"); }
+      finally { prepared?.dispose(); }
+    });
     $("completionApply").addEventListener("click", applyCustomCommands);
     // topbar
     $("btnCompile").addEventListener("click", compile);
@@ -3307,6 +3560,7 @@
     if (!collapsed && state.previewRestoring) settlePreviewReveal();
   }
   function togglePreviewPane() {
+    pendingNavigationReveal?.finish(false);
     rememberPreviewPosition();
     state.previewCollapsed = !state.previewCollapsed;
     syncPreviewPane();
@@ -3857,6 +4111,7 @@
         : "pdf";
       state.compileProfile = normalizeCompileProfile(data.compileProfile);
       state.mainPath = String(data.mainPath || "");
+      state.sourceMapping = data.sourceMapping !== false;
       // Retention arrives with the project, bounds included. Anything the panel
       // had pending belonged to the project being closed, so it is dropped.
       state.retention = data.retention && typeof data.retention === "object" ? data.retention : null;
