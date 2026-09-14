@@ -55,7 +55,7 @@ test.before(async (t) => {
   t.diagnostic(`Browser: ${browser.version()}; isolated fixture: ${base.origin}`);
 }, { timeout: 30000 });
 
-async function pageFor(t, variant, { openProject = true, authenticated = true, projects = [], extraFiles = [], documentSource = source } = {}) {
+async function pageFor(t, variant, { openProject = true, authenticated = true, projects = [], extraFiles = [], documentSource = source, sourceMapping = true } = {}) {
   const context = await browser.newContext({ viewport: variant.viewport, deviceScaleFactor: variant.scale || 1,
     hasTouch: !!variant.touch, reducedMotion: variant.motion || "reduce", colorScheme: variant.theme || "dark" });
   if (variant.layout) await context.addInitScript((layout) => localStorage.setItem("iris_layout", JSON.stringify(layout)), variant.layout);
@@ -94,7 +94,7 @@ async function pageFor(t, variant, { openProject = true, authenticated = true, p
       { id: "draft", type: "file", name: "draft.txt", path: "draft.txt", kind: "tex", content: "Local draft\n" },
       ...extraFiles,
     ] }, assets: {}, fonts: [], autoSave: false, autoSaveDelay: 600, engine: "pdflatex",
-    lilypondArgs: "", lilypondFormat: "pdf",
+    lilypondArgs: "", lilypondFormat: "pdf", sourceMapping,
     compileProfile: { mode: "quick", steps: [{ tool: "[engine]", args: ["[main]"] }] } };
   const fixture = { versions: [], socket: null, detail: null, compile: null, compileRequests: [], responses: {},
     holdCompile() {
@@ -1143,6 +1143,49 @@ for (const language of ["en", "it"]) {
   });
 }
 
+for (const language of ["en", "it"]) {
+  test(`footer preview toggle follows both panel controls and compact navigation without source mapping / ${language}`, options, async (t) => {
+    const { page } = await pageFor(t, { viewport: { width: 1440, height: 900 }, language }, { sourceMapping: false });
+    const footer = page.locator("#btnPreview"), toolbar = page.locator("#btnPreviewPane"), pane = page.locator("#previewPane");
+    const open = language === "it" ? "Apri anteprima" : "Open preview";
+    const close = language === "it" ? "Chiudi anteprima" : "Close preview";
+    let queries = 0;
+    page.on("request", (request) => { if (new URL(request.url()).pathname.endsWith("/navigation")) queries++; });
+    const before = await page.evaluate(() => ({ text: IrisEditor.getValue(), selection: IrisEditor.selection(), activeId: IrisApp.serialize().activeId }));
+    assert.equal(await pane.isVisible(), true);
+    await footer.click();
+    assert.equal(await pane.isVisible(), false, "footer must close the panel even without a PDF or map");
+    assert.equal(await footer.getAttribute("aria-label"), open);
+    assert.equal(await footer.getAttribute("aria-expanded"), "false");
+    assert.equal(await toolbar.getAttribute("aria-label"), open);
+    await footer.focus(); await page.keyboard.press("Enter");
+    assert.equal(await pane.isVisible(), true);
+    assert.equal(await footer.getAttribute("aria-label"), close);
+    assert.equal(await footer.getAttribute("aria-expanded"), "true");
+    await toolbar.click();
+    assert.equal(await pane.isVisible(), false);
+    assert.equal(await footer.getAttribute("aria-label"), open, "toolbar action updates footer state");
+    await toolbar.click();
+    assert.equal(await footer.getAttribute("aria-label"), close);
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.locator('[data-workspace="editor"]').click();
+    assert.equal(await footer.getAttribute("aria-label"), open);
+    await footer.focus(); await page.keyboard.press("Enter");
+    assert.equal(await pane.isVisible(), true, "compact toggle opens the preview workspace");
+    assert.equal(await footer.getAttribute("aria-label"), close);
+    await footer.click();
+    assert.equal(await pane.isVisible(), false, "compact close returns to the editor");
+    assert.equal(await page.locator(".cm-content").isVisible(), true);
+    await page.locator('[data-workspace="preview"]').click();
+    assert.equal(await footer.getAttribute("aria-label"), close, "workspace tabs update footer state");
+    await page.locator('[data-workspace="editor"]').click();
+    assert.equal(await footer.getAttribute("aria-label"), open);
+    assert.deepEqual(await page.evaluate(() => ({ text: IrisEditor.getValue(), selection: IrisEditor.selection(), activeId: IrisApp.serialize().activeId })), before);
+    assert.equal(queries, 0, "panel visibility does not issue source-map queries");
+  });
+}
+
 const referenceFile = { id: "references", type: "file", name: "references.bib", path: "references.bib",
   kind: "bib", content: "@article{known, title={A known reference}}\n" };
 
@@ -1334,7 +1377,7 @@ for (const variant of [variants[0], { ...variants[1], name: "tablet / IT", viewp
     await toggle.click();
     await page.locator("#previewPane").waitFor({ state: "hidden" });
     assert.equal(await toggle.getAttribute("aria-expanded"), "false");
-    assert.equal(await toggle.getAttribute("aria-label"), variant.language === "it" ? "Mostra pannello anteprima" : "Show preview panel");
+    assert.equal(await toggle.getAttribute("aria-label"), variant.language === "it" ? "Apri anteprima" : "Open preview");
     await page.waitForFunction((width) => document.querySelector(".edpane").getBoundingClientRect().width > width + 200, editorWidth);
     assert.equal(await page.locator("#rz2").isVisible(), false);
     send(fixture, { t: "build", projectId, buildId: "remote-while-hidden", status: "succeeded", by: "Ada" });

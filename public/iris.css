@@ -1771,8 +1771,8 @@ html.iris-inadmin[data-role="admin"] .admin-screen{display:block}
   .statusbar{height:36px}
   #stCursor,.st:nth-child(3),.st:nth-child(4),#stLanguage{display:none}
   .sb-actions{padding-inline:var(--space-3)}
-  #btnFormat,#btnFind,#btnShowInPdf{width:30px;padding:0;justify-content:center}
-  #btnFormat .sb-btn-label,#btnFind .sb-btn-label,#btnShowInPdf .sb-btn-label{display:none}
+  #btnFormat,#btnFind,#btnPreview{width:30px;padding:0;justify-content:center}
+  #btnFormat .sb-btn-label,#btnFind .sb-btn-label,#btnPreview .sb-btn-label{display:none}
 }
 
 @media(max-width:680px){

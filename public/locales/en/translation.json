@@ -2,7 +2,6 @@
   "navigation": {
     "enable": "Enable PDF–source mapping",
     "enableHint": "Move between PDF and source with Ctrl/Cmd-click. Disable to reduce compilation work and map storage.",
-    "show": "Show in PDF",
     "artifact": "PDF document",
     "disabled": "PDF–source mapping is disabled in Compilation settings.",
     "missing": "This build or source has no available map. Compile again with PDF–source mapping enabled.",
@@ -207,8 +206,8 @@
     "project": "Project",
     "refreshTree": "Refresh file tree",
     "newItem": "New file or folder",
-    "dropImages": "Drop images here",
-    "dropImagesRest": "in the selected folder, or browse…",
+    "dropFiles": "Drop files here",
+    "dropFilesRest": "in the selected folder, or browse…",
     "panels": "Sidebar panels",
     "documentOutline": "Document outline",
     "close": "Close the sidebar",
@@ -252,8 +251,8 @@
     "failedWithoutLocation": "Compilation failed without a diagnostic message. Check the Log tab for details."
   },
   "preview": {
-    "hidePane": "Hide preview panel",
-    "showPane": "Show preview panel",
+    "closePane": "Close preview",
+    "openPane": "Open preview",
     "preview": "Preview",
     "log": "Log",
     "previousPage": "Previous page",

@@ -2553,7 +2553,6 @@
     const preview = view === "preview";
     if (!preview) rememberPreviewPosition();
     if (preview) state.previewCollapsed = false;
-    syncPreviewPane();
     document.querySelector(".body").classList.toggle("workspace-preview", preview);
     $("workspaceSwitch").querySelectorAll("button").forEach((button) => {
       const selected = button.dataset.workspace === (preview ? "preview" : "editor");
@@ -2561,6 +2560,7 @@
       button.setAttribute("aria-selected", selected ? "true" : "false");
       button.tabIndex = selected ? 0 : -1;
     });
+    syncPreviewPane();
     if (preview) {
       restorePreviewPosition();
       if (state.fit) requestPreviewLayout();
@@ -3070,7 +3070,7 @@
       if (!state.sourceMapping) clearNavigationHighlight();
       void persistWhenDocumentClean();
     });
-    $("btnShowInPdf").addEventListener("click", () => navigateSource({ line: lastCursor.line, column: lastCursor.column - 1 }));
+    $("btnPreview").addEventListener("click", togglePreviewPane);
     $("pvPages").addEventListener("mousedown", (event) => {
       if (!window.IrisSourceNavigation.isGesture(event)) return;
       const page = event.target.closest(".pdf-page"), view = page && pdfPageViews.get(page);
@@ -3539,18 +3539,23 @@
     pane.hidden = collapsed;
     $("rz2").hidden = collapsed;
     button.hidden = compactMedia.matches;
-    button.setAttribute("aria-expanded", collapsed ? "false" : "true");
-    button.classList.toggle("on", !collapsed);
-    const label = collapsed ? "preview.showPane" : "preview.hidePane";
-    button.setAttribute("data-i18n-title", label);
-    button.setAttribute("data-i18n-aria-label", label);
-    button.title = t(label);
-    button.setAttribute("aria-label", t(label));
-    const iconHost = button.querySelector("[data-icon]");
-    const icon = collapsed ? "layout-sidebar-right-expand" : "layout-sidebar-right-collapse";
-    if (iconHost && iconHost.dataset.icon !== icon) {
-      iconHost.dataset.icon = icon;
-      iconHost.innerHTML = ti(icon);
+    const open = compactMedia.matches ? document.querySelector(".body").classList.contains("workspace-preview") : !collapsed;
+    const label = open ? "preview.closePane" : "preview.openPane";
+    const icon = open ? "layout-sidebar-right-collapse" : "layout-sidebar-right-expand";
+    for (const control of [button, $("btnPreview")]) {
+      control.setAttribute("aria-expanded", String(open));
+      control.classList.toggle("on", open);
+      control.setAttribute("data-i18n-title", label);
+      control.setAttribute("data-i18n-aria-label", label);
+      control.title = t(label);
+      control.setAttribute("aria-label", t(label));
+      const text = control.querySelector(".sb-btn-label");
+      if (text) { text.setAttribute("data-i18n", label); text.textContent = t(label); }
+      const iconHost = control.querySelector("[data-icon]");
+      if (iconHost && iconHost.dataset.icon !== icon) {
+        iconHost.dataset.icon = icon;
+        iconHost.innerHTML = ti(icon);
+      }
     }
     if (button.hidden && hadToggleFocus) {
       $("workspaceSwitch").querySelector('[aria-selected="true"]')?.focus();
@@ -3558,7 +3563,12 @@
     if (!collapsed && state.previewRestoring) settlePreviewReveal();
   }
   function togglePreviewPane() {
+    sourceNavigation.cancel();
     pendingNavigationReveal?.finish(false);
+    if (compactMedia.matches) {
+      setWorkspaceView(document.querySelector(".body").classList.contains("workspace-preview") ? "editor" : "preview");
+      return;
+    }
     rememberPreviewPosition();
     state.previewCollapsed = !state.previewCollapsed;
     syncPreviewPane();

@@ -58,9 +58,17 @@ Live text editing has its own server persistence: Iris writes accepted edits
 after a pause and during sustained typing even with project autosave off.
 Check the collaboration status for edits that the server has not confirmed.
 
-**Snapshot** records a history checkpoint for changed text files. Compilation
-also records the changed source used for the build. Save a new file before
-expecting it to have history or join a live editing session.
+**Snapshot** saves the project first, then records a manual history revision for
+each changed, versionable text file. The database stores the text of those
+revisions; the filesystem holds the current working files. Unchanged files do
+not get duplicate revisions. Snapshot applies across the project's text files,
+and you inspect or restore each file through its own history.
+
+Use Save to keep the current project state and Snapshot to choose a recovery
+point before a substantial edit. Compilation and idle collaborative editing also
+record changed text automatically. Snapshots cover text revisions; a complete
+installation backup also includes assets, settings and the other database data.
+Save a new file before expecting it to have history or join a live editing session.
 
 A conflicting whole-project save keeps your local work and reports the conflict.
 Copy any work you need before choosing to discard changes or reopen the project.
@@ -122,10 +130,12 @@ it on the host for other projects.
 
 ## Preview and build history
 
-Read PDFs in the embedded PDF.js viewer or zoom through PNG/SVG output. In a
-split workspace, the right-panel toolbar button hides or restores the preview.
-Iris retains its width and reading position; starting a compilation reopens it.
-Compact screens use the **Editor/Preview** selector.
+Read PDFs in the embedded PDF.js viewer or zoom through PNG/SVG output. Use
+**Open preview / Close preview** in the footer or the toolbar's panel button
+to open or close the side panel. Both follow its current state and work with
+mapping disabled or before compilation. Iris retains the panel width and reading
+position; starting a compilation reopens it. On compact screens, the footer
+switches between workspaces, as does the **Editor/Preview** selector.
 
 Open **Builds** for previous compilations, their author and duration, compiler
 log, diagnostics and files. Download an individual output or a ZIP of the build.
@@ -143,8 +153,7 @@ in the log without appearing as an active warning.
 For a matching PDF build, **Ctrl-click** on Windows/Linux or **Cmd-click** on
 macOS moves between the source and output:
 
-- Click a source position to reveal its PDF area. The **Show in PDF** footer
-  action uses your caret and supports keyboard activation.
+- Click a source position to reveal its PDF area.
 - Click printed text or music in the PDF to open the corresponding source.
 - Use **PDF document** above the preview when a build has several PDFs. A source
   jump can select another PDF in that build.

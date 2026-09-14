@@ -61,7 +61,7 @@
       <button class="workflow-btn workflow-builds" id="btnBuilds" type="button" title="Compilation history" aria-label="Open compilation history" data-i18n-title="toolbar.buildsTitle" data-i18n-aria-label="toolbar.buildsAria"><span class="ic" data-icon="box"></span><span class="workflow-label" data-i18n="toolbar.builds">Builds</span></button>
     </div>
     <div class="tbar-right">
-      <button class="tbtn icononly" id="btnPreviewPane" type="button" aria-controls="previewPane" aria-expanded="true" title="Hide preview panel" aria-label="Hide preview panel" data-i18n-title="preview.hidePane" data-i18n-aria-label="preview.hidePane"><span class="ic" data-icon="layout-sidebar-right-collapse"></span></button>
+      <button class="tbtn icononly" id="btnPreviewPane" type="button" aria-controls="previewPane" aria-expanded="true" title="Close preview" aria-label="Close preview" data-i18n-title="preview.closePane" data-i18n-aria-label="preview.closePane"><span class="ic" data-icon="layout-sidebar-right-collapse"></span></button>
       <button class="tbtn icononly project-share-trigger" id="btnShareProject" type="button" title="Share project" aria-label="Share project" data-i18n-title="sharing.toolbarTitle" data-i18n-aria-label="sharing.toolbarAria" hidden><span class="ic" data-icon="users"></span></button>
       <button class="userchip" id="userChip" title="Account" aria-label="Account" data-i18n-title="common.account" data-i18n-aria-label="common.account" aria-haspopup="menu" aria-expanded="false" aria-controls="userMenu">
         <span class="avatar" id="userAvatar">–</span>
@@ -90,8 +90,8 @@
           </div>
           <div class="tree" id="tree" role="tree"></div>
           <button class="dropzone" id="sideDrop" type="button">
-            <b><span data-icon="upload"></span><span data-i18n="sidebar.dropImages">Drop images here</span></b>
-            <span data-i18n="sidebar.dropImagesRest">in the selected folder, or browse…</span>
+            <b><span data-icon="upload"></span><span data-i18n="sidebar.dropFiles">Drop files here</span></b>
+            <span data-i18n="sidebar.dropFilesRest">in the selected folder, or browse…</span>
           </button>
         </div>
         <div id="sidePanelOutline" role="tabpanel" aria-labelledby="sideTabOutline" tabindex="0" data-panel="outline" hidden>
@@ -251,7 +251,7 @@
       <span class="st" id="stTime" data-i18n="status.neverCompiled">not compiled yet</span>
     </div>
     <div class="sb-actions">
-      <button class="sb-btn" id="btnShowInPdf" type="button" title="Show in PDF" aria-label="Show in PDF" data-i18n-title="navigation.show" data-i18n-aria-label="navigation.show"><span class="ic" data-icon="file-type-pdf"></span><span class="sb-btn-label" data-i18n="navigation.show">Show in PDF</span></button>
+      <button class="sb-btn" id="btnPreview" type="button" aria-controls="previewPane" aria-expanded="true" title="Close preview" aria-label="Close preview" data-i18n-title="preview.closePane" data-i18n-aria-label="preview.closePane"><span class="ic" data-icon="layout-sidebar-right-collapse"></span><span class="sb-btn-label" data-i18n="preview.closePane">Close preview</span></button>
       <button class="sb-btn" id="btnFormat" type="button" title="Format" aria-label="Format" data-i18n-title="status.format" data-i18n-aria-label="status.format"><span class="ic" data-icon="align-left-2"></span><span class="sb-btn-label" data-i18n="status.format">Format</span></button>
       <button class="sb-btn" id="btnFind" type="button" title="Find" aria-label="Find" data-i18n-title="find.find" data-i18n-aria-label="find.find"><span class="ic" data-icon="search"></span><span class="sb-btn-label" data-i18n="find.find">Find</span></button>
       <button class="sb-wrap" id="btnWrap" type="button" role="switch" aria-checked="false" aria-label="Enable word wrap" data-i18n-aria-label="status.wrapEnable" title="Enable word wrap" data-i18n-title="status.wrapEnable"><span class="sb-wrap-label" data-i18n="status.wrap">Wrap</span><span class="sb-switch" aria-hidden="true"></span></button>

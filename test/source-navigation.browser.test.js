@@ -235,10 +235,10 @@ test("inverse checks the inactive room authority before changing either pane, in
   assert.deepEqual(await snapshot(f.page), before);
 });
 
-test("old responses cannot override a newer request, file, build or PDF resize", options, async (t) => {
+test("old responses cannot override a newer request, file, build, PDF resize or preview close", options, async (t) => {
   const f = await journey(t, server, browser, "lilypond"), match = await nativeMatch(f);
   await openSource(f);
-  for (const change of ["request", "file", "resize", "build"]) {
+  for (const change of ["request", "file", "resize", "preview", "build"]) {
     f.override({ status: "ready", matches: [{ ...match, page: 2 }] });
     const gate = f.hold(), count = f.records.length + 1;
     await sourceClick(f.page, f.source.column); await f.received(count);
@@ -248,9 +248,14 @@ test("old responses cannot override a newer request, file, build or PDF resize",
       await f.page.locator('.pdf-page[data-page="1"] .source-navigation-highlight').waitFor();
     } else if (change === "file") await openSource(f, f.mainId);
     else if (change === "resize") { await f.page.locator("#zIn").click(); await settle(f.page); }
+    else if (change === "preview") await f.page.locator("#btnPreview").click();
     else await f.page.evaluate(() => IrisApp.clearBuildOutput());
     const before = await snapshot(f.page); gate.resolve(); await settle(f.page);
     assert.deepEqual(await snapshot(f.page), before, change);
+    if (change === "preview") {
+      assert.equal(await f.page.locator("#previewPane").isVisible(), false, "late mapping must not reopen a closed preview");
+      await f.page.locator("#btnPreview").click();
+    }
     if (change === "file") await openSource(f);
   }
 });
@@ -266,7 +271,7 @@ test("ordinary clicks, Alt/Shift gestures and repeated file loads do not duplica
   await f.page.locator(".source-navigation-highlight").waitFor();
 });
 
-test("keyboard Show in PDF reveals collapsed preview, retains canvases and follows renamed IDs", options, async (t) => {
+test("keyboard preview toggle retains canvases and source navigation follows renamed IDs", options, async (t) => {
   const f = await journey(t, server, browser);
   const data = await (await f.request(`/api/projects/${f.projectId}`)).json();
   data.project.nodes[1].children[0].name = "renamed.tex"; data.project.nodes[1].children[0].path = "parts/renamed.tex";
@@ -276,7 +281,10 @@ test("keyboard Show in PDF reveals collapsed preview, retains canvases and follo
   await openSource(f);
   await f.page.evaluate(() => { IrisEditor.select(7, 7); window.navigationCanvas = document.querySelector(".pdf-page canvas"); });
   await f.page.locator("#btnPreviewPane").click();
-  await f.page.locator("#btnShowInPdf").focus(); await f.page.keyboard.press("Enter");
+  await f.page.locator("#btnPreview").focus(); await f.page.keyboard.press("Enter");
+  assert.equal(await f.page.locator("#previewPane").isVisible(), true);
+  assert.equal(f.records.length, 0, "opening the panel is independent of source navigation");
+  await sourceClick(f.page, 7);
   assert.equal((await f.received(1)).query.column, 7);
   await f.page.locator(".source-navigation-highlight").waitFor();
   assert.equal(await f.page.locator("#previewPane").isVisible(), true);
@@ -374,7 +382,7 @@ for (const backend of ["latex", "lilypond"]) test(`compact Italian light/DPR2 na
   const f = await journey(t, server, browser, backend, { viewport: { width: 390, height: 844 }, language: "it", theme: "light", scale: 2 });
   await openSource(f);
   await f.page.evaluate((column) => IrisEditor.select(column, column), f.source.column);
-  await f.page.getByRole("button", { name: "Mostra nel PDF", exact: true }).focus(); await f.page.keyboard.press("Enter");
+  await sourceClick(f.page, f.source.column);
   const record = await f.received(1); assert.equal(record.result.status, "ready");
   await f.page.locator(".source-navigation-highlight").waitFor();
   assert.equal(await f.page.locator(".body").evaluate((node) => node.classList.contains("workspace-preview")), true);

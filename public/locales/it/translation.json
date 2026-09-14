@@ -2,7 +2,6 @@
   "navigation": {
     "enable": "Abilita mappatura PDF–sorgente",
     "enableHint": "Permette di passare tra PDF e sorgente con Ctrl/Cmd+clic. Disattivala per ridurre il lavoro di compilazione e lo spazio delle mappe.",
-    "show": "Mostra nel PDF",
     "artifact": "Documento PDF",
     "disabled": "La mappatura PDF–sorgente è disattivata nelle impostazioni di compilazione.",
     "missing": "La mappa di questa build o del sorgente non è disponibile. Ricompila con la mappatura PDF–sorgente attiva.",
@@ -207,8 +206,8 @@
     "project": "Progetto",
     "refreshTree": "Aggiorna albero dei file",
     "newItem": "Nuovo file o cartella",
-    "dropImages": "Trascina immagini qui",
-    "dropImagesRest": "nella cartella selezionata, oppure sfoglia…",
+    "dropFiles": "Trascina file qui",
+    "dropFilesRest": "nella cartella selezionata, oppure sfoglia…",
     "panels": "Pannelli laterali",
     "documentOutline": "Struttura documento",
     "close": "Chiudi il pannello laterale",
@@ -252,8 +251,8 @@
     "failedWithoutLocation": "Compilazione fallita senza un messaggio diagnostico. Consulta la scheda Log per i dettagli."
   },
   "preview": {
-    "hidePane": "Nascondi pannello anteprima",
-    "showPane": "Mostra pannello anteprima",
+    "closePane": "Chiudi anteprima",
+    "openPane": "Apri anteprima",
     "preview": "Anteprima",
     "log": "Log",
     "previousPage": "Pagina precedente",

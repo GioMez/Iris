@@ -19,15 +19,15 @@ accounts on your instance.
 
 ## Why I built it
 
-I use and love LaTeX for typography and LilyPond for engraved music. Working
-with both meant juggling editors and installing gigabytes of toolchain on
-each machine where I wanted to compile. I wanted to keep that installation
-on my own server and work from a browser.
+I started with LilyPond. I couldn't find an online editor that brought together
+the pieces I needed: editing, compilation, font management and preview, with
+the option to host it myself. I wanted an editor shaped around the way I work
+on scores, with the source and the engraved result on the same page.
 
-I also never found a web editor for LilyPond that brought together the pieces
-I needed: editing, compilation, font management and preview, with the option
-to host it myself. Iris grew out of that need. I wanted to open a score or a
-document, work on its source, and see the result on the same page.
+LaTeX came next. There are already good LaTeX editors, but it is the other tool
+I use frequently. I was already building an editor around my own needs, so why
+not add it? Having both in Iris lets me keep the toolchains on my server and
+work from a browser without installing them on every machine.
 
 ## What you can do
 
@@ -53,6 +53,10 @@ LilyPond projects can produce PDF, PNG, SVG, PS or EPS. Iris previews PDFs and
 images, shows compiler diagnostics, and keeps the files from each build in
 **Compilation history** for download.
 
+Use **Open preview** or **Close preview** in the footer to open or close the
+side panel. The toolbar's panel button controls the same view. On compact
+screens, opening the preview switches from the editor to the preview workspace.
+
 Move between a PDF and its source with Ctrl-click or Cmd-click. Navigation
 requires a matching build and a supported native toolchain; the
 [user guide](docs/user-guide.md#move-between-pdf-and-source) explains the controls
@@ -69,10 +73,26 @@ selections. Presence markers in the file tree and outline show where others are
 working; overlap notices flag shared sections or music blocks. A newer-build
 notice lets you choose when to replace your preview with a collaborator's result.
 
-Take a **Snapshot** before a change, inspect a file's history, or restore a
-previous revision. Builds have their own history. Owners can adjust retention
-within the server's limits. Members of all three roles can export a project as
-a ZIP; accounts with project-creation rights can import it into another instance.
+Inspect a file's history or restore a previous revision. Builds have their own
+history. Owners can adjust retention within the server's limits. Members of all
+three roles can export a project as a ZIP; accounts with project-creation rights
+can import it into another instance.
+
+### Save your work and choose recovery points
+
+**Save** updates the project's current working copy on the server: files,
+folder structure and settings. Accepted live edits also reach the server through
+collaboration, and optional project autosave handles project saves for you.
+
+**Snapshot** saves first, then records a manual history revision for each changed
+text file. Those revisions include the text itself and can be opened or restored
+from file history. Unchanged files do not get duplicate revisions.
+
+The two actions serve different purposes: Save keeps your current work, while
+Snapshot lets you choose a recovery point before a substantial rewrite or a new
+arrangement. Compilation and idle collaborative editing also record text
+revisions automatically. Snapshots cover text-file history; use a full backup
+to preserve the entire installation, including assets and settings.
 
 ### Use your own instance
 
@@ -122,6 +142,13 @@ Iris: one Node.js server
 ```
 
 The server orders collaborative edits and writes project content to disk.
+Iris uses the filesystem and PostgreSQL for different parts of that persistence:
+
+| Storage | What it contains |
+| --- | --- |
+| **Filesystem** | Current source files, images, attachments, fonts, templates, project state/settings and generated PDFs or other build files. Working sources remain ordinary files. |
+| **PostgreSQL** | Accounts, permissions, project/file identities, **historical text contents** for revision history and restore, build metadata/logs/diagnostics, and the audit trail. |
+
 For a build, it saves the project and copies its sources into a separate working
 directory. Later edits can continue while the compiler runs against that copy.
 Successful builds keep their own output directories.

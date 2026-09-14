@@ -24,8 +24,7 @@ Use Ctrl-click on Windows/Linux or Cmd-click on macOS for both languages:
 
 - In the editor, click the source position you want to locate. Iris keeps your
   existing selection, reveals the preview, selects the mapped PDF if needed,
-  and highlights the returned area. **Show in PDF** in the footer performs the
-  same operation from the current caret and supports keyboard activation.
+  and highlights the returned area.
 - In the PDF, click an object or text position. Iris opens the source by file
   identity, focuses the editor, and selects the reported column or row.
   Compact layouts switch to the relevant pane.
@@ -37,6 +36,12 @@ Ordinary clicks and Alt/Shift gestures retain their editing behavior. Blank PDF
 areas can have no match. SyncTeX row precision selects the complete row instead
 of guessing a column. A source jump changes the reading position; zoom, refit
 and closing/reopening the preview retain its existing reading anchor.
+
+The footer's **Open preview / Close preview** control and the toolbar panel
+button toggle the preview without a source-map query. They also work before
+compilation and with mapping disabled. On compact screens the footer switches
+between the editor and preview workspaces. Both controls expose their current
+expanded state and can be activated from the keyboard.
 
 The highlight uses document ink on document paper, with the shared selection
 tint. Switching themes keeps the PDF's paper colors. Iris retains the selected

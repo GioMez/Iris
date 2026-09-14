@@ -22,23 +22,23 @@
   "captures": [
     {
       "name": "lilypond-workspace.png",
-      "bytes": 206671,
-      "sha256": "4c2b7510d3196b5ec852beb6ea3c160b44a7c37210d40d6fa3a3b9da354160f4"
+      "bytes": 206805,
+      "sha256": "3bc35cdbea9e1fd6c9d9b31ba1bf6d82384eb45024f1bcc43b5e07fd1b166922"
     },
     {
       "name": "latex-workspace.png",
-      "bytes": 219363,
-      "sha256": "6bc2fdb3d42f94d68a1fc1aa319d26f6de2050c626c14f0f624ab3380f5bd3b9"
+      "bytes": 219680,
+      "sha256": "56235f3e4425bb57c9a34e568d1292d8266ca1d15e5955e29caeae2444ef4327"
     },
     {
       "name": "bibliography.png",
-      "bytes": 103798,
-      "sha256": "8c8a1249526207f78e0c45e037324db3efb034e7f6f31adf7d401651b988106a"
+      "bytes": 104063,
+      "sha256": "f440d96fd994fa35e3f1139e7c2a7fb184ae7be318a63c5aa9cdb25ad0552d84"
     },
     {
       "name": "administration.png",
-      "bytes": 75351,
-      "sha256": "1eaeabd8fcfe65b01818d1a41ce18cef71455e2238a40e4adc68669969a04ccb"
+      "bytes": 75940,
+      "sha256": "0d7256f4d57e4f16c369e02d7f591cc1a705f47ad24b02353e75595b3c0ef05a"
     }
   ]
 }
