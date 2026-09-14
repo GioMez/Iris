@@ -17,6 +17,10 @@ accounts on your instance.
 
 ![A synthetic LilyPond project in Iris: score source on the left and the compiled two-staff Morning study in the PDF preview on the right.](docs/images/lilypond-workspace.png)
 
+<div align="center">
+<a href="https://www.buymeacoffee.com/giogiomez" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me a Coffee" style="height: 60px !important;width: 217px !important;" ></a>
+</div>
+
 ## Why I built it
 
 I started with LilyPond. I couldn't find an online editor that brought together
