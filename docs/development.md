@@ -136,11 +136,21 @@ For an already-running test engine:
 
 ```sh
 node scripts/smoke.cjs --engine docker
+node scripts/smoke.cjs --engine podman
+node scripts/smoke.cjs --help
+```
+
+For a dedicated Podman test environment, you can select a connection and provider
+explicitly. Set `PODMAN_CONNECTION` to the test connection's name and
+`PODMAN_COMPOSE_PROVIDER` to the provider executable's absolute path:
+
+```sh
 node scripts/smoke.cjs --engine podman \
   --connection "$PODMAN_CONNECTION" \
   --compose-provider "$PODMAN_COMPOSE_PROVIDER"
-node scripts/smoke.cjs --help
 ```
+
+Both flags are optional; omit them to use Podman's configured defaults.
 
 The source path must be visible to the engine for Compose's init-script bind
 mount. Docker uses your selected context/host; Podman accepts an explicit

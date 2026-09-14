@@ -311,15 +311,16 @@ the following shell functions. For Docker:
 engine() { docker "$@"; }
 ```
 
-For Podman, retain the provider and connection exports from Installation:
+For Podman:
 
 ```sh
-engine() { podman --connection "$PODMAN_CONNECTION" "$@"; }
+engine() { podman "$@"; }
 ```
 
 Set `PROJECT=iris`, `ENV_FILE` to the absolute source `.env` path, `BACKUP` to
 an existing backup directory, and `DB_PASSWORD` to the source's restricted-role
-password. Use the same project name and environment file as at startup:
+password. Use the same engine environment, project name and environment file
+as at startup:
 
 ```sh
 compose() { engine compose --env-file "$ENV_FILE" -f docker-compose.yml -p "$PROJECT" "$@"; }

@@ -178,26 +178,19 @@ with Docker running as a separate nested daemon in a disposable VM.
 
 ### Podman
 
-Start your Podman engine and choose a Compose provider. Qualification used
-**rootless Podman 6.1.1 / podman-compose 1.6.0**, on Linux arm64 with SELinux.
-Set the provider to the installed executable's absolute path. On a remote
-connection or Podman machine, set `PODMAN_CONNECTION` to the intended connection
-name; these commands do not change the saved default:
+Start your Podman engine and make sure a Compose provider, such as
+`podman-compose`, is installed through your package manager. `podman compose`
+detects an installed provider. These commands use your default Podman environment:
 
 ```sh
-export PODMAN_COMPOSE_PROVIDER="/absolute/path/to/podman-compose"
-export PODMAN_CONNECTION="your-connection-name"
-export CONTAINER_CONNECTION="$PODMAN_CONNECTION"
-podman --connection "$PODMAN_CONNECTION" build -t localhost/iris:1.0.0 .
-podman --connection "$PODMAN_CONNECTION" compose --env-file .env -f docker-compose.yml -p iris up -d
+podman build -t localhost/iris:1.0.0 .
+podman compose --env-file .env -f docker-compose.yml -p iris up -d
 ```
 
-On a local Linux engine, omit `--connection "$PODMAN_CONNECTION"` and the two
-connection exports. Keep `PODMAN_COMPOSE_PROVIDER` set to your chosen provider.
-The remote engine must see the source directory at the path the provider
-resolves: PostgreSQL mounts `db/init/01-create-iris-user.sh` from it. On macOS,
-check the VM's source-path sharing, including any `/var` to `/private/var`
-canonicalization. Both engines use this same Compose file.
+If Podman runs in a VM, keep the source directory in a folder shared with that
+VM: Compose mounts the PostgreSQL initialization script from it. Both engines
+use the same Compose file. Qualification used **rootless Podman 6.1.1 /
+podman-compose 1.6.0** on Linux arm64 with SELinux.
 
 ### Check service status (optional)
 
@@ -208,10 +201,10 @@ With Docker:
 docker compose --env-file .env -f docker-compose.yml -p iris ps
 ```
 
-With Podman, using the connection configured above:
+With Podman:
 
 ```sh
-podman --connection "$PODMAN_CONNECTION" compose --env-file .env -f docker-compose.yml -p iris ps
+podman compose --env-file .env -f docker-compose.yml -p iris ps
 ```
 
 ### Compiler availability
@@ -266,7 +259,7 @@ docker compose --env-file .env -f docker-compose.yml -p iris logs -f webapp
 Podman:
 
 ```sh
-podman --connection "$PODMAN_CONNECTION" compose --env-file .env -f docker-compose.yml -p iris logs -f webapp
+podman compose --env-file .env -f docker-compose.yml -p iris logs -f webapp
 ```
 
 Press Ctrl+C to stop following the logs; the services keep running in the

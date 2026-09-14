@@ -201,9 +201,10 @@ credentials rather than treating them as configured values. Keep one Compose
 file for both engines. Its fixed container paths and database settings take
 precedence over the native example values.
 
-`PODMAN_COMPOSE_PROVIDER` and `CONTAINER_CONNECTION` configure the Podman CLI,
-not Iris. The installation guide uses `PODMAN_CONNECTION` as a shell variable
-for the explicit `--connection` argument. `PATH`, `HOME` and `TMPDIR` come from
-the runtime and also affect tool discovery and temporary files. Test-runner
-options belong in [Development](development.md#run-the-tests), not an instance's
-configuration.
+Podman provider and connection choices belong to its CLI configuration. The
+installation guide uses Podman's defaults; explicit test-environment overrides
+are described in [Development](development.md#installation-smokes).
+
+`PATH`, `HOME` and `TMPDIR` come from the runtime and affect tool discovery and
+temporary files. Test-runner options belong in
+[Development](development.md#run-the-tests), not an instance's configuration.
