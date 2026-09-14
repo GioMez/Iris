@@ -147,16 +147,18 @@ port. Compose fixes the internal database host to `postgres`, its port to 5432,
 and the database/user to `iris`; the native `DB_HOST` values in `.env` do not
 override those container settings.
 
+In both procedures below, the build command creates the local Iris image.
+Compose then starts PostgreSQL, waits for its healthcheck to pass, and starts
+Iris. A single `up -d` starts both services; `-d` leaves them running in the
+background.
+
 ### Docker
 
 Start your Docker engine, then run:
 
 ```sh
 docker build -t localhost/iris:1.0.0 .
-docker compose --env-file .env -f docker-compose.yml -p iris up -d postgres
-docker compose --env-file .env -f docker-compose.yml -p iris up -d webapp
-docker compose --env-file .env -f docker-compose.yml -p iris ps
-docker compose --env-file .env -f docker-compose.yml -p iris logs webapp
+docker compose --env-file .env -f docker-compose.yml -p iris up -d
 ```
 
 Qualification used **Docker Engine 29.8.0 / Docker Compose 5.5.1** on Linux arm64,
@@ -175,10 +177,7 @@ export PODMAN_COMPOSE_PROVIDER="/absolute/path/to/podman-compose"
 export PODMAN_CONNECTION="your-connection-name"
 export CONTAINER_CONNECTION="$PODMAN_CONNECTION"
 podman --connection "$PODMAN_CONNECTION" build -t localhost/iris:1.0.0 .
-podman --connection "$PODMAN_CONNECTION" compose --env-file .env -f docker-compose.yml -p iris up -d postgres
-podman --connection "$PODMAN_CONNECTION" compose --env-file .env -f docker-compose.yml -p iris up -d webapp
-podman --connection "$PODMAN_CONNECTION" compose --env-file .env -f docker-compose.yml -p iris ps
-podman --connection "$PODMAN_CONNECTION" compose --env-file .env -f docker-compose.yml -p iris logs webapp
+podman --connection "$PODMAN_CONNECTION" compose --env-file .env -f docker-compose.yml -p iris up -d
 ```
 
 On a local Linux engine, omit `--connection "$PODMAN_CONNECTION"` and the two
@@ -187,6 +186,21 @@ The remote engine must see the source directory at the path the provider
 resolves: PostgreSQL mounts `db/init/01-create-iris-user.sh` from it. On macOS,
 check the VM's source-path sharing, including any `/var` to `/private/var`
 canonicalization. Both engines use this same Compose file.
+
+### Check service status (optional)
+
+Use `ps` to inspect the services and their health status after startup.
+With Docker:
+
+```sh
+docker compose --env-file .env -f docker-compose.yml -p iris ps
+```
+
+With Podman, using the connection configured above:
+
+```sh
+podman --connection "$PODMAN_CONNECTION" compose --env-file .env -f docker-compose.yml -p iris ps
+```
 
 ### Compiler availability
 
@@ -211,12 +225,12 @@ For Docker, stop and restart with:
 
 ```sh
 docker compose --env-file .env -f docker-compose.yml -p iris stop
-docker compose --env-file .env -f docker-compose.yml -p iris up -d webapp
+docker compose --env-file .env -f docker-compose.yml -p iris up -d
 ```
 
-For Podman, use the same `stop` and `up -d webapp` arguments after the Podman
-Compose prefix above. `up -d webapp` starts its database dependency. These
-operations preserve the volumes. `down --volumes` destroys them; it belongs
+For Podman, use the same `stop` and `up -d` arguments after the Podman
+Compose prefix above. These operations preserve the volumes.
+`down --volumes` destroys them; it belongs
 to disposal of an installation, not ordinary restart.
 
 PostgreSQL's initialization script runs only with an empty volume. Changing
@@ -228,8 +242,24 @@ See [Administration](administration.md#backup-and-restore) before moving data.
 
 On startup with an empty `users` table, Iris creates **`admin`**, assigns the
 administrator role, and prints a random password once in server output. For
-Compose, read the `webapp` logs shown above. Save that password, sign in, and
-change it through the account UI. Iris stores an Argon2id hash, not the password.
+a native installation, read the terminal or service logs. With Compose, follow
+the `webapp` logs until the credentials appear.
+
+Docker:
+
+```sh
+docker compose --env-file .env -f docker-compose.yml -p iris logs -f webapp
+```
+
+Podman:
+
+```sh
+podman --connection "$PODMAN_CONNECTION" compose --env-file .env -f docker-compose.yml -p iris logs -f webapp
+```
+
+Press Ctrl+C to stop following the logs; the services keep running in the
+background. Save the password, sign in, and change it through the account UI.
+Iris stores an Argon2id hash, not the password.
 
 Open **Admin** on the project dashboard to create additional users. There
 is no public signup. Existing accounts and roles survive restarts; Iris does
