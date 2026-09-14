@@ -88,7 +88,7 @@ actions below the filename. Preview controls and file-tab close buttons also
 provide 44 px targets. The file-tab strip scrolls instead of shrinking tabs until
 their close buttons overlap. Outline rows, notices, menus and bibliography
 navigation/disclosures use the same minimum target. Touch checks use browser
-emulation and include hit-testing, not just rectangle sizes.
+emulation and measure hit targets as well as rectangle sizes.
 
 Card content and actions share horizontal insets. Status/retry rows reserve
 ordinary layout space and wrap text, without negative-margin compensation.
@@ -179,6 +179,16 @@ anchor from provisional scroll clamping. PDF pages/canvases are reused when the
 document, fit width or zoom, and pixel density are unchanged. New dimensions or
 documents still render through the normal generation-checked path.
 
+## File-tab scrolling
+
+The tab strip owns horizontal overflow on desktop and touch layouts. Focus on
+an offscreen tab can scroll the strip; it must not scroll `.pane.edpane` or move
+the editor host/gutter. Opening a file from the tree reveals its active tab
+within the strip. Keep CodeMirror's own source scrolling independent.
+
+Browser checks cover mouse selection, Tab/Enter activation, tree opening,
+sidebar/viewport resize, caret preservation and both themes.
+
 ## Verification
 
 `test/ui-visibility.browser.test.js` exercises token propagation with non-default
@@ -189,3 +199,10 @@ density to model 200% zoom reflow. The bibliography browser suite covers its
 table/card layout, scrolling, multiline messages and dialogs.
 Boundary-width checks cover the pinned toolbar controls; rendered PNG/SVG build
 checks compare the image's dimensions with its 100% and 110% zoom labels.
+
+Run the current geometry checks with the [disposable runner](development.md#run-the-tests):
+
+```sh
+node scripts/test.cjs --browser test/ui-visibility.browser.test.js
+node scripts/test.cjs --browser test/bibliography.browser.test.js
+```

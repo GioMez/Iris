@@ -168,16 +168,6 @@
     nodes.forEach((n) => { if (n.type === "folder") walk(n.children, fn); else fn(n); });
   }
   function findFile(id) { let r = null; walk(project.nodes, (f) => { if (f.id === id) r = f; }); return r; }
-  function inferProjectType(data) {
-    if (data && (data.projectType === "latex" || data.projectType === "lilypond")) return data.projectType;
-    let tex = 0, ly = 0;
-    walk(project.nodes, (file) => {
-      if (/\.ly$/i.test(file.path || file.name || "")) ly += 1;
-      if (/\.tex$/i.test(file.path || file.name || "")) tex += 1;
-    });
-    return ly > 0 && tex === 0 ? "lilypond" : "latex";
-  }
-
   function updateProjectTypeUi() {
     const lilypond = isLilyPondProject();
     const projectIcon = document.querySelector(".projchip .pdot");
@@ -992,6 +982,14 @@
       activateOnKeyboard(t, () => openFile(id));
       bar.appendChild(t);
     });
+    // Opening from the tree has no tab-focus event to reveal the selection.
+    // Scroll this strip explicitly so the source pane keeps its own geometry.
+    const selected = bar.querySelector('[aria-selected="true"]');
+    if (selected && bar.clientWidth) {
+      const tab = selected.getBoundingClientRect(), strip = bar.getBoundingClientRect();
+      if (tab.left < strip.left) bar.scrollLeft += tab.left - strip.left;
+      else if (tab.right > strip.right) bar.scrollLeft += tab.right - strip.right;
+    }
   }
   function closeTab(id) {
     const i = state.openTabs.indexOf(id);
@@ -1529,7 +1527,7 @@
     project.name = data.project.name || project.name;
     project.nodes = data.project.nodes;
     state.assets = data.assets || {};
-    state.projectType = inferProjectType(data);
+    state.projectType = data.projectType === "lilypond" ? "lilypond" : "latex";
     state.projectLanguage = data.language || state.projectLanguage;
     state.engine = data.engine || "pdflatex";
     state.compileProfile = normalizeCompileProfile(data.compileProfile);
@@ -2184,7 +2182,9 @@
       state.previewBuildId = null;
       const ms = ((performance.now() - t0) / 1000).toFixed(1);
       const message = window.IrisI18n.error(err, "editor.compileFailed");
-      const res = { success: false, log: t("editor.compileFailedLog", { message }), warnings: [], errors: [err.message || t("editor.compileError")] };
+      const errorMessage = err.message || t("editor.compileError");
+      const res = { success: false, log: t("editor.compileFailedLog", { message }), warnings: [], errors: [errorMessage],
+        diagnostics: [{ severity: "error", file: null, line: null, column: null, message: errorMessage }] };
       buildLog(f, res, ms);
       updateCompileStatus(res, ms);
       setView("diagnostics");
@@ -2334,15 +2334,13 @@
     }
     items.forEach((item) => {
       const line = fromBuild ? item.buildLine : item.line;
-      // Old builds lack revision ids: a position outside a stale cache must
+      // Unversionable sources lack revision ids: a position outside a stale cache must
       // remain pending until opening the file delivers its actual document.
       item.line = !fromBuild && line >= oldLine ? line : lines.get(line) ?? null;
     });
   }
   function setCompileDiagnostics(res) {
-    const items = Array.isArray(res.diagnostics) ? res.diagnostics
-      : [...(res.errors || []).map((message) => ({ severity: "error", message })),
-        ...(res.warnings || []).map((message) => ({ severity: "warning", message }))];
+    const items = res.diagnostics || [];
     pendingDiagnostic = null;
     diagnosticSources = new Map();
     diagnosticDocuments = new Map();
@@ -4100,7 +4098,7 @@
       loadedProjectId = data.id || `local:${generation}`;
       state.projectLanguage = projectLanguage;
       project = (data.project && data.project.nodes) ? data.project : { name: data.name || "", nodes: [] };
-      state.projectType = inferProjectType(data);
+      state.projectType = data.projectType === "lilypond" ? "lilypond" : "latex";
       state.assets = data.assets || {};
       // rebuild image assets from the tree if not stored separately
       walk(project.nodes, (f) => { if (f.kind === "img" && f.data && f.path && !state.assets[f.path]) state.assets[f.path] = f.data; });

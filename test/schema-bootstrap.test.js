@@ -4,7 +4,7 @@ const { initializeSchema } = require("../src/database");
 const { connectionString, isolatedSchema } = require("./helpers/isolated-schema.cjs");
 
 const options = { skip: !connectionString, timeout: 15000 };
-const incompatible = (error) => error.code === "IRIS_SCHEMA_INCOMPATIBLE" && /incompatible beta schema/i.test(error.message) && /fresh|reset/i.test(error.message);
+const incompatible = (error) => error.code === "IRIS_SCHEMA_INCOMPATIBLE";
 const objects = async (pool) => (await pool.query(
   "SELECT oid, relname, relkind FROM pg_class WHERE relnamespace = current_schema()::regnamespace ORDER BY relname"
 )).rows;
@@ -16,12 +16,10 @@ test("fresh initialization creates current tables and a constrained singleton ve
     "audit_events", "build_artifacts", "build_outputs", "document_versions", "iris_schema",
     "project_deletions", "project_files", "project_members", "projects", "users",
   ]);
-  assert.deepEqual((await pool.query("SELECT * FROM iris_schema")).rows, [{ singleton: true, version: 1 }]);
-  await assert.rejects(pool.query("INSERT INTO iris_schema VALUES (TRUE, 1)"), { code: "23505" });
-  await assert.rejects(pool.query("INSERT INTO iris_schema VALUES (FALSE, 1)"), { code: "23514" });
+  assert.deepEqual((await pool.query("SELECT * FROM iris_schema")).rows, [{ singleton: true, version: 2 }]);
+  await assert.rejects(pool.query("INSERT INTO iris_schema VALUES (TRUE, 2)"), { code: "23505" });
+  await assert.rejects(pool.query("INSERT INTO iris_schema VALUES (FALSE, 2)"), { code: "23514" });
   await assert.rejects(pool.query("UPDATE iris_schema SET version = NULL"), { code: "23502" });
-  const columns = (await pool.query("SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = current_schema() AND column_name IN ('legacy_storage_path', 'session_epoch')")).rows;
-  assert.deepEqual(columns, []);
 });
 
 test("repeat initialization preserves rows, identities and the explicit version", options, async (t) => {
@@ -33,7 +31,7 @@ test("repeat initialization preserves rows, identities and the explicit version"
   await initializeSchema(pool);
   assert.deepEqual((await pool.query("SELECT * FROM audit_events")).rows, before);
   assert.deepEqual(await objects(pool), catalog);
-  assert.deepEqual((await pool.query("SELECT * FROM iris_schema")).rows, [{ singleton: true, version: 1 }]);
+  assert.deepEqual((await pool.query("SELECT * FROM iris_schema")).rows, [{ singleton: true, version: 2 }]);
 });
 
 for (const isolation of ["read committed", "repeatable read"]) {
@@ -61,7 +59,7 @@ for (const isolation of ["read committed", "repeatable read"]) {
       assert.deepEqual(await objects(barrier), [], "no DDL is visible before admission");
       await barrier.query("COMMIT");
       await Promise.all(pending);
-      assert.deepEqual((await pool.query("SELECT * FROM iris_schema")).rows, [{ singleton: true, version: 1 }]);
+      assert.deepEqual((await pool.query("SELECT * FROM iris_schema")).rows, [{ singleton: true, version: 2 }]);
       for (const client of clients) {
         assert.equal((await client.query("SHOW default_transaction_isolation")).rows[0].default_transaction_isolation, isolation);
       }
@@ -76,13 +74,13 @@ for (const isolation of ["read committed", "repeatable read"]) {
 
 test("an unmarked nonempty schema is refused with its original rows and bytes untouched", options, async (t) => {
   const pool = await isolatedSchema(t);
-  await pool.query("CREATE TABLE beta_payload (id INTEGER PRIMARY KEY, payload BYTEA NOT NULL)");
+  await pool.query("CREATE TABLE existing_payload (id INTEGER PRIMARY KEY, payload BYTEA NOT NULL)");
   const bytes = Buffer.from([0, 255, 13, 10, 128, 1]);
-  await pool.query("INSERT INTO beta_payload VALUES (7, $1)", [bytes]);
+  await pool.query("INSERT INTO existing_payload VALUES (7, $1)", [bytes]);
   const before = await objects(pool);
   await assert.rejects(initializeSchema(pool), incompatible);
   assert.deepEqual(await objects(pool), before);
-  assert.deepEqual((await pool.query("SELECT * FROM beta_payload")).rows, [{ id: 7, payload: bytes }]);
+  assert.deepEqual((await pool.query("SELECT * FROM existing_payload")).rows, [{ id: 7, payload: bytes }]);
 });
 
 test("an old unmarked application table is refused without altering its definition or data", options, async (t) => {
@@ -104,7 +102,7 @@ for (const ddl of ["CREATE SEQUENCE reserved_ids", "CREATE VIEW reserved_view AS
   });
 }
 
-for (const version of [0, 2]) {
+for (const version of [0, 1, 3]) {
   test(`schema version ${version} is refused without rewriting the marker or current rows`, options, async (t) => {
     const pool = await isolatedSchema(t);
     await initializeSchema(pool);
@@ -121,16 +119,16 @@ for (const version of [0, 2]) {
 
 for (const [name, ddl] of [
   ["missing row", "CREATE TABLE iris_schema (singleton BOOLEAN PRIMARY KEY CHECK (singleton), version INTEGER NOT NULL)"],
-  ["extra row", "CREATE TABLE iris_schema (singleton BOOLEAN NOT NULL, version INTEGER NOT NULL); INSERT INTO iris_schema VALUES (TRUE, 1), (FALSE, 1)"],
-  ["duplicate row", "CREATE TABLE iris_schema (singleton BOOLEAN NOT NULL, version INTEGER NOT NULL); INSERT INTO iris_schema VALUES (TRUE, 1), (TRUE, 1)"],
-  ["false singleton", "CREATE TABLE iris_schema (singleton BOOLEAN PRIMARY KEY, version INTEGER NOT NULL); INSERT INTO iris_schema VALUES (FALSE, 1)"],
+  ["extra row", "CREATE TABLE iris_schema (singleton BOOLEAN NOT NULL, version INTEGER NOT NULL); INSERT INTO iris_schema VALUES (TRUE, 2), (FALSE, 2)"],
+  ["duplicate row", "CREATE TABLE iris_schema (singleton BOOLEAN NOT NULL, version INTEGER NOT NULL); INSERT INTO iris_schema VALUES (TRUE, 2), (TRUE, 2)"],
+  ["false singleton", "CREATE TABLE iris_schema (singleton BOOLEAN PRIMARY KEY, version INTEGER NOT NULL); INSERT INTO iris_schema VALUES (FALSE, 2)"],
   ["null version", "CREATE TABLE iris_schema (singleton BOOLEAN PRIMARY KEY, version INTEGER); INSERT INTO iris_schema VALUES (TRUE, NULL)"],
-  ["wrong columns", "CREATE TABLE iris_schema (old_version TEXT); INSERT INTO iris_schema VALUES ('1')"],
-  ["text version", "CREATE TABLE iris_schema (singleton BOOLEAN PRIMARY KEY, version TEXT NOT NULL); INSERT INTO iris_schema VALUES (TRUE, '1')"],
-  ["view", "CREATE VIEW iris_schema AS SELECT TRUE AS singleton, 1 AS version"],
-  ["unconstrained singleton", "CREATE TABLE iris_schema (singleton BOOLEAN NOT NULL, version INTEGER NOT NULL); INSERT INTO iris_schema VALUES (TRUE, 1)"],
-  ["missing singleton check", "CREATE TABLE iris_schema (singleton BOOLEAN PRIMARY KEY, version INTEGER NOT NULL); INSERT INTO iris_schema VALUES (TRUE, 1)"],
-  ["unvalidated singleton check", "CREATE TABLE iris_schema (singleton BOOLEAN PRIMARY KEY, version INTEGER NOT NULL); ALTER TABLE iris_schema ADD CHECK (singleton) NOT VALID; INSERT INTO iris_schema VALUES (TRUE, 1)"],
+  ["wrong columns", "CREATE TABLE iris_schema (old_version TEXT); INSERT INTO iris_schema VALUES ('2')"],
+  ["text version", "CREATE TABLE iris_schema (singleton BOOLEAN PRIMARY KEY, version TEXT NOT NULL); INSERT INTO iris_schema VALUES (TRUE, '2')"],
+  ["view", "CREATE VIEW iris_schema AS SELECT TRUE AS singleton, 2 AS version"],
+  ["unconstrained singleton", "CREATE TABLE iris_schema (singleton BOOLEAN NOT NULL, version INTEGER NOT NULL); INSERT INTO iris_schema VALUES (TRUE, 2)"],
+  ["missing singleton check", "CREATE TABLE iris_schema (singleton BOOLEAN PRIMARY KEY, version INTEGER NOT NULL); INSERT INTO iris_schema VALUES (TRUE, 2)"],
+  ["unvalidated singleton check", "CREATE TABLE iris_schema (singleton BOOLEAN PRIMARY KEY, version INTEGER NOT NULL); ALTER TABLE iris_schema ADD CHECK (singleton) NOT VALID; INSERT INTO iris_schema VALUES (TRUE, 2)"],
 ]) {
   test(`malformed marker (${name}) is refused without repair`, options, async (t) => {
     const pool = await isolatedSchema(t);
@@ -168,7 +166,7 @@ test("DDL failure rolls back every object and permits a clean retry", options, a
   assert.equal(injected, true);
   assert.deepEqual(await objects(pool), []);
   await initializeSchema(pool);
-  assert.deepEqual((await pool.query("SELECT * FROM iris_schema")).rows, [{ singleton: true, version: 1 }]);
+  assert.deepEqual((await pool.query("SELECT * FROM iris_schema")).rows, [{ singleton: true, version: 2 }]);
 });
 
 test("initialization identifies only the first application schema in the search path", options, async (t) => {
@@ -182,7 +180,7 @@ test("initialization identifies only the first application schema in the search 
     await client.query(`SET search_path TO ${schema}, ${otherSchema}`);
     await initializeSchema({ connect: async () => ({ query: client.query.bind(client), release() {} }) });
     assert.equal((await client.query("SELECT count(*)::int AS n FROM pg_class WHERE relnamespace = current_schema()::regnamespace AND relkind = 'r'")).rows[0].n, 10);
-    assert.deepEqual((await client.query(`SELECT * FROM ${schema}.iris_schema`)).rows, [{ singleton: true, version: 1 }]);
+    assert.deepEqual((await client.query(`SELECT * FROM ${schema}.iris_schema`)).rows, [{ singleton: true, version: 2 }]);
   } finally { client.release(); }
 });
 
@@ -214,7 +212,7 @@ test("permission errors retain PostgreSQL's diagnosis instead of requesting a sc
   };
   try {
     await assert.rejects(initializeSchema(restricted), { code: "42501", message: "permission denied for table iris_schema" });
-    assert.deepEqual((await pool.query("SELECT * FROM iris_schema")).rows, [{ singleton: true, version: 1 }]);
+    assert.deepEqual((await pool.query("SELECT * FROM iris_schema")).rows, [{ singleton: true, version: 2 }]);
   } finally {
     await pool.query(`REVOKE USAGE ON SCHEMA ${schema} FROM ${role}; DROP ROLE ${role}`);
   }

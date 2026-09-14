@@ -49,8 +49,13 @@ tests before merging.
 Run the checks before submitting a catalog change:
 
 ```sh
+npm ci
 npm test
 ```
+
+The [development runner](docs/development.md#run-the-tests) needs an unprivileged
+POSIX user and PostgreSQL 18+ tools. It creates and removes its own cluster and
+storage; no configured Iris instance is needed.
 
 The localization tests verify key parity, non-empty values, placeholders,
 plural forms, markup bindings, script loading order, and API error coverage.
@@ -62,3 +67,6 @@ A maintainer must also add its metadata to `SUPPORTED` in
 `public/iris-i18n.js` and add the corresponding option to the two language
 selectors in `public/Iris.html`. This small reviewed change controls the label,
 locale identifier, and text direction used by the application.
+
+For the language controls and project/default preferences, see the
+[user guide](docs/user-guide.md#sign-in-and-choose-your-workspace).

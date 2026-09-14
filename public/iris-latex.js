@@ -1,104 +1,7 @@
 /* ===================== Iris · LaTeX engine ===================== */
 (function () {
-  function escAll(s) {
-    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  }
-
-  /* ---- syntax highlighter: returns HTML string aligned 1:1 with source ---- */
-  function highlight(src) {
-    let out = "";
-    let i = 0;
-    const n = src.length;
-    const push = (cls, txt) => {
-      out += cls ? `<span class="${cls}">${txt}</span>` : txt;
-    };
-
-    while (i < n) {
-      const c = src[i];
-
-      // line comment
-      if (c === "%") {
-        let j = i;
-        while (j < n && src[j] !== "\n") j++;
-        push("t-comment", escAll(src.slice(i, j)));
-        i = j;
-        continue;
-      }
-
-      // control sequence
-      if (c === "\\") {
-        let j = i + 1;
-        if (j < n && /[a-zA-Z]/.test(src[j])) {
-          while (j < n && /[a-zA-Z]/.test(src[j])) j++;
-          if (src[j] === "*") j++; // starred form
-        } else {
-          j = i + 2; // single-char command: \\ \% \{ \, \[ ...
-        }
-        const cmd = src.slice(i, Math.min(j, n));
-
-        // display / inline math via \[ \] and \( \)
-        if (cmd === "\\[") {
-          let k = src.indexOf("\\]", j);
-          k = k === -1 ? n : k + 2;
-          push("t-math", escAll(src.slice(i, k)));
-          i = k; continue;
-        }
-        if (cmd === "\\(") {
-          let k = src.indexOf("\\)", j);
-          k = k === -1 ? n : k + 2;
-          push("t-math", escAll(src.slice(i, k)));
-          i = k; continue;
-        }
-        if (cmd === "\\\\") { push("t-special", "\\\\"); i = j; continue; }
-
-        push("t-cmd", escAll(cmd));
-        i = j;
-
-        // \begin{env} / \end{env} → color env name
-        if (cmd === "\\begin" || cmd === "\\end") {
-          let k = i;
-          while (k < n && (src[k] === " " || src[k] === "\t")) k++;
-          if (src[k] === "{") {
-            const e = src.indexOf("}", k);
-            if (e !== -1) {
-              push("", escAll(src.slice(i, k)));
-              push("t-brace", "{");
-              push("t-env", escAll(src.slice(k + 1, e)));
-              push("t-brace", "}");
-              i = e + 1;
-              continue;
-            }
-          }
-        }
-        continue;
-      }
-
-      // inline / display math $ ... $  /  $$ ... $$
-      if (c === "$") {
-        const disp = src[i + 1] === "$";
-        let k = i + (disp ? 2 : 1);
-        while (k < n) {
-          if (src[k] === "\\") { k += 2; continue; }
-          if (disp) { if (src[k] === "$" && src[k + 1] === "$") { k += 2; break; } }
-          else if (src[k] === "$") { k += 1; break; }
-          k++;
-        }
-        push("t-math", escAll(src.slice(i, Math.min(k, n))));
-        i = Math.min(k, n);
-        continue;
-      }
-
-      if (c === "{" || c === "}" || c === "[" || c === "]") { push("t-brace", c); i++; continue; }
-      if (c === "&" || c === "~") { push("t-special", escAll(c)); i++; continue; }
-
-      out += escAll(c);
-      i++;
-    }
-    return out;
-  }
-
-  /* ---- CodeMirror stream tokenizer: same rules as highlight() ---- */
-  // Token names map 1:1 onto the t-* CSS classes used by highlight():
+  /* ---- CodeMirror stream tokenizer ---- */
+  // The editor maps these token names onto its syntax classes:
   // cmd → t-cmd, env → t-env, brace → t-brace, math → t-math,
   // comment → t-comment, special → t-special, null → plain text.
   const stream = {
@@ -414,5 +317,5 @@
     return found.sort((a, b) => a.from - b.from || b.to - a.to);
   }
 
-  window.IrisLatex = { highlight, format, indentOnEnter, blockAtEnter, completionText, outline, regions, escAll, stream };
+  window.IrisLatex = { format, indentOnEnter, blockAtEnter, completionText, outline, regions, stream };
 })();

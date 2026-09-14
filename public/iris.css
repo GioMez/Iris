@@ -530,7 +530,9 @@ button{font-family:inherit;color:inherit}
 
 /* ===================== editor ===================== */
 .edpane{background:var(--editor-bg)}
-.tabbar{display:flex;align-items:stretch;height:40px;background:var(--panel-2);border-bottom:1px solid var(--border);padding-right:var(--space-4)}
+.tabbar{display:flex;align-items:stretch;height:40px;background:var(--panel-2);border-bottom:1px solid var(--border);padding-right:var(--space-4);
+  overflow-x:auto;overflow-y:hidden;scrollbar-width:none}
+.tabbar::-webkit-scrollbar{display:none}
 .ftab{display:flex;align-items:center;gap:var(--space-4);padding:0 var(--space-5);font-size:var(--text-md);color:var(--txt-mut);cursor:pointer;
   border-right:1px solid var(--border);position:relative;max-width:200px}
 .ftab .fi{font-size:var(--text-sm)}
@@ -544,7 +546,6 @@ button{font-family:inherit;color:inherit}
 .ftab .x{width:var(--control-sm);height:var(--control-sm);padding:0;border:0;background:transparent;border-radius:var(--radius-compact);display:grid;place-items:center;color:var(--txt-mut);font-size:var(--text-md)}
 .ftab .x .ti{width:13px;height:13px}
 .ftab .x:hover{background:var(--hover-strong);color:var(--txt)}
-.tabbar .spring{display:flex;align-items:center;justify-content:flex-end;padding-right:var(--space-2)}
 .mini{height:var(--control-sm);padding:0 var(--space-5);border-radius:var(--radius-control);border:1px solid var(--border);background:var(--surface-control);color:var(--txt-dim);
   font-size:var(--text-sm);cursor:pointer;display:inline-flex;align-items:center;gap:var(--space-3)}
 .mini .ti{width:14px;height:14px}
@@ -1819,8 +1820,7 @@ html.iris-inadmin[data-role="admin"] .admin-screen{display:block}
   .topbar .workflow-actions>*{flex:0 0 auto}
   .workflow-actions::-webkit-scrollbar{display:none}
   .statusbar{height:48px}
-  .tabbar{height:48px;overflow-x:auto;overflow-y:hidden;scrollbar-width:none}
-  .tabbar::-webkit-scrollbar{display:none}
+  .tabbar{height:48px}
   .ftab,.ftab .x{min-width:var(--control-touch);min-height:var(--control-touch)}
   .ftab{flex:0 0 auto;min-width:160px}
   .ftab .x{flex:0 0 var(--control-touch)}

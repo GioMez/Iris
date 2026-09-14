@@ -1,0 +1,44 @@
+{
+  "version": "1.0.0",
+  "schema": 2,
+  "viewport": {
+    "width": 1600,
+    "height": 1000,
+    "dpr": 1
+  },
+  "fixture": "scripts/fixtures/docs-demo.cjs",
+  "versions": {
+    "node": "v26.8.2",
+    "postgres": "psql (PostgreSQL) 18.6 (Homebrew)",
+    "pdflatex": "pdfTeX 3.141592653-2.6-1.40.29 (TeX Live 2026/Homebrew)",
+    "lilypond": "GNU LilyPond 2.26.0 (running Guile 3.0)",
+    "chromium": "152.0.7977.83"
+  },
+  "fonts": {
+    "plexSans": true,
+    "plexMono": true
+  },
+  "externalFailures": [],
+  "captures": [
+    {
+      "name": "lilypond-workspace.png",
+      "bytes": 206671,
+      "sha256": "4c2b7510d3196b5ec852beb6ea3c160b44a7c37210d40d6fa3a3b9da354160f4"
+    },
+    {
+      "name": "latex-workspace.png",
+      "bytes": 219363,
+      "sha256": "6bc2fdb3d42f94d68a1fc1aa319d26f6de2050c626c14f0f624ab3380f5bd3b9"
+    },
+    {
+      "name": "bibliography.png",
+      "bytes": 103798,
+      "sha256": "8c8a1249526207f78e0c45e037324db3efb034e7f6f31adf7d401651b988106a"
+    },
+    {
+      "name": "administration.png",
+      "bytes": 75351,
+      "sha256": "1eaeabd8fcfe65b01818d1a41ce18cef71455e2238a40e4adc68669969a04ccb"
+    }
+  ]
+}

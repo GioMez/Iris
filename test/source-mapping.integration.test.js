@@ -11,7 +11,7 @@ async function setup(t, sourceMapping, env = {}) {
   const users = {};
   for (const name of ["owner", "viewer", "editor", "outsider"]) users[name] = (await f.pool.query("INSERT INTO users (id, username, email, display_name) VALUES ($1,$2,$3,$2) RETURNING *", [uuidv7(), name, `${name}@example.test`])).rows[0];
   const request = (url, opts = {}) => f.request(url, { cookie: f.cookieFor(users.owner), ...opts });
-  const create = await request("/api/projects", { method: "POST", body: { name: "Navigation", data: { ...(sourceMapping === undefined ? {} : { sourceMapping }), project: { nodes: [
+  const create = await request("/api/projects", { method: "POST", body: { name: "Navigation", data: { projectType: "lilypond", ...(sourceMapping === undefined ? {} : { sourceMapping }), project: { nodes: [
     { type: "file", id: "main", name: "main.ly", path: "main.ly", content: "\\include \"part.ly\"\n\\score { \\theme }", kind: "ly" },
     { type: "file", id: "part", name: "part.ly", path: "part.ly", content: "theme = { c'4 d'4 }\n", kind: "ly" },
   ] } } } });
@@ -59,7 +59,7 @@ test("sourceMapping defaults true and persists false across open, sparse save an
   }
 });
 
-test("sourceMapping imports false, defaults legacy manifests, and validates all creation/save forms", options, async (t) => {
+test("sourceMapping imports false, defaults omitted settings, and validates all creation/save forms", options, async (t) => {
   const f = await setup(t, false);
   const { createZip } = require("../src/zip");
   for (const value of [false, undefined, null, "true"]) {
@@ -70,10 +70,6 @@ test("sourceMapping imports false, defaults legacy manifests, and validates all 
     assert.equal(res.status, value === null || value === "true" ? 400 : 201);
     if (res.status === 201) assert.equal((await res.json()).data.sourceMapping, value !== false);
   }
-  const meta = path.join(f.dir, ".iris", "project.json");
-  const legacy = JSON.parse(await fs.readFile(meta, "utf8")); delete legacy.sourceMapping;
-  await fs.writeFile(meta, JSON.stringify(legacy));
-  assert.equal((await (await f.request(f.url)).json()).sourceMapping, true);
   for (const value of [null, "true", 1]) {
     assert.equal((await f.request("/api/projects", { method: "POST", body: { name: "Invalid", data: { sourceMapping: value } } })).status, 400);
     assert.equal((await f.request(f.url, { method: "PUT", body: { baseRevision: 0, data: { ...f.out.data, sourceMapping: value } } })).status, 400);

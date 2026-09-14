@@ -35,10 +35,3 @@ test("the sidebar toggle uses complementary icons for its open and closed states
   assert.match(icons, /"layout-sidebar-left-expand":/);
   assert.match(app, /open \? "layout-sidebar-left-collapse" : "layout-sidebar-left-expand"/);
 });
-
-test("legacy interface glyphs are no longer used as icons", () => {
-  const sources = ["public/Iris.html", "public/iris-app.js", "public/iris-projects.js"]
-    .map(read)
-    .join("\n");
-  assert.doesNotMatch(sources, /[▤☰◆＋▢⤓⊕‹›⌕⇄✕▣≣−✦▶⚙⚿🅰▾▴✎⚠✗✷➜♪◦▸]/u);
-});

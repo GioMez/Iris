@@ -4,7 +4,7 @@ const { Pool } = require("pg");
 
 const SCHEMA_FILE = path.resolve(__dirname, "../db/schema.sql");
 // Bump for incompatible current-schema changes; SQL comments are not versions.
-const CURRENT_SCHEMA_VERSION = 1;
+const CURRENT_SCHEMA_VERSION = 2;
 const MINIMUM_POSTGRES_MAJOR = 18;
 
 // A minimum, not an exact match: a newer major is allowed until one is proven
@@ -23,7 +23,7 @@ function assertSupportedPostgresVersion(versionNumber) {
 }
 
 function incompatibleSchema(reason) {
-  const error = new Error(`Incompatible beta schema: ${reason}. Use a fresh empty database or explicitly reset the beta installation after backup/export; Iris will not reset or convert it automatically.`);
+  const error = new Error(`Incompatible Iris schema: ${reason}. Use a fresh empty database or restore a backup matching this Iris version. Iris will not reset or convert an incompatible schema automatically.`);
   error.code = "IRIS_SCHEMA_INCOMPATIBLE";
   return error;
 }

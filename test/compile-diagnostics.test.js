@@ -117,7 +117,7 @@ test("Biber log prefixes preserve warnings and errors without fabricating source
   assert.ok(result.diagnostics.every((d) => d.file === null && d.line === null));
 });
 
-test("explicit active diagnostics override stale aliases and version 1 empty storage never reparses trace", () => {
+test("explicit active diagnostics override stale aliases and empty storage never reparses trace", () => {
   const log = "(./main.tex\nLaTeX Warning: Citation 'resolved' undefined on input line 7.\n)";
   const empty = { diagnostics: [], warnings: [], errors: [] };
   assert.deepEqual(compileDiagnosticsView({ diagnostics: [], warnings: ["warning: stale"], errors: ["stale error"], log }), empty);
@@ -125,15 +125,12 @@ test("explicit active diagnostics override stale aliases and version 1 empty sto
   assert.deepEqual(compileDiagnosticsView({ diagnostics: [final], warnings: ["warning: stale"], errors: [], log }), {
     diagnostics: [final], warnings: ["final warning"], errors: [],
   });
-  const row = { diagnostics_version: 1, warnings: [], errors: [], log };
+  const row = { warnings: [], errors: [], log };
   const view = buildOutputView(row, true);
   assert.deepEqual(view.diagnostics, []);
   assert.deepEqual(view.warnings, []);
   assert.deepEqual(view.errors, []);
   assert.equal(view.log, log);
-  const legacy = buildOutputView({ ...row, diagnostics_version: null }, true);
-  assert.equal(legacy.diagnostics.length, 1);
-  assert.equal(legacy.diagnostics[0].line, 7);
 });
 
 test("LilyPond warnings with file, line and column never count as errors", () => {
@@ -224,25 +221,13 @@ test("diagnostics stay bounded after deduplication", () => {
   assert.equal(result.diagnostics.length, 160);
 });
 
-test("build history exposes persisted locations and retains the legacy string arrays", () => {
+test("build history exposes persisted locations and derives warning/error message arrays", () => {
   const warning = { severity: "warning", file: "parts/voice.ily", line: 8, column: 2, message: "barcheck failed" };
   const view = buildOutputView({ warnings: [warning], errors: [], log: "raw log" }, true);
   assert.deepEqual(view.diagnostics, [warning]);
   assert.deepEqual(view.warnings, ["barcheck failed"]);
   assert.deepEqual(view.errors, []);
   assert.equal(view.log, "raw log");
-});
-
-test("old builds recover diagnostics from their logs and retain failures absent from the log", () => {
-  const view = buildOutputView({
-    warnings: ["main.ly:8:2: warning: barcheck failed"],
-    errors: ["main.ly:8:2: warning: barcheck failed", "publication failed"],
-    log: "main.ly:8:2: warning: barcheck failed",
-  }, true);
-  assert.equal(view.warnings.length, 1);
-  assert.deepEqual(view.errors, ["publication failed"]);
-  assert.equal(view.diagnostics.length, 2);
-  assert.equal(view.diagnostics[0].file, "main.ly");
 });
 
 test("the actual pipeline returns structured diagnostics with portable source paths", async () => {

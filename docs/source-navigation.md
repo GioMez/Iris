@@ -1,5 +1,8 @@
 # PDF–source navigation
 
+This is the developer contract. For gestures, settings and troubleshooting, see
+[Move between PDF and source](user-guide.md#move-between-pdf-and-source).
+
 Iris creates source maps for PDF builds of LaTeX and LilyPond projects. The
 project setting `sourceMapping` defaults to `true`. An explicit `false` survives
 creation, import, saves and compilation. A sparse save that omits the setting
@@ -230,10 +233,10 @@ from the CLI can only match recorded snapshot sources. Path normalization
 handles dot segments and macOS `/var` versus `/private/var` aliases. Iris does
 not open source paths returned by the compiler.
 
-Runtime verification: pdfTeX 1.40.29, TeX Live 2026/Homebrew, SyncTeX CLI utility
+Native qualification on macOS arm64: pdfTeX 1.40.29, TeX Live 2026/Homebrew, SyncTeX CLI utility
 1.5 (help also identifies command-line client 1.21). The tested engine emits row
 precision. XeLaTeX, LuaLaTeX and XeTeX use the same managed option/query adapter;
-the R9 backend native suite verifies pdfLaTeX. An engine that supplies no
+the native suite qualifies pdfLaTeX. An engine that supplies no
 SyncTeX file yields `missing`.
 
 ### LilyPond
@@ -252,7 +255,7 @@ PDF coordinates. The adapter converts LilyPond Unicode-character offsets to UTF-
 the saved normalized source text. Each PDF, including independently named book
 outputs, receives its own artifact identity.
 
-Runtime verification: LilyPond 2.26.0 with Guile 3.0, standard PS backend.
+Native qualification on macOS arm64: LilyPond 2.26.0 with Guile 3.0, standard PS backend.
 The suite measures real rendered PDF geometry for spaced/Unicode include paths,
 reused music, chords/rests, physical pages with printed numbering starting at 7,
 multiple books/PDFs, landscape pages and scaled/rotated/translated final stencils. It also checks
@@ -260,7 +263,7 @@ user settings includes, collector I/O errors and the transform-depth budget.
 Ghostscript 10.08.0 supplies the test rasters; production Lily mapping queries
 do not spawn Ghostscript.
 
-Other LilyPond versions/backends have no runtime verification in this task.
+Other LilyPond versions/backends have no native qualification for this release.
 Missing final-page mapping output yields `unsupported`. An exception or invalid
 sidecar yields `unavailable` while the compiler's valid PDF remains usable.
 
@@ -279,9 +282,15 @@ Navigation verifies artifact hashes, rejects symlink sidecars and validates
 manifest identities. It does not mutate published maps.
 
 Private navigation manifests, temporary Lily maps and SyncTeX files do not
-appear in public build-file listings, downloads or ZIP archives. They contain
+appear in public build-file listings, build-file downloads or build ZIPs. They contain
 snapshot text and compiler paths intended for the backend. Build deletion and
 retention remove them with the build directory.
+
+Portable project exports use a separate filesystem walk and include ordinary
+output files, including retained navigation sidecars. Those ZIPs can therefore
+carry snapshot text and compiler paths. Imports copy the bytes with new project
+identities; they do not recreate database build records or a usable navigation
+history. Compile the imported project to create its own builds/maps.
 
 | Work | Budget |
 | --- | --- |
@@ -310,43 +319,33 @@ the handler settles.
 ## Verification commands
 
 ```sh
-node --test test/source-mapping.test.js
-node --test test/source-navigation-client.test.js
-node --test test/build-download-lifecycle.test.js
-IRIS_TEST_COMPILERS=1 node --test test/source-mapping.native.test.js
+node scripts/test.cjs test/source-mapping.test.js test/source-navigation-client.test.js test/build-download-lifecycle.test.js test/source-mapping.integration.test.js
+node scripts/test.cjs --native test/source-mapping.native.test.js
+node scripts/test.cjs --browser test/source-navigation.browser.test.js
 ```
 
-The native suite skips unless `IRIS_TEST_COMPILERS=1`. Once enabled, a missing
-required compiler, SyncTeX CLI or rasterizer fails the test with diagnostics.
-The suite creates and removes disposable source/output directories.
+The [repository runner](development.md#run-the-tests) creates disposable
+PostgreSQL and storage and removes its fixtures. The native suite skips without
+`--native`; an enabled gate fails if a required compiler, SyncTeX CLI or
+rasterizer is missing. The browser gate requires native pdfLaTeX, SyncTeX and
+LilyPond plus installed Chrome through Playwright Core.
 
-Run `test/source-mapping.integration.test.js` through the isolated PostgreSQL
-runner used by the project. Its `serverFixture` creates its own projects,
-database schema and storage, disables dotenv loading and removes its fixtures.
-The controller's Task 1 report records exact commands, counts and native
-measurements for this implementation.
-
-Enable `IRIS_TEST_BROWSER=1` with the isolated PostgreSQL runner to execute
-`test/source-navigation.browser.test.js`. This gate requires installed native
-pdfLaTeX, SyncTeX and LilyPond plus Chrome (Playwright Core). It compiles fixture
-projects through the real HTTP route, opens their retained outputs in PDF.js,
-and drives actual editor/PDF mouse events and the keyboard action. Chromium
-152.0.7977.83, PDF.js 6.3.289 and CodeMirror View 6.43.7 supplied the R9 browser
-runtime. Ctrl-click also runs with a controlled Linux platform identity on the
-macOS browser host; Cmd-click uses the host identity.
+Browser journeys compile fixtures through real HTTP, open retained output in
+PDF.js, and drive editor/PDF mouse events and the keyboard action. Qualification
+uses Chromium 152.0.7977.83, PDF.js 6.3.289 and CodeMirror View 6.43.7. Ctrl-click
+also runs with a controlled Linux platform identity on the macOS host;
+Cmd-click uses the host identity.
 
 Controlled viewer fixtures cover nonzero crop origins, rotations 0/90/180/270,
 zoom and DPR 1/2, with rendered-pixel containment checks. A real pdfLaTeX cropped
-PDF regression follows the native HTTP route into the viewer: its marker covers
-all 319 measured first-line pixels at DPR 2, and the first inverse gesture on
-that ink selects source row 4. It compares compile, retained-download and viewer
+PDF regression follows the native HTTP route into the viewer and checks marker
+containment of rendered first-line pixels at DPR 2, plus inverse source-row
+selection on that ink. It compares compile, retained-download and viewer
 download bytes. Parser tests cover inherited indirect MediaBoxes in compressed
 objects; browser tests cover lazy acquisition, off/re-enable, cancellation,
 per-artifact reuse, parse failure and worker timeout. Native browser journeys
 cover included sources, physical pages, multiple LilyPond PDFs, dirty text,
 authoritative inactive rooms, rename/delete, delayed responses, compact Italian
-light-theme layouts, readers, and preview reopen/cache behavior. Retained UI,
-bibliography and request-security browser gates accompany this suite. The Task 2
-report records the earlier commands, exercised totals and fixture cleanup. The
-final fix report records the cropped-PDF and real-handler download regressions
-and the combined acceptance gates.
+light-theme layouts, readers, and preview reopen/cache behavior. UI, bibliography
+and request-security browser gates accompany this suite; see the
+[combined command](development.md#browser-and-native-gates).

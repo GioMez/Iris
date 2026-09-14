@@ -1,15 +1,19 @@
 {
   "name": "iris",
-  "version": "1.0.0-beta2",
+  "version": "1.0.0",
   "private": true,
   "license": "GPL-3.0-or-later",
   "type": "commonjs",
   "scripts": {
     "start": "node src/server.js",
     "dev": "node src/server.js",
-    "test": "node --test",
-    "test:bibliography:browser": "node --test --test-timeout=30000 test/bibliography.browser.test.js",
-    "test:integration": "node --test test/postgresql.integration.test.js"
+    "test": "node scripts/test.cjs",
+    "test:bibliography:browser": "node scripts/test.cjs --browser test/bibliography.browser.test.js",
+    "test:integration": "node scripts/test.cjs test/postgresql.integration.test.js",
+    "test:browser": "node scripts/test.cjs --browser",
+    "test:native": "node scripts/test.cjs --native test/source-mapping.native.test.js",
+    "release:source": "node scripts/release.cjs",
+    "smoke": "node scripts/smoke.cjs"
   },
   "dependencies": {
     "@codemirror/autocomplete": "6.20.3",

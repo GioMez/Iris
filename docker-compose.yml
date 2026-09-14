@@ -1,8 +1,10 @@
 services:
   webapp:
+    image: localhost/iris:1.0.0
     build: .
     restart: unless-stopped
     init: true
+    stop_grace_period: 25s
     depends_on:
       postgres:
         condition: service_healthy
@@ -22,12 +24,14 @@ services:
       DATA_DIR: /app/data
       TEMPLATE_DIR: /app/data/templates
       APP_BASE_URL: "${APP_BASE_URL:-}"
-      TEX_BIN_PATH: /usr/local/texlive/bin/x86_64-linux
-      TEX_PATH_LOCKED: "true"
-      LILYPOND_BIN_PATH: /usr/bin
-      LILYPOND_PATH_LOCKED: "true"
-      COMPILE_TIMEOUT_MS: 30000
-      COOKIE_SECURE: "false"
+      # The stock image contains no compilers. Paths refer to this Linux runtime,
+      # never the operator's host. Native installation supports host toolchains.
+      TEX_BIN_PATH: "${TEX_BIN_PATH:-}"
+      TEX_PATH_LOCKED: "${TEX_PATH_LOCKED:-false}"
+      LILYPOND_BIN_PATH: "${LILYPOND_BIN_PATH:-}"
+      LILYPOND_PATH_LOCKED: "${LILYPOND_PATH_LOCKED:-false}"
+      COMPILE_TIMEOUT_MS: "${COMPILE_TIMEOUT_MS:-30000}"
+      COOKIE_SECURE: "${COOKIE_SECURE:-false}"
       # Enable only when the proxy overwrites/strips X-Forwarded-For,
       # X-Forwarded-Host and X-Forwarded-Proto and preserves browser metadata.
       TRUST_PROXY: "${TRUST_PROXY:-false}"
@@ -53,26 +57,28 @@ services:
       # ARGON2_TIME_COST: 3
       # ARGON2_PARALLELISM: 1
     ports:
-      - "127.0.0.1:3000:3000"
+      - "${IRIS_BIND_ADDRESS:-127.0.0.1}:${IRIS_PORT:-3000}:3000"
     volumes:
       - project-data:/app/data
       # Optional separate, host-backed mutable template catalog. Omit this to
       # keep templates in the project-data volume with the rest of /app/data.
       # - ./templates:/app/data/templates
-      # Mount container-compatible LaTeX and LilyPond distributions here.
-      # - ./texlive/bin:/usr/local/texlive/bin/x86_64-linux:ro
-      # - ./lilypond/bin/lilypond:/usr/bin/lilypond:ro
     read_only: true
     tmpfs:
-      - /tmp
+      - /tmp:rw,nosuid,nodev,size=256m
     cap_drop:
       - ALL
     security_opt:
       - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
 
   postgres:
     # PostgreSQL 18 is the supported database baseline for Iris.
-    image: postgres:18
+    image: docker.io/library/postgres:18
     restart: unless-stopped
     environment:
       POSTGRES_DB: postgres
@@ -81,11 +87,9 @@ services:
       # Used only by the initialization script to create the restricted role.
       DB_PASSWORD: "${DB_PASSWORD:?Set DB_PASSWORD to a secure random value}"
       POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
-    ports:
-      - "127.0.0.1:5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql
-      - ./db/init/01-create-iris-user.sh:/docker-entrypoint-initdb.d/01-create-iris-user.sh:ro
+      - ./db/init/01-create-iris-user.sh:/docker-entrypoint-initdb.d/01-create-iris-user.sh:ro,z
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "postgres", "-d", "postgres"]
       interval: 5s

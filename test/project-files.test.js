@@ -116,12 +116,12 @@ test("a removed file is soft-deleted, never resurrected on re-add", () => {
   assert.deepEqual(readded.softDeletes, []);
 });
 
-test("a new file adopts a client-supplied UUIDv7 but mints one for a legacy id", () => {
+test("a new file adopts a client-supplied UUIDv7 but mints one for a draft id", () => {
   const plan = reconcileProjectFiles(
     [],
     [
       { nodeId: UUID_B, path: "adopted.tex", kind: "tex" },
-      { nodeId: "file_legacy", path: "minted.tex", kind: "tex" },
+      { nodeId: "file_draft", path: "minted.tex", kind: "tex" },
     ],
     { generateId: counter() }
   );

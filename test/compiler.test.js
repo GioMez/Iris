@@ -9,7 +9,6 @@ process.env.DB_PASSWORD = "test-only-database-password";
 
 const {
   fileKindForPath,
-  inferProjectType,
   findCompileFile,
   normalizeCompileProfile,
   sanitizeCompileProfileForStorage,
@@ -42,10 +41,13 @@ function project(files, projectType) {
   };
 }
 
-test("recognizes legacy LilyPond projects from .ly sources", () => {
-  assert.equal(inferProjectType(project([{ path: "main.ly" }])), "lilypond");
-  assert.equal(inferProjectType(project([{ path: "main.tex" }, { path: "music.ly" }])), "latex");
-  assert.equal(inferProjectType(project([{ path: "main.ly" }], "latex")), "latex");
+test("main-source selection follows the declared project type, defaulting to LaTeX", () => {
+  const files = [{ path: "music.ly" }, { path: "main.tex" }];
+  assert.equal(findCompileFile(project(files)).path, "main.tex");
+  assert.equal(findCompileFile(project(files, "lilypond")).path, "music.ly");
+  assert.equal(findCompileFile(project(files, "latex")).path, "main.tex");
+  assert.throws(() => findCompileFile(project([{ path: "music.ly" }])),
+    error => error.errorCode === "COMPILE_NO_SOURCE" && error.params.extension === ".tex");
 });
 
 test("selects a LilyPond score as the main source", () => {

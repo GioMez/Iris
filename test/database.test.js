@@ -38,13 +38,13 @@ test("createDatabase bootstraps with a restricted owner, reopens and refuses an 
   await admin.query(`CREATE DATABASE ${database} OWNER ${database}`);
   pool = await createDatabase(options);
   assert.deepEqual((await pool.query("SELECT rolsuper, rolcreatedb, rolcreaterole FROM pg_roles WHERE rolname = current_user")).rows, [{ rolsuper: false, rolcreatedb: false, rolcreaterole: false }]);
-  assert.deepEqual((await pool.query("SELECT * FROM iris_schema")).rows, [{ singleton: true, version: 1 }]);
+  assert.deepEqual((await pool.query("SELECT * FROM iris_schema")).rows, [{ singleton: true, version: 2 }]);
   await pool.query("INSERT INTO audit_events (action, actor_label, target_type) VALUES ('startup.test', 'operator', 'system')");
   await pool.end();
   pool = null;
   pool = await createDatabase(options);
   assert.equal((await pool.query("SELECT COUNT(*)::int AS n FROM audit_events")).rows[0].n, 1);
-  await pool.query("UPDATE iris_schema SET version = 2");
+  await pool.query("UPDATE iris_schema SET version = 1");
   await pool.end();
   pool = null;
   await assert.rejects(createDatabase(options), { code: "IRIS_SCHEMA_INCOMPATIBLE" });

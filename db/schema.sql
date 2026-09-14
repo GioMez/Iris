@@ -167,7 +167,6 @@ CREATE TABLE build_outputs (
   log TEXT NOT NULL DEFAULT '',
   warnings JSONB NOT NULL DEFAULT '[]'::jsonb,
   errors JSONB NOT NULL DEFAULT '[]'::jsonb,
-  diagnostics_version INTEGER,
   CONSTRAINT build_outputs_status_check CHECK (status IN ('running', 'succeeded', 'failed')),
   CONSTRAINT build_outputs_project_type_check CHECK (project_type IN ('latex', 'lilypond')),
   CONSTRAINT build_outputs_format_check CHECK (format IN ('pdf', 'png', 'svg', 'ps', 'eps')),

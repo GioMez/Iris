@@ -434,19 +434,9 @@ test("admin member mutations retain focus and expose in-modal status", () => {
 
 test("editor suppresses native boundary bounce without custom motion", () => {
   assert.match(css, /\.cm-host \.cm-scroller\{[^}]*overscroll-behavior:none/);
-  assert.doesNotMatch(css, /editor-bounce|bounce-push|bounce-return/);
-  assert.doesNotMatch(app, /editorBoundaryWheel|boundaryBounceAmount|editorBounceTimer/);
 });
 
-test("the textarea editor is gone and CodeMirror is the only editor", () => {
-  assert.ok(!fs.existsSync(path.join(root, "public/iris-editor-legacy.js")));
-  // No DOM, CSS or temporary switch left over from the migration.
-  ["codeArea", "codeWrap", "codeLayer", "lineMeasure", "curHl", 'id="gutter"'].forEach((leftover) => {
-    assert.ok(!html.includes(leftover), `Iris.html still contains ${leftover}`);
-  });
-  assert.doesNotMatch(css, /\.code-area|\.code-wrap|\.code-layer|\.line-measure|\.cur-hl|editor-hscroll/);
-  assert.doesNotMatch(editorAdapter, /legacyRequested|IrisEditorLegacy|iris_editor/);
-  assert.doesNotMatch(app, /\barea\.value\b|IrisEditorLegacy/);
+test("an unavailable editor exposes a localized failure in its pane", () => {
   // A failed module load has to be visible in the pane, not just the console.
   assert.match(editorAdapter, /function reportUnavailable\(err\)/);
   assert.match(editorAdapter, /cm-unavailable/);

@@ -96,29 +96,13 @@ function parseCompileLog(log, { cwd = "", bounded = true } = {}) {
   return diagnosticResult(items, bounded);
 }
 
-// The existing JSONB warning/error arrays store structured entries for new
-// builds. Old builds still contain strings; recover their locations from the
-// log, and preserve setup/publication failures even when absent from that log.
+// Pipeline results and persisted JSONB entries carry authoritative structured
+// diagnostics. The raw trace may include resolved multipass observations.
 function compileDiagnosticsView(result) {
   if (Array.isArray(result.diagnostics)) return diagnosticResult(result.diagnostics);
   const warnings = Array.isArray(result.warnings) ? result.warnings : [];
   const errors = Array.isArray(result.errors) ? result.errors : [];
-  const stored = [...warnings, ...errors].filter((item) => item && typeof item === "object");
-  if (result.diagnostics_version === 1) return diagnosticResult(stored);
-  const items = stored.length ? stored.slice() : parseCompileLog(result.log).diagnostics;
-  for (const [severity, values] of [["warning", warnings], ["error", errors]]) {
-    for (const value of values) {
-      if (typeof value !== "string") continue;
-      const parsed = parseCompileLog(value).diagnostics;
-      if (parsed.length) {
-        // A legacy string may lack the file context present in the full log.
-        for (const item of parsed) if (!items.some((d) => d.message === item.message && d.severity === item.severity)) items.push(item);
-      } else if (!items.some((d) => d.message === value)) {
-        items.push(diagnostic(severity, value));
-      }
-    }
-  }
-  return diagnosticResult(items);
+  return diagnosticResult([...warnings, ...errors]);
 }
 
 function selectCompileDiagnostics(steps, { cwd = "", preLog = "" } = {}) {

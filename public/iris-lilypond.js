@@ -1,58 +1,7 @@
 /* ===================== Iris · LilyPond text support ===================== */
 (function () {
-  const esc = (s) => IrisLatex.escAll(s);
-
-  function highlight(src) {
-    let out = "";
-    let i = 0;
-    while (i < src.length) {
-      if (src.startsWith("%{", i)) {
-        const end = src.indexOf("%}", i + 2);
-        const next = end < 0 ? src.length : end + 2;
-        out += `<span class="t-comment">${esc(src.slice(i, next))}</span>`;
-        i = next;
-        continue;
-      }
-      if (src[i] === "%") {
-        const end = src.indexOf("\n", i);
-        const next = end < 0 ? src.length : end;
-        out += `<span class="t-comment">${esc(src.slice(i, next))}</span>`;
-        i = next;
-        continue;
-      }
-      if (src[i] === '"') {
-        let next = i + 1;
-        while (next < src.length) {
-          if (src[next] === "\\") next += 2;
-          else if (src[next++] === '"') break;
-          else next += 0;
-        }
-        out += `<span class="t-env">${esc(src.slice(i, next))}</span>`;
-        i = next;
-        continue;
-      }
-      if (src[i] === "\\") {
-        let next = i + 1;
-        while (next < src.length && /[A-Za-z-]/.test(src[next])) next += 1;
-        if (next === i + 1) next += 1;
-        out += `<span class="t-cmd">${esc(src.slice(i, next))}</span>`;
-        i = next;
-        continue;
-      }
-      if (src[i] === "{" || src[i] === "}" || src.startsWith("<<", i) || src.startsWith(">>", i)) {
-        const token = src.startsWith("<<", i) || src.startsWith(">>", i) ? src.slice(i, i + 2) : src[i];
-        out += `<span class="t-brace">${esc(token)}</span>`;
-        i += token.length;
-        continue;
-      }
-      out += esc(src[i]);
-      i += 1;
-    }
-    return out;
-  }
-
-  /* ---- CodeMirror stream tokenizer: same rules as highlight() ---- */
-  // Token names map onto the t-* CSS classes used by highlight(): cmd → t-cmd,
+  /* ---- CodeMirror stream tokenizer ---- */
+  // The editor maps these token names onto its syntax classes: cmd → t-cmd,
   // env → t-env (strings), brace → t-brace, comment → t-comment, null → text.
   const stream = {
     startState() { return { block: false, str: false }; },
@@ -446,5 +395,5 @@
     return found.sort((a, b) => a.from - b.from || b.to - a.to);
   }
 
-  window.IrisLilyPond = { highlight, format, indentOnEnter, blockAtEnter, completionText, outline, regions, stream };
+  window.IrisLilyPond = { format, indentOnEnter, blockAtEnter, completionText, outline, regions, stream };
 })();

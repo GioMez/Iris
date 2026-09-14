@@ -703,7 +703,7 @@
         return;
       }
       // Center only when the position falls outside the comfortable band,
-      // mirroring the legacy editor's find/replace behaviour.
+      // keeping find/replace selections visible in the source viewport.
       const rect = view.scrollDOM.getBoundingClientRect();
       const coords = view.coordsAtPos(pos);
       if (!coords || coords.top < rect.top + 30 || coords.bottom > rect.bottom - 50) {

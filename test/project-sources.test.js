@@ -7,7 +7,7 @@ const path = require("node:path");
 process.env.IRIS_SECRET ||= "test-only-secret-with-sufficient-entropy";
 process.env.DB_PASSWORD ||= "test-only-database-password";
 
-const { writeProjectFile, readProjectFile, hydrateProjectPayloads, buildProjectArchive } = require("../src/server");
+const { writeProjectFile, readProjectFile, buildProjectArchive } = require("../src/server");
 const { extractZip } = require("../src/zip");
 const Bibliography = require("../public/iris-bibliography");
 
@@ -49,7 +49,7 @@ for (const kind of ["bib", "ris"]) {
   });
 
   for (const [label, bytes] of [["invalid UTF-8", Buffer.from([0xef, 0xbb, 0xbf, 0xc3, 0x28, 0xff, 13, 10])], ["NUL", Buffer.from("text\0text")]]) {
-    test(`${kind} ${label} stays in the manifest and preserves bytes through saves, materialization and export`, options, async (t) => {
+    test(`${kind} ${label} stays in the manifest and preserves bytes through saves and export`, options, async (t) => {
       const dir = await projectDir(t);
       await writeProjectFile(dir, projectData([textNode("main.tex", "original")]));
       await fs.writeFile(path.join(dir, name), bytes);
@@ -68,12 +68,6 @@ for (const kind of ["bib", "ris"]) {
         assert.ok(stored);
         assert.equal(Object.hasOwn(stored, "sourceError"), false);
         assert.equal(Object.hasOwn(stored, "readOnly"), false);
-        await hydrateProjectPayloads(dir, data);
-        assert.equal(node.content, undefined);
-        assert.equal(node.data, `data:text/plain; charset=utf-8;base64,${bytes.toString("base64")}`);
-        const staging = await projectDir(t);
-        await writeProjectFile(staging, data);
-        assert.deepEqual(await fs.readFile(path.join(staging, name)), bytes);
         const archive = extractZip(await buildProjectArchive(dir, "Sources"));
         assert.deepEqual(archive.files.get(name), bytes);
         assert.equal(JSON.parse(archive.files.get(".iris/project.json")).project.nodes.find((node) => node.name === name).sourceError, undefined);
@@ -113,46 +107,6 @@ test("a text file attached as a data URL is stored as its decoded text", async (
   assert.equal(stored.binary, undefined);
 });
 
-test("saving a project again never rewrites a text source as its data URL", async (t) => {
-  const dir = await projectDir(t);
-  // What an older client holds after loading a project whose manifest flagged the
-  // uploaded .bib as base64: the node still claims to be binary and the asset map
-  // still carries the data URL the server built with a parameterised media type.
-  const stale = `data:text/plain; charset=utf-8;base64,${Buffer.from(BIB, "utf8").toString("base64")}`;
-  await fs.mkdir(dir, { recursive: true });
-  await writeProjectFile(dir, projectData([textNode("main.tex", "x")]));
-  await fs.writeFile(path.join(dir, "refs.bib"), BIB, "utf8");
-
-  await writeProjectFile(dir, projectData([
-    textNode("main.tex", "x"),
-    { type: "file", id: "b", name: "refs.bib", kind: "bib", path: "refs.bib", binary: true, encoding: "base64", content: BIB },
-  ], { "refs.bib": stale }));
-
-  assert.equal(await fs.readFile(path.join(dir, "refs.bib"), "utf8"), BIB);
-});
-
-test("a legacy manifest that flags a text source as base64 heals on the next read", async (t) => {
-  const dir = await projectDir(t);
-  await writeProjectFile(dir, projectData([textNode("main.tex", "x")]));
-  await fs.writeFile(path.join(dir, "refs.bib"), BIB, "utf8");
-  const manifestPath = path.join(dir, ".iris", "project.json");
-  const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8"));
-  manifest.project.nodes.push({
-    type: "file", id: "b", name: "refs.bib", kind: "bib", path: "refs.bib", binary: true, encoding: "base64",
-  });
-  await fs.writeFile(manifestPath, JSON.stringify(manifest), "utf8");
-
-  const data = await readProjectFile(dir);
-  const node = data.project.nodes.find((entry) => entry.name === "refs.bib");
-  assert.equal(node.content, BIB);
-  assert.equal(node.encoding, "utf8");
-  assert.equal(node.binary, undefined);
-  assert.equal(node.data, undefined);
-  // The bytes are the file's own, so they are not duplicated into the asset map
-  // that the write path replays for binary files.
-  assert.equal(data.assets["refs.bib"], undefined);
-});
-
 test("binary files still round-trip through their data URL", async (t) => {
   const dir = await projectDir(t);
   const upload = `data:image/png;base64,${PNG.toString("base64")}`;
@@ -173,50 +127,6 @@ test("binary files still round-trip through their data URL", async (t) => {
   // never opened, must leave the bytes untouched.
   await writeProjectFile(dir, data);
   assert.deepEqual(await fs.readFile(path.join(dir, "plot.png")), PNG);
-});
-
-test("a build compiles the sources the client did not send, not empty files", async (t) => {
-  const dir = await projectDir(t);
-  const style = "%% bibliography style\n";
-  await writeProjectFile(dir, projectData([
-    textNode("main.tex", "\\documentclass{article}\\bibliography{refs}"),
-    { type: "file", id: "b", name: "refs.bib", kind: "bib", path: "refs.bib", content: BIB },
-    { type: "file", id: "s", name: "num.bst", kind: "file", path: "num.bst", content: style },
-    { type: "file", id: "i", name: "plot.png", kind: "img", path: "plot.png", data: `data:image/png;base64,${PNG.toString("base64")}` },
-  ]));
-
-  // What the browser sends on compile: content only for the file being edited.
-  const snapshot = projectData([
-    textNode("main.tex", "\\documentclass{article}\\bibliography{refs}"),
-    { type: "file", id: "b", name: "refs.bib", kind: "bib", path: "refs.bib" },
-    { type: "file", id: "s", name: "num.bst", kind: "file", path: "num.bst", binary: true, encoding: "base64" },
-    { type: "file", id: "i", name: "plot.png", kind: "img", path: "plot.png" },
-  ]);
-  await writeProjectFile(dir, snapshot);
-  await hydrateProjectPayloads(dir, snapshot);
-
-  // The staging tree of a build starts empty, so what the snapshot omits is lost.
-  const staging = await projectDir(t);
-  await writeProjectFile(staging, snapshot);
-  assert.equal(await fs.readFile(path.join(staging, "refs.bib"), "utf8"), BIB);
-  assert.equal(await fs.readFile(path.join(staging, "num.bst"), "utf8"), style);
-  assert.deepEqual(await fs.readFile(path.join(staging, "plot.png")), PNG);
-});
-
-test("completing a build snapshot never replaces what the client did send", async (t) => {
-  const dir = await projectDir(t);
-  await writeProjectFile(dir, projectData([
-    textNode("main.tex", "on disk"),
-    { type: "file", id: "b", name: "refs.bib", kind: "bib", path: "refs.bib", content: BIB },
-  ]));
-  const snapshot = projectData([
-    textNode("main.tex", "just typed"),
-    { type: "file", id: "b", name: "refs.bib", kind: "bib", path: "refs.bib", content: "" },
-  ]);
-  await hydrateProjectPayloads(dir, snapshot);
-  assert.equal(snapshot.project.nodes[0].content, "just typed");
-  // An empty string is an edit that cleared the file, not an omission.
-  assert.equal(snapshot.project.nodes[1].content, "");
 });
 
 test("the build copies saved source bytes while holding the project gate", () => {
@@ -404,7 +314,7 @@ for (const format of ["bib", "ris"]) for (const extension of ["txt", "md"]) {
     assert.deepEqual(await fs.readFile(path.join(f.dir, f.name)), Buffer.from(f.text));
   });
 
-  test(`generic ${format} ${extension} PG damaged sources survive GET, sparse save, materialization and export`, pgOptions, async (t) => {
+  test(`generic ${format} ${extension} PG damaged sources survive GET, sparse save and export`, pgOptions, async (t) => {
     const f = await bibliographyServer(t, format, extension);
     for (const bytes of [Buffer.concat([Buffer.from("\uFEFF"), Buffer.from(f.text.slice(1), "latin1")]), Buffer.from(f.text.replace("\u00e9", "\0"))]) {
       await fs.writeFile(path.join(f.dir, f.name), bytes);
@@ -414,11 +324,6 @@ for (const format of ["bib", "ris"]) for (const extension of ["txt", "md"]) {
       assert.equal(node.content, undefined);
       data.project.nodes[0].content += " unrelated";
       assert.equal((await f.request(f.url, { method: "PUT", body: { baseRevision: data.revision, data } })).status, 200);
-      await hydrateProjectPayloads(f.dir, data);
-      assert.equal(node.content, undefined);
-      const staging = await projectDir(t);
-      await writeProjectFile(staging, data);
-      assert.deepEqual(await fs.readFile(path.join(staging, f.name)), bytes);
       const exported = await f.request(f.url + "/archive");
       assert.deepEqual(extractZip(Buffer.from(await exported.arrayBuffer())).files.get(f.name), bytes);
       assert.deepEqual(await fs.readFile(path.join(f.dir, f.name)), bytes);

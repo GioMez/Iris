@@ -1013,10 +1013,8 @@ function mimeForProjectFile(filePath) {
   return "application/octet-stream";
 }
 
-// Whether a node carries its bytes as a data URL rather than as text. The
-// extension decides first: a text source stays text even when the node claims
-// otherwise, so a .bib attached through the upload dialog — which used to flag
-// every file it read as base64 — is stored, edited and versioned as text.
+// Known source extensions are text; image extensions are binary. Uploads can
+// carry either kind as data URLs.
 function fileIsBinaryNode(node) {
   const filePath = node.path || node.name || "";
   if (/\.(png|jpe?g|gif|webp|svg|pdf)$/i.test(filePath)) return true;
@@ -1098,8 +1096,8 @@ function decodeProjectText(bytes, filePath) {
   return probe;
 }
 
-function generatedIdFor(relPath) {
-  return "gen_" + crypto.createHash("sha1").update(relPath).digest("hex").slice(0, 12);
+function filesystemIdFor(relPath) {
+  return "fs_gen_" + crypto.createHash("sha1").update(relPath).digest("hex").slice(0, 12);
 }
 
 function isIgnoredProjectFsEntry(name) {
@@ -1124,9 +1122,8 @@ function stripFilePayloads(data) {
     nodes.forEach((node) => {
       if (node.type === "folder") strip(node.children);
       else {
-        // The manifest records how the bytes live on disk, so it is derived from
-        // the file itself: a stale flag on an incoming node cannot keep a text
-        // source in the data URL round-trip it never belonged in.
+        // Record the on-disk representation, independently of the upload's
+        // transport encoding. Source text and binary assets hydrate differently.
         if (fileIsBinaryNode(node)) {
           node.binary = true;
           node.encoding = "base64";
@@ -1206,53 +1203,6 @@ async function writeProjectNodes(storagePath, data) {
   return expectedFiles;
 }
 
-// Fills in the payloads the client left out. A save omits the content of every
-// file it did not edit so it cannot overwrite a collaborator's newer text, and
-// the project directory answers for those files. Materializing that same
-// snapshot into an empty directory — which is what a build staging tree is —
-// would instead create them empty, so the bytes on disk are read back in first.
-async function hydrateProjectPayloads(storagePath, data) {
-  const assets = data.assets || {};
-  const walk = async (nodes, parentPath = "") => {
-    if (!Array.isArray(nodes)) return;
-    for (const node of nodes) {
-      if (!node || node.generated) continue;
-      if (node.type === "folder") {
-        await walk(node.children, safeProjectSourcePath(path.posix.join(parentPath, node.name || "")));
-        continue;
-      }
-      const rel = nodeRelPath(node, node.name, parentPath);
-      if (fileIsBinaryNode(node)) {
-        if (node.data != null || assets[rel] != null || assets[node.path] != null) continue;
-        const buffer = await fs.readFile(path.join(storagePath, rel)).catch(() => null);
-        if (buffer) node.data = `data:${mimeForProjectFile(rel)};base64,${buffer.toString("base64")}`;
-      } else if (node.content == null) {
-        const bytes = await fs.readFile(path.join(storagePath, rel)).catch(() => null);
-        if (bytes != null) {
-          try {
-            node.content = decodeProjectText(bytes, rel);
-            delete node.sourceError;
-          } catch (err) {
-            if (err.errorCode !== "BIBLIOGRAPHY_INVALID_ENCODING") throw err;
-            delete node.content;
-            node.sourceError = err.errorCode;
-            node.data = `data:${mimeForProjectFile(rel)};base64,${bytes.toString("base64")}`;
-          }
-        }
-      }
-    }
-  };
-  if (data.project) await walk(data.project.nodes);
-  for (const font of Array.isArray(data.fonts) ? data.fonts : []) {
-    if (!font || !font.path || font.data != null) continue;
-    let rel;
-    try { rel = safeRelPath(font.path); } catch { continue; }
-    const buffer = await fs.readFile(path.join(storagePath, rel)).catch(() => null);
-    if (buffer) font.data = `data:${mimeForProjectFile(rel)};base64,${buffer.toString("base64")}`;
-  }
-  return data;
-}
-
 async function writeProjectFonts(storagePath, data, expectedFiles) {
   if (!Array.isArray(data.fonts)) return;
   for (const font of data.fonts) {
@@ -1287,50 +1237,46 @@ async function pruneProjectFiles(storagePath, expectedFiles) {
   await walkDir(storagePath);
 }
 
-async function buildFsNode(storagePath, relPath, entry, generated, textHint = false, strictRead = false) {
+async function buildFsNode(storagePath, relPath, entry, textHint = false, strictRead = false) {
   const abs = path.join(storagePath, relPath);
   if (entry.isDirectory()) {
-    const children = await scanFsTree(storagePath, relPath, generated, strictRead);
+    const children = await scanFsTree(storagePath, relPath, strictRead);
     return {
       type: "folder",
       name: entry.name,
       open: false,
-      ...(generated ? { generated: true, readOnly: true } : {}),
       children,
     };
   }
   const kind = fileKindForPath(relPath);
   const node = {
     type: "file",
-    id: generated ? generatedIdFor(relPath) : "fs_" + generatedIdFor(relPath),
+    id: filesystemIdFor(relPath),
     name: entry.name,
     kind,
     path: relPath,
-    ...(generated ? { generated: true, readOnly: true } : {}),
   };
-  if (!generated) {
-    if (textHint || fileIsTextPath(relPath)) {
-      node.encoding = "utf8";
-      const bytes = await fs.readFile(abs).catch((err) => { if (strictRead) throw err; return Buffer.alloc(0); });
-      try { node.content = decodeProjectText(bytes, relPath); }
-      catch (err) {
-        if (err.errorCode !== "BIBLIOGRAPHY_INVALID_ENCODING") throw err;
-        node.sourceError = err.errorCode;
-      }
+  if (textHint || fileIsTextPath(relPath)) {
+    node.encoding = "utf8";
+    const bytes = await fs.readFile(abs).catch((err) => { if (strictRead) throw err; return Buffer.alloc(0); });
+    try { node.content = decodeProjectText(bytes, relPath); }
+    catch (err) {
+      if (err.errorCode !== "BIBLIOGRAPHY_INVALID_ENCODING") throw err;
+      node.sourceError = err.errorCode;
     }
-    else {
-      const buf = await fs.readFile(abs).catch((err) => { if (strictRead) throw err; return null; });
-      if (buf) {
-        node.binary = true;
-        node.encoding = "base64";
-        node.data = `data:${mimeForProjectFile(relPath)};base64,${buf.toString("base64")}`;
-      }
+  }
+  else {
+    const buf = await fs.readFile(abs).catch((err) => { if (strictRead) throw err; return null; });
+    if (buf) {
+      node.binary = true;
+      node.encoding = "base64";
+      node.data = `data:${mimeForProjectFile(relPath)};base64,${buf.toString("base64")}`;
     }
   }
   return node;
 }
 
-async function scanFsTree(storagePath, relBase = "", generated = false, strictRead = false) {
+async function scanFsTree(storagePath, relBase = "", strictRead = false) {
   const absBase = path.join(storagePath, relBase);
   const entries = await fs.readdir(absBase, { withFileTypes: true }).catch((err) => { if (strictRead) throw err; return []; });
   const nodes = [];
@@ -1338,7 +1284,7 @@ async function scanFsTree(storagePath, relBase = "", generated = false, strictRe
     if (isIgnoredProjectFsEntry(entry.name)) continue;
     if (!relBase && entry.name.toLowerCase() === "output") continue;
     const rel = relBase ? path.posix.join(relBase, entry.name) : entry.name;
-    nodes.push(await buildFsNode(storagePath, rel, entry, generated, false, strictRead));
+    nodes.push(await buildFsNode(storagePath, rel, entry, false, strictRead));
   }
   return nodes;
 }
@@ -1376,13 +1322,13 @@ async function syncNodesWithFilesystem(storagePath, data, strictRead = false) {
           node.children = await merge(node.children || [], rel);
           synced.push(node);
         } else {
-          synced.push(await buildFsNode(storagePath, rel, entry, false, false, strictRead));
+          synced.push(await buildFsNode(storagePath, rel, entry, false, strictRead));
         }
       } else if (node.type === "folder") {
-        synced.push(await buildFsNode(storagePath, rel, entry, false, false, strictRead));
+        synced.push(await buildFsNode(storagePath, rel, entry, false, strictRead));
       } else {
         const textHint = node.encoding === "utf8" || (node.content != null && !fileIsBinaryNode(node));
-        const hydrated = await buildFsNode(storagePath, rel, entry, false, textHint, strictRead);
+        const hydrated = await buildFsNode(storagePath, rel, entry, textHint, strictRead);
         const merged = {
           ...hydrated,
           ...node,
@@ -1407,7 +1353,7 @@ async function syncNodesWithFilesystem(storagePath, data, strictRead = false) {
       if (!relBase && entry.name.toLowerCase() === "output") continue;
       if (known.has(entry.name)) continue;
       const rel = relBase ? path.posix.join(relBase, entry.name) : entry.name;
-      synced.push(await buildFsNode(storagePath, rel, entry, false, false, strictRead));
+      synced.push(await buildFsNode(storagePath, rel, entry, false, strictRead));
     }
     return synced;
   };
@@ -1459,7 +1405,7 @@ async function readProjectFile(storagePath, { strictRead = false } = {}) {
   };
   await hydrate(data.project.nodes);
   await syncNodesWithFilesystem(storagePath, data, strictRead);
-  data.projectType = inferProjectType(data);
+  data.projectType = normalizedProjectType(data.projectType);
   reconcileProjectFonts(data);
   const hydratedFonts = [];
   for (const font of data.fonts) {
@@ -1652,7 +1598,7 @@ async function listProjects(req, res, user) {
     try {
       const manifest = await readProjectManifest(resolveProjectStorageDir(DATA_DIR, row.storage_path));
       fileCount = countFiles(manifest);
-      projectType = inferProjectType(manifest);
+      projectType = normalizedProjectType(manifest.projectType);
     } catch {}
     return {
       id: row.id,
@@ -2055,7 +2001,7 @@ async function saveProjectTree(id, row, body, data, client, protect, { manifestO
   data.sourceMapping = SourceMapping.normalizeSourceMapping(mappingSetting);
   data.project = data.project && Array.isArray(data.project.nodes) ? data.project : { nodes: [] };
   data.project.name = body.name == null ? row.name : cleanName(body.name);
-  data.projectType = inferProjectType(data);
+  data.projectType = normalizedProjectType(data.projectType);
   data.lilypondArgs = data.projectType === "lilypond" ? sanitizeLilypondArgsForStorage(data.lilypondArgs) : "";
   data.lilypondFormat = data.projectType === "lilypond" ? normalizeLilypondFormat(data.lilypondFormat) : "pdf";
   data.mainPath = sanitizeMainPathForStorage(data.mainPath);
@@ -3272,7 +3218,7 @@ async function createProject(req, res, user) {
   data.sourceMapping = SourceMapping.normalizeSourceMapping(Object.hasOwn(body, "sourceMapping") ? body.sourceMapping : data.sourceMapping);
   data.project = data.project && Array.isArray(data.project.nodes) ? data.project : { nodes: [] };
   data.project.name = name;
-  data.projectType = inferProjectType(data);
+  data.projectType = normalizedProjectType(data.projectType);
   data.lilypondArgs = data.projectType === "lilypond" ? sanitizeLilypondArgsForStorage(data.lilypondArgs) : "";
   data.lilypondFormat = data.projectType === "lilypond" ? normalizeLilypondFormat(data.lilypondFormat) : "pdf";
   data.mainPath = sanitizeMainPathForStorage(data.mainPath);
@@ -3533,7 +3479,7 @@ function normalizeImportedProject(data, name, now) {
     ? data.project
     : { nodes: [] };
   data.project.name = name;
-  data.projectType = inferProjectType(data);
+  data.projectType = normalizedProjectType(data.projectType);
   data.engine = data.projectType === "lilypond"
     ? "lilypond"
     : (LATEX_ENGINES.has(data.engine) ? data.engine : "pdflatex");
@@ -3623,23 +3569,10 @@ function walkProjectFiles(nodes, fn) {
 }
 
 function normalizedProjectType(value) {
-  return value === "lilypond" ? "lilypond" : value === "latex" ? "latex" : null;
+  return value === "lilypond" ? "lilypond" : "latex";
 }
 
-function inferProjectType(data) {
-  const stored = normalizedProjectType(data && data.projectType);
-  if (stored) return stored;
-  let texFiles = 0;
-  let lilypondFiles = 0;
-  walkProjectFiles(data && data.project && data.project.nodes, (file) => {
-    const kind = fileKindForPath(file.path || file.name || "");
-    if (kind === "tex") texFiles += 1;
-    if (kind === "ly") lilypondFiles += 1;
-  });
-  return lilypondFiles > 0 && texFiles === 0 ? "lilypond" : "latex";
-}
-
-function findCompileFile(data, requestedPath, projectType = inferProjectType(data)) {
+function findCompileFile(data, requestedPath, projectType = normalizedProjectType(data.projectType)) {
   let requested = null;
   let firstSource = null;
   let main = null;
@@ -4183,8 +4116,7 @@ async function finalizeBuildOutput({ id, status, storagePath, artifacts, result 
       `UPDATE build_outputs SET
          completed_at = CURRENT_TIMESTAMP, status = $2, storage_path = $3, size = $4,
          content_hash = $5, artifact_count = $6, duration_ms = $7, exit_code = $8,
-         signal = $9, timed_out = $10, log = $11, warnings = $12::jsonb, errors = $13::jsonb,
-         diagnostics_version = 1
+         signal = $9, timed_out = $10, log = $11, warnings = $12::jsonb, errors = $13::jsonb
        WHERE id = $1 AND status = 'running'`,
       [
         id, status, succeeded ? storagePath : null, size, contentHash, succeeded ? artifacts.length : 0,
@@ -4239,7 +4171,7 @@ async function listBuildOutputs(req, res, user, projectId, url) {
 async function getBuildOutput(req, res, user, projectId, buildId) {
   const project = await authorizeProject(projectId, user, "read");
   const { rows } = await db.query(
-    `SELECT ${BUILD_OUTPUT_FIELDS}, log, warnings, errors, diagnostics_version FROM build_outputs
+    `SELECT ${BUILD_OUTPUT_FIELDS}, log, warnings, errors FROM build_outputs
      WHERE id = $1 AND project_id = $2`,
     [buildId, projectId]
   );
@@ -4574,7 +4506,7 @@ async function compileProject(req, res, user, id) {
         const data = body.data && typeof body.data === "object" ? body.data : await readProjectFile(row.storageDir, { strictRead: true });
         data.project = data.project && Array.isArray(data.project.nodes) ? data.project : { nodes: [] };
         data.project.name = name;
-        const projectType = inferProjectType(data);
+        const projectType = normalizedProjectType(data.projectType);
         data.projectType = projectType;
         validateProjectSourceTree(data);
         const engine = projectType === "lilypond" ? "lilypond" : String(body.engine || data.engine || "pdflatex").trim();
@@ -4816,7 +4748,8 @@ async function reconcileStalledBuildsNow() {
     [
       cutoff,
       "Iris: this build was interrupted and never completed.",
-      JSON.stringify(["Iris: this build was interrupted and never completed."]),
+      JSON.stringify([{ severity: "error", file: null, line: null, column: null,
+        message: "Iris: this build was interrupted and never completed." }]),
     ]
   );
   if (rows.length) console.log(`Retention: closed ${rows.length} interrupted build(s)`);
@@ -6269,13 +6202,11 @@ module.exports = {
   projectRetention,
   writeProjectFile,
   readProjectFile,
-  hydrateProjectPayloads,
   buildProjectArchive,
   collectProjectArchiveEntries,
   parseProjectArchive,
   reconcileProjectFonts,
   fileKindForPath,
-  inferProjectType,
   findCompileFile,
   normalizeCompileProfile,
   sanitizeCompileProfileForStorage,

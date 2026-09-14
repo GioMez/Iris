@@ -77,7 +77,7 @@ test("first-party runtime colors are palette primitives or individually document
   const brand = new Set(["public/iris_logo.svg", "public/iris_logo_w.svg", "public/iris_text_logo_w.svg"]);
   function walk(directory) {
     for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
-      if (entry.name === "vendor" || entry.name === "Iris Wireframes.html") continue;
+      if (entry.name === "vendor") continue;
       const absolute = path.join(directory, entry.name), relative = path.relative(root, absolute);
       if (entry.isDirectory()) walk(absolute);
       else if (/\.(?:css|js|html|svg)$/.test(entry.name) && !brand.has(relative)) {

@@ -1,14 +1,37 @@
 # Project templates
 
-These files seed a new Iris instance. The mutable catalog is stored in `TEMPLATE_DIR` (default `DATA_DIR/templates`) and managed from the **Templates** section of the Admin dashboard. Existing projects are not affected by later template changes.
+The files here seed a fresh Iris instance. Administrators manage the mutable
+catalog under `TEMPLATE_DIR` (default `DATA_DIR/templates`) from **Admin →
+Templates** on the project dashboard. Existing projects retain their copied
+source when you change a template.
 
-Administrators can set the display title, description, ID/file name, type, default status and source from the GUI. Files manually placed below `TEMPLATE_DIR/latex/` or `TEMPLATE_DIR/lilypond/` are also discovered when their ID is valid; metadata then falls back to the file name.
+## Edit the catalog
 
-Templates must be regular UTF-8 text files without NUL bytes and no larger than 1 MiB. At most 200 templates per type are exposed. They are read through an authenticated endpoint that refuses path traversal and does not follow symlinks; the template directories are not served directly as static files.
+The console lets you set a template's title, description, ID, project type,
+default status and source. You can rename a template or move it between LaTeX
+and LilyPond. Changes appear the next time a user opens the new-project dialog;
+no application-code change or restart is needed.
 
-`article.tex` is the preferred LaTeX default and `default.ly` is the preferred LilyPond default. If either file is absent, the first template in that directory is selected by default.
+Template IDs omit the `.tex` or `.ly` extension and accept up to 80 Unicode
+characters. They cannot start/end with a dot, contain path separators/control
+characters or reserved filename punctuation, or use reserved device names.
+The title accepts up to 120 characters. Use the console to maintain the catalog
+metadata and defaults together with its source files.
 
-LaTeX templates support these localized placeholders:
+Regular files placed under `TEMPLATE_DIR/latex/` or `TEMPLATE_DIR/lilypond/`
+are also discoverable when their IDs are valid. Files without catalog metadata
+use a title derived from the filename. Iris selects the configured default
+first, then `article.tex` for LaTeX or `default.ly` for LilyPond, then the first
+available template in sorted ID order.
+
+Templates must be UTF-8 text without NUL bytes and no larger than 1 MiB. Iris
+exposes at most 200 per type through authenticated endpoints, refuses traversal
+and does not follow symlinks. It does not serve template directories as static
+files.
+
+## Localized placeholders
+
+LaTeX templates can use:
 
 - `@@TITLE@@`
 - `@@INTRODUCTION@@`
@@ -17,15 +40,22 @@ LaTeX templates support these localized placeholders:
 - `@@LETTER_BODY@@`
 - `@@LETTER_CLOSING@@`
 
-LilyPond templates support `@@TITLE@@`.
+LilyPond templates support `@@TITLE@@`. The frontend substitutes starter text
+from its language catalog when creating the project; see
+[Translating Iris](../../TRANSLATING.md).
 
-Adding or editing a template requires no application-code change or server restart.
+Iris copies the template as source text. A compiler interprets it if a user
+compiles the project, under the same execution rules as other sources. Treat
+template authors as trusted source authors.
 
-Template source is copied as text into the new project and is not evaluated while the project is created. It is interpreted only if a user later compiles the project, under the same compiler restrictions as any source entered directly in the editor. Treat template authors as trusted source authors.
+## Storage and backup
 
-Docker Compose persists the catalog in the existing `/app/data` volume. To keep it in a separate host directory, mount the mutable root read-write:
+Both Docker and Podman Compose persist the catalog in the `project-data` volume
+at `/app/data/templates`. A separate host-backed catalog needs a writable mount
+with ownership suitable for Iris UID 1000, and SELinux labeling where applicable.
+Include that separate directory in the coordinated backup.
 
-```yaml
-volumes:
-  - ./templates:/app/data/templates
-```
+See [Administration](../../docs/administration.md#templates),
+[Configuration](../../docs/configuration.md) and
+[backup/restore](../../docs/administration.md#backup-and-restore) for instance
+settings and the two-layer procedure.

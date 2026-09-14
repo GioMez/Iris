@@ -1,52 +1,18 @@
-// Parity tests for the CodeMirror stream tokenizers introduced by the editor
-// migration: for every character of a corpus, the token emitted by
-// IrisLatex.stream / IrisLilyPond.stream must match the t-* class produced by
-// the reference highlight() renderers the legacy editor painted with.
+// Explicit syntax expectations for the tokenizers used by the mounted editor.
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const vm = require("node:vm");
+const { StringStream, StreamLanguage } = require("@codemirror/language");
+const { Tag, tagHighlighter, highlightTree } = require("@lezer/highlight");
 
 function loadSyntaxModules() {
-  const context = { window: {} };
-  vm.createContext(context);
-  vm.runInContext(fs.readFileSync(path.join(__dirname, "../public/iris-latex.js"), "utf8"), context);
-  context.IrisLatex = context.window.IrisLatex;
-  vm.runInContext(fs.readFileSync(path.join(__dirname, "../public/iris-lilypond.js"), "utf8"), context);
-  return { latex: context.window.IrisLatex, lilypond: context.window.IrisLilyPond };
-}
-
-// Minimal CodeMirror StringStream: the subset of the contract the tokenizers
-// rely on (sol/eol/peek/next/eat/eatWhile/match/skipToEnd/current).
-class StringStream {
-  constructor(string) { this.string = string; this.pos = 0; this.start = 0; }
-  sol() { return this.pos === 0; }
-  eol() { return this.pos >= this.string.length; }
-  peek() { return this.string.charAt(this.pos) || undefined; }
-  next() { if (this.pos < this.string.length) return this.string.charAt(this.pos++); }
-  eat(match) {
-    const ch = this.string.charAt(this.pos);
-    // Duck-typed: RegExp literals created inside the vm context do not pass an
-    // instanceof check from this realm.
-    const ok = typeof match === "string" ? ch === match
-      : ch && (typeof match.test === "function" ? match.test(ch) : match(ch));
-    if (ok) { this.pos += 1; return ch; }
+  // Real StringStream's RegExp checks need the syntax modules in the same realm.
+  const window = {};
+  for (const name of ["latex", "lilypond"]) {
+    new Function("window", fs.readFileSync(path.join(__dirname, `../public/iris-${name}.js`), "utf8"))(window);
   }
-  eatWhile(match) { const start = this.pos; while (this.eat(match)) {} return this.pos > start; }
-  skipToEnd() { this.pos = this.string.length; }
-  match(pattern, consume) {
-    if (typeof pattern === "string") {
-      if (this.string.slice(this.pos, this.pos + pattern.length) !== pattern) return null;
-      if (consume !== false) this.pos += pattern.length;
-      return true;
-    }
-    const found = this.string.slice(this.pos).match(pattern);
-    if (!found || found.index > 0) return null;
-    if (consume !== false) this.pos += found[0].length;
-    return found;
-  }
-  current() { return this.string.slice(this.start, this.pos); }
+  return { latex: window.IrisLatex, lilypond: window.IrisLilyPond };
 }
 
 // Runs the stream tokenizer over the whole source and returns one token name
@@ -57,7 +23,7 @@ function streamClasses(spec, src) {
   const state = spec.startState();
   const lines = src.split("\n");
   lines.forEach((line, index) => {
-    const stream = new StringStream(line);
+    const stream = new StringStream(line, 2);
     while (!stream.eol()) {
       stream.start = stream.pos;
       const token = spec.token(stream, state);
@@ -70,162 +36,82 @@ function streamClasses(spec, src) {
   return classes;
 }
 
-// Converts highlight()'s HTML into the same one-class-per-character shape.
-function decodeEntities(s) {
-  return s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&amp;/g, "&");
-}
-function highlightClasses(highlight, src) {
-  const html = highlight(src);
-  const classes = [];
-  const spanRe = /<span class="t-([a-z]+)">([\s\S]*?)<\/span>/g;
-  let last = 0, m;
-  while ((m = spanRe.exec(html))) {
-    for (const _ of decodeEntities(html.slice(last, m.index))) classes.push(null);
-    for (const _ of decodeEntities(m[2])) classes.push(m[1]);
-    last = spanRe.lastIndex;
-  }
-  for (const _ of decodeEntities(html.slice(last))) classes.push(null);
-  return classes;
-}
+// Each pair is a hand-labelled source fragment, including plain text. Checking
+// every UTF-16 offset catches both missing tokens and color leaking past closers.
+const syntaxCorpora = {
+  latex: [
+    ["\\documentclass", "cmd"], ["[", "brace"], ["11pt", null], ["]{", "brace"], ["article", null], ["}", "brace"], ["\n", null],
+    ["\\usepackage", "cmd"], ["[", "brace"], ["utf8", null], ["]{", "brace"], ["inputenc", null], ["}\n", "brace"],
+    ["% comment with \\commands and $math$ and \\begin{x}\n", "comment"],
+    ["\\begin", "cmd"], ["{", "brace"], ["document", "env"], ["}\n", "brace"],
+    ["\\section*", "cmd"], ["{", "brace"], ["Hello ", null], ["&", "special"], [" World 😀", null], ["}\n", "brace"],
+    ["Text with ", null], ["~", "special"], [" special, ", null], ["\\%", "cmd"], [" escaped, and braces ", null],
+    ["{", "brace"], ["like ", null], ["[", "brace"], ["these", null], ["]}", "brace"], [".\nInline ", null],
+    ["$a^2 + b_1 \\$ still$", "math"], [" and ", null], ["\\(x+y\\)", "math"], [" math.\nDisplay: ", null],
+    ["\\[ \\int_0^1 x\\,dx \\]\n$$\\sum_{i=1}^n i$$", "math"], ["\n", null],
+    ["\\begin", "cmd"], ["{", "brace"], ["align*", "env"], ["}", "brace"], ["\n  a ", null], ["&", "special"],
+    ["= b ", null], ["\\\\", "special"], ["\n  c ", null], ["&", "special"], ["= d\n", null],
+    ["\\end", "cmd"], ["{", "brace"], ["align*", "env"], ["}\n", "brace"],
+    ["\\begin", "cmd"], [" ", null], ["{", "brace"], ["spaced", "env"], ["}\n", "brace"], ["text", null],
+    ["\\end", "cmd"], ["{", "brace"], ["spaced", "env"], ["}\n", "brace"],
+    ["Multi-line math ", null], ["$a +\n\nb$", "math"], [" then prose.\n", null],
+    ["\\begin", "cmd"], ["{}\n", "brace"], ["Unclosed inline ", null], ["\\( math 😀 to the end", "math"],
+  ],
+  lilypond: [
+    ["\\version", "cmd"], [" ", null], ['"2.24.0"', "env"], ["\n", null],
+    ["% line comment with \\score\n%{ block\n\ncomment across lines %}", "comment"],
+    ["\nglobal = ", null], ["{", "brace"], [" ", null], ["\\key", "cmd"], [" c ", null], ["\\major", "cmd"],
+    [" ", null], ["\\time", "cmd"], [" 4/4 ", null], ["}\n", "brace"],
+    ["\\score", "cmd"], [" ", null], ["{", "brace"], ["\n  ", null], ["\\relative", "cmd"], [" c' ", null], ["{", "brace"],
+    ["\n    c4 d e2 | <c e g>1 |\n    d8-. e-- ", null], ["\\f", "cmd"], [" g", null], ["\\p", "cmd"],
+    ["\n    ", null], ["<<", "brace"], [" ", null], ["{", "brace"], [" c2 ", null], ["}", "brace"], [" ", null],
+    ["\\\\", "cmd"], [" ", null], ["{", "brace"], [" e2 ", null], ["}", "brace"], [" ", null], [">>", "brace"],
+    ["\n  ", null], ["}", "brace"], ["\n  ", null], ["\\addlyrics", "cmd"], [" ", null], ["{", "brace"],
+    [" la la ", null], ['"quoted lyric"', "env"], [" ", null], ["}", "brace"], ["\n  ", null], ["\\layout", "cmd"],
+    [" ", null], ["{", "brace"], [" ", null], ["}\n}", "brace"], ["\n", null], ['"multi\n\nline string"', "env"], ["\n", null],
+    ["\\markup", "cmd"], [" ", null], ["{", "brace"], [" ", null], ["\\bold", "cmd"], [" ", null],
+    ['"text with \\"escape\\" inside"', "env"], [" ", null], ["}", "brace"], ["\nangle singles: a < b > c 😀\n", null],
+    ['"unclosed 😀 string', "env"],
+  ],
+};
 
-function assertParity(spec, highlight, src) {
-  const expected = highlightClasses(highlight, src);
-  const actual = streamClasses(spec, src);
-  assert.equal(actual.length, src.length, "stream classes must cover the source 1:1");
-  assert.equal(expected.length, src.length, "highlight classes must cover the source 1:1");
-  // Newlines carry no visible colour; both sides are normalised there (the
-  // legacy renderer folds line breaks into multi-line math/string spans).
-  for (let i = 0; i < src.length; i++) {
-    if (src[i] === "\n") { expected[i] = null; actual[i] = null; }
-    if (actual[i] !== expected[i]) {
-      const lineNo = src.slice(0, i).split("\n").length;
-      assert.fail(`token mismatch at offset ${i} (line ${lineNo}, char ${JSON.stringify(src[i])}): ` +
-        `stream=${actual[i]} highlight=${expected[i]}\ncontext: ${JSON.stringify(src.slice(Math.max(0, i - 20), i + 20))}`);
-    }
-  }
-}
-
-const LATEX_CORPUS = String.raw`\documentclass[11pt]{article}
-\usepackage[utf8]{inputenc}
-% comment with \commands and $math$ and \begin{x}
-\begin{document}
-\section*{Hello & World}
-Text with ~ special, \% escaped, and braces {like [these]}.
-Inline $a^2 + b_1 \$ still$ and \(x+y\) math.
-Display: \[ \int_0^1 x\,dx \]
-$$\sum_{i=1}^n i$$
-\begin{align*}
-  a &= b \\
-  c &= d
-\end{align*}
-\begin {spaced}
-text\end{spaced}
-Multi-line math $a +
-b$ then prose.
-\begin{}
-Unclosed inline \( math to the end`;
-
-const LILYPOND_CORPUS = String.raw`\version "2.24.0"
-% line comment with \score
-%{ block
-comment across lines %}
-global = { \key c \major \time 4/4 }
-\score {
-  \relative c' {
-    c4 d e2 | <c e g>1 |
-    d8-. e-- \f g\p
-    << { c2 } \\ { e2 } >>
-  }
-  \addlyrics { la la "quoted lyric" }
-  \layout { }
-}
-"multi
-line string"
-\markup { \bold "text with \"escape\" inside" }
-angle singles: a < b > c`;
-
-test("LaTeX stream tokenizer matches highlight() class for class", () => {
-  const { latex } = loadSyntaxModules();
-  assertParity(latex.stream, latex.highlight, LATEX_CORPUS);
-});
-
-test("LilyPond stream tokenizer matches highlight() class for class", () => {
-  const { latex, lilypond } = loadSyntaxModules();
-  assert.ok(latex, "LilyPond highlighting reuses the LaTeX escape helper");
-  assertParity(lilypond.stream, lilypond.highlight, LILYPOND_CORPUS);
-});
-
-test("stream tokenizers keep state across lines for math, strings and block comments", () => {
-  const { latex, lilypond } = loadSyntaxModules();
-  const mathClasses = streamClasses(latex.stream, "$a\n+ b$ x");
-  assert.equal(mathClasses[3], "math", "math continues on the following line");
-  assert.equal(mathClasses[8], null, "text after the closing $ is plain");
-  const stringClasses = streamClasses(lilypond.stream, '"a\nb" x');
-  assert.equal(stringClasses[3], "env", "strings span lines like the reference renderer");
-  assert.equal(stringClasses[6], null, "text after the closing quote is plain");
-  const commentClasses = streamClasses(lilypond.stream, "%{ a\nb %} c4");
-  assert.equal(commentClasses[5], "comment", "block comments span lines");
-  assert.equal(commentClasses[9], null, "code after %} is plain again");
-});
-
-// Runs the tokenizers inside the real CodeMirror StreamLanguage — the same
-// realm setup as the browser — and checks corpus parity via highlightTree.
-test("tokenizers drive the real CodeMirror StreamLanguage", async () => {
-  const [{ StreamLanguage }, { Tag, tagHighlighter, highlightTree }] = await Promise.all([
-    import("@codemirror/language"),
-    import("@lezer/highlight"),
-  ]);
-  // Same-realm load: cross-realm RegExp literals would fail the instanceof
-  // checks inside CodeMirror's own StringStream.
-  const hadWindow = "window" in globalThis;
-  const previousWindow = globalThis.window;
-  const previousLatex = globalThis.IrisLatex;
-  globalThis.window = {};
-  try {
-    vm.runInThisContext(fs.readFileSync(path.join(__dirname, "../public/iris-latex.js"), "utf8"));
-    globalThis.IrisLatex = globalThis.window.IrisLatex;
-    vm.runInThisContext(fs.readFileSync(path.join(__dirname, "../public/iris-lilypond.js"), "utf8"));
-    const modules = [
-      [globalThis.window.IrisLatex, LATEX_CORPUS],
-      [globalThis.window.IrisLilyPond, LILYPOND_CORPUS],
-    ];
+for (const [kind, fragments] of Object.entries(syntaxCorpora)) {
+  const text = fragments.map(([value]) => value).join("");
+  const expected = fragments.flatMap(([value, style]) => value.split("").map(char => char === "\n" ? null : style));
+  test(`${kind} tokens cover commands, delimiters, escapes, multiline and Unicode source in real CodeMirror`, () => {
+    const { stream } = loadSyntaxModules()[kind];
+    assert.deepEqual(streamClasses(stream, text), expected);
     const names = ["cmd", "env", "brace", "math", "comment", "special"];
-    const tokenTable = Object.fromEntries(names.map((name) => [name, Tag.define()]));
-    const highlighter = tagHighlighter(names.map((name) => ({ tag: tokenTable[name], class: name })));
-    for (const [mod, corpus] of modules) {
-      const language = StreamLanguage.define({
-        startState: mod.stream.startState,
-        copyState: mod.stream.copyState,
-        token: mod.stream.token,
-        tokenTable,
-      });
-      const tree = language.parser.parse(corpus);
-      const actual = new Array(corpus.length).fill(null);
-      highlightTree(tree, highlighter, (from, to, cls) => {
-        for (let i = from; i < to; i++) actual[i] = cls;
-      });
-      const expected = highlightClasses(mod.highlight, corpus);
-      for (let i = 0; i < corpus.length; i++) {
-        if (corpus[i] === "\n") continue;
-        assert.equal(actual[i], expected[i],
-          `real-parser mismatch at offset ${i}: ${JSON.stringify(corpus.slice(Math.max(0, i - 20), i + 20))}`);
+    const tokenTable = Object.fromEntries(names.map(name => [name, Tag.define()]));
+    const highlighter = tagHighlighter(names.map(name => ({ tag: tokenTable[name], class: name })));
+    const tree = StreamLanguage.define({ ...stream, tokenTable }).parser.parse(text);
+    const actual = new Array(text.length).fill(null);
+    highlightTree(tree, highlighter, (from, to, style) => actual.fill(style, from, to));
+    for (let i = 0; i < text.length; i++) {
+      if (text[i] !== "\n") assert.equal(actual[i], expected[i], `UTF-16 offset ${i}: ${JSON.stringify(text.slice(i - 10, i + 10))}`);
+    }
+  });
+
+  test(`${kind} every in-progress prefix advances and copied multiline states branch independently`, () => {
+    const spec = loadSyntaxModules()[kind].stream;
+    for (let end = 0; end <= text.length; end++) {
+      const state = spec.startState();
+      for (const line of text.slice(0, end).split("\n")) {
+        const stream = new StringStream(line, 2);
+        while (!stream.eol()) {
+          stream.start = stream.pos;
+          const copy = spec.copyState(state), saved = structuredClone(state);
+          const probe = new StringStream(line, 2); probe.pos = stream.pos; probe.start = stream.start;
+          const token = spec.token(probe, copy);
+          assert.deepEqual(state, saved, "tokenizing a copied state must not mutate its source");
+          assert.equal(spec.token(stream, state), token);
+          assert.equal(stream.pos, probe.pos);
+          assert.ok(stream.pos > stream.start, `stalled on ${JSON.stringify(line)}`);
+        }
       }
     }
-  } finally {
-    if (hadWindow) globalThis.window = previousWindow; else delete globalThis.window;
-    if (previousLatex === undefined) delete globalThis.IrisLatex; else globalThis.IrisLatex = previousLatex;
-  }
-});
-
-test("stream state copies are independent", () => {
-  const { latex, lilypond } = loadSyntaxModules();
-  [latex, lilypond].forEach((mod) => {
-    const state = mod.stream.startState();
-    const copy = mod.stream.copyState(state);
-    assert.notEqual(copy, state);
-    assert.deepEqual(copy, state);
   });
-});
+}
 
 const bibliographyCorpora = [
   ["bib", '\uFEFF% outside\r\n@book{key\u{1f600},\r\n title={A {nested \\} tail},\r\n year=2026, custom=macro # "open\r\n% literal',

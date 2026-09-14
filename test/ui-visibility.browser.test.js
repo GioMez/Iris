@@ -2,7 +2,6 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const path = require("node:path");
 const fs = require("node:fs/promises");
-const { execFileSync } = require("node:child_process");
 const { chromium } = require("playwright-core");
 
 const enabled = process.env.IRIS_TEST_BROWSER === "1";
@@ -1147,151 +1146,82 @@ for (const language of ["en", "it"]) {
 const referenceFile = { id: "references", type: "file", name: "references.bib", path: "references.bib",
   kind: "bib", content: "@article{known, title={A known reference}}\n" };
 
-// Compare the approved dark baseline on the same mounted DOM: no time, data or
-// layout differences between the two captures. Artifacts live in the runner's
-// disposable TMPDIR, never application storage.
-for (const variant of variants) {
-  test(`R8 dark computed colors and screenshots: ${variant.name}`, options, async (t) => {
-    const directory = await fs.mkdtemp(path.join(process.env.TMPDIR, "iris-r8-colors-"));
-    t.diagnostic(`Color comparison artifacts: ${directory}`);
-    const baseline = execFileSync("git", ["show", "9b206d1:public/iris.css"], { cwd: path.resolve(__dirname, ".."), encoding: "utf8" });
-    const evidence = [];
-    async function capture(page, name) {
-      await page.evaluate(async () => { await document.fonts.ready; await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame); });
-      const computed = () => page.evaluate(() => {
-        const canvas = document.createElement("canvas"), ctx = canvas.getContext("2d", { willReadFrequently: true });
-        canvas.width = canvas.height = 1;
-        const rgba = (value) => {
-          ctx.clearRect(0, 0, 1, 1); ctx.fillStyle = value; ctx.fillRect(0, 0, 1, 1);
-          return [...ctx.getImageData(0, 0, 1, 1).data];
-        };
-        return [...document.querySelectorAll("body *")].filter((node) => node.getBoundingClientRect().width && node.getBoundingClientRect().height)
-          .map((node) => ({ name: node.id || node.getAttribute("class") || node.tagName,
-            colors: ["color", "backgroundColor", "borderTopColor", "outlineColor"].map((key) => rgba(getComputedStyle(node)[key])) }));
-      });
-      const after = await computed();
-      const focusRing = await page.locator(".cm-host").evaluate((node) => {
-        if (!node.querySelector(".cm-content:focus-visible")) return null;
-        const { left, top, right, bottom } = node.getBoundingClientRect();
-        return { left, top, right, bottom, viewportWidth: innerWidth };
-      });
-      const current = await page.screenshot({ path: path.join(directory, `${name}-after.png`), animations: "disabled", caret: "hide" });
-      // This action did not exist in the R8 baseline. Keep its current geometry
-      // while comparing the unchanged shared color roles on the same DOM.
-      const navigationLayout = await page.locator("#btnShowInPdf").evaluate((node) => {
-        const style = getComputedStyle(node), label = getComputedStyle(node.querySelector(".sb-btn-label"));
-        return `#btnShowInPdf{width:${style.width};padding:${style.padding};justify-content:${style.justifyContent}}#btnShowInPdf .sb-btn-label{display:${label.display}}`;
-      });
-      const style = await page.addStyleTag({ content: baseline + navigationLayout });
-      await page.evaluate(() => { document.querySelector('link[href="iris.css"]').disabled = true; });
-      await page.evaluate(() => new Promise(requestAnimationFrame));
-      const before = await computed();
-      const original = await page.screenshot({ path: path.join(directory, `${name}-before.png`), animations: "disabled", caret: "hide" });
-      await style.evaluate((node) => node.remove());
-      await page.evaluate(() => { document.querySelector('link[href="iris.css"]').disabled = false; });
-      const differences = after.flatMap((entry, index) => JSON.stringify(entry) === JSON.stringify(before[index]) ? [] : [{ before: before[index], after: entry }]);
-      const pixels = await page.evaluate(async ([a, b, ring]) => {
-        async function decode(data) {
-          const image = new Image(); image.src = `data:image/png;base64,${data}`; await image.decode();
-          const canvas = document.createElement("canvas"); canvas.width = image.width; canvas.height = image.height;
-          const ctx = canvas.getContext("2d"); ctx.drawImage(image, 0, 0); return ctx.getImageData(0, 0, image.width, image.height).data;
-        }
-        const left = await decode(a), right = await decode(b);
-        let changed = 0, greaterThanOne = 0, focusRingChanges = 0, maxDelta = 0;
-        for (let i = 0; i < left.length; i += 4) {
-          const delta = Math.max(...[0, 1, 2].map((channel) => Math.abs(left[i + channel] - right[i + channel])));
-          if (delta) changed++;
-          if (delta > 1) {
-            greaterThanOne++;
-            const x = (i / 4) % (ring?.viewportWidth || 1), y = Math.floor((i / 4) / (ring?.viewportWidth || 1));
-            if (ring && x >= ring.left && x < ring.right && y >= ring.top && y < ring.bottom
-              && (x < ring.left + 1 || x >= ring.right - 1 || y < ring.top + 1 || y >= ring.bottom - 1)) focusRingChanges++;
-          }
-          maxDelta = Math.max(maxDelta, delta);
-        }
-        return { total: left.length / 4, changed, greaterThanOne, focusRingChanges, maxDelta };
-      }, [original.toString("base64"), current.toString("base64"), focusRing]);
-      evidence.push({ name, elements: after.length, differences, pixels });
-      t.diagnostic(`${name}: ${JSON.stringify({ elements: after.length, computedDifferences: differences.length, pixels })}`);
-      await fs.writeFile(path.join(directory, "comparison.json"), JSON.stringify(evidence, null, 2));
-      assert.deepEqual(differences.filter((difference) => !/\bt-(brace|comment)\b/.test(difference.after.name)
-        && difference.after.name !== "brand-wordmark"
-        && !(name === "editor-overlays" && /\bcm-iris-(peer-selection|match-active)\b/.test(difference.after.name))), [],
-        `${name}: computed dark colors are preserved except the measured muted-syntax contrast correction`);
-      // Small raster rounding and the token-colored select chevron are bounded;
-      // broad surface/text recoloring cannot pass this dark-preservation gate.
-      // The reviewed focus correction occupies only the host's 1px inset edge.
-      // Report it separately without widening the allowance for other pixels.
-      assert.ok((pixels.greaterThanOne - pixels.focusRingChanges) / pixels.total < .005, `${name}: unexpected dark appearance change`);
+for (const theme of ["dark", "light"]) {
+  test(`crowded tabs scroll their strip without clipping the editor / ${theme}`, options, async (t) => {
+    const extraFiles = Array.from({ length: 8 }, (_, index) => ({ id: `chapter-${index}`, type: "file",
+      name: `chapter-${index}.tex`, path: `chapter-${index}.tex`, kind: "tex", content: "Chapter\n" }));
+    const { page } = await pageFor(t, { ...variants[0], viewport: { width: 1467, height: 900 }, theme }, { extraFiles });
+    const geometry = () => page.evaluate(() => {
+      const pane = document.querySelector(".pane.edpane"), host = document.querySelector(".cm-host");
+      const gutter = document.querySelector(".cm-gutters"), strip = document.querySelector("#ftabs");
+      return { outerScroll: pane.scrollLeft, paneX: pane.getBoundingClientRect().x,
+        hostX: host.getBoundingClientRect().x, gutterX: gutter.getBoundingClientRect().x,
+        editorScroll: document.querySelector(".cm-scroller").scrollLeft, stripScroll: strip.scrollLeft,
+        stripWidth: strip.clientWidth, stripContent: strip.scrollWidth };
+    });
+    const initial = await geometry();
+    await page.locator('#ftabs [role="tab"]').nth(3).click();
+    const selected = await geometry();
+    t.diagnostic(`Fourth tab geometry: ${JSON.stringify({ initial, selected })}`);
+    assert.equal(selected.outerScroll, initial.outerScroll, "tab focus must not scroll the outer editor pane");
+    assert.equal(selected.hostX, initial.hostX, "source host stays aligned");
+    assert.equal(selected.gutterX, initial.gutterX, "line-number gutter stays aligned");
+    assert.equal(selected.editorScroll, 0);
+    assert.ok(selected.stripScroll > initial.stripScroll, "only the crowded strip scrolls to reveal the selected tab");
+    const check = async (label) => {
+      const actual = await geometry();
+      assert.equal(actual.outerScroll, 0, `${label}: outer pane never scrolls`);
+      assert.equal(actual.hostX, actual.paneX, `${label}: host stays aligned with its pane`);
+      assert.equal(actual.gutterX, actual.paneX, `${label}: gutter is not clipped`);
+    };
+    const visibleTab = async (index) => {
+      assert.equal(await page.locator('#ftabs [role="tab"]').nth(index).evaluate((node) => {
+        const tab = node.getBoundingClientRect(), strip = node.parentElement.getBoundingClientRect();
+        return tab.left >= strip.left - 1 && tab.right <= strip.right + 1;
+      }), true, "the focused or selected tab is inside the strip");
+    };
+    await page.evaluate(() => { IrisEditor.select(2, 8); IrisEditor.focus(); });
+    const caret = await page.evaluate(() => IrisEditor.selection());
+    // Native sequential focus reveals an offscreen tab without activating it.
+    await page.locator('#ftabs [role="tab"]').nth(8).focus();
+    await page.keyboard.press("Tab"); // its close button
+    await page.keyboard.press("Tab"); // the final tab
+    assert.equal(await page.locator('#ftabs [role="tab"]').last().evaluate(node => node === document.activeElement), true);
+    await visibleTab(9);
+    await check("keyboard focus");
+    assert.deepEqual(await page.evaluate(() => IrisEditor.selection()), caret, "tab focus retains the source selection");
+    await page.keyboard.press("Enter");
+    assert.equal(await page.locator('#ftabs [role="tab"]').last().getAttribute("aria-selected"), "true");
+    assert.equal(await page.locator(".cm-content").evaluate(node => node === document.activeElement), true);
+    await visibleTab(9);
+    await check("keyboard selection");
+    await page.evaluate(() => { IrisEditor.select(1, 5); IrisEditor.focus(); });
+    const retained = await page.evaluate(() => IrisEditor.selection());
+    for (const width of [1300, 1467]) {
+      await page.setViewportSize({ width, height: 900 });
+      await page.locator("#btnSidebar").click();
+      await page.locator('#ftabs [role="tab"]').last().focus();
+      await check(`resize/sidebar ${width}`);
+      await visibleTab(9);
+      assert.deepEqual(await page.evaluate(() => IrisEditor.selection()), retained);
     }
-    const login = await pageFor(t, variant, { authenticated: false, openProject: false });
-    await capture(login.page, "login");
-    await login.page.locator("#loginUser").focus();
-    await capture(login.page, "login-focus");
-    const { page, fixture } = await pageFor(t, variant, { openProject: false, extraFiles: [referenceFile], documentSource: "% Selected comment\n" + source });
-    await capture(page, "home-empty");
-    await page.locator("#pkAdmin").click();
-    await capture(page, "admin-empty");
-    await page.locator("#adminTabTemplates").click();
-    await page.locator("#adminTemplateNew").click();
-    await capture(page, "admin-dialog");
-    await page.locator("#adminTemplateCancel").click();
-    const detail = fixture.holdDetail();
-    await page.locator('#adminTemplateRows [data-template-id="visibility"] .admin-row-edit').click();
-    await page.waitForFunction(() => document.querySelector("#adminTemplateForm").hasAttribute("aria-busy"));
-    await capture(page, "admin-loading");
-    detail.resolve({ status: 503, body: { errorCode: "NOT_FOUND" } });
-    await page.locator("#adminTemplateDetailRetry").waitFor({ state: "visible" });
-    await capture(page, "admin-error");
-    await page.locator("#adminTemplateCancel").click();
-    await page.locator("#adminBack").click();
-    await page.evaluate((id) => IrisProjects.openProject(id), projectId);
-    await page.waitForFunction(() => IrisCollab.status() === "live");
-    await capture(page, "editor-preview-empty");
-    await page.locator("#btnCompile").hover();
-    await capture(page, "action-hover");
-    await page.locator(".cm-content").focus();
-    await page.keyboard.press("ControlOrMeta+a");
-    await capture(page, "editor-selection");
-    await page.keyboard.press("ArrowRight");
-    send(fixture, { t: "peers", fileId, peers: [{ ...peer, color: "#ffffff", anchor: 0, head: 10 }] });
-    await page.locator(".cm-iris-peer-selection").waitFor({ state: "attached" });
-    await page.evaluate(() => IrisEditor.highlightMatches([{ from: 0, to: 10 }], 0));
-    await page.locator(".cm-iris-match-active").waitFor({ state: "attached" });
-    await capture(page, "editor-overlays");
-    await page.evaluate(() => IrisEditor.highlightMatches([], -1));
-    send(fixture, { t: "peers", fileId, peers: [] });
-    await page.locator(".cm-iris-peer-selection").waitFor({ state: "detached" });
-    const compile = fixture.holdCompile();
-    await page.locator("#btnCompile").click();
-    await page.locator("#compiling").waitFor({ state: "visible" });
-    await capture(page, "preview-loading");
-    compile.resolve({ status: 503, body: { errorCode: "COMPILE_FAILED" } });
-    await page.locator("#compiling").waitFor({ state: "hidden" });
-    await page.evaluate(async () => IrisApp.showBuildOutput({
-      build: { id: "color-preview", status: "succeeded", format: "svg", mainPath: "main.ly",
-        completedAt: "2026-09-13T10:00:00Z", warnings: [], errors: [] },
-      artifacts: [{ name: "score.svg", mimeType: "image/svg+xml",
-        base64: btoa('<svg xmlns="http://www.w3.org/2000/svg" width="100" height="200"><rect x="10" y="10" width="80" height="180"/></svg>') }],
-    }));
-    await page.locator(".image-preview img").waitFor({ state: "visible" });
-    await capture(page, "preview-document");
-    if (variant.viewport.width < 820) await page.locator('[data-workspace="editor"]').click();
-    await page.getByRole("tab", { name: "references.bib", exact: true }).click();
-    await page.locator("#bibliographyPanel").waitFor({ state: "visible" });
-    await page.waitForFunction(() => !document.querySelector("#bibliographyAdd").disabled);
-    await capture(page, "bibliography");
-    await page.locator("#bibliographyAdd").click();
-    await page.locator("#bibliographyModal").waitFor({ state: "visible" });
-    await capture(page, "bibliography-dialog");
-    await page.evaluate(() => IrisMotion.closeDialog("bibliographyModal"));
-    await openSettings(page);
-    await page.locator(variant.viewport.width <= 700 ? '.set-accordion-trigger[data-set="editor"]' : "#settingsTabEditor").click();
-    await capture(page, "settings-switches");
-    const home = await pageFor(t, variant, { openProject: false,
-      projects: [{ id: projectId, name: "Color reference project", projectType: "latex", role: "owner", updatedAt: "2026-09-13T10:00:00Z" }] });
-    await home.page.locator(".pcard").waitFor({ state: "visible" });
-    await capture(home.page, "home-project");
+    // A newly reopened file must be reachable without shifting the source pane.
+    await page.locator('#ftabs [role="tab"]').last().locator(".x").click();
+    await page.locator('#tree .node[data-id="chapter-7"] .nm').click();
+    assert.equal(await page.locator('#ftabs [role="tab"]').last().getAttribute("aria-selected"), "true");
+    await visibleTab(9);
+    await check("reopened file");
+    // Source scrolling remains owned by CodeMirror, independently of the strip.
+    await page.evaluate(() => {
+      IrisEditor.load("x".repeat(400) + "\n" + "line\n".repeat(100), "tex");
+      IrisEditor.select(350); IrisEditor.focus();
+    });
+    await page.waitForFunction(() => document.querySelector(".cm-scroller").scrollLeft > 0);
+    assert.equal(await page.locator(".pane.edpane").evaluate(node => node.scrollLeft), 0);
+    const end = await page.evaluate(() => IrisEditor.getValue().length);
+    await page.evaluate(end => { IrisEditor.select(end); IrisEditor.focus(); }, end);
+    await page.waitForFunction(() => document.querySelector(".cm-scroller").scrollTop > 0);
+    assert.equal(await page.locator(".pane.edpane").evaluate(node => node.scrollTop), 0);
   });
 }
 
@@ -1487,6 +1417,18 @@ test("reduced motion suppresses the active compilation spinner", options, async 
   gate.resolve({ body: { success: false, log: "Controlled completion", errors: [], warnings: [], durationMs: 1 } });
   await page.waitForFunction(() => !document.querySelector("#btnCompile").disabled);
   assert.equal(animations, 0, "a visible progress indication does not require animation when motion is reduced");
+});
+
+test("a refused compile request leaves a visible unlocated error diagnostic", options, async (t) => {
+  const { page, fixture } = await pageFor(t, variants[0]);
+  const gate = fixture.holdCompile();
+  await page.locator("#btnCompile").click();
+  gate.resolve({ status: 503, body: { errorCode: "COMPILE_SERVER_BUSY" } });
+  const diagnostic = page.locator("#diagnosticsList .diagnostic-item.error");
+  await diagnostic.waitFor({ state: "visible" });
+  assert.equal(await diagnostic.locator(".diagnostic-message").textContent(), "The server is running as many compilations as it can. Try again shortly.");
+  assert.equal(await diagnostic.isDisabled(), true, "an unlocated failure must not fabricate a source jump");
+  assert.equal(await page.locator(".cm-iris-diagnostic-mark").count(), 0);
 });
 
 test("failed admin loading and a successful empty retry have distinct visible states", options, async (t) => {

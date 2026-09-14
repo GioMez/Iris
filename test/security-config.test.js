@@ -58,27 +58,5 @@ test("SSO auto-provisioning cannot be pointed at an unbounded role", () => {
   assert.doesNotMatch(accepted.stderr, /OAUTH_DEFAULT_ROLE/);
 });
 
-test("Compose requires secrets and does not expose default credentials", () => {
-  const compose = fs.readFileSync(path.join(root, "docker-compose.yml"), "utf8");
-  const postgresInit = fs.readFileSync(path.join(root, "db/init/01-create-iris-user.sh"), "utf8");
-  assert.match(compose, /IRIS_SECRET: "\$\{IRIS_SECRET:\?/);
-  assert.match(compose, /DB_PASSWORD: "\$\{DB_PASSWORD:\?/);
-  assert.match(compose, /POSTGRES_PASSWORD: "\$\{POSTGRES_ADMIN_PASSWORD:\?/);
-  assert.match(compose, /pg_isready.*-U.*postgres.*-d.*postgres/);
-  assert.match(compose, /image:\s*postgres:18\s*$/m);
-  assert.match(compose, /postgres-data:\/var\/lib\/postgresql\s*$/m);
-  assert.doesNotMatch(compose, /postgres-data:\/var\/lib\/postgresql\/data\s*$/m);
-  assert.doesNotMatch(compose, /POSTGRES_PASSWORD:\s*(iris|postgres)\s*$/m);
-  assert.match(postgresInit, /CREATE ROLE iris WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE/);
-  assert.match(postgresInit, /CREATE DATABASE iris OWNER iris/);
-  assert.doesNotMatch(compose, /iris-root|-piris/);
-});
-
-test("the PostgreSQL runtime image includes the current schema and provisioning assets", () => {
-  const packageJson = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
-  const dockerfile = fs.readFileSync(path.join(root, "Dockerfile"), "utf8");
-  assert.ok(packageJson.dependencies.pg);
-  assert.match(dockerfile, /npm ci --omit=dev/);
-  assert.match(dockerfile, /COPY db\/schema\.sql \.\/db\/schema\.sql/);
-  assert.match(dockerfile, /COPY db\/init \.\/db\/init/);
-});
+// Compose secret refusal, restricted-role provisioning, persistent volumes and
+// runtime/schema contents are exercised on the actual engines by scripts/smoke.cjs.

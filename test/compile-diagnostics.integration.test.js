@@ -69,6 +69,35 @@ async function multipassProject(t, env) {
   return { ...f, cookie, created, url: `/api/projects/${created.project.id}` };
 }
 
+test("interrupted-build reconciliation persists structured errors and leaves recent and completed builds untouched", {
+  skip: !process.env.TEST_DATABASE_URL, timeout: 20000,
+}, async (t) => {
+  const f = await multipassProject(t);
+  const ids = [uuidv7(), uuidv7(), uuidv7()];
+  const source = f.created.data.project.nodes[0];
+  for (const [index, id] of ids.entries()) {
+    await f.pool.query(`INSERT INTO build_outputs (id, project_id, source_file_id, source_content_hash,
+      created_by_label, project_type, compiler, format, main_path, display_name, created_at, status, completed_at)
+      VALUES ($1, $2, $3, $4, 'Fixture', 'latex', 'pdflatex', 'pdf', 'main.tex', 'main.pdf',
+        CURRENT_TIMESTAMP - $5::interval, $6::varchar, CASE WHEN $6::varchar = 'failed' THEN CURRENT_TIMESTAMP ELSE NULL END)`,
+    [id, f.created.project.id, source.id, "a".repeat(64), index === 1 ? "0 minutes" : "10 minutes", index === 2 ? "failed" : "running"]);
+  }
+  const untouched = (await f.pool.query("SELECT * FROM build_outputs WHERE id = ANY($1::uuid[]) ORDER BY id", [ids.slice(1)])).rows;
+  assert.equal(await f.app.reconcileStalledBuilds(), 1);
+  const row = (await f.pool.query("SELECT warnings, errors, status, completed_at FROM build_outputs WHERE id = $1", [ids[0]])).rows[0];
+  const error = { severity: "error", file: null, line: null, column: null, message: "Iris: this build was interrupted and never completed." };
+  assert.deepEqual(row.errors, [error], "the recovery writer uses the same structured format as compiler finalization");
+  assert.deepEqual(row.warnings, []);
+  assert.equal(row.status, "failed");
+  assert.ok(row.completed_at);
+  const { build } = await (await f.request(`${f.url}/builds/${ids[0]}`, { cookie: f.cookie })).json();
+  assert.deepEqual(build.diagnostics, [error]);
+  assert.deepEqual(build.errors, [error.message]);
+  assert.deepEqual(build.warnings, []);
+  assert.equal(await f.app.reconcileStalledBuilds(), 0, "repeating startup recovery adds no duplicate diagnostic");
+  assert.deepEqual((await f.pool.query("SELECT * FROM build_outputs WHERE id = ANY($1::uuid[]) ORDER BY id", [ids.slice(1)])).rows, untouched);
+});
+
 for (const mode of ["bibtex", "biber"]) {
   for (const unresolved of [false, true]) {
     test(`${mode} POST compile -> GET build retains trace and ${unresolved ? "only final included-source provenance" : "authoritative empty arrays"}`, {
@@ -105,9 +134,9 @@ for (const mode of ["bibtex", "biber"]) {
       assert.deepEqual(build.diagnostics, compiled.diagnostics);
       assert.deepEqual(build.warnings, compiled.warnings);
       assert.deepEqual(build.errors, []);
-      const stored = (await f.pool.query("SELECT diagnostics_version, warnings, errors FROM build_outputs WHERE id = $1", [compiled.buildId])).rows[0];
-      assert.equal(stored.diagnostics_version, 1);
-      assert.ok(Array.isArray(stored.warnings) && Array.isArray(stored.errors));
+      const stored = (await f.pool.query("SELECT warnings, errors FROM build_outputs WHERE id = $1", [compiled.buildId])).rows[0];
+      assert.deepEqual(stored.warnings, compiled.diagnostics.filter(item => item.severity === "warning"));
+      assert.deepEqual(stored.errors, []);
       if (unresolved) {
         assert.deepEqual(build.diagnostics.map((d) => [d.file, d.line]), [["chapters/intro.tex", 2], ["chapters/intro.tex", 3]]);
         assert.ok(build.warnings.every((message) => !message.includes("'resolved'")));
@@ -117,15 +146,6 @@ for (const mode of ["bibtex", "biber"]) {
           const revision = await (await f.request(`${f.url}/files/${item.sourceFileId}/versions/${item.sourceRevisionId}`, { cookie: f.cookie })).json();
           assert.equal(revision.content, "first\n\\cite{missing}\nlast");
         }
-      } else {
-        // Concrete pre-version rows still recover from trace, without backfilling them.
-        await f.pool.query("UPDATE build_outputs SET diagnostics_version = NULL WHERE id = $1", [compiled.buildId]);
-        const legacy = await (await f.request(`${f.url}/builds/${compiled.buildId}`, { cookie: f.cookie })).json();
-        assert.equal(legacy.build.warnings.length, 1);
-        assert.equal(legacy.build.diagnostics[0].file, "main.tex");
-        await f.pool.query("UPDATE build_outputs SET errors = $2::jsonb WHERE id = $1", [compiled.buildId, JSON.stringify(["publication failed"])]);
-        const legacyError = await (await f.request(`${f.url}/builds/${compiled.buildId}`, { cookie: f.cookie })).json();
-        assert.deepEqual(legacyError.build.errors, ["publication failed"]);
       }
     });
   }
@@ -145,14 +165,14 @@ for (const phase of ["setup", "publication"]) {
     f.hooks.spawn = () => ({ command: process.execPath, args: ["-e", 'require("node:fs").writeFileSync("output/main.pdf", "%PDF-1.4 fake")'] });
     const response = await f.request(`${f.url}/compile`, { cookie: f.cookie, method: "POST", body: { baseRevision: 0, data: f.created.data } });
     assert.equal(response.status, 500);
-    const row = (await f.pool.query("SELECT id, diagnostics_version FROM build_outputs")).rows[0];
+    const row = (await f.pool.query("SELECT id, errors FROM build_outputs")).rows[0];
     const { build } = await (await f.request(`${f.url}/builds/${row.id}`, { cookie: f.cookie })).json();
     assert.equal(build.status, "failed");
     assert.equal(build.errors.length, 1);
     assert.match(build.errors[0], new RegExp(`fixture ${phase} failure`));
     assert.equal(build.diagnostics[0].file, null);
     assert.equal(build.diagnostics[0].line, null);
-    assert.equal(row.diagnostics_version, 1);
+    assert.deepEqual(row.errors, build.diagnostics);
   });
 }
 
@@ -180,7 +200,7 @@ for (const phase of ["artifact read", "publication finalization"]) {
       baseRevision: 0, data: f.created.data,
     } });
     assert.equal(response.status, 500);
-    const row = (await f.pool.query("SELECT id, diagnostics_version, errors FROM build_outputs")).rows[0];
+    const row = (await f.pool.query("SELECT id, errors FROM build_outputs")).rows[0];
     const detail = await f.request(`${f.url}/builds/${row.id}`, { cookie: f.cookie });
     assert.equal(detail.status, 200);
     const { build } = await detail.json();
@@ -192,7 +212,6 @@ for (const phase of ["artifact read", "publication finalization"]) {
     assert.match(build.errors[0], new RegExp(`fixture ${phase} failure`));
     assert.equal(build.errors.length, 80);
     assert.equal(build.errors.filter((message) => message.startsWith("compiler failure ")).length, 79);
-    assert.equal(row.diagnostics_version, 1);
     assert.deepEqual(row.errors.map((item) => item.message), build.errors);
     assert.deepEqual(build.diagnostics.find((item) => item.severity === "error"), {
       severity: "error", file: null, line: null, column: null, message: build.errors[0],
