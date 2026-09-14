@@ -63,17 +63,21 @@ npm ci
 cp .env.example .env
 ```
 
-Generate two independent values, one for `IRIS_SECRET` and one for `DB_PASSWORD`:
+Run the following command **twice** to generate two independent values:
 
 ```sh
 openssl rand -hex 32
-openssl rand -hex 32
 ```
 
-Enter them on the corresponding lines in `.env`. Set `DB_HOST`, `DB_PORT`,
-`DB_NAME` and `DB_USER` for your PostgreSQL service. For a local-only native
-instance, set `BIND_ADDRESS=127.0.0.1`. The example's `DATA_DIR=./data` and
-`PUBLIC_DIR=./public` resolve from the directory where you start Iris.
+After each run, copy the output into the corresponding entry in `.env`:
+
+1. First value → `IRIS_SECRET`.
+2. Second value → `DB_PASSWORD`.
+
+Set `DB_HOST`, `DB_PORT`, `DB_NAME` and `DB_USER` for your PostgreSQL service.
+For a local-only native instance, set `BIND_ADDRESS=127.0.0.1`. The example's
+`DATA_DIR=./data` and `PUBLIC_DIR=./public` resolve from the directory where you
+start Iris.
 
 Use an absolute `DATA_DIR` for a managed service and set `TEMPLATE_DIR` to its
 `templates` subdirectory, or remove the example's explicit `TEMPLATE_DIR` to use
@@ -127,18 +131,26 @@ read-only root filesystem, writable project storage and a 256 MiB temporary
 
 ### Configure the instance
 
-Create `.env` if you have not done so, then generate three independent secrets:
+Create `.env` if you have not done so:
 
 ```sh
 cp .env.example .env
-openssl rand -hex 32
-openssl rand -hex 32
+```
+
+Run the following command **three times** to generate three independent values:
+
+```sh
 openssl rand -hex 32
 ```
 
-Enter the values as `IRIS_SECRET`, `DB_PASSWORD` and
-`POSTGRES_ADMIN_PASSWORD`. The last credential initializes the PostgreSQL
-administrator; Iris receives only the restricted `iris` role's password.
+After each run, copy the output into the corresponding entry in `.env`:
+
+1. First value → `IRIS_SECRET`.
+2. Second value → `DB_PASSWORD`.
+3. Third value → `POSTGRES_ADMIN_PASSWORD`.
+
+The last credential initializes the PostgreSQL administrator; Iris receives
+only the restricted `iris` role's password.
 Compose refuses to start if any required secret is missing.
 
 Set `IRIS_PORT` to change the host port and `IRIS_BIND_ADDRESS` to change its
