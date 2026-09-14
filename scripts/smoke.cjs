@@ -7,7 +7,7 @@ const { parseArgs } = require("node:util");
 const { run, launch, workspace, postgres, freePort, until } = require("./lib/disposable.cjs");
 const { journey, filesystemProbe } = require("./lib/smoke-journey.cjs");
 const root = path.resolve(__dirname, "..");
-const image = "localhost/iris:1.0.0";
+const image = `localhost/iris:${require("../package.json").version}`;
 const help = `Usage:
   node scripts/smoke.cjs --native [--browser] [--pg-bin DIR]
   node scripts/smoke.cjs --engine docker
@@ -22,7 +22,7 @@ const help = `Usage:
                           the same Compose, restart and two-layer backup/restore.
 --connection NAME         Explicit Podman connection (never changes defaults).
 --compose-provider PATH   Explicit Podman Compose provider (tested: podman-compose).
---use-image               Use an already-built localhost/iris:1.0.0. Otherwise
+--use-image               Use an already-built ${image}. Otherwise
                           refuse to overwrite it, build it and remove it on cleanup.
 --help                    Show help.
 

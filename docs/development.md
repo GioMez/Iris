@@ -156,7 +156,7 @@ The source path must be visible to the engine for Compose's init-script bind
 mount. Docker uses your selected context/host; Podman accepts an explicit
 connection and provider. The script provisions no VM or daemon.
 
-Container smoke builds `localhost/iris:1.0.0`, checks the same Compose on the
+Container smoke builds `localhost/iris:1.0.1`, checks the same Compose on the
 selected engine, and exercises initialization, health, login, storage, restart,
 permissions and separate-volume/database restore. It checks missing-compiler
 failures in the lightweight image. It refuses to overwrite an existing Iris
@@ -179,10 +179,10 @@ other host/storage-driver combinations.
 After the reviewed release commit and annotated tag exist:
 
 ```sh
-node scripts/release.cjs --ref R1.0.0 --output .drafts/release-1.0.0
+node scripts/release.cjs --ref R1.0.1 --output .drafts/release-1.0.1
 ```
 
-The output directory must be new. The script creates `iris-1.0.0.tar.gz` and
+The output directory must be new. The script creates `iris-1.0.1.tar.gz` and
 `SHA256SUMS` from immutable Git objects. It does not create a tag or change the
 index. Working-tree modifications do not enter ref-based packaging.
 
@@ -214,7 +214,7 @@ workflow publishes no prebuilt image; operators build from the source tag/archiv
 
 ## Persistence contract
 
-Product **1.0.0** uses database schema **2**. `initializeSchema()` owns the
+Product **1.0.1** uses database schema **2**. `initializeSchema()` owns the
 initialization transaction and advisory lock `49524953`. It creates nine
 application tables plus the singleton `iris_schema` marker in an empty schema,
 reopens a matching marker, and rejects incompatible or malformed state without

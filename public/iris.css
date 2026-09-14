@@ -396,7 +396,7 @@ button{font-family:inherit;color:inherit}
 .spring{flex:1}
 
 /* topbar: pin account on the right, scroll the action cluster when narrow */
-.topbar>.logo,.topbar>#btnSidebar{flex:0 0 auto}
+.topbar>.logo{flex:0 0 auto}
 .tbar-scroll{flex:1 1 auto;min-width:0;display:flex;align-items:center;gap:var(--space-3);
   overflow-x:auto;overflow-y:hidden;scrollbar-width:none;-ms-overflow-style:none;--edge-bg:var(--topbar)}
 .tbar-scroll::-webkit-scrollbar{height:0;display:none}
@@ -782,9 +782,10 @@ button{font-family:inherit;color:inherit}
 /* ===================== statusbar ===================== */
 .statusbar{display:flex;align-items:stretch;gap:0;height:var(--control-md);background:var(--topbar);border-top:1px solid var(--border);
   font-size:var(--text-sm);color:var(--txt-dim);font-family:var(--font-code);min-width:0}
-.sb-info{flex:1 1 auto;min-width:0;display:flex;align-items:center;overflow-x:auto;overflow-y:hidden;
+.sb-info{flex:1 1 auto;min-width:var(--control-sm);display:flex;align-items:center;overflow-x:auto;overflow-y:hidden;
   scrollbar-width:none;-ms-overflow-style:none;--edge-bg:var(--topbar)}
 .sb-info::-webkit-scrollbar{height:0;display:none}
+.sb-sidebar{flex:0 0 auto;align-self:center;margin-left:var(--space-2)}
 .sb-info>*{flex:0 0 auto}
 .sb-info .spring{flex:1 1 auto;min-width:8px}
 .st{display:inline-flex;align-items:center;gap:var(--space-3);padding:0 var(--space-5);height:100%}
@@ -853,7 +854,11 @@ button.st{border:0;background:transparent;font:inherit}
 
 
 /* statusbar utilities and compiler configuration */
-.sb-actions{flex:0 0 auto;display:flex;align-items:center;gap:var(--space-3);padding:0 var(--space-4);border-left:1px solid var(--border)}
+.sb-actions{flex:0 1 auto;min-width:max(calc(var(--control-sm) + 2 * var(--space-4) + 1px),var(--footer-focus-width,0px));overflow-x:auto;scrollbar-width:none;display:flex;align-items:center;gap:var(--space-3);padding:0 var(--space-4);border-left:1px solid var(--border)}
+.sb-actions>*{flex:0 0 auto}
+.sb-actions::-webkit-scrollbar{display:none}
+.sb-config{flex:0 0 auto;display:flex;align-items:center;gap:var(--space-3);padding-right:var(--space-4)}
+.sb-config>*{flex:0 0 auto}
 .sb-btn{display:inline-flex;align-items:center;gap:var(--space-3);height:var(--control-sm);padding:0 var(--space-5);border-radius:var(--radius-compact);
   border:1px solid var(--border);background:var(--surface-control);color:var(--txt-dim);font-size:var(--text-sm);cursor:pointer;
   font-family:var(--font-ui);white-space:nowrap}
@@ -863,6 +868,7 @@ button.st{border:0;background:transparent;font:inherit}
 .sb-wrap{height:var(--control-sm);padding:0 var(--space-4) 0 var(--space-5);border-radius:var(--radius-compact);border:1px solid var(--border);background:var(--surface-control);color:var(--txt-dim);
   display:inline-flex;align-items:center;gap:var(--space-4);cursor:pointer;font:var(--text-sm) var(--font-ui);white-space:nowrap}
 .sb-wrap:hover{background:var(--hover);color:var(--txt)}
+.sb-wrap .ti{width:var(--icon-sm);height:var(--icon-sm)}
 .sb-switch{width:25px;height:14px;border-radius:var(--radius-pill);background:var(--switch-compact-track);position:relative;flex:0 0 auto;transition:background var(--motion-fast) var(--ease-standard)}
 .sb-switch::after{content:"";position:absolute;left:2px;top:2px;width:10px;height:10px;border-radius:var(--radius-round);background:var(--switch-compact-thumb);transition:transform var(--motion-fast) var(--ease-standard),background var(--motion-fast) var(--ease-standard)}
 .sb-wrap.on{color:var(--selection);border-color:var(--selection-line);background:var(--selection-soft)}
@@ -1204,6 +1210,7 @@ html:not(.iris-inproject) #projChip{display:none}
 .iris-authed .picker-screen{display:block}
 .iris-inproject .picker-screen{display:none}
 .picker-wrap{width:min(940px,100%);margin:0 auto}
+.picker-screen,.admin-screen{scrollbar-gutter:stable both-edges}
 
 /* The workspace enters as one surface and remains mounted while it shrinks on
    exit. Only after that does the unanimated project home become visible. */
@@ -1272,7 +1279,7 @@ html:not(.iris-inproject) #projChip{display:none}
 /* Viewer role: hide every write affordance. The server still enforces this;
    this only keeps a viewer from starting edits they cannot persist. */
 .iris-readonly #btnSave,.iris-readonly #btnSnapshot,.iris-readonly #btnCompile,.iris-readonly #btnFormat,
-.iris-readonly #btnNew,.iris-readonly #newFileBtn,.iris-readonly #btnOpen,
+.iris-readonly #btnNew,.iris-readonly #newFileBtn,
 .iris-readonly #btnAttach,.iris-readonly .node-tools,
 /* Find stays available to a viewer; replace cannot work for one, and used to
    sit there fully enabled doing nothing on every click. */
@@ -1680,7 +1687,7 @@ html.iris-inadmin[data-role="admin"] .admin-screen{display:block}
 @media(max-width:640px){
   .admin-screen{padding:var(--space-8) var(--space-6) var(--space-9)}
   .admin-screen .picker-top .login-brand{display:none}
-  .admin-header-actions{gap:var(--space-2)}
+  .admin-header-actions{gap:var(--space-2);flex-wrap:wrap;justify-content:flex-end}
   .admin-switch button{padding-inline:var(--space-4)}
   .admin-filters{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
   .admin-search{grid-column:1/-1;min-width:0}
@@ -1797,7 +1804,7 @@ html.iris-inadmin[data-role="admin"] .admin-screen{display:block}
   .userchip{width:32px;padding:0;justify-content:center}
   .pvbar{padding-inline:var(--space-4)}
   #stTime,.sb-divider{display:none}
-  .sb-wrap{width:34px;padding:0;justify-content:center}
+  .sb-wrap{padding-inline:var(--space-3);justify-content:center}
   .sb-wrap-label{display:none}
 }
 
@@ -1824,9 +1831,6 @@ html.iris-inadmin[data-role="admin"] .admin-screen{display:block}
   .ftab,.ftab .x{min-width:var(--control-touch);min-height:var(--control-touch)}
   .ftab{flex:0 0 auto;min-width:160px}
   .ftab .x{flex:0 0 var(--control-touch)}
-  .sb-actions{max-width:calc(100% - var(--control-touch));overflow-x:auto;scrollbar-width:none;flex:0 1 auto}
-  .sb-actions>*{flex:0 0 auto}
-  .sb-actions::-webkit-scrollbar{display:none}
   .side .node{height:auto;min-height:var(--control-touch);flex-wrap:wrap}
   .side .node .nm{min-height:var(--control-touch);display:flex;align-items:center}
   .side .node-tools{flex-basis:100%;justify-content:flex-end}

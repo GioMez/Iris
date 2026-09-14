@@ -93,6 +93,11 @@ emulation and measure hit targets as well as rectangle sizes.
 Card content and actions share horizontal insets. Status/retry rows reserve
 ordinary layout space and wrap text, without negative-margin compensation.
 
+The footer pins the file-tree toggle on the left and the engine/settings controls
+on the right. Preview, formatting, search and Wrap share a scrollable utility
+group. Keyboard focus reserves enough width for its current control and reveals
+it within that group, including after a responsive resize.
+
 ## Geometry exceptions
 
 - CodeMirror has its own `--editor-font-size`, `--editor-line-height`, editor
@@ -169,7 +174,7 @@ bound scrolling areas, while multiline descriptions and diagnostics can grow.
 
 ## Collapsible preview
 
-In a split workspace, the right-panel toolbar button hides or shows the preview
+In a split workspace, the footer preview button hides or shows the preview
 and its resizer. The editor takes the freed width. Hiding preserves the output,
 reading position and saved panel width. Starting a compilation or explicitly
 requesting a preview reveals the panel; background build notifications do not.

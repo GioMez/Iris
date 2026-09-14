@@ -1,6 +1,6 @@
 # Demonstration images
 
-These screenshots show Iris 1.0.0 running with synthetic accounts and projects.
+These screenshots show Iris running with synthetic accounts and projects.
 The music, document text and bibliography entries come from
 [`scripts/fixtures/docs-demo.cjs`](../../scripts/fixtures/docs-demo.cjs).
 The references and observations are invented demonstration material.

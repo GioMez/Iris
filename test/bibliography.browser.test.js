@@ -1793,47 +1793,28 @@ for (const language of ["en", "it"]) {
   });
 }
 
-for (const format of ["bib", "ris"]) for (const route of ["open", "upload"]) {
-  test(`generic ${format} ${route} uses original bytes at the browser FileReader boundary`, options, async (t) => {
+for (const format of ["bib", "ris"]) {
+  test(`generic ${format} upload uses original bytes at the browser FileReader boundary`, options, async (t) => {
     const page = await pageFor(t, project("ordinary", "main.tex"));
     const source = format === "bib" ? "\uFEFF@book{a,title={Caf\u00e9}}\r\n" : "\uFEFFTY  - BOOK\r\nTI  - Caf\u00e9\r\nER  -\r\n";
     const before = await page.evaluate(() => IrisApp.serialize());
     const damaged = [Buffer.concat([Buffer.from("\uFEFF"), Buffer.from(source.slice(1), "latin1")]), Buffer.from(source.replace("\u00e9", "\0"))];
-    if (route === "open") damaged.push(Buffer.from(source, "utf16le"));
     for (const [i, buffer] of [...damaged, Buffer.from(source)].entries()) {
       const valid = i === damaged.length;
       const file = { name: valid ? "valid.txt" : `damaged-${i}.md`, mimeType: "application/octet-stream", buffer };
       const notices = await page.locator("#toasts > *").count();
-      if (route === "open") {
-        const chooser = page.waitForEvent("filechooser");
-        await page.locator("#btnOpen").click();
-        await (await chooser).setFiles(file);
-      } else {
-        if (!await page.locator("#attachModal").isVisible()) await page.locator("#btnAttach").click();
-        await page.locator("#attachInput").setInputFiles(file);
-        await page.locator("#attachUpload").click();
-      }
+      if (!await page.locator("#attachModal").isVisible()) await page.locator("#btnAttach").click();
+      await page.locator("#attachInput").setInputFiles(file);
+      await page.locator("#attachUpload").click();
       await page.waitForFunction((notices) => document.querySelector("#toasts").children.length > notices, notices);
       const saved = await page.evaluate(() => IrisApp.serialize());
       if (valid) assert.equal(saved.project.nodes.at(-1).content, source);
       else assert.deepEqual(saved, before, "damaged bibliography bytes must not enter project state");
     }
-    if (route === "upload") {
-      await page.locator("#attachModal").waitFor({ state: "hidden" });
-      await page.locator(".node").getByText("valid.txt", { exact: true }).click();
-    }
+    await page.locator("#attachModal").waitFor({ state: "hidden" });
+    await page.locator(".node").getByText("valid.txt", { exact: true }).click();
     await settled(page);
     assert.equal(await page.locator("#bibliographyTableTab").getAttribute("aria-disabled"), "false");
     assert.equal(await page.evaluate(() => IrisEditor.getValue()), source);
   });
 }
-
-test("ordinary external open retains FileReader BOM decoding", options, async (t) => {
-  const page = await pageFor(t, project("ordinary", "main.tex"));
-  const chooser = page.waitForEvent("filechooser");
-  await page.locator("#btnOpen").click();
-  await (await chooser).setFiles({ name: "ordinary.txt", mimeType: "text/plain", buffer: Buffer.from("\uFEFFordinary Caf\u00e9", "utf16le") });
-  await page.waitForFunction(() => IrisApp.serialize().project.nodes.length === 2);
-  assert.equal(await page.evaluate(() => IrisEditor.getValue()), "ordinary Caf\u00e9");
-  assert.equal(await page.locator("#bibliographyPanel").isVisible(), false);
-});

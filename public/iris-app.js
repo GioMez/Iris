@@ -2700,6 +2700,7 @@
     return folder ? folder.nodes : project.nodes;
   }
   function openAttach() {
+    if (isReadOnly()) { toast(t("projects.readOnlyNotice")); return; }
     $("attachDest").innerHTML = folderOptions();
     if (state.selectedFolder) $("attachDest").value = state.selectedFolder;
     clearAttach();
@@ -2771,6 +2772,7 @@
     return cleaned + ext[1];
   }
   function doUpload() {
+    if (isReadOnly()) { toast(t("projects.readOnlyNotice")); return; }
     const af = state.attachFile;
     if (!af) return;
     const dest = $("attachDest").value;
@@ -3025,44 +3027,34 @@
     if (saved) toast(t("editor.documentSaved"));
     return saved;
   }
-  function openExternal(file) {
-    const reader = new FileReader();
-    const kind = inferKind(file.name, isLilyPondProject() ? "ly" : "tex");
-    const bibliography = kind === "bib" || kind === "ris";
-    const style = /\.(sty|cls|bst|bbx|cbx|lbx)$/i.test(file.name);
-    let bytes;
-    reader.onload = () => {
-      let content = reader.result;
-      if (typeof content !== "string") {
-        bytes = new Uint8Array(content);
-        content = new TextDecoder("utf-8", { ignoreBOM: true }).decode(bytes);
-        if (!bibliography && (style || !window.IrisBibliography.candidate(content))) {
-          reader.readAsText(file);
-          return;
-        }
-      }
-      // FileReader can recognize another BOM in its ordinary-text fallback.
-      // That result is also only a probe if it exposes a bibliography header.
-      if (bibliography || (!style && window.IrisBibliography.candidate(content))) {
-        try { content = window.IrisBibliography.decodeUtf8(bytes); }
-        catch { toast(t("api.BIBLIOGRAPHY_INVALID_ENCODING"), "err"); return; }
-      }
-      const id = "open_" + Date.now();
-      project.nodes.push({ type: "file", id, name: file.name, kind, path: file.name, content });
-      renderTree(); openFile(id); markFileDirty(id); schedulePersist(); toast(t("editor.opened", { name: file.name }));
-    };
-    reader.readAsArrayBuffer(file);
-  }
-  function openExternalPicker() {
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = ".tex,.ly,.ily,.bib,.ris,.txt";
-    input.onchange = () => input.files[0] && openExternal(input.files[0]);
-    input.click();
-  }
 
   /* ---------------- wiring ---------------- */
+  function revealFooterAction() {
+    const strip = document.querySelector(".sb-actions");
+    const control = document.activeElement?.closest?.("button");
+    if (!control || !strip.contains(control)) {
+      strip.style.removeProperty("--footer-focus-width");
+      return;
+    }
+    const style = getComputedStyle(strip);
+    const inset = (property) => parseFloat(style[property]) || 0;
+    const left = inset("paddingLeft") + inset("borderLeftWidth");
+    const right = inset("paddingRight") + inset("borderRightWidth");
+    strip.style.setProperty("--footer-focus-width", `${Math.ceil(control.getBoundingClientRect().width + left + right)}px`);
+    const box = control.getBoundingClientRect(), clip = strip.getBoundingClientRect();
+    if (box.left < clip.left + left) strip.scrollLeft -= clip.left + left - box.left;
+    else if (box.right > clip.right - right) strip.scrollLeft += box.right - clip.right + right;
+  }
   function wire() {
+    const footerActions = document.querySelector(".sb-actions");
+    // Pointer focus occurs before click: keep its target still until release.
+    footerActions.addEventListener("focusin", (event) => {
+      if (event.target.matches(":focus-visible")) requestAnimationFrame(revealFooterAction);
+    });
+    footerActions.addEventListener("focusout", () => requestAnimationFrame(() => {
+      if (!footerActions.contains(document.activeElement)) revealFooterAction();
+    }));
+    footerActions.addEventListener("click", () => requestAnimationFrame(revealFooterAction));
     $("compileSourceMapping").addEventListener("change", function () {
       if (isReadOnly()) { this.checked = state.sourceMapping; return; }
       state.sourceMapping = this.checked;
@@ -3116,7 +3108,6 @@
     $("btnNew").addEventListener("click", newFile);
     $("newFileBtn").addEventListener("click", newFile);
     $("refreshTreeBtn").addEventListener("click", () => { void refreshFileTree(); });
-    $("btnOpen").addEventListener("click", openExternalPicker);
     $("btnAttach").addEventListener("click", openAttach);
     $("dlBtn").addEventListener("click", downloadPdf);
     $("btnSettings").addEventListener("click", openSettings);
@@ -3435,7 +3426,6 @@
     setupResizer($("rz1"), "side");
     setupResizer($("rz2"), "pv");
     $("btnSidebar").addEventListener("click", toggleSidebar);
-    $("btnPreviewPane").addEventListener("click", togglePreviewPane);
     $("sideBackdrop").addEventListener("click", closeResponsiveSidebar);
     drawerMedia.addEventListener("change", syncResponsiveLayout);
 
@@ -3450,7 +3440,7 @@
       if (!mod || e.altKey || e.repeat) return;
       if (key === "s") { e.preventDefault(); void saveProject(); }
       else if (key === "n") { e.preventDefault(); newFile(); }
-      else if (key === "o") { e.preventDefault(); openExternalPicker(); }
+      else if (key === "o") { e.preventDefault(); openAttach(); }
       else if (e.key === "Enter") { e.preventDefault(); void compile(); }
       else if (key === "f") { e.preventDefault(); findOpen(false); }
       else if (key === "h") { e.preventDefault(); findOpen(true); }
@@ -3528,8 +3518,7 @@
   }
   function syncPreviewPane() {
     const collapsed = state.previewCollapsed && !compactMedia.matches;
-    const pane = $("previewPane"), button = $("btnPreviewPane");
-    const hadToggleFocus = document.activeElement === button;
+    const pane = $("previewPane"), control = $("btnPreview");
     const revealing = pane.hidden && !collapsed;
     if (collapsed) {
       ++previewRestoreGeneration;
@@ -3538,29 +3527,24 @@
     document.querySelector(".body").classList.toggle("preview-collapsed", collapsed);
     pane.hidden = collapsed;
     $("rz2").hidden = collapsed;
-    button.hidden = compactMedia.matches;
     const open = compactMedia.matches ? document.querySelector(".body").classList.contains("workspace-preview") : !collapsed;
     const label = open ? "preview.closePane" : "preview.openPane";
     const icon = open ? "layout-sidebar-right-collapse" : "layout-sidebar-right-expand";
-    for (const control of [button, $("btnPreview")]) {
-      control.setAttribute("aria-expanded", String(open));
-      control.classList.toggle("on", open);
-      control.setAttribute("data-i18n-title", label);
-      control.setAttribute("data-i18n-aria-label", label);
-      control.title = t(label);
-      control.setAttribute("aria-label", t(label));
-      const text = control.querySelector(".sb-btn-label");
-      if (text) { text.setAttribute("data-i18n", label); text.textContent = t(label); }
-      const iconHost = control.querySelector("[data-icon]");
-      if (iconHost && iconHost.dataset.icon !== icon) {
-        iconHost.dataset.icon = icon;
-        iconHost.innerHTML = ti(icon);
-      }
-    }
-    if (button.hidden && hadToggleFocus) {
-      $("workspaceSwitch").querySelector('[aria-selected="true"]')?.focus();
+    control.setAttribute("aria-expanded", String(open));
+    control.classList.toggle("on", open);
+    control.setAttribute("data-i18n-title", label);
+    control.setAttribute("data-i18n-aria-label", label);
+    control.title = t(label);
+    control.setAttribute("aria-label", t(label));
+    const text = control.querySelector(".sb-btn-label");
+    if (text) { text.setAttribute("data-i18n", label); text.textContent = t(label); }
+    const iconHost = control.querySelector("[data-icon]");
+    if (iconHost && iconHost.dataset.icon !== icon) {
+      iconHost.dataset.icon = icon;
+      iconHost.innerHTML = ti(icon);
     }
     if (!collapsed && state.previewRestoring) settlePreviewReveal();
+    requestAnimationFrame(revealFooterAction);
   }
   function togglePreviewPane() {
     sourceNavigation.cancel();

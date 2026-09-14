@@ -313,7 +313,7 @@ function harness(language = "en", realtime = false) {
     editor.carets = () => view.state.selection.ranges.map((range) => range.from);
     run("iris-collab.js");
   }
-  run("iris-app.js", "window.appTest = { state, findFile, wire, wireEditorEvents, openFile, navigationSource, syncRealtimeSession, canonicalFileId, refreshFileTree, saveProject, openFileHistory, snapshotProject, confirmRestore, verState, openTreeRename, confirmTreeRename, folderNodeByPath, docFileForCompile, openExternal, openExternalPicker, pickAttach, doUpload, openNewItem, confirmNewItem, findOpen, findSelect, activateDiagnostic, compile, skipArtifactRendering() { renderCompiledOutput = async () => {}; }, get bibliography() { return bibliographyView; } };\n");
+  run("iris-app.js", "window.appTest = { state, findFile, wire, wireEditorEvents, openFile, navigationSource, syncRealtimeSession, canonicalFileId, refreshFileTree, saveProject, openFileHistory, snapshotProject, confirmRestore, verState, openTreeRename, confirmTreeRename, folderNodeByPath, docFileForCompile, pickAttach, doUpload, openNewItem, confirmNewItem, findOpen, findSelect, activateDiagnostic, compile, skipArtifactRendering() { renderCompiledOutput = async () => {}; }, get bibliography() { return bibliographyView; } };\n");
   run("iris-projects.js", "window.projectsTest = { renameProject, cache, metaOf, finishDiscardDecision };\n");
   context.window.appTest.wireEditorEvents();
   return {
@@ -1630,18 +1630,6 @@ test("RIS is editable text and persists the exact buffer", options, async () => 
 
 for (const kind of ["bib", "ris"]) {
   const source = kind === "bib" ? "\uFEFF@book{a, title={Perch\u00e9}}\r\n" : "\uFEFFTY  - BOOK\r\nTI  - Perch\u00e9\r\nER  - \r\n";
-  test(`${kind} external open preserves UTF-8 BOM and CRLF without writing untouched sources`, options, async () => {
-    const h = harness(); await h.open();
-    const bytes = Buffer.from(source);
-    h.a.openExternal({ name: `refs.${kind}`, bytes });
-    const node = h.a.findFile(h.a.state.activeId);
-    assert.equal(node.kind, kind);
-    assert.equal(h.editor.value, source);
-    assert.equal(h.app.capturePersistence().data.project.nodes.at(-1).content, source);
-    assert.deepEqual(bytes, Buffer.from(source));
-    assert.equal(h.app.capturePersistence().data.project.nodes[0].content, undefined, "untouched TeX is omitted");
-  });
-
   test(`${kind} upload preserves its text rather than replaying a data URL`, options, async () => {
     const h = harness(); await h.open();
     h.a.pickAttach({ name: `refs.${kind}`, bytes: Buffer.from(source), size: Buffer.byteLength(source), type: "application/octet-stream" });
@@ -1655,15 +1643,13 @@ for (const kind of ["bib", "ris"]) {
     assert.equal(h.app.capturePersistence().data.project.nodes.at(-1).content, undefined, "no-op saves omit acknowledged text");
   });
 
-  for (const route of ["open", "upload"]) {
-    test(`${kind} ${route} rejects invalid encoding without adopting the file`, options, async () => {
+    test(`${kind} upload rejects invalid encoding without adopting the file`, options, async () => {
       for (const language of ["en", "it"]) {
         const h = harness(language); await h.open(); h.edit("unsaved original");
         const before = clone(h.app.capturePersistence().data);
         const bytes = Buffer.from([0xc3, 0x28, 0xff]);
         const file = { name: `bad.${kind}`, bytes, size: bytes.length, type: "application/octet-stream" };
-        if (route === "open") h.a.openExternal(file);
-        else { h.a.pickAttach(file); h.a.doUpload(); }
+        h.a.pickAttach(file); h.a.doUpload();
         assert.deepEqual(clone(h.app.capturePersistence().data), before);
         assert.equal(h.editor.value, "unsaved original");
         assert.deepEqual(bytes, Buffer.from([0xc3, 0x28, 0xff]));
@@ -1673,7 +1659,6 @@ for (const kind of ["bib", "ris"]) {
         assert.equal(h.requests.length, 1);
       }
     });
-  }
 
   test(`${kind} sourceError is transient, non-editable and cannot join or leak placeholder text into a save`, options, async () => {
     const h = harness("en", true);
@@ -1734,38 +1719,32 @@ for (const kind of ["bib", "ris"]) {
 
 for (const format of ["bib", "ris"]) for (const extension of ["txt", "md"]) {
   const source = format === "bib" ? "\uFEFF@book{a,title={Caf\u00e9}}\r\n" : "\uFEFFTY  - BOOK\r\nTI  - Caf\u00e9\r\nER  -\r\n";
-  for (const route of ["open", "upload"]) {
-    test(`generic ${format} ${extension} ${route} preserves original BOM and CRLF`, options, async () => {
+    test(`generic ${format} ${extension} upload preserves original BOM and CRLF`, options, async () => {
       const h = harness(); await h.open();
       const file = { name: `refs.${extension}`, bytes: Buffer.from(source), size: Buffer.byteLength(source), type: "application/octet-stream" };
-      if (route === "open") h.a.openExternal(file);
-      else { h.a.pickAttach(file); h.a.doUpload(); }
+      h.a.pickAttach(file); h.a.doUpload();
       const node = h.app.capturePersistence().data.project.nodes.at(-1);
       assert.equal(node.content, source);
-      assert.equal(node.kind, route === "upload" && extension === "md" ? "file" : "tex", "recognition does not rewrite the file kind");
+      assert.equal(node.kind, extension === "md" ? "file" : "tex", "recognition does not rewrite the file kind");
       assert.equal(node.data, undefined);
     });
 
-    test(`generic ${format} ${extension} ${route} refuses damaged bibliography without adoption`, options, async () => {
+    test(`generic ${format} ${extension} upload refuses damaged bibliography without adoption`, options, async () => {
       for (const damaged of [Buffer.concat([Buffer.from("\uFEFF"), Buffer.from(source.slice(1), "latin1")]), Buffer.from(source.replace("\u00e9", "\0"))]) {
         const h = harness(); await h.open(); h.edit("unsaved original");
         const before = clone(h.app.capturePersistence().data);
         const file = { name: `refs.${extension}`, bytes: damaged, size: damaged.length, type: "application/octet-stream" };
-        if (route === "open") h.a.openExternal(file);
-        else { h.a.pickAttach(file); h.a.doUpload(); }
+        h.a.pickAttach(file); h.a.doUpload();
         assert.deepEqual(clone(h.app.capturePersistence().data), before);
         assert.equal(h.editor.value, "unsaved original");
         assert.ok(h.get("toasts").children.some((node) => node.innerHTML.includes(h.t("api.BIBLIOGRAPHY_INVALID_ENCODING"))));
         assert.equal(h.requests.length, 1);
       }
     });
-  }
 }
 
-test("ordinary non-bibliography external open and upload keep their decoding behavior", options, async () => {
+test("ordinary non-bibliography upload retains undecodable source bytes", options, async () => {
   const h = harness(); await h.open();
-  h.a.openExternal({ name: "ordinary.txt", bytes: Buffer.from("Caf\u00e9", "latin1") });
-  assert.equal(h.editor.value, "Caf\uFFFD");
   const file = { name: "ordinary.md", bytes: Buffer.from("Caf\u00e9", "latin1"), size: 4, type: "application/octet-stream" };
   h.a.pickAttach(file); h.a.doUpload();
   const node = h.app.capturePersistence().data.project.nodes.at(-1);
@@ -1784,10 +1763,23 @@ test("new bibliography files are blank while TeX and LilyPond keep their templat
   }
 });
 
-test("external picker offers RIS alongside existing source formats", options, async () => {
-  const h = harness(); await h.open(); h.a.openExternalPicker();
-  assert.equal(h.inputs.at(-1).clicked, true);
-  for (const extension of [".tex", ".ly", ".ily", ".bib", ".ris", ".txt"]) assert.ok(h.inputs.at(-1).accept.split(",").includes(extension));
+test("the open shortcut uses Attach and refuses read-only projects", options, async () => {
+  const h = harness(); await h.open(); h.a.wire();
+  const query = h.document.querySelector;
+  h.document.querySelector = (selector) => selector === ".scrim.on"
+    ? (h.get("attachModal").classList.contains("on") ? h.get("attachModal") : null)
+    : selector === ".menu.on" ? null : query(selector);
+  h.document.documentElement.classList.add("iris-inproject");
+  h.document.dispatchEvent({ type: "keydown", key: "o", ctrlKey: true, preventDefault() {} });
+  assert.equal(h.get("attachModal").classList.contains("on"), true, "Ctrl+O opens the destination-aware attachment dialog");
+  h.get("attachModal").classList.remove("on");
+  h.app.setRole("viewer");
+  h.document.dispatchEvent({ type: "keydown", key: "o", metaKey: true, preventDefault() {} });
+  assert.equal(h.get("attachModal").classList.contains("on"), false, "shortcut cannot bypass read-only controls");
+  const before = clone(h.app.serialize());
+  h.a.pickAttach({ name: "blocked.txt", bytes: Buffer.from("blocked"), size: 7, type: "text/plain" });
+  h.a.doUpload();
+  assert.deepEqual(clone(h.app.serialize()), before, "an already picked file cannot bypass a role change");
 });
 
 test("custom completion commands load, apply and persist as project settings", options, async () => {

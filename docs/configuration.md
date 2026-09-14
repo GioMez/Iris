@@ -1,6 +1,6 @@
 # Configuration reference
 
-Iris 1.0.0 reads configuration at startup from the process environment and
+Iris reads configuration at startup from the process environment and
 `.env` in its working directory. An existing environment value wins over the
 file. Relative paths resolve from that working directory. Restart Iris after
 changing configuration.

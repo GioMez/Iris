@@ -55,8 +55,8 @@ test.before(async (t) => {
   t.diagnostic(`Browser: ${browser.version()}; isolated fixture: ${base.origin}`);
 }, { timeout: 30000 });
 
-async function pageFor(t, variant, { openProject = true, authenticated = true, projects = [], extraFiles = [], documentSource = source, sourceMapping = true } = {}) {
-  const context = await browser.newContext({ viewport: variant.viewport, deviceScaleFactor: variant.scale || 1,
+async function pageFor(t, variant, { openProject = true, authenticated = true, projects = [], extraFiles = [], documentSource = source, sourceMapping = true, browserInstance = browser } = {}) {
+  const context = await browserInstance.newContext({ viewport: variant.viewport, deviceScaleFactor: variant.scale || 1,
     hasTouch: !!variant.touch, reducedMotion: variant.motion || "reduce", colorScheme: variant.theme || "dark" });
   if (variant.layout) await context.addInitScript((layout) => localStorage.setItem("iris_layout", JSON.stringify(layout)), variant.layout);
   if (variant.storedTheme !== undefined) await context.addInitScript((value) => localStorage.setItem("iris_theme", value), variant.storedTheme);
@@ -1144,9 +1144,9 @@ for (const language of ["en", "it"]) {
 }
 
 for (const language of ["en", "it"]) {
-  test(`footer preview toggle follows both panel controls and compact navigation without source mapping / ${language}`, options, async (t) => {
+  test(`footer preview toggle follows panel state and compact navigation without source mapping / ${language}`, options, async (t) => {
     const { page } = await pageFor(t, { viewport: { width: 1440, height: 900 }, language }, { sourceMapping: false });
-    const footer = page.locator("#btnPreview"), toolbar = page.locator("#btnPreviewPane"), pane = page.locator("#previewPane");
+    const footer = page.locator("#btnPreview"), pane = page.locator("#previewPane");
     const open = language === "it" ? "Apri anteprima" : "Open preview";
     const close = language === "it" ? "Chiudi anteprima" : "Close preview";
     let queries = 0;
@@ -1157,16 +1157,10 @@ for (const language of ["en", "it"]) {
     assert.equal(await pane.isVisible(), false, "footer must close the panel even without a PDF or map");
     assert.equal(await footer.getAttribute("aria-label"), open);
     assert.equal(await footer.getAttribute("aria-expanded"), "false");
-    assert.equal(await toolbar.getAttribute("aria-label"), open);
     await footer.focus(); await page.keyboard.press("Enter");
     assert.equal(await pane.isVisible(), true);
     assert.equal(await footer.getAttribute("aria-label"), close);
     assert.equal(await footer.getAttribute("aria-expanded"), "true");
-    await toolbar.click();
-    assert.equal(await pane.isVisible(), false);
-    assert.equal(await footer.getAttribute("aria-label"), open, "toolbar action updates footer state");
-    await toolbar.click();
-    assert.equal(await footer.getAttribute("aria-label"), close);
 
     await page.setViewportSize({ width: 390, height: 844 });
     await page.locator('[data-workspace="editor"]').click();
@@ -1185,6 +1179,153 @@ for (const language of ["en", "it"]) {
     assert.equal(queries, 0, "panel visibility does not issue source-map queries");
   });
 }
+
+for (const language of ["en", "it"]) {
+  test(`Attach shortcut lists tree-created folders and uploads into the chosen destination / ${language}`, options, async (t) => {
+    const { page } = await pageFor(t, { viewport: { width: 1440, height: 900 }, language });
+    const writes = [];
+    await page.route(`**/api/projects/${projectId}`, async (route) => {
+      if (route.request().method() !== "PUT") return route.fallback();
+      const body = route.request().postDataJSON(); writes.push(body);
+      await route.fulfill({ contentType: "application/json", body: JSON.stringify({ revision: body.baseRevision + 1,
+        data: { ...body.data, id: projectId, revision: body.baseRevision + 1 } }) });
+    });
+    await page.locator("#newFileBtn").click();
+    await page.locator('[data-new-type="folder"]').click();
+    await page.locator("#newItemInput").fill("scores");
+    await page.locator("#treeNewOk").click();
+    await page.locator("#treeNewModal").waitFor({ state: "hidden" });
+    await page.evaluate(() => IrisApp.waitForPersistence());
+    await page.locator(".cm-content").focus();
+    await page.keyboard.press("ControlOrMeta+o");
+    await page.locator("#attachModal").waitFor({ state: "visible" });
+    assert.equal(await page.locator("#attachDest").getAttribute("aria-describedby"), "attachDestHint");
+    assert.equal(await page.locator("#attachDestHint").isVisible(), true);
+    await page.locator("#attachDest").selectOption("scores/");
+    assert.equal(await page.locator("#attachInput").getAttribute("accept"), null, "the unified picker accepts source files and arbitrary attachments");
+    const name = language === "it" ? "notes.ily" : "notes.ly", content = "{ c'4 }\n";
+    await page.locator("#attachInput").setInputFiles({ name, mimeType: "text/plain", buffer: Buffer.from(content) });
+    await page.locator("#attachUpload").click();
+    await page.locator("#attachModal").waitFor({ state: "hidden" });
+    await page.evaluate(() => IrisApp.waitForPersistence());
+    const folder = writes.at(-1).data.project.nodes.find(node => node.type === "folder" && node.name === "scores");
+    assert.equal(folder.children[0].path, `scores/${name}`);
+    assert.equal(folder.children[0].content, content);
+    await page.evaluate(() => IrisApp.setRole("viewer"));
+    await page.keyboard.press("ControlOrMeta+o");
+    assert.equal(await page.locator("#attachModal").isVisible(), false);
+  });
+
+  test(`bottom panel controls and Wrap icon stay reachable through compact reflow / ${language}`, options, async (t) => {
+    const { page } = await pageFor(t, { viewport: { width: 1440, height: 900 }, language, touch: true });
+    const sidebar = page.locator("#btnSidebar");
+    const ready = await page.locator("#stState").boundingBox(), button = await sidebar.boundingBox();
+    assert.ok(Math.abs((button.y + button.height / 2) - (ready.y + ready.height / 2)) < 3, "sidebar control is beside Ready in the bottom bar");
+    assert.ok(button.x < ready.x);
+    for (const [width, start] of [[1440, "true"], [820, "false"], [390, "false"], [320, "false"]]) {
+      await page.setViewportSize({ width, height: 900 });
+      await page.waitForFunction(expected => document.querySelector("#btnSidebar").getAttribute("aria-expanded") === expected, start);
+      await sidebar.click();
+      assert.notEqual(await sidebar.getAttribute("aria-expanded"), start);
+      await sidebar.click();
+      assert.equal(await sidebar.getAttribute("aria-expanded"), start);
+      await page.locator(".sb-info").evaluate((node) => { node.scrollLeft = node.scrollWidth; });
+      const box = await sidebar.boundingBox();
+      assert.ok(box.x >= 0 && box.x + box.width <= width && box.width >= 44 && box.height >= 44);
+      assert.equal(await page.evaluate(({ x, y, width, height }) => document.elementFromPoint(x + width / 2, y + height / 2)?.closest("button")?.id, box), "btnSidebar");
+      const wrap = page.locator("#btnWrap");
+      await wrap.scrollIntoViewIfNeeded();
+      const icon = await wrap.locator("svg").boundingBox(), control = await wrap.boundingBox();
+      assert.ok(icon && icon.width > 0 && icon.x >= control.x && icon.x + icon.width <= control.x + control.width, "Wrap icon fits its control");
+      const checked = await wrap.getAttribute("aria-checked");
+      await wrap.focus(); await page.keyboard.press("Space");
+      assert.notEqual(await wrap.getAttribute("aria-checked"), checked);
+      for (const id of ["engineBtn", "btnSettings"]) {
+        const pinned = await page.locator(`#${id}`).boundingBox();
+        assert.ok(pinned.x >= 0 && pinned.x + pinned.width <= width, `${id} stays pinned while utilities scroll`);
+        assert.equal(await page.evaluate(({ x, y, width, height }) => document.elementFromPoint(x + width / 2, y + height / 2)?.closest("button")?.id, pinned), id);
+      }
+      const preview = page.locator("#btnPreview");
+      await preview.scrollIntoViewIfNeeded();
+      const expanded = await preview.getAttribute("aria-expanded");
+      await preview.click();
+      assert.notEqual(await preview.getAttribute("aria-expanded"), expanded);
+      await preview.click();
+      assert.equal(await preview.getAttribute("aria-expanded"), expanded);
+    }
+  });
+}
+
+for (const language of ["en", "it"]) for (const touch of [false, true]) test(`footer keyboard navigation reveals complete utilities before and after resize / ${language} / touch=${touch}`, options, async (t) => {
+  const { page } = await pageFor(t, { viewport: { width: 1024, height: 900 }, language, touch });
+  const check = async (id) => {
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    const result = await page.locator(`#${id}`).evaluate(node => {
+      const box = node.getBoundingClientRect(), clip = node.closest(".sb-actions").getBoundingClientRect();
+      const style = getComputedStyle(node), extent = parseFloat(style.outlineWidth) + parseFloat(style.outlineOffset);
+      return { focused: document.activeElement === node && node.matches(":focus-visible"),
+        contained: box.left >= clip.left && box.right <= clip.right,
+        outline: box.left - extent >= clip.left && box.right + extent <= clip.right && box.top - extent >= clip.top && box.bottom + extent <= clip.bottom,
+        hit: document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2)?.closest("button")?.id };
+    });
+    assert.deepEqual(result, { focused: true, contained: true, outline: true, hit: id });
+  };
+  await page.locator("#btnPreview").focus();
+  await page.keyboard.press("Tab"); await page.keyboard.press("Tab"); await page.keyboard.press("Tab");
+  await check("btnWrap");
+  await page.setViewportSize({ width: 320, height: 900 });
+  await check("btnWrap");
+  await page.keyboard.press("Shift+Tab");
+  await check("btnFind");
+});
+
+for (const language of ["en", "it"]) for (const touch of [false, true]) test(`footer recomputes focus width after keyboard-to-pointer input / ${language} / touch=${touch}`, options, async (t) => {
+  const { page } = await pageFor(t, { viewport: { width: 1024, height: 900 }, language, touch });
+  const frame = () => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  await page.keyboard.press("Tab"); await page.locator("#btnPreview").focus(); await frame();
+  await page.locator(".sb-actions").hover(); await page.mouse.wheel(500, 0); await frame();
+  const wrap = page.locator("#btnWrap"), before = await wrap.boundingBox(), state = await wrap.getAttribute("aria-checked");
+  await page.mouse.move(before.x + before.width / 2, before.y + before.height / 2);
+  await page.mouse.down(); await frame();
+  assert.deepEqual(await wrap.boundingBox(), before, "pointer-down must not move its target before release");
+  await page.mouse.up(); await frame();
+  assert.notEqual(await wrap.getAttribute("aria-checked"), state);
+  await page.setViewportSize({ width: 320, height: 900 }); await frame();
+  for (const id of ["btnSidebar", "engineBtn", "btnSettings", "btnWrap"]) {
+    const box = await page.locator(`#${id}`).boundingBox();
+    assert.ok(box.x >= 0 && box.x + box.width <= 320, `${id} stays inside the viewport after mixed-input resize`);
+    assert.equal(await page.evaluate(({ x, y, width, height }) => document.elementFromPoint(x + width / 2, y + height / 2)?.closest("button")?.id, box), id);
+  }
+});
+
+for (const width of [1440, 320]) test(`admin header alignment is stable with classic scrollbars at ${width}px`, options, async (t) => {
+  const withScrollbars = await chromium.launch({ headless: true, ignoreDefaultArgs: ["--hide-scrollbars"], timeout: 10000,
+    ...(process.env.IRIS_BROWSER_EXECUTABLE ? { executablePath: process.env.IRIS_BROWSER_EXECUTABLE } : { channel: "chrome" }) });
+  let page, fixture;
+  try {
+    ({ page, fixture } = await pageFor(t, { viewport: { width, height: 900 }, language: "en", touch: width === 320 }, { openProject: false, browserInstance: withScrollbars }));
+  } catch (error) { await withScrollbars.close(); throw error; }
+  t.after(() => withScrollbars.close());
+  fixture.responses["GET /api/admin/projects"] = { body: { projects: [], nextOffset: null } };
+  fixture.responses["GET /api/admin/templates"] = { body: { templates: { latex: Array.from({ length: 18 }, (_, i) => ({ ...template,
+    id: `template-${i}`, title: `Project template ${i}`, description: "A starting source for a document, with explanatory text for its intended use." })), lilypond: [] } } };
+  await page.locator("#pkAdmin").click();
+  const header = page.locator("#adminScreen .picker-top");
+  const before = await header.boundingBox();
+  const account = await page.locator("#adminAccount").boundingBox();
+  assert.ok(account.x >= 0 && account.x + account.width <= width, "admin account remains inside the viewport");
+  await page.locator("#adminTabProjects").click();
+  assert.deepEqual(await header.boundingBox(), before);
+  await page.locator("#adminTabTemplates").click();
+  await page.waitForFunction(() => document.querySelectorAll("#adminTemplateRows tr").length === 18);
+  assert.equal(await page.locator("#adminScreen").evaluate(node => node.scrollHeight > node.clientHeight), true);
+  const after = await header.boundingBox();
+  t.diagnostic(JSON.stringify({ before, after }));
+  assert.deepEqual(after, before, "Templates must not shift or narrow the shared header");
+  assert.equal(await page.locator("#adminScreen").evaluate(node => node.scrollWidth <= node.clientWidth), true, "admin content fits the gutter-adjusted width");
+  await page.locator("#adminTabUsers").click();
+  assert.deepEqual(await header.boundingBox(), before);
+});
 
 const referenceFile = { id: "references", type: "file", name: "references.bib", path: "references.bib",
   kind: "bib", content: "@article{known, title={A known reference}}\n" };
@@ -1324,9 +1465,9 @@ for (const language of ["en", "it"]) {
   test(`status action focus is inside the touch scroller: ${language}`, options, async (t) => {
     const { page } = await pageFor(t, { viewport: { width: 375, height: 844 }, language, touch: true });
     await page.keyboard.press("Tab");
-    await page.locator("#btnSettings").focus();
-    await page.locator("#btnSettings").scrollIntoViewIfNeeded();
-    const visible = await page.locator("#btnSettings").evaluate((node) => {
+    await page.locator("#btnWrap").focus();
+    await page.locator("#btnWrap").scrollIntoViewIfNeeded();
+    const visible = await page.locator("#btnWrap").evaluate((node) => {
       const box = node.getBoundingClientRect(), clip = node.closest(".sb-actions").getBoundingClientRect();
       const style = getComputedStyle(node), extent = parseFloat(style.outlineWidth) + parseFloat(style.outlineOffset);
       return node.matches(":focus-visible") && box.top - extent >= clip.top && box.bottom + extent <= clip.bottom
@@ -1353,7 +1494,7 @@ for (const variant of [variants[0], { ...variants[1], name: "tablet / IT", viewp
   { ...variants[0], name: "desktop / normal motion", motion: "no-preference" }]) {
   test(`preview pane toggles without losing width, output or editor state: ${variant.name}`, options, async (t) => {
     const { page, fixture } = await pageFor(t, variant);
-    const toggle = page.locator("#btnPreviewPane");
+    const toggle = page.locator("#btnPreview");
     assert.equal(await toggle.count(), 1, "the preview control is in the persistent toolbar");
     await page.locator(".app").evaluate((node) => Promise.allSettled(node.getAnimations().map((animation) => animation.finished)));
     const text = await page.locator(".cm-content").textContent();
@@ -1403,13 +1544,13 @@ for (const variant of [variants[0], { ...variants[1], name: "tablet / IT", viewp
 
   test(`starting compilation reopens the collapsed preview before the response: ${variant.name}`, options, async (t) => {
     const { page, fixture } = await pageFor(t, variant);
-    assert.equal(await page.locator("#btnPreviewPane").count(), 1);
-    await page.locator("#btnPreviewPane").click();
+    assert.equal(await page.locator("#btnPreview").count(), 1);
+    await page.locator("#btnPreview").click();
     const gate = fixture.holdCompile();
     await page.locator("#btnCompile").click();
     await page.waitForFunction(() => document.querySelector("#btnCompile").disabled);
     await page.locator("#previewPane").waitFor({ state: "visible" });
-    assert.equal(await page.locator("#btnPreviewPane").getAttribute("aria-expanded"), "true");
+    assert.equal(await page.locator("#btnPreview").getAttribute("aria-expanded"), "true");
     gate.resolve({ body: { success: false, log: "Controlled compiler failure", errors: ["Controlled compiler failure"], warnings: [], durationMs: 1 } });
     await page.waitForFunction(() => !document.querySelector("#btnCompile").disabled);
     assert.equal(fixture.compileRequests.length, 1);
@@ -1508,7 +1649,7 @@ for (const savedSidebar of [false, true]) {
   test(`both collapsed panels retain a usable editor across tablet widths (saved sidebar: ${savedSidebar})`, options, async (t) => {
     const { page } = await pageFor(t, { ...variants[0], ...(savedSidebar ? { layout: { sideCollapsed: true } } : {}) });
     if (!savedSidebar) await page.locator("#btnSidebar").click();
-    await page.locator("#btnPreviewPane").click();
+    await page.locator("#btnPreview").click();
     const widths = [];
     for (const width of [1181, 1180, 1024, 821]) {
       await page.setViewportSize({ width, height: 900 });
@@ -1521,16 +1662,16 @@ for (const savedSidebar of [false, true]) {
 test("pane disclosures announce their actual initial state after project entry", options, async (t) => {
   const { page } = await pageFor(t, variants[0]);
   assert.equal(await page.locator("#previewPane").isVisible(), true);
-  assert.equal(await page.locator("#btnPreviewPane").getAttribute("aria-expanded"), "true");
+  assert.equal(await page.locator("#btnPreview").getAttribute("aria-expanded"), "true");
   assert.equal(await page.locator("#btnSidebar").getAttribute("aria-expanded"), "true");
 });
 
-test("preview toggle hands focus to compact navigation when it disappears", options, async (t) => {
+test("preview toggle retains keyboard focus across the compact breakpoint", options, async (t) => {
   const { page } = await pageFor(t, { ...variants[0], viewport: { width: 821, height: 900 } });
-  await page.locator("#btnPreviewPane").focus();
+  await page.locator("#btnPreview").focus();
   await page.setViewportSize({ width: 820, height: 900 });
-  await page.locator("#btnPreviewPane").waitFor({ state: "hidden" });
-  assert.equal(await page.evaluate(() => document.activeElement === document.querySelector('#workspaceSwitch [aria-selected="true"]')), true);
+  await page.locator("#btnPreview").waitFor({ state: "visible" });
+  assert.equal(await page.evaluate(() => document.activeElement === document.querySelector('#btnPreview')), true);
 });
 
 async function showTallOutput(page, format) {
@@ -1565,9 +1706,9 @@ for (const format of ["svg", "pdf"]) {
       return (stage.scrollTop + parseFloat(getComputedStyle(stage).paddingTop) - first.offsetTop) / first.offsetHeight;
     });
     const before = await anchor();
-    await page.locator("#btnPreviewPane").click();
+    await page.locator("#btnPreview").click();
     await page.setViewportSize({ width: 1024, height: 900 });
-    await page.locator("#btnPreviewPane").click();
+    await page.locator("#btnPreview").click();
     await page.locator(".body").evaluate((node) => Promise.allSettled(node.getAnimations().map((animation) => animation.finished)));
     assert.ok(Math.abs(await anchor() - before) < .005, "refitting must not adopt an intermediate clamped scroll position");
   });
@@ -1577,8 +1718,8 @@ test("same-width PDF reveal retains its pages and canvases", options, async (t) 
   const { page } = await pageFor(t, variants[0]);
   await showTallOutput(page, "pdf");
   await page.evaluate(() => { window.savedPdfPage = document.querySelector(".pdf-page"); window.savedPdfCanvas = window.savedPdfPage.querySelector("canvas"); });
-  await page.locator("#btnPreviewPane").click();
-  await page.locator("#btnPreviewPane").click();
+  await page.locator("#btnPreview").click();
+  await page.locator("#btnPreview").click();
   await page.locator("#previewPane").waitFor({ state: "visible" });
   assert.equal(await page.evaluate(() => document.querySelector(".pdf-page") === window.savedPdfPage
     && document.querySelector(".pdf-page canvas") === window.savedPdfCanvas), true);

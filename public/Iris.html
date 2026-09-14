@@ -35,10 +35,9 @@
 
   <!-- ===================== TOPBAR ===================== -->
   <div class="topbar">
-    <button class="tbtn icononly" id="btnSidebar" title="Show/hide sidebar" aria-label="Show or hide the sidebar" data-i18n-title="toolbar.toggleSidebarTitle" data-i18n-aria-label="toolbar.toggleSidebarAria" aria-controls="projectSidebar" aria-expanded="true"><span class="ic" data-icon="layout-sidebar-left-collapse"></span></button>
     <div class="logo">
       <div class="mark"><img src="iris_logo_w.svg" alt=""></div>
-      <div class="brand-label"><img class="brand-wordmark" src="iris_text_logo_w.svg" alt="Iris"> <span class="v">1.0.0</span></div>
+      <div class="brand-label"><img class="brand-wordmark" src="iris_text_logo_w.svg" alt="Iris"> <span class="v">1.0.1</span></div>
     </div>
     <div class="tbar-scroll">
       <div class="tsep"></div>
@@ -46,8 +45,7 @@
       <div class="projchip" id="projChip"><span class="pdot" data-icon="file-code-2"></span><span id="projChipName">—</span></div>
       <div class="tsep"></div>
       <button class="tbtn" id="btnNew" type="button" title="New file (Ctrl/Cmd+N)" aria-label="New file" data-i18n-aria-label="toolbar.new" data-i18n-title="toolbar.newTitle" aria-keyshortcuts="Control+N Meta+N"><span class="ic" data-icon="file-plus"></span><span data-i18n="toolbar.new">New</span></button>
-      <button class="tbtn" id="btnOpen" type="button" title="Open file (Ctrl/Cmd+O)" aria-label="Open file" data-i18n-aria-label="toolbar.open" data-i18n-title="toolbar.openTitle" aria-keyshortcuts="Control+O Meta+O"><span class="ic" data-icon="folder-open"></span><span data-i18n="toolbar.open">Open</span></button>
-      <button class="tbtn" id="btnAttach" type="button" title="Attach file" aria-label="Attach file" data-i18n-aria-label="attach.title" data-i18n-title="attach.title"><span class="ic" data-icon="paperclip"></span><span data-i18n="toolbar.attach">Attach</span></button>
+      <button class="tbtn" id="btnAttach" type="button" title="Attach file (Ctrl/Cmd+O)" aria-label="Attach file" data-i18n-aria-label="attach.title" data-i18n-title="toolbar.attachTitle" aria-keyshortcuts="Control+O Meta+O"><span class="ic" data-icon="paperclip"></span><span data-i18n="toolbar.attach">Attach</span></button>
     </div>
     <div class="workspace-switch" id="workspaceSwitch" role="tablist" aria-label="Workspace" data-i18n-aria-label="workspace.aria">
       <button class="on" type="button" role="tab" aria-label="Show editor" title="Show editor" data-i18n-title="workspace.showEditor" data-i18n-aria-label="workspace.showEditor" aria-selected="true" data-workspace="editor"><span data-icon="code"></span><span class="workspace-label" data-i18n="workspace.editor">Editor</span></button>
@@ -61,7 +59,6 @@
       <button class="workflow-btn workflow-builds" id="btnBuilds" type="button" title="Compilation history" aria-label="Open compilation history" data-i18n-title="toolbar.buildsTitle" data-i18n-aria-label="toolbar.buildsAria"><span class="ic" data-icon="box"></span><span class="workflow-label" data-i18n="toolbar.builds">Builds</span></button>
     </div>
     <div class="tbar-right">
-      <button class="tbtn icononly" id="btnPreviewPane" type="button" aria-controls="previewPane" aria-expanded="true" title="Close preview" aria-label="Close preview" data-i18n-title="preview.closePane" data-i18n-aria-label="preview.closePane"><span class="ic" data-icon="layout-sidebar-right-collapse"></span></button>
       <button class="tbtn icononly project-share-trigger" id="btnShareProject" type="button" title="Share project" aria-label="Share project" data-i18n-title="sharing.toolbarTitle" data-i18n-aria-label="sharing.toolbarAria" hidden><span class="ic" data-icon="users"></span></button>
       <button class="userchip" id="userChip" title="Account" aria-label="Account" data-i18n-title="common.account" data-i18n-aria-label="common.account" aria-haspopup="menu" aria-expanded="false" aria-controls="userMenu">
         <span class="avatar" id="userAvatar">–</span>
@@ -236,6 +233,7 @@
 
   <!-- ===================== STATUSBAR ===================== -->
   <div class="statusbar">
+    <button class="sb-icon sb-sidebar" id="btnSidebar" type="button" title="Show/hide sidebar" aria-label="Show or hide the sidebar" data-i18n-title="toolbar.toggleSidebarTitle" data-i18n-aria-label="toolbar.toggleSidebarAria" aria-controls="projectSidebar" aria-expanded="true"><span data-icon="layout-sidebar-left-collapse"></span></button>
     <div class="sb-info">
       <span class="st accent"><span class="dotok" id="stDot"></span><span id="stState" data-i18n="status.ready">ready</span></span>
       <span class="st" id="stCursor">Ln 1, Col 1</span>
@@ -254,7 +252,9 @@
       <button class="sb-btn" id="btnPreview" type="button" aria-controls="previewPane" aria-expanded="true" title="Close preview" aria-label="Close preview" data-i18n-title="preview.closePane" data-i18n-aria-label="preview.closePane"><span class="ic" data-icon="layout-sidebar-right-collapse"></span><span class="sb-btn-label" data-i18n="preview.closePane">Close preview</span></button>
       <button class="sb-btn" id="btnFormat" type="button" title="Format" aria-label="Format" data-i18n-title="status.format" data-i18n-aria-label="status.format"><span class="ic" data-icon="align-left-2"></span><span class="sb-btn-label" data-i18n="status.format">Format</span></button>
       <button class="sb-btn" id="btnFind" type="button" title="Find" aria-label="Find" data-i18n-title="find.find" data-i18n-aria-label="find.find"><span class="ic" data-icon="search"></span><span class="sb-btn-label" data-i18n="find.find">Find</span></button>
-      <button class="sb-wrap" id="btnWrap" type="button" role="switch" aria-checked="false" aria-label="Enable word wrap" data-i18n-aria-label="status.wrapEnable" title="Enable word wrap" data-i18n-title="status.wrapEnable"><span class="sb-wrap-label" data-i18n="status.wrap">Wrap</span><span class="sb-switch" aria-hidden="true"></span></button>
+      <button class="sb-wrap" id="btnWrap" type="button" role="switch" aria-checked="false" aria-label="Enable word wrap" data-i18n-aria-label="status.wrapEnable" title="Enable word wrap" data-i18n-title="status.wrapEnable"><span data-icon="text-wrap-column"></span><span class="sb-wrap-label" data-i18n="status.wrap">Wrap</span><span class="sb-switch" aria-hidden="true"></span></button>
+    </div>
+    <div class="sb-config">
       <div class="sb-divider"></div>
       <button class="sb-engine" id="engineBtn" title="Compilation engine" data-i18n-title="status.engineTitle" aria-haspopup="menu" aria-expanded="false" aria-controls="engineMenu"><span data-i18n="status.engine">engine</span> <b id="engineName">pdflatex</b><span class="chev" data-icon="chevron-up"></span></button>
       <button class="sb-icon" id="btnSettings" title="Settings" aria-label="Settings" data-i18n-title="status.settings" data-i18n-aria-label="status.settings"><span class="ic" data-icon="settings"></span></button>
@@ -309,8 +309,8 @@
       </div>
       <div class="field">
         <label class="label" for="attachDest" data-i18n="attach.destination">Destination folder</label>
-        <select class="select" id="attachDest"></select>
-        <div class="hint"><span data-icon="info-circle"></span><span data-i18n="attach.destinationHint">Images usually belong in figure/.</span></div>
+        <select class="select" id="attachDest" aria-describedby="attachDestHint"></select>
+        <div class="hint" id="attachDestHint"><span data-icon="info-circle"></span><span data-i18n="attach.destinationHint">Create folders in the file tree before opening this dialog; they will appear here as destinations.</span></div>
       </div>
       <div class="field">
         <label class="label" for="attachRename" data-i18n="attach.fileName">File name</label>
@@ -879,7 +879,7 @@
     <header class="picker-top">
       <div class="login-brand">
         <div class="mark"><img src="iris_logo_w.svg" alt=""></div>
-        <div class="brand-label"><img class="brand-wordmark" src="iris_text_logo_w.svg" alt="Iris"> <span class="v">1.0.0</span></div>
+        <div class="brand-label"><img class="brand-wordmark" src="iris_text_logo_w.svg" alt="Iris"> <span class="v">1.0.1</span></div>
       </div>
       <div class="picker-user">
         <button class="tbtn ghost-b admin-only" id="pkAdmin" type="button" title="Server administration" aria-label="Server administration" data-i18n-title="admin.open" data-i18n-aria-label="admin.open"><span class="ic" data-icon="shield-lock"></span><span data-i18n="admin.adminShort">Admin</span></button>
@@ -922,7 +922,7 @@
     <header class="picker-top">
       <div class="login-brand">
         <div class="mark"><img src="iris_logo_w.svg" alt=""></div>
-        <div class="brand-label"><img class="brand-wordmark" src="iris_text_logo_w.svg" alt="Iris"> <span class="v">1.0.0</span></div>
+        <div class="brand-label"><img class="brand-wordmark" src="iris_text_logo_w.svg" alt="Iris"> <span class="v">1.0.1</span></div>
       </div>
       <div class="picker-user admin-header-actions">
         <div class="admin-switch" id="adminSwitch" role="tablist" aria-label="Admin sections" data-i18n-aria-label="admin.sectionsAria">
@@ -1463,7 +1463,7 @@
     </label>
     <div class="login-brand">
       <div class="mark"><img src="iris_logo_w.svg" alt=""></div>
-      <div class="brand-label"><img class="brand-wordmark" src="iris_text_logo_w.svg" alt="Iris"> <span class="v">1.0.0</span></div>
+      <div class="brand-label"><img class="brand-wordmark" src="iris_text_logo_w.svg" alt="Iris"> <span class="v">1.0.1</span></div>
     </div>
     <h1 class="login-title" data-i18n="auth.title">Sign in to your workspace</h1>
     <p class="login-sub" data-i18n="auth.subtitle">Enter your credentials to continue</p>
@@ -1495,7 +1495,7 @@
 </div>
 
 <!-- hidden inputs -->
-<input type="file" id="attachInput" accept="image/*,application/pdf,.bib,.ris,.bst,.tex,.sty,.cls,.txt,.csv,.dat" hidden>
+<input type="file" id="attachInput" hidden>
 <input type="file" id="fontInput" accept=".ttf,.otf,.woff,.woff2" hidden>
 <input type="file" id="projectImportInput" accept=".zip,application/zip" hidden>
 

@@ -12,7 +12,7 @@ Write source, manage files and fonts, compile on your server, and read the
 result beside your code. You can work alone or share a project with other
 accounts on your instance.
 
-**Version 1.0.0** · [Installation](docs/installation.md) ·
+**Version 1.0.1** · [Installation](docs/installation.md) ·
 [User guide](docs/user-guide.md) · [All documentation](docs/README.md)
 
 ![A synthetic LilyPond project in Iris: score source on the left and the compiled two-staff Morning study in the PDF preview on the right.](docs/images/lilypond-workspace.png)
@@ -54,7 +54,7 @@ images, shows compiler diagnostics, and keeps the files from each build in
 **Compilation history** for download.
 
 Use **Open preview** or **Close preview** in the footer to open or close the
-side panel. The toolbar's panel button controls the same view. On compact
+side panel. The file-tree toggle is at the bottom left beside Ready. On compact
 screens, opening the preview switches from the editor to the preview workspace.
 
 Move between a PDF and its source with Ctrl-click or Cmd-click. Navigation
@@ -106,7 +106,7 @@ dark themes.
 For a complete editing-and-compilation setup, install **Node.js 24+**,
 **PostgreSQL 18+**, and the LaTeX and/or LilyPond tools you intend to use on the
 machine running Iris. Follow the [native installation guide](docs/installation.md#native-installation)
-to obtain the `R1.0.0` sources, install locked dependencies and create your first
+to obtain the `R1.0.1` sources, install locked dependencies and create your first
 administrator.
 
 You can also [build Iris with Docker or Podman](docs/installation.md#local-container-build).

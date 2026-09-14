@@ -31,6 +31,11 @@ delete a source, and download individual files. **Refresh** reconciles the tree
 with the project's files on the server. The main-source marker shows the selected
 compilation entry point. Generated files appear in **Builds**, outside this tree.
 
+Use **Attach** or **Ctrl/Cmd+O** to add an existing file. Create destination
+folders in the file tree before opening the attachment dialog, then choose a
+folder, check the filename and upload. Select the uploaded file in the tree to
+open it. The tree's toggle is in the bottom-left corner, beside Ready.
+
 Open files in tabs. The tab strip scrolls when the tabs exceed its width.
 The outline follows LaTeX headings and environments or LilyPond music structures.
 Use search and replace, formatting and editor settings to adjust how you work.
@@ -131,8 +136,8 @@ it on the host for other projects.
 ## Preview and build history
 
 Read PDFs in the embedded PDF.js viewer or zoom through PNG/SVG output. Use
-**Open preview / Close preview** in the footer or the toolbar's panel button
-to open or close the side panel. Both follow its current state and work with
+**Open preview / Close preview** in the footer to open or close the side panel.
+The control follows its current state and works with
 mapping disabled or before compilation. Iris retains the panel width and reading
 position; starting a compilation reopens it. On compact screens, the footer
 switches between workspaces, as does the **Editor/Preview** selector.

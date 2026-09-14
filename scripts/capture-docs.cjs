@@ -99,7 +99,7 @@ async function main() {
         await capture(`${record.type}-workspace.png`);
       }
       await page.locator("#tree .node .nm").filter({ hasText: "references.bib" }).click();
-      await page.locator("#btnPreviewPane").click();
+      await page.locator("#btnPreview").click();
       await page.locator("#bibliographyTable").waitFor({ state: "visible" });
       await page.waitForFunction(() => document.querySelectorAll("#bibliographyRows tr").length === 3);
       await capture("bibliography.png");
@@ -110,7 +110,7 @@ async function main() {
       const fonts = await page.evaluate(() => ({ plexSans: document.fonts.check('14px "IBM Plex Sans"'), plexMono: document.fonts.check('14px "IBM Plex Mono"') }));
       await page.evaluate(() => IrisCollab.disconnect());
       assert.deepEqual(errors, [], "shipped UI runtime errors");
-      const evidence = { version: "1.0.0", schema: 2, viewport: { width: 1600, height: 1000, dpr: 1 }, fixture: "scripts/fixtures/docs-demo.cjs", versions, fonts, externalFailures, captures };
+      const evidence = { version: require("../package.json").version, schema: 2, viewport: { width: 1600, height: 1000, dpr: 1 }, fixture: "scripts/fixtures/docs-demo.cjs", versions, fonts, externalFailures, captures };
       await fs.writeFile(path.join(output, "capture.json"), JSON.stringify(evidence, null, 2) + "\n");
       console.log(JSON.stringify(evidence, null, 2));
     });

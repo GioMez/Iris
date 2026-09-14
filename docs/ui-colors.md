@@ -1,6 +1,6 @@
 # Interface color contract
 
-Iris 1.0.0 defines interface colors in `public/iris.css`. Choose tokens by
+Iris defines interface colors in `public/iris.css`. Choose tokens by
 purpose: components use role tokens, and role definitions use named
 `--palette-*` primitives. Keep syntax, status, category and action-label roles
 separate even where they share a color.

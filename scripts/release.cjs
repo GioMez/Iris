@@ -8,7 +8,7 @@ const { gzipSync } = require("node:zlib");
 const { parseArgs } = require("node:util");
 
 const help = `Usage:
-  node scripts/release.cjs --ref R1.0.0 --output .drafts/release-1.0.0
+  node scripts/release.cjs --ref R1.0.1 --output .drafts/release-1.0.1
   node scripts/release.cjs --candidate DIR --manifest FILE --output DIR
 
 --ref REF        Read only Git objects at an explicit commit, tag or tree.

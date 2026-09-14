@@ -504,10 +504,10 @@ test("project autosave is opt-in and uses a configurable long debounce", () => {
 test("fundamental project actions expose matching keyboard shortcuts", () => {
   assert.match(html, /id="btnSave"[^>]*aria-keyshortcuts="Control\+S Meta\+S"/);
   assert.match(html, /id="btnNew"[^>]*aria-keyshortcuts="Control\+N Meta\+N"/);
-  assert.match(html, /id="btnOpen"[^>]*aria-keyshortcuts="Control\+O Meta\+O"/);
+  assert.match(html, /id="btnAttach"[^>]*aria-keyshortcuts="Control\+O Meta\+O"/);
   assert.match(html, /id="btnCompile"[^>]*aria-keyshortcuts="Control\+Enter Meta\+Enter"/);
   assert.match(app, /key === "n"[^\n]*newFile\(\)/);
-  assert.match(app, /key === "o"[^\n]*openExternalPicker\(\)/);
+  assert.match(app, /key === "o"[^\n]*openAttach\(\)/);
   assert.match(app, /e\.key === "Enter"[^\n]*compile\(\)/);
   assert.match(app, /if \(state\.compiling\) return/);
 });

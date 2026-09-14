@@ -37,11 +37,10 @@ areas can have no match. SyncTeX row precision selects the complete row instead
 of guessing a column. A source jump changes the reading position; zoom, refit
 and closing/reopening the preview retain its existing reading anchor.
 
-The footer's **Open preview / Close preview** control and the toolbar panel
-button toggle the preview without a source-map query. They also work before
-compilation and with mapping disabled. On compact screens the footer switches
-between the editor and preview workspaces. Both controls expose their current
-expanded state and can be activated from the keyboard.
+The footer's **Open preview / Close preview** control toggles the preview without
+a source-map query. It also works before compilation and with mapping disabled.
+On compact screens it switches between the editor and preview workspaces. The
+control exposes its current expanded state and can be activated from the keyboard.
 
 The highlight uses document ink on document paper, with the shared selection
 tint. Switching themes keeps the PDF's paper colors. Iris retains the selected

@@ -280,7 +280,7 @@ test("keyboard preview toggle retains canvases and source navigation follows ren
   await f.page.locator(`#tree .node[data-id="${f.partId}"] .nm`).filter({ hasText: "renamed.tex" }).waitFor();
   await openSource(f);
   await f.page.evaluate(() => { IrisEditor.select(7, 7); window.navigationCanvas = document.querySelector(".pdf-page canvas"); });
-  await f.page.locator("#btnPreviewPane").click();
+  await f.page.locator("#btnPreview").click();
   await f.page.locator("#btnPreview").focus(); await f.page.keyboard.press("Enter");
   assert.equal(await f.page.locator("#previewPane").isVisible(), true);
   assert.equal(f.records.length, 0, "opening the panel is independent of source navigation");
@@ -417,7 +417,7 @@ test("a source switch during slow PDF painting cannot apply an old navigation re
   const match = { ...await nativeMatch(f), page: 2 };
   f.override({ status: "ready", matches: [match] });
   await openSource(f);
-  await f.page.locator("#btnPreviewPane").click();
+  await f.page.locator("#btnPreview").click();
   await f.page.setViewportSize({ width: 1200, height: 900 });
   await f.page.evaluate(() => { window.navigationPaintGate = new Promise((resolve) => { window.finishNavigationPaint = resolve; }); });
   await sourceClick(f.page, f.source.column); await f.received(1);
@@ -457,7 +457,7 @@ test(`review I1: cross-artifact manual-zoom painting cannot reveal after ${chang
   else if (change === "artifact selection") {
     await f.page.locator("#pdfArtifact").selectOption(f.build.artifacts[1].id);
     await f.page.waitForFunction(() => document.querySelectorAll(".pdf-page").length === 1);
-  } else if (change === "preview collapse") await f.page.locator("#btnPreviewPane").click();
+  } else if (change === "preview collapse") await f.page.locator("#btnPreview").click();
   else {
     f.override({ status: "no-match", matches: [] });
     await sourceClick(f.page, f.source.column); await f.received(2);
@@ -474,7 +474,7 @@ test(`review I1: cross-artifact manual-zoom painting cannot reveal after ${chang
 
 test("review I2: collapsed cross-artifact jump reveals physical page 2 once, then retains the reading anchor", options, async (t) => {
   const f = await crossArtifactTarget(t);
-  await f.page.locator("#btnPreviewPane").click();
+  await f.page.locator("#btnPreview").click();
   await sourceClick(f.page, f.source.column); await f.received(1);
   await f.page.locator('.pdf-page[data-page="2"] .source-navigation-highlight').waitFor({ state: "attached" });
   await settle(f.page);
@@ -487,7 +487,7 @@ test("review I2: collapsed cross-artifact jump reveals physical page 2 once, the
   assert.equal(geometry.page, "2");
   await f.page.locator("#pgPrev").click(); await settle(f.page);
   const anchor = await snapshot(f.page);
-  await f.page.locator("#btnPreviewPane").click(); await f.page.locator("#btnPreviewPane").click(); await settle(f.page);
+  await f.page.locator("#btnPreview").click(); await f.page.locator("#btnPreview").click(); await settle(f.page);
   assert.deepEqual(await snapshot(f.page), anchor, "ordinary reopening must not replay the consumed target");
   await f.page.locator("#zIn").click(); await settle(f.page);
   assert.equal((await snapshot(f.page)).page, "1", "ordinary zoom must not replay a page-2 target");

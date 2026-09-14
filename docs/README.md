@@ -1,6 +1,6 @@
 # Iris documentation
 
-Iris 1.0.0 is a self-hosted editor for LaTeX documents and LilyPond scores.
+Iris is a self-hosted editor for LaTeX documents and LilyPond scores.
 Start with the [project introduction](../README.md) or choose a guide below.
 
 ## Use Iris
