@@ -149,7 +149,7 @@
     "retry": "Riprova",
     "root": "radice",
     "browse": "sfoglia…",
-    "optionalExample": "opzionale, es. /opt/homebrew/bin"
+    "optionalExample": "opzionale, es. /path/to/bin"
   },
   "language": {
     "title": "Lingua",

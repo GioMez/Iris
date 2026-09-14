@@ -212,8 +212,8 @@ podman compose --env-file .env -f docker-compose.yml -p iris ps
 **The stock image has neither TeX nor LilyPond.** Editing, accounts, project
 storage and import/export work; compilation reports a missing executable until
 you provide a compatible toolchain in Iris's runtime. A host path in a setting
-does not install a compiler. A macOS binary cannot run inside this Linux image,
-and a Linux toolchain must match its architecture, libc and runtime dependencies.
+does not install a compiler. Install a toolchain inside the container that
+matches its environment, architecture and runtime dependencies.
 
 The distribution supplies one compiler-free Iris image recipe and the
 PostgreSQL service. Use the native installation above for the qualified

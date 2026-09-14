@@ -149,7 +149,7 @@
     "retry": "Try again",
     "root": "root",
     "browse": "browse…",
-    "optionalExample": "optional, e.g. /opt/homebrew/bin"
+    "optionalExample": "optional, e.g. /path/to/bin"
   },
   "language": {
     "title": "Language",
