@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const { ROLE_NAMES } = require('./helpers/language-fixtures.cjs');
 
 function boot({ stored = null, dark = false, blocked = false } = {}) {
   const file = path.resolve(__dirname, '../public/iris-theme.js');
@@ -101,4 +102,46 @@ test('light palette keeps all syntax readable on selections and UI text on its s
   for (const [fg, bg, minimum] of [['on-accent', 'accent', 4.5], ['on-accent', 'accent-press', 4.5],
     ['on-danger', 'semantic-danger', 4.5], ['switch-thumb', 'switch-track', 3], ['switch-compact-thumb', 'switch-compact-track', 3]]) check(fg, bg, minimum);
   assert.deepEqual(failures, []);
+});
+
+for (const theme of ['dark', 'light']) test(`${theme} full semantic syntax palette separates roles and qualifies selections`, (t) => {
+  const css = fs.readFileSync(path.resolve(__dirname, '../public/iris.css'), 'utf8');
+  const root = css.match(/:root\s*\{([^}]+)\}/)[1];
+  const light = css.match(/:root\[data-theme="light"\]\s*\{([^}]+)\}/)[1];
+  const declarations = Object.fromEntries([...`${root}${theme === 'light' ? light : ''}`.matchAll(/--([\w-]+):\s*([^;]+);/g)]
+    .map(([, name, value]) => [name, value]));
+  function value(name) {
+    const raw = declarations[name], alias = raw?.match(/^var\(--([\w-]+)\)$/);
+    if (alias) return value(alias[1]);
+    assert.match(raw || '', /^#[\da-f]{6}$/i, `${theme} ${name} has a concrete palette foreground`);
+    return raw;
+  }
+  function luminance(hex) {
+    return hex.slice(1).match(/../g).map(v => parseInt(v, 16) / 255)
+      .map(v => v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4)
+      .reduce((sum, v, i) => sum + v * [.2126, .7152, .0722][i], 0);
+  }
+  const samples = [];
+  const backgrounds = ['editor-bg', 'editor-selection', 'editor-selection-idle'].map(name => [name, value(name)]);
+  // A peer caret line can tint local selection even without a peer range.
+  const peerAlpha = Number(css.match(/\.cm-host \.cm-iris-peer-line\{[^}]*var\(--peer-color\)\s+(\d+)%/)[1]) / 100;
+  for (const selection of ['editor-selection', 'editor-selection-idle']) {
+    for (const peer of ['#ffffff', '#9ece6a', '#7aa2f7', '#f7768e', '#e0af68', '#bb9af7', '#2ac3de', '#ff9e64', '#b4f9f8', value('peer-fallback')]) {
+      const rgb = hex => hex.slice(1).match(/../g).map(v => parseInt(v, 16));
+      const mixed = rgb(value(selection)).map((v, i) => Math.round(v * (1 - peerAlpha) + rgb(peer)[i] * peerAlpha));
+      backgrounds.push([`${selection} + peer line ${peer}`, '#' + mixed.map(v => v.toString(16).padStart(2, '0')).join('')]);
+    }
+  }
+  for (const role of ROLE_NAMES) for (const [bg, color] of backgrounds) {
+    const a = luminance(value(`syntax-${role}`)), b = luminance(color);
+    samples.push({ role, bg, ratio: (Math.max(a, b) + .05) / (Math.min(a, b) + .05) });
+  }
+  assert.deepEqual(samples.filter(s => s.ratio < 4.5), []);
+  for (const [a, b] of [['command', 'text'], ['comment', 'delimiter'], ['string', 'environment']]) {
+    const rgb = role => value(`syntax-${role}`).slice(1).match(/../g).map(v => parseInt(v, 16));
+    assert.ok(Math.hypot(...rgb(a).map((v, i) => v - rgb(b)[i])) >= 40, `${a}/${b} must be visibly separated`);
+  }
+  const comment = luminance(value('syntax-comment')), delimiter = luminance(value('syntax-delimiter'));
+  assert.ok(theme === 'dark' ? delimiter > comment : delimiter < comment, 'delimiters are more prominent than comments');
+  t.diagnostic(`HP02 ${theme} minimum base/selection contrast: ${Math.min(...samples.filter(s => !s.bg.includes(' + ')).map(s => s.ratio)).toFixed(3)}:1; including peer caret line: ${Math.min(...samples.map(s => s.ratio)).toFixed(3)}:1`);
 });

@@ -64,30 +64,20 @@
   }
 
   async function createCodeMirror() {
-    const [S, V, L, C, H, CO, A] = await Promise.all([
+    const [S, V, L, C, syntaxStyle, CO, A] = await Promise.all([
       import("@codemirror/state"),
       import("@codemirror/view"),
       import("@codemirror/language"),
       import("@codemirror/commands"),
-      import("@lezer/highlight"),
+      import("./iris-syntax-style.mjs"),
       import("@codemirror/collab"),
       import("@codemirror/autocomplete"),
     ]);
 
-    // Custom tags mapped straight onto the existing t-* token classes so the
-    // stylesheet keeps a single source of truth for the syntax palette.
-    const tokenClasses = { cmd: "t-cmd", env: "t-env", brace: "t-brace", math: "t-math", comment: "t-comment", special: "t-special",
-      entryType: "t-cmd", key: "t-env", field: "t-special", value: "t-math" };
-    const tokenTable = {};
-    const styleSpecs = [];
-    Object.keys(tokenClasses).forEach((name) => {
-      tokenTable[name] = H.Tag.define();
-      styleSpecs.push({ tag: tokenTable[name], class: tokenClasses[name] });
-    });
-    const irisHighlight = L.syntaxHighlighting(L.HighlightStyle.define(styleSpecs));
+    const { legacyTokenTable, bibliographyTokenTable, syntaxExtension } = syntaxStyle;
     const diagnostics = window.IrisDiagnostics.createGutter(S, V);
 
-    const streamDefinition = (spec) => L.StreamLanguage.define({
+    const streamDefinition = (spec, tokenTable = legacyTokenTable) => L.StreamLanguage.define({
       languageData: { commentTokens: { line: "%" } },
       ...spec,
       tokenTable,
@@ -95,8 +85,8 @@
     const languages = {
       tex: streamDefinition(window.IrisLatex.stream),
       ly: streamDefinition(window.IrisLilyPond.stream),
-      bib: streamDefinition(window.IrisBibtex.stream),
-      ris: streamDefinition(window.IrisRis.stream),
+      bib: streamDefinition(window.IrisBibtex.stream, bibliographyTokenTable),
+      ris: streamDefinition(window.IrisRis.stream, bibliographyTokenTable),
     };
 
     const flags = { wordWrap: false, autoIndent: true, readOnly: false, kind: null };
@@ -628,7 +618,7 @@
           braceMarkers,
           V.keymap.of(editorKeymap),
           languageCompartment.of(languages[flags.kind] || []),
-          irisHighlight,
+          syntaxExtension,
           L.indentUnit.of("  "),
           wrapCompartment.of(flags.wordWrap ? V.EditorView.lineWrapping : []),
           readOnlyCompartment.of(S.EditorState.readOnly.of(flags.readOnly)),

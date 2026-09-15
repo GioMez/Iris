@@ -3,8 +3,24 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const { StringStream, StreamLanguage } = require("@codemirror/language");
-const { Tag, tagHighlighter, highlightTree } = require("@lezer/highlight");
+const { StringStream } = require("@codemirror/language");
+
+// Keep tags, highlighter, language and state on the same native-ESM graph.
+async function highlighting() {
+  assert.ok(fs.existsSync(path.join(__dirname, "../public/iris-syntax-style.mjs")), "shared syntax style module exists");
+  const [style, language, highlight, state] = await Promise.all([
+    import("../public/iris-syntax-style.mjs"), import("@codemirror/language"),
+    import("@lezer/highlight"), import("@codemirror/state"),
+  ]);
+  return { ...style, ...language, ...highlight, ...state };
+}
+const sourceClasses = { cmd: "t-command t-cmd", env: "t-environment t-env", brace: "t-delimiter t-brace",
+  math: "t-math", comment: "t-comment", special: "t-operator t-special", string: "t-string" };
+const sourceRoles = { cmd: "command", env: "environment", brace: "delimiter",
+  math: "math", comment: "comment", special: "operator", string: "string" };
+const bibliographyClasses = { entryType: "t-bib-entry-type t-cmd", key: "t-bib-key t-env",
+  field: "t-bib-field t-special", value: "t-bib-value t-math", comment: "t-bib-comment t-comment",
+  brace: "t-bib-delimiter t-brace", special: "t-bib-operator t-special" };
 
 function loadSyntaxModules() {
   // Real StringStream's RegExp checks need the syntax modules in the same realm.
@@ -58,7 +74,7 @@ const syntaxCorpora = {
     ["\\begin", "cmd"], ["{}\n", "brace"], ["Unclosed inline ", null], ["\\( math 😀 to the end", "math"],
   ],
   lilypond: [
-    ["\\version", "cmd"], [" ", null], ['"2.24.0"', "env"], ["\n", null],
+    ["\\version", "cmd"], [" ", null], ['"2.24.0"', "string"], ["\n", null],
     ["% line comment with \\score\n%{ block\n\ncomment across lines %}", "comment"],
     ["\nglobal = ", null], ["{", "brace"], [" ", null], ["\\key", "cmd"], [" c ", null], ["\\major", "cmd"],
     [" ", null], ["\\time", "cmd"], [" 4/4 ", null], ["}\n", "brace"],
@@ -67,28 +83,32 @@ const syntaxCorpora = {
     ["\n    ", null], ["<<", "brace"], [" ", null], ["{", "brace"], [" c2 ", null], ["}", "brace"], [" ", null],
     ["\\\\", "cmd"], [" ", null], ["{", "brace"], [" e2 ", null], ["}", "brace"], [" ", null], [">>", "brace"],
     ["\n  ", null], ["}", "brace"], ["\n  ", null], ["\\addlyrics", "cmd"], [" ", null], ["{", "brace"],
-    [" la la ", null], ['"quoted lyric"', "env"], [" ", null], ["}", "brace"], ["\n  ", null], ["\\layout", "cmd"],
-    [" ", null], ["{", "brace"], [" ", null], ["}\n}", "brace"], ["\n", null], ['"multi\n\nline string"', "env"], ["\n", null],
+    [" la la ", null], ['"quoted lyric"', "string"], [" ", null], ["}", "brace"], ["\n  ", null], ["\\layout", "cmd"],
+    [" ", null], ["{", "brace"], [" ", null], ["}\n}", "brace"], ["\n", null], ['"multi\n\nline string"', "string"], ["\n", null],
     ["\\markup", "cmd"], [" ", null], ["{", "brace"], [" ", null], ["\\bold", "cmd"], [" ", null],
-    ['"text with \\"escape\\" inside"', "env"], [" ", null], ["}", "brace"], ["\nangle singles: a < b > c 😀\n", null],
-    ['"unclosed 😀 string', "env"],
+    ['"text with \\"escape\\" inside"', "string"], [" ", null], ["}", "brace"], ["\nangle singles: a < b > c 😀\n", null],
+    ['"unclosed 😀 string', "string"],
   ],
 };
 
 for (const [kind, fragments] of Object.entries(syntaxCorpora)) {
   const text = fragments.map(([value]) => value).join("");
   const expected = fragments.flatMap(([value, style]) => value.split("").map(char => char === "\n" ? null : style));
-  test(`${kind} tokens cover commands, delimiters, escapes, multiline and Unicode source in real CodeMirror`, () => {
+  test(`${kind} tokens cover commands, delimiters, escapes, multiline and Unicode source in real CodeMirror`, async () => {
     const { stream } = loadSyntaxModules()[kind];
     assert.deepEqual(streamClasses(stream, text), expected);
-    const names = ["cmd", "env", "brace", "math", "comment", "special"];
-    const tokenTable = Object.fromEntries(names.map(name => [name, Tag.define()]));
-    const highlighter = tagHighlighter(names.map(name => ({ tag: tokenTable[name], class: name })));
+    const { StreamLanguage, highlightTree, legacyTokenTable: tokenTable, roleHighlighter, cssHighlighter } = await highlighting();
     const tree = StreamLanguage.define({ ...stream, tokenTable }).parser.parse(text);
     const actual = new Array(text.length).fill(null);
-    highlightTree(tree, highlighter, (from, to, style) => actual.fill(style, from, to));
+    highlightTree(tree, cssHighlighter, (from, to, style) => actual.fill(style, from, to));
     for (let i = 0; i < text.length; i++) {
-      if (text[i] !== "\n") assert.equal(actual[i], expected[i], `UTF-16 offset ${i}: ${JSON.stringify(text.slice(i - 10, i + 10))}`);
+      if (text[i] !== "\n") assert.equal(actual[i], sourceClasses[expected[i]] || null, `UTF-16 offset ${i}: ${JSON.stringify(text.slice(i - 10, i + 10))}`);
+    }
+    const semantic = new Array(text.length).fill(null);
+    highlightTree(tree, roleHighlighter, (from, to, role) => semantic.fill(role, from, to));
+    for (let i = 0; i < text.length; i++) {
+      if (text[i] !== "\n") assert.equal(semantic[i], sourceRoles[expected[i]] || null,
+        `semantic role at UTF-16 offset ${i}: ${JSON.stringify(text.slice(i - 10, i + 10))}`);
     }
   });
 
@@ -144,15 +164,11 @@ const bibliographyCorpora = [
 ];
 
 for (const kind of ["bib", "ris"]) {
-  test(`${kind} incremental stream highlights incomplete native syntax in real CodeMirror`, { timeout: 5000 }, () => {
+  test(`${kind} incremental stream highlights incomplete native syntax in real CodeMirror`, { timeout: 5000 }, async () => {
     const mod = require(`../public/iris-${kind === "bib" ? "bibtex" : "ris"}.js`);
     assert.equal(typeof mod.stream, "object", "parser must export an incremental stream");
-    const { EditorState } = require("@codemirror/state");
-    const { StreamLanguage, StringStream, ensureSyntaxTree } = require("@codemirror/language");
-    const { Tag, tagHighlighter, highlightTree } = require("@lezer/highlight");
-    const names = ["entryType", "key", "field", "value", "comment", "brace", "special"];
-    const tokenTable = Object.fromEntries(names.map((name) => [name, Tag.define()]));
-    const highlighter = tagHighlighter(names.map((name) => ({ tag: tokenTable[name], class: name })));
+    const { EditorState, StreamLanguage, StringStream, ensureSyntaxTree, highlightTree,
+      bibliographyTokenTable: tokenTable, cssHighlighter: highlighter } = await highlighting();
     const language = StreamLanguage.define({ ...mod.stream, tokenTable });
     for (const [, text, spans, status] of bibliographyCorpora.filter(([format]) => format === kind)) {
       if (status) assert.equal(mod.parse(text).status, status, JSON.stringify(text));
@@ -164,7 +180,7 @@ for (const kind of ["bib", "ris"]) {
       for (const [literal, style] of spans) {
         const from = text.indexOf(literal);
         assert.notEqual(from, -1);
-        assert.deepEqual(actual.slice(from, from + literal.length), new Array(literal.length).fill(style), `${literal} in ${JSON.stringify(text)}`);
+        assert.deepEqual(actual.slice(from, from + literal.length), new Array(literal.length).fill(bibliographyClasses[style]), `${literal} in ${JSON.stringify(text)}`);
       }
       // Every prefix is a possible in-progress edit. Drive the real StringStream
       // and branch copied states, without calling the full-document scanner.

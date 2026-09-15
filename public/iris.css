@@ -27,6 +27,12 @@
   --palette-comment:#929dc3;
   --palette-bracket:#939ec4;
   --palette-orange:#ff9e64;
+  /* Syntax-only refinements preserve action/status and bibliography paint. */
+  --palette-syntax-blue:#8fbdff;
+  --palette-syntax-purple:#c7adff;
+  --palette-syntax-cyan:#7dcfff;
+  --palette-syntax-comment:#b3b6bf;
+  --palette-syntax-delimiter:#d0d3da;
   --palette-white:#fff;
   --palette-black:#000;
   --palette-scrollbar:#2e3048;
@@ -84,15 +90,40 @@
   --history-manual-selected:var(--accent);
   --build-accent:var(--palette-purple);
   /* syntax colors: intentionally independent from interface semantics */
-  --syntax-command:var(--palette-blue);
-  --syntax-environment:var(--palette-purple);
+  --syntax-command:var(--palette-syntax-blue);
+  --syntax-structure:var(--palette-syntax-blue);
+  --syntax-environment:var(--palette-syntax-purple);
+  --syntax-context:var(--palette-syntax-purple);
+  --syntax-definition:var(--palette-syntax-cyan);
+  --syntax-variable:var(--palette-syntax-cyan);
+  --syntax-reference:var(--palette-syntax-cyan);
+  --syntax-citation:var(--palette-syntax-cyan);
+  --syntax-path:var(--palette-syntax-cyan);
+  --syntax-string:var(--palette-amber);
+  --syntax-literal:var(--palette-amber);
+  --syntax-lyric:var(--palette-amber);
   --syntax-bracket:var(--palette-bracket);
   --syntax-argument:var(--palette-amber);
   --syntax-math:var(--palette-green);
-  --syntax-comment:var(--palette-comment);
+  --syntax-pitch:var(--palette-green);
+  --syntax-comment:var(--palette-syntax-comment);
+  --syntax-delimiter:var(--palette-syntax-delimiter);
   --syntax-text:var(--palette-text);
   --syntax-special:var(--palette-red);
   --syntax-number:var(--palette-orange);
+  --syntax-duration:var(--palette-orange);
+  --syntax-rest:var(--palette-syntax-purple);
+  --syntax-operator:var(--palette-amber);
+  --syntax-articulation:var(--palette-amber);
+  --syntax-property:var(--palette-syntax-purple);
+  --syntax-scheme:var(--palette-syntax-cyan);
+  --bibliography-entry-type:var(--palette-blue);
+  --bibliography-key:var(--palette-purple);
+  --bibliography-field:var(--palette-red);
+  --bibliography-value:var(--palette-green);
+  --bibliography-comment:var(--palette-comment);
+  --bibliography-delimiter:var(--palette-bracket);
+  --bibliography-operator:var(--palette-red);
   /* Separate roles may share a primitive without coupling their semantics. */
   --on-accent:var(--palette-on-accent);
   --on-danger:var(--palette-on-danger);
@@ -293,6 +324,11 @@
   --palette-comment:#4c586f;
   --palette-bracket:#4a566d;
   --palette-orange:#843a16;
+  --palette-syntax-blue:#1557a0;
+  --palette-syntax-purple:#65358e;
+  --palette-syntax-cyan:#006079;
+  --palette-syntax-comment:#59616c;
+  --palette-syntax-delimiter:#343e4b;
   --palette-scrollbar:#8a96aa;
   --palette-border-hover:#65738a;
   --palette-bar-sheen:#dce3ef;
@@ -678,6 +714,38 @@ button{font-family:inherit;color:inherit}
 .t-comment{color:var(--syntax-comment)}
 .t-special{color:var(--syntax-special)}
 .t-number{color:var(--syntax-number)}
+/* Explicit semantic roles; only structure and definitions carry extra weight. */
+.t-command{color:var(--syntax-command);font-weight:400}
+.t-structure{color:var(--syntax-structure);font-weight:600}
+.t-environment{color:var(--syntax-environment);font-weight:400}
+.t-context{color:var(--syntax-context);font-weight:400}
+.t-definition{color:var(--syntax-definition);font-weight:600}
+.t-variable{color:var(--syntax-variable);font-weight:400}
+.t-reference{color:var(--syntax-reference);font-weight:400}
+.t-citation{color:var(--syntax-citation);font-weight:400}
+.t-path{color:var(--syntax-path);font-weight:400}
+.t-string{color:var(--syntax-string);font-weight:400}
+.t-literal{color:var(--syntax-literal);font-weight:400}
+.t-lyric{color:var(--syntax-lyric);font-weight:400}
+.t-math{font-weight:400}
+.t-pitch{color:var(--syntax-pitch);font-weight:400}
+.t-number{font-weight:400}
+.t-duration{color:var(--syntax-duration);font-weight:400}
+.t-rest{color:var(--syntax-rest);font-weight:400}
+.t-operator{color:var(--syntax-operator);font-weight:400}
+.t-articulation{color:var(--syntax-articulation);font-weight:400}
+.t-comment{font-weight:400}
+.t-delimiter{color:var(--syntax-delimiter);font-weight:400}
+.t-property{color:var(--syntax-property);font-weight:400}
+.t-scheme{color:var(--syntax-scheme);font-weight:400}
+/* These aliases win over compatibility t-* classes, preserving BibTeX/RIS. */
+.t-bib-entry-type{color:var(--bibliography-entry-type)}
+.t-bib-key{color:var(--bibliography-key)}
+.t-bib-field{color:var(--bibliography-field)}
+.t-bib-value{color:var(--bibliography-value)}
+.t-bib-comment{color:var(--bibliography-comment)}
+.t-bib-delimiter{color:var(--bibliography-delimiter)}
+.t-bib-operator{color:var(--bibliography-operator)}
 
 /* ===================== preview ===================== */
 .pvpane{background:var(--preview-bg);container-type:inline-size}

@@ -19,6 +19,7 @@ For user controls, see [theme selection](user-guide.md#sign-in-and-choose-your-w
 | `--border`, `--border-soft`, `--line`, `--border-hover` | Dividers and control edges. |
 | `--accent`, `--accent-press`, `--on-accent`, `--on-danger` | Filled actions and labels. |
 | `--semantic-*`, `--category-*`, `--syntax-*` | Independent status, category and source colors. |
+| `--bibliography-*` | BibTeX/RIS entry type, key, field, value, comment, delimiter and operator colors. |
 | `--permission-editor`, `--history-compile`, `--build-accent` | Editor permissions, compile-history reason and build metadata. |
 | `--selection`, `--selection-tint`, `--selection-soft`, `--selection-line` | Selected controls and rows. |
 | `--editor-selection`, `--editor-selection-idle` | Opaque local editor selections. |
@@ -115,17 +116,111 @@ System mode. Manual overrides take precedence. If browser storage fails, the
 controller keeps the current page's choice in memory. The settings field updates
 on change, settings entry and language refresh, outside project persistence.
 
+## Source syntax roles (HP02)
+
+`public/iris-syntax-style.mjs` exports one shared set of CodeMirror tags. Import
+this module and CodeMirror through the same native-ESM graph. Node tests must
+use `import()` for `@lezer/highlight`, `@codemirror/language` and editor state
+when they consume these tags; mixing CommonJS and ESM duplicates identities.
+
+| Export | Contract |
+| --- | --- |
+| `syntaxTags` | Frozen role-to-tag table; one tag per role in the palette below. |
+| `syntaxClasses` | Frozen role-to-class-string table. Each string includes `t-<role>`. Command, environment, delimiter and operator also include their compatibility class. |
+| `legacyTokenTable` | TeX/LilyPond stream names: `cmd → command`, `env → environment`, `brace → delimiter`, `math → math`, `comment → comment`, `special → operator`, `string → string`. |
+| `bibliographyTokenTable` | Separate frozen tags for `entryType`, `key`, `field`, `value`, `comment`, `brace` and `special`. Use this table for BibTeX/RIS streams. |
+| `roleHighlighter` | Semantic mapper for the 23 source tags: returns bare names such as `command`, `pitch`, `duration` and `rest`. It has no bibliography mappings. |
+| `cssHighlighter` | Rendering mapper for source `syntaxClasses` and bibliography aliases, including compatibility classes. |
+| `syntaxExtension` | Ready-to-use `syntaxHighlighting(cssHighlighter)` extension. |
+
+The editor imports the module from the local server and installs the extension
+with the appropriate stream table. Plain source text inherits `--syntax-text`
+from `.cm-content`; it needs no tag. LilyPond quoted strings now emit `string`,
+including escapes, multiline content and incomplete input.
+
+Semantic consumers pass `roleHighlighter` to Lezer's `highlightTree()` and use
+the callback's role string directly. For a single source tag,
+`roleHighlighter.style([syntaxTags.command])` returns `"command"`, while
+`cssHighlighter.style([syntaxTags.command])` returns `"t-command t-cmd"`.
+`roleHighlighter.style()` returns `null` for unmapped tags, including bibliography
+tags. Untagged text produces no semantic callback; callers can keep their plain
+text default. Semantic consumers need no CSS-prefix stripping or compatibility
+class decoding.
+
+### Initial palette
+
+Each role has a `--syntax-<role>` variable and a `.t-<role>` class. The table
+groups roles that share an initial primitive. Ratios show the lowest WCAG
+contrast against the editor background, active selection and idle selection,
+computed from the checked-in CSS. These Node measurements do not qualify
+browser compositing or future parser output.
+
+| Roles | Dark | Light | Min dark | Min light |
+| --- | --- | --- | ---: | ---: |
+| command, structure | `#8fbdff` | `#1557a0` | 6.335 | 5.832 |
+| environment, context, rest, property | `#c7adff` | `#65358e` | 6.312 | 6.901 |
+| definition, variable, reference, citation, path, scheme | `#7dcfff` | `#006079` | 7.121 | 5.740 |
+| string, literal, lyric, operator, articulation | `#e0af68` | `#694500` | 6.109 | 6.904 |
+| math, pitch | `#9ece6a` | `#245629` | 6.684 | 6.943 |
+| number, duration | `#ff9e64` | `#843a16` | 6.007 | 6.516 |
+| comment | `#b3b6bf` | `#59616c` | 6.027 | 5.052 |
+| delimiter | `#d0d3da` | `#343e4b` | 8.151 | 8.741 |
+| text (inherited) | `#c8cee8` | `#242c40` | 7.824 | 11.216 |
+
+Structure and definition use weight 600; other roles use 400. Syntax rules add
+no text opacity or underline. Neutral delimiters are more prominent than
+comments. Syntax-only blue, purple, cyan, comment and delimiter primitives let source
+colors change without recoloring action/status controls or document paper/ink.
+Node checks also composite the existing 9% peer caret line over active and idle
+selection, using the fixed peer palette, fallback and white stress case. The
+lowest ratio across those combinations is **4.582:1 dark / 4.711:1 light**.
+Browser qualification must confirm the corresponding mounted paint.
+
+HP02 exposes the full vocabulary for later language work. The current streams
+emit command, environment, delimiter, math, comment, operator and string. The
+browser tests inspect these roles on mounted CodeMirror spans. They label CSS
+swatches as **palette-only** for the full vocabulary, including future roles.
+Those swatches check weights, role propagation and contrast across local
+selection, search, brackets and both peer/search stacking orders, using the
+eight server peer colors, fallback and white stress case. Grammar coverage for
+the future roles belongs to HP04-06; user-source corpus and subjective visual
+acceptance remain pending.
+
+### Bibliography compatibility
+
+BibTeX/RIS keep their existing meanings and initial paint through explicit
+aliases. Shared names such as `comment`, `brace` and `special` also use separate
+bibliography tags so source palette changes cannot leak into them.
+
+| Stream name | Explicit class | Retained class | Role / primitive |
+| --- | --- | --- | --- |
+| `entryType` | `t-bib-entry-type` | `t-cmd` | `--bibliography-entry-type` / `--palette-blue` |
+| `key` | `t-bib-key` | `t-env` | `--bibliography-key` / `--palette-purple` |
+| `field` | `t-bib-field` | `t-special` | `--bibliography-field` / `--palette-red` |
+| `value` | `t-bib-value` | `t-math` | `--bibliography-value` / `--palette-green` |
+| `comment` | `t-bib-comment` | `t-comment` | `--bibliography-comment` / `--palette-comment` |
+| `brace` | `t-bib-delimiter` | `t-brace` | `--bibliography-delimiter` / `--palette-bracket` |
+| `special` | `t-bib-operator` | `t-special` | `--bibliography-operator` / `--palette-red` |
+
+The bibliography rules follow compatibility rules in the stylesheet and take
+precedence when a span has both classes. Existing `--syntax-bracket`,
+`--syntax-argument`, `--syntax-special` and legacy classes remain available to
+older consumers.
+
 ## Verification
 
 ```sh
 node scripts/test.cjs test/ui-colors.test.js test/ui-theme.test.js test/ui-accessibility.test.js
+node --test test/editor-stream.test.js test/ui-theme.test.js test/ui-colors.test.js test/language-fixtures.test.js test/codemirror-vendor.test.js test/syntax-style.test.js
 node scripts/test.cjs --browser test/ui-visibility.browser.test.js
 ```
 
-The literal scanner covers first-party runtime CSS/JS/HTML/SVG under `public/`
+The literal scanner covers first-party runtime CSS/JS/MJS/HTML/SVG under `public/`
 and `src/`, including inline styles, encoded SVG and fallback colors, with the
 named exceptions above. Mutation cases exercise named colors, modern functions,
-hex literals and interpolated fallbacks.
+hex literals and interpolated fallbacks. A filesystem regression checks nested
+`.mjs` traversal, and ESM regressions apply the JS paint rules to `.mjs` files.
+The scanner keeps its Windows/POSIX artwork and peer exceptions local.
 
 Browser checks measure current role propagation, focus, selected metadata,
 syntax and layered peer/search/bracket colors. They exercise head initialization,

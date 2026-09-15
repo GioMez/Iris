@@ -3,6 +3,8 @@ const assert = require("node:assert/strict");
 const path = require("node:path");
 const fs = require("node:fs/promises");
 const { chromium } = require("playwright-core");
+const { loadFixtures, ROLE_NAMES } = require("./helpers/language-fixtures.cjs");
+const peerColors = [null, "#ffffff", "#9ece6a", "#7aa2f7", "#f7768e", "#e0af68", "#bb9af7", "#2ac3de", "#ff9e64", "#b4f9f8"];
 
 const enabled = process.env.IRIS_TEST_BROWSER === "1";
 const options = { skip: !enabled, timeout: 30000 };
@@ -63,7 +65,7 @@ async function pageFor(t, variant, { openProject = true, authenticated = true, p
   if (variant.blockedStorage) await context.addInitScript(() => {
     Object.defineProperty(window, "localStorage", { get() { throw new DOMException("Fixture storage blocked", "SecurityError"); } });
   });
-  const sockets = new Set(), gates = new Set(), errors = [];
+  const sockets = new Set(), gates = new Set(), errors = [], syntaxAssets = [];
   let page, closing = false;
   t.after(async () => {
     closing = true;
@@ -80,6 +82,7 @@ async function pageFor(t, variant, { openProject = true, authenticated = true, p
   page.on("pageerror", (error) => errors.push(error.message));
   page.on("response", (response) => {
     const url = new URL(response.url());
+    if (url.pathname === "/iris-syntax-style.mjs") syntaxAssets.push({ url: response.url(), status: response.status(), type: response.headers()["content-type"] });
     if (url.origin === base.origin && !url.pathname.startsWith("/api/") && response.status() >= 400) {
       errors.push(`Asset response: ${response.status()} ${url.pathname}`);
     }
@@ -187,7 +190,7 @@ async function pageFor(t, variant, { openProject = true, authenticated = true, p
     await page.waitForFunction(() => IrisCollab.status() === "live" && IrisMotion.activeSurface() === "app");
     assert.equal(await page.locator(".app").evaluate((node) => node.inert), false);
   }
-  return { page, fixture };
+  return { page, fixture, syntaxAssets };
 }
 
 function send(fixture, frame) {
@@ -358,12 +361,23 @@ for (const theme of ["dark", "light"]) {
 
 // Read the mounted consumer and composite its actual ancestor backgrounds in
 // paint order. In particular, a match's background can sit on a peer line.
-async function renderedContrast(page, selector, { pseudo = null, shadow = false, minimum = 4.5, surrounding = false, paintProperty = "color" } = {}) {
-  return page.locator(selector).first().evaluate((node, { pseudo, shadow, minimum, surrounding, paintProperty }) => {
+async function renderedContrast(page, selector, { pseudo = null, shadow = false, minimum = 4.5, surrounding = false, paintProperty = "color", selected = false, plain = false } = {}) {
+  return page.locator(selector).first().evaluate((node, { pseudo, shadow, minimum, surrounding, paintProperty, selected, plain }) => {
     // CodeMirror can wrap a syntax span in a decoration span. Measure the
     // actual text leaf rather than its outer wrapper's inherited text color.
     if (!pseudo && !shadow) {
-      const text = document.createTreeWalker(node, NodeFilter.SHOW_TEXT).nextNode();
+      const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+      let text = walker.nextNode();
+      if (plain) {
+        const isSyntax = text => {
+          for (let parent = text.parentElement; parent && parent !== node; parent = parent.parentElement) {
+            if ([...parent.classList].some(name => name.startsWith('t-'))) return true;
+          }
+          return false;
+        };
+        while (text && (!text.textContent.trim() || isSyntax(text))) text = walker.nextNode();
+        if (!text) throw new Error('Expected real unclassified source text');
+      }
       if (text) node = text.parentElement;
     }
     const canvas = document.createElement("canvas"); canvas.width = canvas.height = 1;
@@ -374,7 +388,14 @@ async function renderedContrast(page, selector, { pseudo = null, shadow = false,
       return [...ctx.getImageData(0, 0, 1, 1).data].slice(0, 3);
     };
     const ancestors = [];
-    for (let current = node; current; current = current.parentElement) ancestors.unshift(getComputedStyle(current).backgroundColor);
+    for (let current = node; current; current = current.parentElement) {
+      ancestors.unshift(getComputedStyle(current).backgroundColor);
+      // CodeMirror paints local selection in a sibling layer behind the content.
+      // Insert it below the content/decoration backgrounds in paint order.
+      if (selected && current.matches('.cm-content')) {
+        ancestors.unshift(getComputedStyle(document.querySelector('.cm-selectionBackground')).backgroundColor);
+      }
+    }
     if (surrounding) ancestors.pop();
     const style = getComputedStyle(node, pseudo);
     if (pseudo === "::selection") ancestors.push(style.backgroundColor);
@@ -385,7 +406,188 @@ async function renderedContrast(page, selector, { pseudo = null, shadow = false,
     const a = luminance(fg), b = luminance(bg);
     return { foreground: fg, background: bg, ratio: (Math.max(a, b) + .05) / (Math.min(a, b) + .05), minimum,
       pigment, content: style.content, shadow: style.boxShadow, focusVisible: node.matches(":focus-visible") || !!node.querySelector(":focus-visible") };
-  }, { pseudo, shadow, minimum, surrounding, paintProperty });
+  }, { pseudo, shadow, minimum, surrounding, paintProperty, selected, plain });
+}
+
+for (const theme of ["dark", "light"]) {
+  test(`HP02 ${theme}: mounted stream roles, local ESM delivery and stacked peer/search paint`, { ...options, timeout: 60000 }, async (t) => {
+    const { page, syntaxAssets } = await pageFor(t, { ...variants[0], theme });
+    assert.deepEqual(syntaxAssets.map(asset => ({ ...asset, type: asset.type.split(';')[0] })),
+      [{ url: new URL('/iris-syntax-style.mjs', base).href, status: 200, type: 'application/javascript' }]);
+    assert.equal(await page.evaluate(async () => (await import('./iris-syntax-style.mjs')).syntaxTags.command
+      === (await import('./iris-syntax-style.mjs')).legacyTokenTable.cmd), true);
+    await selectFile(page, "draft");
+    const corpus = loadFixtures();
+    const documents = [
+      { kind: 'tex', text: corpus.find(f => f.id === 'latex-core').source + '\\begin{document}\n$x+1$\n\\end{document}\n',
+        tokens: [['command', '\\section*'], ['environment', 'document'], ['delimiter', '{'], ['operator', '~'], ['math', '$x+1$'], ['comment', '% commento']] },
+      { kind: 'ly', text: corpus.find(f => f.id === 'lilypond-core').source,
+        tokens: [['command', '\\version'], ['string', '"2.26.0"'], ['delimiter', '{'], ['comment', '% c4 \\score fake']] },
+    ];
+    const samples = [];
+    for (const { kind, text, tokens } of documents) {
+      await page.evaluate(({ kind, text }) => IrisEditor.load(text, kind), { kind, text });
+      for (const [role, literal] of tokens) {
+        await page.locator(`.cm-content .t-${role}`).filter({ hasText: literal }).first().waitFor({ state: 'attached' });
+      }
+      if (kind === 'ly') assert.equal(await page.locator('.cm-content .t-env, .cm-content .t-environment').count(), 0,
+        'quoted strings do not carry an environment alias');
+      const selectors = [...tokens.map(([role]) => `.cm-content .t-${role}`), '.cm-content'];
+      async function capture(state, selected = false) {
+        for (const selector of selectors) samples.push({ kind, state, selector,
+          ...await renderedContrast(page, selector, { selected, plain: selector === '.cm-content' }) });
+      }
+      await capture('editor');
+      await page.evaluate(end => { IrisEditor.select(0, end); IrisEditor.focus(); }, text.length);
+      await page.locator('.cm-selectionBackground').first().waitFor({ state: 'attached' });
+      await capture('active selection', true);
+      await page.locator('#btnSettings').focus();
+      await capture('idle selection', true);
+      for (const color of peerColors) {
+        // Put a peer caret on each token's line, without peer selection fills
+        // that would otherwise conceal the local-selection/line composite.
+        await page.evaluate(({ color, text }) => {
+          let position = 0;
+          IrisEditor.setPeers(text.split('\n').map((line, i) => {
+            const caret = { id: `caret-${i}`, name: `Caret ${i}`, color, anchor: position, head: position };
+            position += line.length + 1;
+            return caret;
+          }));
+        }, { color, text });
+        await page.locator('.cm-content').focus();
+        await capture(`active selection + peer caret ${color || 'fallback'}`, true);
+        await page.locator('#btnSettings').focus();
+        await capture(`idle selection + peer caret ${color || 'fallback'}`, true);
+      }
+      await page.evaluate(() => IrisEditor.setPeers([]));
+      await page.evaluate(() => IrisEditor.select(0));
+      for (const color of peerColors) {
+        // Two peers share the full selection. Both nesting orders of opaque
+        // search/peer decorations must retain syntax contrast.
+        await page.evaluate(({ color, end }) => IrisEditor.setPeers([
+          { id: 'hp02-a', name: 'A', color, anchor: 0, head: end },
+          { id: 'hp02-b', name: 'B', color, anchor: end, head: 0 },
+        ]), { color, end: text.length });
+        await page.locator('.cm-iris-peer-selection').first().waitFor({ state: 'attached' });
+        await capture(`stacked peers ${color || 'fallback'}`);
+        for (const active of [-1, 0]) {
+          await page.evaluate(({ end, active }) => IrisEditor.highlightMatches([{ from: 0, to: end }], active), { end: text.length, active });
+          await capture(`peers + ${active === 0 ? 'active' : 'inactive'} search ${color || 'fallback'}`);
+        }
+        await page.evaluate(() => IrisEditor.highlightMatches([], -1));
+      }
+      await page.evaluate(() => IrisEditor.setPeers([]));
+    }
+    t.diagnostic(`HP02 real emitted spans ${theme}: ${samples.length} samples; minimum ${Math.min(...samples.map(s => s.ratio)).toFixed(3)}:1`);
+    assert.deepEqual(samples.filter(s => s.ratio < s.minimum), []);
+    // A real local edit makes undo preservation observable, rather than merely
+    // checking an empty history. Theme changes must keep the same view/state.
+    await page.evaluate(async () => {
+      const { EditorView } = await import('@codemirror/view');
+      window.hp02Original = IrisEditor.getValue();
+      IrisEditor.replaceRange(0, 0, '% local edit\n');
+      IrisEditor.select(2, 9); IrisEditor.focus();
+      const view = EditorView.findFromDOM(document.querySelector('.cm-editor'));
+      window.hp02Retained = { view, state: view.state, selection: IrisEditor.selection(), doc: IrisEditor.getValue() };
+      IrisTheme.setPreference(IrisTheme.resolved() === 'dark' ? 'light' : 'dark');
+    });
+    assert.equal(await page.evaluate(async () => {
+      const { EditorView } = await import('@codemirror/view'), before = window.hp02Retained;
+      const current = EditorView.findFromDOM(document.querySelector('.cm-editor'));
+      return current === before.view && current.state === before.state && before.doc === IrisEditor.getValue()
+        && JSON.stringify(before.selection) === JSON.stringify(IrisEditor.selection());
+    }), true, 'theme switch preserves editor identity, state, document and selection after editing');
+    assert.equal(await page.evaluate(() => IrisEditor.undo() && IrisEditor.getValue() === window.hp02Original), true,
+      'undo still reverts the pre-switch edit');
+  });
+
+  test(`HP02 ${theme}: bibliography aliases preserve historical classes and foregrounds`, options, async (t) => {
+    const { page } = await pageFor(t, { ...variants[0], theme });
+    await selectFile(page, 'draft');
+    const expected = theme === 'dark'
+      ? { 'entry-type': '#7aa2f7', key: '#bb9af7', field: '#f7768e', value: '#9ece6a', comment: '#929dc3', delimiter: '#939ec4', operator: '#f7768e' }
+      : { 'entry-type': '#244f91', key: '#65358e', field: '#962d48', value: '#245629', comment: '#4c586f', delimiter: '#4a566d', operator: '#962d48' };
+    for (const [kind, text, aliases] of [
+      ['bib', '% note\n@book{key,title="A" # {B},year=2026}\n', { 'entry-type': 'cmd', key: 'env', field: 'special', value: 'math', comment: 'comment', delimiter: 'brace', operator: 'special' }],
+      ['ris', '% note\nTY  - BOOK\nTI  - A\nER  -\n', { 'entry-type': 'cmd', field: 'special', value: 'math', comment: 'comment', delimiter: 'brace' }],
+    ]) {
+      await page.evaluate(({ kind, text }) => IrisEditor.load(text, kind), { kind, text });
+      for (const [role, legacy] of Object.entries(aliases)) {
+        const selector = `.cm-content .t-bib-${role}.t-${legacy}`;
+        await page.locator(selector).first().waitFor({ state: 'attached' });
+        const rgb = expected[role].slice(1).match(/../g).map(v => parseInt(v, 16));
+        assert.equal(await page.locator(selector).first().evaluate(node => getComputedStyle(node).color), `rgb(${rgb.join(', ')})`);
+        assert.ok((await renderedContrast(page, selector)).ratio >= 4.5);
+      }
+    }
+  });
+
+  test(`HP02 ${theme}: labelled CSS swatches prequalify all roles, not future parsing`, options, async (t) => {
+    const { page } = await pageFor(t, { ...variants[0], theme });
+    const samples = await page.evaluate(({ roles, peerColors }) => {
+      const host = document.createElement('aside'); host.className = 'cm-host';
+      host.setAttribute('aria-label', 'HP02 palette-only CSS swatches; not parser output');
+      host.dataset.qualification = 'palette-only';
+      document.body.appendChild(host);
+      const canvas = document.createElement('canvas'); canvas.width = canvas.height = 1;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      const paint = layers => {
+        ctx.clearRect(0, 0, 1, 1);
+        for (const color of layers) { ctx.fillStyle = color; ctx.fillRect(0, 0, 1, 1); }
+        return [...ctx.getImageData(0, 0, 1, 1).data].slice(0, 3);
+      };
+      const luminance = rgb => rgb.map(c => c / 255).map(c => c <= .04045 ? c / 12.92 : ((c + .055) / 1.055) ** 2.4)
+        .reduce((sum, c, i) => sum + c * [.2126, .7152, .0722][i], 0);
+      const results = [];
+      const base = getComputedStyle(host).backgroundColor;
+      for (const role of roles) {
+        const swatch = document.createElement('span'); swatch.className = `t-${role}`; swatch.textContent = `${role}: palette only`;
+        if (role === 'text') swatch.style.color = 'var(--syntax-text)';
+        host.appendChild(swatch);
+        const style = getComputedStyle(swatch);
+        const foreground = style.color, weight = style.fontWeight, opacity = style.opacity, decoration = style.textDecorationLine;
+        const reference = document.createElement('span'); reference.style.color = `var(--syntax-${role})`;
+        host.appendChild(reference);
+        const roleForeground = getComputedStyle(reference).color;
+        reference.remove();
+        function check(background, layers) {
+          const bg = luminance(paint([base, ...layers])), fg = luminance(paint([base, ...layers, foreground]));
+          results.push({ role, background, foreground, roleForeground, weight, opacity, decoration, ratio: (Math.max(fg, bg) + .05) / (Math.min(fg, bg) + .05) });
+        }
+        for (const bg of ['editor-bg', 'editor-selection', 'editor-selection-idle', 'editor-match-bg', 'editor-match-active-bg',
+          'editor-bracket-match-bg', 'editor-bracket-error-bg']) {
+          swatch.style.backgroundColor = `var(--${bg})`;
+          check(bg, [getComputedStyle(swatch).backgroundColor]);
+        }
+        for (const color of peerColors) {
+          const line = document.createElement('span'); line.className = 'cm-iris-peer-line';
+          line.style.setProperty('--peer-color', color || 'var(--peer-fallback)');
+          const band = document.createElement('span'); band.className = 'cm-iris-peer-selection';
+          const nested = band.cloneNode();
+          host.appendChild(line); line.appendChild(band); band.appendChild(nested);
+          const backgrounds = [line, band, nested].map(node => getComputedStyle(node).backgroundColor);
+          check(`stacked peers ${color || 'fallback'}`, backgrounds);
+          for (const selection of ['editor-selection', 'editor-selection-idle']) {
+            swatch.style.backgroundColor = `var(--${selection})`;
+            check(`${selection} + peer caret ${color || 'fallback'}`, [getComputedStyle(swatch).backgroundColor, backgrounds[0]]);
+          }
+          for (const bg of ['editor-match-bg', 'editor-match-active-bg', 'editor-bracket-match-bg', 'editor-bracket-error-bg']) {
+            swatch.style.backgroundColor = `var(--${bg})`;
+            const overlay = getComputedStyle(swatch).backgroundColor;
+            check(`peers then ${bg} ${color || 'fallback'}`, [...backgrounds, overlay]);
+            check(`${bg} then peers ${color || 'fallback'}`, [overlay, ...backgrounds]);
+          }
+          line.remove();
+        }
+        swatch.remove();
+      }
+      host.remove();
+      return results;
+    }, { roles: ROLE_NAMES, peerColors });
+    assert.deepEqual(samples.filter(s => s.foreground !== s.roleForeground || s.ratio < 4.5 || s.opacity !== '1' || s.decoration !== 'none'
+      || s.weight !== (['structure', 'definition'].includes(s.role) ? '600' : '400')), []);
+    t.diagnostic(`HP02 palette-only ${theme}: ${samples.length} samples; minimum ${Math.min(...samples.map(s => s.ratio)).toFixed(3)}:1`);
+  });
 }
 
 test("R10 light peer initials and marker boundaries remain readable for fallback and bright identities", options, async (t) => {

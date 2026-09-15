@@ -2,7 +2,7 @@
 (function () {
   /* ---- CodeMirror stream tokenizer ---- */
   // The editor maps these token names onto its syntax classes: cmd → t-cmd,
-  // env → t-env (strings), brace → t-brace, comment → t-comment, null → text.
+  // string → t-string, brace → t-brace, comment → t-comment, null → text.
   const stream = {
     startState() { return { block: false, str: false }; },
     copyState(s) { return { block: s.block, str: s.str }; },
@@ -19,7 +19,7 @@
           if (stream.peek() === "\\") { stream.next(); if (!stream.eol()) stream.next(); continue; }
           if (stream.next() === '"') { state.str = false; break; }
         }
-        return "env";
+        return "string";
       }
       const c = stream.next();
       if (c === "%") {
@@ -40,7 +40,7 @@
           if (stream.peek() === "\\") { stream.next(); if (!stream.eol()) stream.next(); continue; }
           if (stream.next() === '"') { state.str = false; break; }
         }
-        return "env";
+        return "string";
       }
       if (c === "\\") {
         if (!stream.eatWhile(/[A-Za-z-]/)) stream.next();

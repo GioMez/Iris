@@ -2,6 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
+const os = require("node:os");
 
 const root = path.resolve(__dirname, "..");
 const namedColors = new Set(("aliceblue antiquewhite aqua aquamarine azure beige bisque black blanchedalmond blue blueviolet brown burlywood " +
@@ -36,7 +37,7 @@ function violations(file, source) {
       const found = colors(value);
       if (found.length) issues.push(`${property}: ${found.join(", ")}`);
     }
-  } else if (file.endsWith(".js")) {
+  } else if (/\.m?js$/.test(file)) {
     // Scan standalone strings independently so quotes inside template
     // interpolations cannot hide a fallback literal.
     for (const match of source.matchAll(/(["'])(#[\da-f]{3,8}|(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\([^"'\n]*\)|[a-z]+)\1/gi)) {
@@ -105,21 +106,44 @@ test("color contract detects new literals including encoded UI SVG colors", () =
   assert.equal(violations("test.html", '<style>.control{color:coral}</style>').length, 1);
 });
 
-test("first-party runtime colors are palette primitives or individually documented exceptions", () => {
+test("native ESM paint and interpolated fallbacks cannot bypass roles", () => {
+  for (const separator of ["/", "\\"]) {
+    const file = `public${separator}iris-syntax-style.mjs`;
+    for (const source of ['export const paint = "#123456";', 'export const paint = "coral";',
+      'export const paint = "oklch(50% .1 30)";', 'export const style = `color:${peer.color || "#abcdef"}`;']) {
+      assert.equal(runtimeViolations(file, source).length, 1, source);
+    }
+    assert.deepEqual(runtimeViolations(file, 'export const paint = "var(--syntax-command)";'), []);
+  }
+});
+
+function scanRuntime(directory, relativeRoot = root) {
   const failures = [];
   function walk(directory) {
     for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
       if (entry.name === "vendor") continue;
-      const absolute = path.join(directory, entry.name), relative = path.relative(root, absolute);
+      const absolute = path.join(directory, entry.name), relative = path.relative(relativeRoot, absolute);
       if (entry.isDirectory()) walk(absolute);
-      else if (/\.(?:css|js|html|svg)$/.test(entry.name)) {
+      else if (/\.(?:css|m?js|html|svg)$/.test(entry.name)) {
         const source = fs.readFileSync(absolute, "utf8");
         failures.push(...runtimeViolations(relative, source).map((issue) => `${relative}: ${issue}`));
       }
     }
   }
-  walk(path.join(root, "public"));
-  walk(path.join(root, "src"));
+  walk(directory);
+  return failures;
+}
+
+test("runtime traversal scans nested .mjs files as JavaScript", (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "iris-esm-colors-"));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(directory, "nested"));
+  fs.writeFileSync(path.join(directory, "nested/paint.mjs"), 'export const color = "#abcdef";');
+  assert.deepEqual(scanRuntime(directory, directory).map(issue => issue.replace(/\\/g, "/")), ['nested/paint.mjs: #abcdef']);
+});
+
+test("first-party runtime colors are palette primitives or individually documented exceptions", () => {
+  const failures = [...scanRuntime(path.join(root, "public")), ...scanRuntime(path.join(root, "src"))];
   assert.deepEqual(failures, [], "literal UI colors bypass theme roles");
 });
 
