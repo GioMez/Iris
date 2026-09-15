@@ -1,0 +1,532 @@
+[
+  {
+    "id": "latex-core", "kind": "tex", "file": "latex-core.tex", "expectations": "target",
+    "origin": {"type":"synthetic","author":"Iris contributors","license":"CC0-1.0"},
+    "syntax": "LaTeX2e 2025-06; graphicx",
+    "validity": {"status":"complete","note":"Complete lexical body fragment; graphicx required, image.pdf is a placeholder asset."},
+    "requirements": ["TX-01"],
+    "roles": [
+      {"from":0,"to":9,"role":"structure","text":"\\section*","requirement":"TX-01"},
+      {"from":12,"to":13,"role":"delimiter","text":"{","requirement":"TX-01"},
+      {"from":13,"to":14,"role":"text","text":"B","requirement":"TX-01"},
+      {"from":14,"to":15,"role":"delimiter","text":"}","requirement":"TX-01"},
+      {"from":16,"to":18,"role":"text","text":"😀","requirement":"TX-01"},
+      {"from":20,"to":36,"role":"command","text":"\\includegraphics","requirement":"TX-01"},
+      {"from":36,"to":37,"role":"delimiter","text":"[","requirement":"TX-01"},
+      {"from":46,"to":47,"role":"delimiter","text":"]","requirement":"TX-01"},
+      {"from":59,"to":61,"role":"command","text":"\\%","requirement":"TX-01"},
+      {"from":62,"to":64,"role":"command","text":"\\{","requirement":"TX-01"},
+      {"from":65,"to":67,"role":"command","text":"\\}","requirement":"TX-01"},
+      {"from":68,"to":70,"role":"command","text":"\\_","requirement":"TX-01"},
+      {"from":71,"to":73,"role":"command","text":"\\&","requirement":"TX-01"},
+      {"from":74,"to":76,"role":"command","text":"\\#","requirement":"TX-01"},
+      {"from":77,"to":79,"role":"command","text":"\\\\","requirement":"TX-01"},
+      {"from":80,"to":82,"role":"command","text":"\\,","requirement":"TX-01"},
+      {"from":83,"to":84,"role":"operator","text":"~","requirement":"TX-01"},
+      {"from":85,"to":95,"role":"comment","text":"% commento","requirement":"TX-01"}
+    ],
+    "contexts": [
+      {"pos":88,"mode":"comment","before":"\\, ~\n% c","after":"ommento\n","requirement":"TX-01"},
+      {"pos":18,"mode":"text","before":"A {B} 😀","after":"}\n\\inclu","requirement":"TX-01"}
+    ],
+    "outline": ["A {B} 😀"]
+  },
+  {
+    "id": "latex-math", "kind": "tex", "file": "latex-math.tex", "expectations": "target",
+    "origin": {"type":"synthetic","author":"Iris contributors","license":"CC0-1.0"},
+    "syntax": "LaTeX2e 2025-06",
+    "validity": {"status":"complete","note":"Exact minimal inline-math fragment; the percent comment ends at LF."},
+    "requirements": ["TX-02"],
+    "roles": [
+      {"from":0,"to":1,"role":"delimiter","text":"$","requirement":"TX-02"},
+      {"from":1,"to":2,"role":"math","text":"a","requirement":"TX-02"},
+      {"from":3,"to":15,"role":"comment","text":"% $ commento","requirement":"TX-02"},
+      {"from":16,"to":17,"role":"math","text":"b","requirement":"TX-02"},
+      {"from":17,"to":18,"role":"delimiter","text":"$","requirement":"TX-02"},
+      {"from":19,"to":24,"role":"text","text":"testo","requirement":"TX-02"}
+    ],
+    "contexts": [
+      {"pos":17,"mode":"math","before":"mmento\nb","after":"$ testo\n","requirement":"TX-02"},
+      {"pos":19,"mode":"text","before":"ento\nb$ ","after":"testo\n","requirement":"TX-02"}
+    ],
+    "outline": []
+  },
+  {
+    "id": "latex-math-delimiters", "kind": "tex", "file": "latex-math-delimiters.tex", "expectations": "target",
+    "origin": {"type":"synthetic","author":"Iris contributors","license":"CC0-1.0"},
+    "syntax": "LaTeX2e 2025-06",
+    "validity": {"status":"complete","note":"Complete display and control-symbol math fragments; fake closers in comments must not terminate math."},
+    "requirements": ["TX-02"],
+    "roles": [
+      {"from":0,"to":2,"role":"delimiter","text":"$$","requirement":"TX-02"},
+      {"from":2,"to":3,"role":"math","text":"x","requirement":"TX-02"},
+      {"from":3,"to":4,"role":"operator","text":"_","requirement":"TX-02"},
+      {"from":4,"to":5,"role":"number","text":"1","requirement":"TX-02"},
+      {"from":5,"to":6,"role":"operator","text":"+","requirement":"TX-02"},
+      {"from":6,"to":12,"role":"command","text":"\\alpha","requirement":"TX-02"},
+      {"from":13,"to":25,"role":"comment","text":"% $$ ignored","requirement":"TX-02"},
+      {"from":26,"to":27,"role":"operator","text":"=","requirement":"TX-02"},
+      {"from":27,"to":28,"role":"number","text":"2","requirement":"TX-02"},
+      {"from":28,"to":30,"role":"delimiter","text":"$$","requirement":"TX-02"},
+      {"from":31,"to":33,"role":"delimiter","text":"\\(","requirement":"TX-02"},
+      {"from":35,"to":40,"role":"command","text":"\\beta","requirement":"TX-02"},
+      {"from":41,"to":53,"role":"comment","text":"% \\) ignored","requirement":"TX-02"},
+      {"from":54,"to":56,"role":"delimiter","text":"\\)","requirement":"TX-02"},
+      {"from":57,"to":59,"role":"delimiter","text":"\\[","requirement":"TX-02"},
+      {"from":61,"to":67,"role":"command","text":"\\gamma","requirement":"TX-02"},
+      {"from":68,"to":80,"role":"comment","text":"% \\] ignored","requirement":"TX-02"},
+      {"from":81,"to":83,"role":"delimiter","text":"\\]","requirement":"TX-02"}
+    ],
+    "contexts": [
+      {"pos":26,"mode":"math","before":"ignored\n","after":"=2$$\n\\(y","requirement":"TX-02"},
+      {"pos":54,"mode":"math","before":"ignored\n","after":"\\)\n\\[z+\\","requirement":"TX-02"},
+      {"pos":81,"mode":"math","before":"ignored\n","after":"\\]\n","requirement":"TX-02"}
+    ],
+    "outline": []
+  },
+  {
+    "id": "latex-environments", "kind": "tex", "file": "latex-environments.tex", "expectations": "target",
+    "origin": {"type":"synthetic","author":"Iris contributors","license":"CC0-1.0"},
+    "syntax": "LaTeX2e 2025-06; amsmath",
+    "validity": {"status":"complete","note":"Complete amsmath body fragment; text arguments return to text inside math."},
+    "requirements": ["TX-03"],
+    "roles": [
+      {"from":7,"to":13,"role":"environment","text":"align*","requirement":"TX-03"},
+      {"from":15,"to":16,"role":"math","text":"a","requirement":"TX-03"},
+      {"from":16,"to":17,"role":"operator","text":"&","requirement":"TX-03"},
+      {"from":18,"to":23,"role":"command","text":"\\text","requirement":"TX-03"},
+      {"from":24,"to":29,"role":"text","text":"testo","requirement":"TX-03"},
+      {"from":60,"to":68,"role":"environment","text":"equation","requirement":"TX-03"},
+      {"from":77,"to":84,"role":"environment","text":"pmatrix","requirement":"TX-03"},
+      {"from":85,"to":86,"role":"number","text":"1","requirement":"TX-03"},
+      {"from":86,"to":87,"role":"operator","text":"&","requirement":"TX-03"},
+      {"from":87,"to":88,"role":"number","text":"0","requirement":"TX-03"}
+    ],
+    "contexts": [
+      {"pos":26,"mode":"text","before":"\\text{te","after":"sto}+1\\\\","requirement":"TX-03"},
+      {"pos":35,"mode":"math","before":"to}+1\\\\\n","after":"b&=2\n\\en","requirement":"TX-03"},
+      {"pos":85,"mode":"math","before":"pmatrix}","after":"1&0\\\\0&1","requirement":"TX-03"}
+    ],
+    "outline": []
+  },
+  {
+    "id": "latex-literal", "kind": "tex", "file": "latex-literal.tex", "expectations": "target",
+    "origin": {"type":"synthetic","author":"Iris contributors","license":"CC0-1.0"},
+    "syntax": "LaTeX2e 2025-06; minted and listings",
+    "validity": {"status":"complete","note":"Complete body fragment. Only Real and After are headings; all fake labels are literal/comment data."},
+    "requirements": ["TX-04"],
+    "roles": [
+      {"from":15,"to":39,"role":"comment","text":"% \\section{Comment fake}","requirement":"TX-04"},
+      {"from":46,"to":82,"role":"literal","text":"\\section{Verb fake}\\label{fake:verb}","requirement":"TX-04"},
+      {"from":91,"to":110,"role":"literal","text":"\\section{Star fake}","requirement":"TX-04"},
+      {"from":129,"to":173,"role":"literal","text":"\\section{Verbatim fake}\\label{fake:verbatim}","requirement":"TX-04"},
+      {"from":209,"to":249,"role":"literal","text":"\\section{Minted fake}\\label{fake:minted}","requirement":"TX-04"},
+      {"from":296,"to":338,"role":"literal","text":"\\section{Listing fake}\\label{fake:listing}","requirement":"TX-04"}
+    ],
+    "contexts": [
+      {"pos":57,"mode":"literal","before":"ction{Ve","after":"rb fake}","requirement":"TX-04"},
+      {"pos":102,"mode":"literal","before":"ction{St","after":"ar fake}","requirement":"TX-04"},
+      {"pos":140,"mode":"literal","before":"ction{Ve","after":"rbatim f","requirement":"TX-04"},
+      {"pos":220,"mode":"literal","before":"ction{Mi","after":"nted fak","requirement":"TX-04"},
+      {"pos":307,"mode":"literal","before":"ction{Li","after":"sting fa","requirement":"TX-04"},
+      {"pos":367,"mode":"text","before":"ction{Af","after":"ter}\n","requirement":"TX-04"}
+    ],
+    "outline": ["Real","After"]
+  },
+  {
+    "id": "latex-headings", "kind": "tex", "file": "latex-headings.tex", "expectations": "target",
+    "origin": {"type":"synthetic","author":"Iris contributors","license":"CC0-1.0"},
+    "syntax": "LaTeX2e 2025-06; book class",
+    "validity": {"status":"complete","note":"Complete body fragment. Outline titles use the long raw title, preserving nested braces and internal newline."},
+    "requirements": ["TX-05"],
+    "roles": [
+      {"from":0,"to":5,"role":"structure","text":"\\part","requirement":"TX-05"},
+      {"from":12,"to":20,"role":"structure","text":"\\chapter","requirement":"TX-05"},
+      {"from":21,"to":26,"role":"text","text":"Short","requirement":"TX-05"},
+      {"from":37,"to":46,"role":"structure","text":"\\section*","requirement":"TX-05"},
+      {"from":50,"to":56,"role":"text","text":"nested","requirement":"TX-05"},
+      {"from":65,"to":76,"role":"structure","text":"\\subsection","requirement":"TX-05"},
+      {"from":77,"to":86,"role":"text","text":"Two\nlines","requirement":"TX-05"},
+      {"from":88,"to":102,"role":"structure","text":"\\subsubsection","requirement":"TX-05"},
+      {"from":110,"to":120,"role":"structure","text":"\\paragraph","requirement":"TX-05"},
+      {"from":127,"to":140,"role":"structure","text":"\\subparagraph","requirement":"TX-05"}
+    ],
+    "contexts": [{"pos":81,"mode":"text","before":"ion{Two\n","after":"lines}\n\\","requirement":"TX-05"}],
+    "outline": ["Part","Chapter","A {nested} title","Two\nlines","Small","Para","Subpara"]
+  },
+  {
+    "id": "latex-custom", "kind": "tex", "file": "latex-custom.tex", "expectations": "target",
+    "origin": {"type":"synthetic","author":"Iris contributors","license":"CC0-1.0"},
+    "syntax": "LaTeX2e 2025-06",
+    "validity": {"status":"complete","note":"Complete fragment given boxnote in latex-macros.tex. Two same-name environments nest; inner end closes inner begin, outer end closes outer begin."},
+    "requirements": ["TX-06"],
+    "roles": [
+      {"from":7,"to":14,"role":"environment","text":"boxnote","requirement":"TX-06"},
+      {"from":29,"to":36,"role":"environment","text":"boxnote","requirement":"TX-06"},
+      {"from":49,"to":56,"role":"environment","text":"boxnote","requirement":"TX-06"},
+      {"from":63,"to":70,"role":"environment","text":"boxnote","requirement":"TX-06"}
+    ],
+    "contexts": [
+      {"pos":40,"mode":"text","before":"note}\nin","after":"ner\n\\end","requirement":"TX-06"},
+      {"pos":18,"mode":"text","before":"note}\nou","after":"ter\n\\beg","requirement":"TX-06"}
+    ],
+    "regions": [
+      {"from":0,"to":71,"label":"\\begin{boxnote}","text":"\\begin{boxnote}\nouter\n\\begin{boxnote}\ninner\n\\end{boxnote}\n\\end{boxnote}","requirement":"TX-06"},
+      {"from":22,"to":57,"label":"\\begin{boxnote}","text":"\\begin{boxnote}\ninner\n\\end{boxnote}","requirement":"TX-06"}
+    ],
+    "outline": []
+  },
+  {
+    "id": "latex-incomplete", "kind": "tex", "file": "latex-incomplete.tex", "expectations": "target",
+    "origin": {"type":"synthetic","author":"Iris contributors","license":"CC0-1.0"},
+    "syntax": "LaTeX2e 2025-06",
+    "validity": {"status":"invalid","note":"Deliberately malformed: stray end, mismatched other inside boxnote, then unfinished begin argument. Recovery must not invent a completed unfinished environment."},
+    "requirements": ["TX-06"],
+    "roles": [
+      {"from":5,"to":10,"role":"environment","text":"stray","requirement":"TX-06"},
+      {"from":19,"to":26,"role":"environment","text":"boxnote","requirement":"TX-06"},
+      {"from":35,"to":40,"role":"environment","text":"other","requirement":"TX-06"},
+      {"from":47,"to":54,"role":"environment","text":"boxnote","requirement":"TX-06"},
+      {"from":56,"to":62,"role":"command","text":"\\begin","requirement":"TX-06"}
+    ],
+    "contexts": [{"pos":73,"mode":"text","before":"finished","after":"\n","requirement":"TX-06"}],
+    "outline": []
+  },
+  {
+    "id": "latex-macros", "kind": "tex", "file": "latex-macros.tex", "expectations": "target",
+    "origin": {"type":"synthetic","author":"Iris contributors","license":"CC0-1.0"},
+    "syntax": "LaTeX2e 2025-06; xparse",
+    "validity": {"status":"complete","note":"Complete preamble/body fragments. Definitions are recognized without expanding calls; bodies create no headings."},
+    "requirements": ["TX-07"],
+    "roles": [
+      {"from":0,"to":11,"role":"command","text":"\\newcommand","requirement":"TX-07"},
+      {"from":12,"to":18,"role":"definition","text":"\\hello","requirement":"TX-07"},
+      {"from":29,"to":31,"role":"variable","text":"#1","requirement":"TX-07"},
+      {"from":33,"to":37,"role":"command","text":"\\def","requirement":"TX-07"},
+      {"from":37,"to":42,"role":"definition","text":"\\pair","requirement":"TX-07"},
+      {"from":54,"to":73,"role":"command","text":"\\NewDocumentCommand","requirement":"TX-07"},
+      {"from":74,"to":80,"role":"definition","text":"\\greet","requirement":"TX-07"},
+      {"from":101,"to":116,"role":"command","text":"\\newenvironment","requirement":"TX-07"},
+      {"from":117,"to":124,"role":"definition","text":"boxnote","requirement":"TX-07"},
+      {"from":150,"to":173,"role":"command","text":"\\NewDocumentEnvironment","requirement":"TX-07"},
+      {"from":174,"to":179,"role":"definition","text":"aside","requirement":"TX-07"},
+      {"from":190,"to":196,"role":"command","text":"\\hello","requirement":"TX-07"},
+      {"from":203,"to":208,"role":"command","text":"\\pair","requirement":"TX-07"},
+      {"from":215,"to":221,"role":"command","text":"\\greet","requirement":"TX-07"},
+      {"from":230,"to":241,"role":"command","text":"\\newcommand","requirement":"TX-07"},
+      {"from":242,"to":249,"role":"definition","text":"\\hidden","requirement":"TX-07"},
+      {"from":260,"to":275,"role":"text","text":"Definition fake","requirement":"TX-07"},
+      {"from":278,"to":285,"role":"command","text":"\\hidden","requirement":"TX-07"}
+    ],
+    "contexts": [{"pos":25,"mode":"text","before":"o}[1]{He","after":"llo #1}\n","requirement":"TX-07"}],
+    "outline": []
+  },
+  {
+    "id": "latex-arguments", "kind": "tex", "file": "latex-arguments.tex", "expectations": "target",
+    "origin": {"type":"synthetic","author":"Iris contributors","license":"CC0-1.0"},
+    "syntax": "LaTeX2e 2025-06; biblatex (two optional cite arguments), cleveref and graphicx",
+    "validity": {"status":"complete","note":"The biblatex citation profile supplies cite[prenote][postnote]{keys}: see and p.~2 are its two optional notes, alpha,beta its citation-key list. Complete argument syntax; keys and file paths are placeholders and are not resolved."},
+    "requirements": ["TX-08"],
+    "roles": [
+      {"from":7,"to":14,"role":"reference","text":"sec:one","requirement":"TX-08"},
+      {"from":21,"to":28,"role":"reference","text":"sec:one","requirement":"TX-08"},
+      {"from":36,"to":51,"role":"reference","text":"sec:one,sec:two","requirement":"TX-08"},
+      {"from":59,"to":62,"role":"text","text":"see","requirement":"TX-08"},
+      {"from":64,"to":68,"role":"text","text":"p.~2","requirement":"TX-08"},
+      {"from":70,"to":80,"role":"citation","text":"alpha,beta","requirement":"TX-08"},
+      {"from":91,"to":105,"role":"path","text":"chapters/intro","requirement":"TX-08"},
+      {"from":114,"to":128,"role":"path","text":"parts/body.tex","requirement":"TX-08"},
+      {"from":167,"to":183,"role":"path","text":"figures/plot.pdf","requirement":"TX-08"}
+    ],
+    "contexts": [{"pos":75,"mode":"text","before":"2]{alpha","after":",beta}\n\\","requirement":"TX-08"}],
+    "outline": []
+  },
+  {
+    "id": "latex-profiles", "kind": "tex", "file": "latex-profiles.tex", "expectations": "target",
+    "origin": {"type":"synthetic","author":"Iris contributors","license":"CC0-1.0"},
+    "syntax": "LaTeX2e 2025-06; internal makeatletter and expl3 profiles",
+    "validity": {"status":"complete","note":"Complete internal and expl3 profile fragments. Internal/expl3 names are single control words only inside their explicit profile toggles."},
+    "requirements": ["TX-09"],
+    "roles": [
+      {"from":0,"to":13,"role":"command","text":"\\makeatletter","requirement":"TX-09"},
+      {"from":18,"to":28,"role":"definition","text":"\\iris@name","requirement":"TX-09"},
+      {"from":35,"to":45,"role":"command","text":"\\iris@name","requirement":"TX-09"},
+      {"from":46,"to":58,"role":"command","text":"\\makeatother","requirement":"TX-09"},
+      {"from":59,"to":72,"role":"command","text":"\\ExplSyntaxOn","requirement":"TX-09"},
+      {"from":73,"to":84,"role":"command","text":"\\cs_new:Npn","requirement":"TX-09"},
+      {"from":85,"to":97,"role":"definition","text":"\\iris_name:n","requirement":"TX-09"},
+      {"from":106,"to":118,"role":"command","text":"\\iris_name:n","requirement":"TX-09"},
+      {"from":126,"to":140,"role":"command","text":"\\ExplSyntaxOff","requirement":"TX-09"}
+    ],
+    "contexts": [{"pos":122,"mode":"text","before":"me:n {Ir","after":"is}\n\\Exp","requirement":"TX-09"}],
+    "outline": []
+  },
+  {
+    "id": "lilypond-core", "kind": "ly", "file": "lilypond-core.ly", "expectations": "target",
+    "origin": {"type":"synthetic","author":"Iris contributors","license":"CC0-1.0"},
+    "syntax": "LilyPond 2.26.0; default nederlands",
+    "validity": {"status":"complete","note":"Complete syntax example; repeated chord q and spacer/full rests. Engraver warnings are outside lexical validity."},
+    "requirements": ["LY-01","LY-02","LY-03","LY-04"],
+    "roles": [
+      {"from":18,"to":34,"role":"comment","text":"% c4 \\score fake","requirement":"LY-01"},
+      {"from":35,"to":55,"role":"comment","text":"%{ block \"string\" %}","requirement":"LY-01"},
+      {"from":63,"to":76,"role":"string","text":"\"Iris \\\"😀\\\"\"","requirement":"LY-01"},
+      {"from":77,"to":83,"role":"definition","text":"melody","requirement":"LY-04"},
+      {"from":99,"to":100,"role":"delimiter","text":"{","requirement":"LY-03"},
+      {"from":103,"to":107,"role":"pitch","text":"cis'","requirement":"LY-02"},
+      {"from":107,"to":109,"role":"duration","text":"4.","requirement":"LY-02"},
+      {"from":110,"to":114,"role":"pitch","text":"bes,","requirement":"LY-02"},
+      {"from":114,"to":119,"role":"duration","text":"8*3/2","requirement":"LY-02"},
+      {"from":120,"to":121,"role":"rest","text":"r","requirement":"LY-02"},
+      {"from":121,"to":122,"role":"duration","text":"4","requirement":"LY-02"},
+      {"from":123,"to":124,"role":"rest","text":"R","requirement":"LY-02"},
+      {"from":124,"to":125,"role":"duration","text":"1","requirement":"LY-02"},
+      {"from":126,"to":127,"role":"rest","text":"s","requirement":"LY-02"},
+      {"from":127,"to":128,"role":"duration","text":"2","requirement":"LY-02"},
+      {"from":129,"to":130,"role":"delimiter","text":"<","requirement":"LY-03"},
+      {"from":130,"to":131,"role":"pitch","text":"c","requirement":"LY-03"},
+      {"from":132,"to":133,"role":"pitch","text":"e","requirement":"LY-03"},
+      {"from":134,"to":135,"role":"pitch","text":"g","requirement":"LY-03"},
+      {"from":135,"to":136,"role":"delimiter","text":">","requirement":"LY-03"},
+      {"from":138,"to":139,"role":"pitch","text":"q","requirement":"LY-02"},
+      {"from":139,"to":140,"role":"duration","text":"8","requirement":"LY-02"},
+      {"from":141,"to":142,"role":"operator","text":"|","requirement":"LY-03"},
+      {"from":145,"to":147,"role":"delimiter","text":"<<","requirement":"LY-03"},
+      {"from":152,"to":153,"role":"articulation","text":"[","requirement":"LY-03"},
+      {"from":155,"to":156,"role":"articulation","text":"]","requirement":"LY-03"},
+      {"from":156,"to":157,"role":"articulation","text":"(","requirement":"LY-03"},
+      {"from":159,"to":160,"role":"articulation","text":")","requirement":"LY-03"},
+      {"from":160,"to":162,"role":"articulation","text":"\\f","requirement":"LY-03"},
+      {"from":162,"to":164,"role":"articulation","text":"\\<","requirement":"LY-03"},
+      {"from":166,"to":168,"role":"articulation","text":"\\!","requirement":"LY-03"},
+      {"from":171,"to":173,"role":"operator","text":"\\\\","requirement":"LY-03"},
+      {"from":178,"to":180,"role":"articulation","text":"->","requirement":"LY-03"},
+      {"from":182,"to":184,"role":"articulation","text":"-.","requirement":"LY-03"},
+      {"from":187,"to":189,"role":"delimiter","text":">>","requirement":"LY-03"},
+      {"from":190,"to":191,"role":"delimiter","text":"}","requirement":"LY-03"},
+      {"from":192,"to":198,"role":"structure","text":"\\score","requirement":"LY-04"},
+      {"from":206,"to":211,"role":"context","text":"Staff","requirement":"LY-04"},
+      {"from":212,"to":219,"role":"variable","text":"\\melody","requirement":"LY-04"}
+    ],
+    "contexts": [
+      {"pos":105,"mode":"music","before":"' {\n  ci","after":"s'4. bes","requirement":"LY-02"},
+      {"pos":40,"mode":"comment","before":"ke\n%{ bl","after":"ock \"str","requirement":"LY-01"}
+    ],
+    "outline": ["\\version \"2.26.0\"","name =","melody = \\relative","Score 1","\\new Staff"]
+  },
+  {
+    "id": "lilypond-modes", "kind": "ly", "file": "lilypond-modes.ly", "expectations": "target",
+    "origin": {"type":"synthetic","author":"Iris contributors","license":"CC0-1.0"},
+    "syntax": "LilyPond 2.26.0",
+    "validity": {"status":"complete","note":"Complete input-mode fragments. Pitch-looking words in lyrics/markup/drums are not pitched music; chord roots are pitches and figure digits are numbers."},
+    "requirements": ["LY-05"],
+    "roles": [
+      {"from":13,"to":21,"role":"lyric","text":"do re mi","requirement":"LY-05"},
+      {"from":22,"to":24,"role":"operator","text":"--","requirement":"LY-05"},
+      {"from":28,"to":30,"role":"operator","text":"__","requirement":"LY-05"},
+      {"from":31,"to":36,"role":"lyric","text":"\"sol\"","requirement":"LY-05"},
+      {"from":49,"to":57,"role":"text","text":"c cis do","requirement":"LY-05"},
+      {"from":58,"to":63,"role":"command","text":"\\bold","requirement":"LY-05"},
+      {"from":64,"to":68,"role":"string","text":"\"re\"","requirement":"LY-05"},
+      {"from":84,"to":85,"role":"pitch","text":"c","requirement":"LY-05"},
+      {"from":85,"to":86,"role":"duration","text":"1","requirement":"LY-05"},
+      {"from":90,"to":91,"role":"number","text":"7","requirement":"LY-05"},
+      {"from":92,"to":93,"role":"pitch","text":"d","requirement":"LY-05"},
+      {"from":110,"to":112,"role":"text","text":"bd","requirement":"LY-05"},
+      {"from":114,"to":116,"role":"text","text":"sn","requirement":"LY-05"},
+      {"from":118,"to":120,"role":"text","text":"hh","requirement":"LY-05"},
+      {"from":138,"to":139,"role":"number","text":"6","requirement":"LY-05"},
+      {"from":140,"to":141,"role":"number","text":"4","requirement":"LY-05"},
+      {"from":145,"to":146,"role":"number","text":"5","requirement":"LY-05"},
+      {"from":147,"to":148,"role":"number","text":"3","requirement":"LY-05"},
+      {"from":164,"to":165,"role":"pitch","text":"c","requirement":"LY-05"},
+      {"from":165,"to":166,"role":"duration","text":"4","requirement":"LY-05"},
+      {"from":167,"to":168,"role":"pitch","text":"d","requirement":"LY-05"}
+    ],
+    "contexts": [
+      {"pos":15,"mode":"lyrics","before":"ode { do","after":" re mi -","requirement":"LY-05"},
+      {"pos":51,"mode":"markup","before":"kup { c ","after":"cis do \\","requirement":"LY-05"},
+      {"pos":85,"mode":"chords","before":"mode { c","after":"1:maj7 d","requirement":"LY-05"},
+      {"pos":111,"mode":"drums","before":"mode { b","after":"d4 sn8 h","requirement":"LY-05"},
+      {"pos":139,"mode":"figures","before":"ode { <6","after":" 4>2 <5 ","requirement":"LY-05"},
+      {"pos":165,"mode":"music","before":"mode { c","after":"4 d }\n","requirement":"LY-05"}
+    ],
+    "outline": ["\\lyricmode","\\markup","\\chordmode","\\drummode","\\figuremode","\\notemode"]
+  },
+  {
+    "id": "lilypond-languages", "kind": "ly", "file": "lilypond-languages.ly", "expectations": "target",
+    "origin": {"type":"synthetic","author":"Iris contributors","license":"CC0-1.0"},
+    "syntax": "LilyPond 2.26.0; nederlands, italiano, english, deutsch",
+    "validity": {"status":"complete","note":"Local analysis records the literal include without resolving it. Subsequent do/re remain neutral text because the pitch language is uncertain; duration, structure and music mode survive. The final explicit local italiano directive restores pitch classification."},
+    "requirements": ["LY-06"],
+    "roles": [
+      {"from":10,"to":22,"role":"string","text":"\"nederlands\"","requirement":"LY-06"},
+      {"from":25,"to":28,"role":"pitch","text":"cis","requirement":"LY-06"},
+      {"from":30,"to":33,"role":"pitch","text":"bes","requirement":"LY-06"},
+      {"from":46,"to":56,"role":"string","text":"\"italiano\"","requirement":"LY-06"},
+      {"from":59,"to":61,"role":"pitch","text":"do","requirement":"LY-06"},
+      {"from":63,"to":66,"role":"pitch","text":"fad","requirement":"LY-06"},
+      {"from":67,"to":70,"role":"pitch","text":"sib","requirement":"LY-06"},
+      {"from":83,"to":92,"role":"string","text":"\"english\"","requirement":"LY-06"},
+      {"from":95,"to":97,"role":"pitch","text":"cs","requirement":"LY-06"},
+      {"from":99,"to":101,"role":"pitch","text":"bf","requirement":"LY-06"},
+      {"from":114,"to":123,"role":"string","text":"\"deutsch\"","requirement":"LY-06"},
+      {"from":126,"to":127,"role":"pitch","text":"h","requirement":"LY-06"},
+      {"from":129,"to":130,"role":"pitch","text":"b","requirement":"LY-06"},
+      {"from":143,"to":155,"role":"path","text":"included.ily","requirement":"LY-06"},
+      {"from":157,"to":158,"role":"delimiter","text":"{","requirement":"LY-06"},
+      {"from":159,"to":161,"role":"text","text":"do","requirement":"LY-06"},
+      {"from":161,"to":162,"role":"duration","text":"4","requirement":"LY-06"},
+      {"from":163,"to":165,"role":"text","text":"re","requirement":"LY-06"},
+      {"from":166,"to":167,"role":"delimiter","text":"}","requirement":"LY-06"},
+      {"from":168,"to":177,"role":"command","text":"\\language","requirement":"LY-06"},
+      {"from":178,"to":188,"role":"string","text":"\"italiano\"","requirement":"LY-06"},
+      {"from":189,"to":190,"role":"delimiter","text":"{","requirement":"LY-06"},
+      {"from":191,"to":193,"role":"pitch","text":"do","requirement":"LY-06"},
+      {"from":193,"to":194,"role":"duration","text":"4","requirement":"LY-06"},
+      {"from":195,"to":197,"role":"pitch","text":"re","requirement":"LY-06"},
+      {"from":198,"to":199,"role":"delimiter","text":"}","requirement":"LY-06"}
+    ],
+    "contexts": [
+      {"pos":161,"mode":"music","before":"ly\"\n{ do","after":"4 re }\n","requirement":"LY-06"},
+      {"pos":193,"mode":"music","before":"no\"\n{ do","after":"4 re }\n","requirement":"LY-06"}
+    ],
+    "outline": ["\\include \"included.ily\""]
+  },
+  {
+    "id": "included", "kind": "ly", "file": "included.ily", "expectations": "target",
+    "origin": {"type":"synthetic","author":"Iris contributors","license":"CC0-1.0"},
+    "syntax": "LilyPond 2.26.0; italiano",
+    "validity": {"status":"complete","note":"Original include fixture; sets italiano and defines motivo. No external include content."},
+    "requirements": ["LY-06"],
+    "roles": [
+      {"from":10,"to":20,"role":"string","text":"\"italiano\"","requirement":"LY-06"},
+      {"from":21,"to":27,"role":"definition","text":"motivo","requirement":"LY-06"},
+      {"from":32,"to":34,"role":"pitch","text":"do","requirement":"LY-06"},
+      {"from":36,"to":38,"role":"pitch","text":"re","requirement":"LY-06"},
+      {"from":39,"to":41,"role":"pitch","text":"mi","requirement":"LY-06"},
+      {"from":42,"to":44,"role":"pitch","text":"fa","requirement":"LY-06"}
+    ],
+    "contexts": [{"pos":34,"mode":"music","before":"o = { do","after":"4 re mi ","requirement":"LY-06"}],
+    "outline": ["motivo ="]
+  },
+  {
+    "id": "included-default", "kind": "ly", "file": "included-default.ily", "expectations": "target",
+    "origin": {"type":"synthetic","author":"Iris contributors","license":"CC0-1.0"},
+    "syntax": "LilyPond 2.26.0; editorial default nederlands",
+    "validity": {"status":"complete","note":"Standalone editor analysis assumes nederlands because this .ily has no local language directive. Compiler meaning can depend on the including file; local analysis does not infer that caller context."},
+    "requirements": ["LY-06"],
+    "roles": [
+      {"from":0,"to":5,"role":"definition","text":"motif","requirement":"LY-06"},
+      {"from":8,"to":9,"role":"delimiter","text":"{","requirement":"LY-06"},
+      {"from":10,"to":13,"role":"pitch","text":"cis","requirement":"LY-06"},
+      {"from":13,"to":14,"role":"duration","text":"4","requirement":"LY-06"},
+      {"from":15,"to":18,"role":"pitch","text":"bes","requirement":"LY-06"},
+      {"from":19,"to":20,"role":"delimiter","text":"}","requirement":"LY-06"}
+    ],
+    "contexts": [{"pos":13,"mode":"music","before":"cis","after":"4 bes }\n","requirement":"LY-06"}],
+    "outline": ["motif ="]
+  },
+  {
+    "id": "lilypond-properties", "kind": "ly", "file": "lilypond-properties.ly", "expectations": "target",
+    "origin": {"type":"synthetic","author":"Iris contributors","license":"CC0-1.0"},
+    "syntax": "LilyPond 2.26.0",
+    "validity": {"status":"complete","note":"Complete context fragment. The with configuration exceeds 240 UTF-16 units; Staff region must reach the music body closer, not the with closer. #red is a Scheme symbol."},
+    "requirements": ["LY-04","LY-07"],
+    "roles": [
+      {"from":5,"to":10,"role":"context","text":"Staff","requirement":"LY-04"},
+      {"from":11,"to":16,"role":"structure","text":"\\with","requirement":"LY-04"},
+      {"from":21,"to":35,"role":"property","text":"instrumentName","requirement":"LY-07"},
+      {"from":47,"to":66,"role":"property","text":"shortInstrumentName","requirement":"LY-07"},
+      {"from":335,"to":344,"role":"command","text":"\\override","requirement":"LY-07"},
+      {"from":345,"to":359,"role":"property","text":"NoteHead.color","requirement":"LY-07"},
+      {"from":362,"to":366,"role":"scheme","text":"#red","requirement":"LY-07"},
+      {"from":369,"to":373,"role":"command","text":"\\set","requirement":"LY-07"},
+      {"from":374,"to":394,"role":"property","text":"Staff.instrumentName","requirement":"LY-07"},
+      {"from":415,"to":420,"role":"context","text":"Voice","requirement":"LY-07"}
+    ],
+    "contexts": [
+      {"pos":73,"mode":"string","before":"e = \"Syn","after":"thetic h","requirement":"LY-04"},
+      {"pos":433,"mode":"music","before":"ead\" { c","after":"4 }\n}\n","requirement":"LY-07"}
+    ],
+    "regions": [
+      {"from":0,"to":438,"label":"\\new Staff","text":"\\new Staff \\with {\n  instrumentName = \"Iris\"\n  shortInstrumentName = \"Synthetic header deliberately longer than two hundred and forty UTF-16 code units: this text exercises context body discovery after a long with configuration, including a quoted brace } and music-like c4 words that remain string data throughout this header.\"\n} {\n  \\override NoteHead.color = #red\n  \\set Staff.instrumentName = \"Solo\"\n  \\context Voice = \"lead\" { c4 }\n}","requirement":"LY-04"}
+    ],
+    "outline": ["\\new Staff","\\context Voice = \"lead\""]
+  },
+  {
+    "id": "lilypond-scheme", "kind": "ly", "file": "lilypond-scheme.ly", "expectations": "target",
+    "origin": {"type":"synthetic","author":"Iris contributors","license":"CC0-1.0"},
+    "syntax": "LilyPond 2.26.0; embedded Guile Scheme",
+    "validity": {"status":"invalid","note":"Deliberately invalid music value with balanced lexical Scheme/music delimiters, including #\\) character and semicolon comment. The Scheme number in music is a lexical probe, not an engravable music value."},
+    "requirements": ["LY-08"],
+    "roles": [
+      {"from":8,"to":10,"role":"delimiter","text":"#(","requirement":"LY-08"},
+      {"from":10,"to":14,"role":"scheme","text":"list","requirement":"LY-08"},
+      {"from":15,"to":19,"role":"scheme","text":"'tag","requirement":"LY-08"},
+      {"from":20,"to":22,"role":"number","text":"12","requirement":"LY-08"},
+      {"from":23,"to":27,"role":"string","text":"\"c4\"","requirement":"LY-08"},
+      {"from":28,"to":31,"role":"scheme","text":"#\\)","requirement":"LY-08"},
+      {"from":32,"to":43,"role":"comment","text":"; ) comment","requirement":"LY-08"},
+      {"from":46,"to":48,"role":"delimiter","text":"#{","requirement":"LY-08"},
+      {"from":49,"to":50,"role":"pitch","text":"c","requirement":"LY-08"},
+      {"from":50,"to":51,"role":"duration","text":"4","requirement":"LY-08"},
+      {"from":52,"to":53,"role":"pitch","text":"d","requirement":"LY-08"},
+      {"from":54,"to":56,"role":"delimiter","text":"#}","requirement":"LY-08"},
+      {"from":66,"to":68,"role":"delimiter","text":"$(","requirement":"LY-08"},
+      {"from":84,"to":91,"role":"scheme","text":"#'(a b)","requirement":"LY-08"}
+    ],
+    "contexts": [
+      {"pos":12,"mode":"scheme","before":"e = #(li","after":"st 'tag ","requirement":"LY-08"},
+      {"pos":36,"mode":"comment","before":"#\\) ; ) ","after":"comment\n","requirement":"LY-08"},
+      {"pos":50,"mode":"music","before":"t\n  #{ c","after":"4 d #})\n","requirement":"LY-08"},
+      {"pos":56,"mode":"scheme","before":" c4 d #}","after":")\nother ","requirement":"LY-08"},
+      {"pos":107,"mode":"music","before":"+ 1 2) d","after":"4 }\n","requirement":"LY-08"}
+    ],
+    "outline": ["value =","other =","quoted ="]
+  },
+  {
+    "id": "lilypond-incomplete", "kind": "ly", "file": "lilypond-incomplete.ly", "expectations": "target",
+    "origin": {"type":"synthetic","author":"Iris contributors","license":"CC0-1.0"},
+    "syntax": "LilyPond 2.26.0",
+    "validity": {"status":"incomplete","note":"Deliberately open music brace and escaped, unterminated Unicode string; EOF remains in string."},
+    "requirements": ["LY-01"],
+    "roles": [{"from":5,"to":22,"role":"string","text":"\"unfinished \\\"😀\n","requirement":"LY-01"}],
+    "contexts": [
+      {"pos":21,"mode":"string","before":"hed \\\"😀","after":"\n","requirement":"LY-01"},
+      {"pos":22,"mode":"string","before":"\n","after":"","requirement":"LY-01"}
+    ],
+    "outline": []
+  },
+  {
+    "id": "lilypond-scheme-incomplete", "kind": "ly", "file": "lilypond-scheme-incomplete.ly", "expectations": "target",
+    "origin": {"type":"synthetic","author":"Iris contributors","license":"CC0-1.0"},
+    "syntax": "LilyPond 2.26.0; embedded Guile Scheme",
+    "validity": {"status":"incomplete","note":"Deliberately unclosed Scheme list inside unclosed music. Character #\\) and comment parentheses do not close Scheme; EOF remains Scheme."},
+    "requirements": ["LY-08"],
+    "roles": [
+      {"from":12,"to":15,"role":"scheme","text":"#\\)","requirement":"LY-08"},
+      {"from":16,"to":20,"role":"string","text":"\"ok\"","requirement":"LY-08"},
+      {"from":21,"to":34,"role":"comment","text":"; unmatched (","requirement":"LY-08"},
+      {"from":37,"to":43,"role":"scheme","text":"'(a b)","requirement":"LY-08"}
+    ],
+    "contexts": [
+      {"pos":43,"mode":"scheme","before":"  '(a b)","after":"\n","requirement":"LY-08"},
+      {"pos":44,"mode":"scheme","before":"\n","after":"","requirement":"LY-08"}
+    ],
+    "outline": []
+  },
+  {
+    "id": "lilypond-comment-incomplete", "kind": "ly", "file": "lilypond-comment-incomplete.ly", "expectations": "target",
+    "origin": {"type":"synthetic","author":"Iris contributors","license":"CC0-1.0"},
+    "syntax": "LilyPond 2.26.0",
+    "validity": {"status":"incomplete","note":"Deliberately unterminated block comment and outer music; fake score stays comment and is absent from outline."},
+    "requirements": ["LY-01"],
+    "roles": [{"from":5,"to":33,"role":"comment","text":"%{ unfinished\n\\score { d4 }\n","requirement":"LY-01"}],
+    "contexts": [
+      {"pos":22,"mode":"comment","before":"shed\n\\sc","after":"ore { d4","requirement":"LY-01"},
+      {"pos":33,"mode":"comment","before":"\n","after":"","requirement":"LY-01"}
+    ],
+    "outline": []
+  }
+]

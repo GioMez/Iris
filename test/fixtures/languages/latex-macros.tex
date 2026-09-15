@@ -1,0 +1,8 @@
+\newcommand{\hello}[1]{Hello #1}
+\def\pair#1#2{#1+#2}
+\NewDocumentCommand{\greet}{O{world} m}{#1 #2}
+\newenvironment{boxnote}{\begingroup}{\endgroup}
+\NewDocumentEnvironment{aside}{m}{#1}{}
+\hello{Iris} \pair{a}{b} \greet{reader}
+\newcommand{\hidden}{\section{Definition fake}}
+\hidden

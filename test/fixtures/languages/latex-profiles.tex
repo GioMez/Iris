@@ -1,0 +1,8 @@
+\makeatletter
+\def\iris@name{Iris}
+\iris@name
+\makeatother
+\ExplSyntaxOn
+\cs_new:Npn \iris_name:n #1 {#1}
+\iris_name:n {Iris}
+\ExplSyntaxOff

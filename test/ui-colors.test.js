@@ -60,6 +60,39 @@ function violations(file, source) {
   return issues;
 }
 
+// Repository-relative paths; keep exceptions at this boundary so direct scans
+// and the filesystem walk exercise the same policy.
+function runtimeViolations(file, source) {
+  file = file.replace(/\\/g, "/");
+  const brand = new Set(["public/iris_logo.svg", "public/iris_logo_w.svg", "public/iris_text_logo_w.svg"]);
+  if (brand.has(file)) return [];
+  // Only the server-assigned identity array is exempt, not UI fallbacks.
+  if (file === "src/collab.js") source = source.replace(/const PEER_COLORS = \[[\s\S]*?\];/, "");
+  return violations(file, source);
+}
+
+test("known artwork exceptions accept POSIX and Windows relative paths only", () => {
+  for (const separator of ["/", "\\"]) {
+    for (const name of ["iris_logo.svg", "iris_logo_w.svg", "iris_text_logo_w.svg"]) {
+      assert.deepEqual(runtimeViolations(`public${separator}${name}`, '<svg fill="#fff"/>'), []);
+      assert.equal(runtimeViolations(`public${separator}icons${separator}${name}`, '<svg fill="#fff"/>').length, 1);
+    }
+    assert.equal(runtimeViolations(`public${separator}ordinary.svg`, '<svg fill="#fff"/>').length, 1);
+  }
+});
+
+test("peer array exception is path-independent and cannot hide ordinary UI paint", () => {
+  const peers = 'const PEER_COLORS = ["#123456", "coral"];';
+  for (const separator of ["/", "\\"]) {
+    const file = `src${separator}collab.js`;
+    assert.deepEqual(runtimeViolations(file, peers), []);
+    assert.deepEqual(runtimeViolations(file, peers + '\nnode.style.color = "#abcdef";'), ["#abcdef"]);
+    assert.deepEqual(runtimeViolations(file, 'const UI_COLORS = ["#123456"];'), ["#123456"]);
+    assert.ok(runtimeViolations(`src${separator}other.js`, peers).length > 0);
+    assert.ok(runtimeViolations(`src${separator}nested${separator}collab.js`, peers).length > 0);
+  }
+});
+
 test("color contract detects new literals including encoded UI SVG colors", () => {
   for (const value of ["#abc", "rgba(1,2,3,.5)", "red", "cornflowerblue", "oklch(50% .1 30)", "url(\"data:image/svg+xml,stroke='%239aa5ce'\")"]) {
     assert.equal(violations("test.css", `.control{background:${value}}`).length, 1, value);
@@ -74,18 +107,14 @@ test("color contract detects new literals including encoded UI SVG colors", () =
 
 test("first-party runtime colors are palette primitives or individually documented exceptions", () => {
   const failures = [];
-  const brand = new Set(["public/iris_logo.svg", "public/iris_logo_w.svg", "public/iris_text_logo_w.svg"]);
   function walk(directory) {
     for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
       if (entry.name === "vendor") continue;
       const absolute = path.join(directory, entry.name), relative = path.relative(root, absolute);
       if (entry.isDirectory()) walk(absolute);
-      else if (/\.(?:css|js|html|svg)$/.test(entry.name) && !brand.has(relative)) {
-        let source = fs.readFileSync(absolute, "utf8");
-        // Server-assigned peer identities are incoming data at the UI boundary.
-        // Only that named array is exempt; a UI fallback elsewhere still fails.
-        if (relative === "src/collab.js") source = source.replace(/const PEER_COLORS = \[[\s\S]*?\];/, "");
-        failures.push(...violations(relative, source).map((issue) => `${relative}: ${issue}`));
+      else if (/\.(?:css|js|html|svg)$/.test(entry.name)) {
+        const source = fs.readFileSync(absolute, "utf8");
+        failures.push(...runtimeViolations(relative, source).map((issue) => `${relative}: ${issue}`));
       }
     }
   }
