@@ -1,17 +1,45 @@
 @top Document { item* }
 
-item { Group | Math | LineComment | Verb | Verbatim | ControlWord | HeadingCommand | ControlSymbol | Text | Space }
+item { Group | OptionalGroup | OptionalArgument | DefaultArgument | HeadingGroup | TextGroup | LabelGroup | ReferenceGroup | ReferenceListGroup | CitationGroup | PathGroup | PathListGroup | DefinitionGroup | BodyGroup | SpecGroup |
+  Math | Environment | End | LineComment | Verb | Verbatim | ControlWord | DefinitionWord |
+  HeadingCommand | CatalogCommand | ProfileCommand | ControlSymbol | DefinitionSymbol | ParameterDelimiter | LiteralHeaderSpace | LiteralHeaderNewline | Text | Space | MathText | Number | Operator | Parameter | ReferenceText | CitationText | PathText | DefinitionText }
 Group { OpenBrace item* CloseBrace }
+OptionalGroup { OptionalOpen item* OptionalClose }
+OptionalArgument { ArgumentOpen item* OptionalClose }
+DefaultArgument { DefaultOpen item* OptionalClose }
+HeadingGroup { HeadingOpen item* CloseBrace }
+TextGroup { TextOpen item* CloseBrace }
+ReferenceGroup { ReferenceOpen item* CloseBrace }
+LabelGroup { LabelOpen item* CloseBrace }
+ReferenceListGroup { ReferenceListOpen item* CloseBrace }
+CitationGroup { CitationOpen item* CloseBrace }
+PathGroup { PathOpen item* CloseBrace }
+PathListGroup { PathListOpen item* CloseBrace }
+DefinitionGroup { DefinitionOpen item* CloseBrace }
+BodyGroup { BodyOpen item* CloseBrace }
+SpecGroup { SpecOpen item* CloseBrace }
 Math { MathOpen item* MathClose }
-LineComment { CommentStart CommentText* CommentEnd }
+Environment { Begin BodyStart item* (EnvironmentClose | MissingEnd) }
+Begin { BeginCommand (HeaderSpace | LineComment)* EnvOpen EnvironmentName EnvClose }
+EnvironmentName { NameChunk+ }
+End { EndCommand (HeaderSpace | LineComment)* EnvOpen EnvironmentName (EndClose | OrphanClose) }
+LineComment { CommentStart CommentText* (CommentEnd | HeaderCommentEnd) }
 Verb { VerbOpen LiteralText* (VerbClose | VerbBreak) }
-Verbatim { VerbatimOpen LiteralText* VerbatimClose }
+Verbatim { Begin LiteralHeaderStart item* LiteralStart (LiteralText | LiteralSpace | LiteralNewline | RejectedEnd)* LiteralEnd }
+LiteralEndHeader { LiteralEndCommand EnvOpen EnvironmentName EnvClose }
+LiteralEnd { LiteralEndHeader LiteralEndSpace* LiteralEndLine }
+RejectedEnd { LiteralEndHeader LiteralEndSpace* LiteralRejected }
 ControlWord { CommandStart CommandPart* CommandEnd }
+DefinitionWord { DefinitionStart CommandPart* CommandEnd }
 
 @external tokens tokens from "./tokens.mjs" {
   OpenBrace, CloseBrace, MathOpen, MathClose,
-  CommentStart, CommentText, CommentEnd,
-  VerbOpen, VerbClose, VerbBreak, VerbatimOpen, VerbatimClose, LiteralText,
-  CommandStart, CommandPart, CommandEnd, HeadingCommand, ControlSymbol, Text, Space
+  OptionalOpen, ArgumentOpen, DefaultOpen, OptionalClose, HeadingOpen, TextOpen, LabelOpen, ReferenceOpen, ReferenceListOpen, CitationOpen, PathOpen, PathListOpen, DefinitionOpen, BodyOpen, SpecOpen,
+  BeginCommand, EndCommand, HeaderSpace, EnvOpen, NameChunk, EnvClose, EndClose, OrphanClose, BodyStart, EnvironmentClose, MissingEnd, LiteralHeaderStart, LiteralStart,
+  LiteralEndCommand, LiteralEndSpace, LiteralEndLine, LiteralRejected, LiteralHeaderSpace, LiteralHeaderNewline,
+  CommentStart, CommentText, CommentEnd, HeaderCommentEnd,
+  VerbOpen, VerbClose, VerbBreak, LiteralText, LiteralSpace, LiteralNewline, ParameterDelimiter,
+  CommandStart, DefinitionStart, CommandPart, CommandEnd, HeadingCommand, CatalogCommand, ProfileCommand, ControlSymbol, DefinitionSymbol, Text, Space,
+  MathText, Number, Operator, Parameter, ReferenceText, CitationText, PathText, DefinitionText
 }
 @context context from "./tokens.mjs"

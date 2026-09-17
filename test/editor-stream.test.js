@@ -1,4 +1,4 @@
-// Explicit syntax expectations for the tokenizers used by the mounted editor.
+// Explicit syntax expectations for mounted paths and the retained legacy TeX stream.
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -94,7 +94,7 @@ const syntaxCorpora = {
 for (const [kind, fragments] of Object.entries(syntaxCorpora)) {
   const text = fragments.map(([value]) => value).join("");
   const expected = fragments.flatMap(([value, style]) => value.split("").map(char => char === "\n" ? null : style));
-  test(`${kind} tokens cover commands, delimiters, escapes, multiline and Unicode source in real CodeMirror`, async () => {
+  test(`${kind === "latex" ? "legacy latex" : kind} tokens cover commands, delimiters, escapes, multiline and Unicode source in real CodeMirror`, async () => {
     const { stream } = loadSyntaxModules()[kind];
     assert.deepEqual(streamClasses(stream, text), expected);
     const { StreamLanguage, highlightTree, legacyTokenTable: tokenTable, roleHighlighter, cssHighlighter } = await highlighting();
@@ -112,7 +112,7 @@ for (const [kind, fragments] of Object.entries(syntaxCorpora)) {
     }
   });
 
-  test(`${kind} every in-progress prefix advances and copied multiline states branch independently`, () => {
+  test(`${kind === "latex" ? "legacy latex" : kind} every in-progress prefix advances and copied multiline states branch independently`, () => {
     const spec = loadSyntaxModules()[kind].stream;
     for (let end = 0; end <= text.length; end++) {
       const state = spec.startState();
@@ -132,6 +132,33 @@ for (const [kind, fragments] of Object.entries(syntaxCorpora)) {
     }
   });
 }
+
+test("mounted TeX extension uses guarded Lezer with separate math roles across replacements and size crossings", async () => {
+  const { createTexHighlighting } = await import("../public/iris-tex-highlighting.mjs");
+  const { EditorState, Compartment, ensureSyntaxTree, syntaxTreeAvailable, highlightTree, roleHighlighter } = await highlighting();
+  const tex = await createTexHighlighting();
+  const compartment = new Compartment();
+  let state = EditorState.create({ doc: "$x+1$", extensions: [compartment.of(tex())] });
+  const semantic = () => {
+    const tree = ensureSyntaxTree(state, state.doc.length, 1000), result = Array(state.doc.length).fill("text");
+    if (tree) highlightTree(tree, roleHighlighter, (from, to, role) => result.fill(role, from, to));
+    return result;
+  };
+  assert.deepEqual(semantic(), ["delimiter", "math", "operator", "number", "delimiter"]);
+  state = state.update({ changes: { from: 0, to: 5, insert: "x".repeat(1048577) }, filter: false }).state;
+  const skipped = ensureSyntaxTree(state, state.doc.length, 10);
+  assert.ok(!skipped || !skipped.type.name && skipped.children.length === 0, "CM may return an anonymous skipping placeholder, never a TeX tree");
+  assert.equal(syntaxTreeAvailable(state, state.doc.length), false);
+  state = state.update({ changes: { from: 0, to: state.doc.length, insert: "$y_2$" }, filter: false }).state;
+  assert.deepEqual(semantic(), ["delimiter", "math", "operator", "number", "delimiter"]);
+  state = state.update({ effects: compartment.reconfigure([]) }).state;
+  assert.deepEqual(semantic(), Array(5).fill("text"));
+  state = state.update({ effects: compartment.reconfigure(tex()) }).state;
+  assert.deepEqual(semantic(), ["delimiter", "math", "operator", "number", "delimiter"]);
+  // The factory is also used on setState/load: each installation owns its life.
+  state = EditorState.create({ doc: "$z^3$", extensions: [tex()] });
+  assert.deepEqual(semantic(), ["delimiter", "math", "operator", "number", "delimiter"]);
+});
 
 const bibliographyCorpora = [
   ["bib", '\uFEFF% outside\r\n@book{key\u{1f600},\r\n title={A {nested \\} tail},\r\n year=2026, custom=macro # "open\r\n% literal',

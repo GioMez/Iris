@@ -410,7 +410,7 @@ async function renderedContrast(page, selector, { pseudo = null, shadow = false,
 }
 
 for (const theme of ["dark", "light"]) {
-  test(`HP02 ${theme}: mounted stream roles, local ESM delivery and stacked peer/search paint`, { ...options, timeout: 60000 }, async (t) => {
+  test(`HP02 ${theme}: mounted parser roles, local ESM delivery and stacked peer/search paint`, { ...options, timeout: 60000 }, async (t) => {
     const { page, syntaxAssets } = await pageFor(t, { ...variants[0], theme });
     assert.deepEqual(syntaxAssets.map(asset => ({ ...asset, type: asset.type.split(';')[0] })),
       [{ url: new URL('/iris-syntax-style.mjs', base).href, status: 200, type: 'application/javascript' }]);
@@ -420,7 +420,7 @@ for (const theme of ["dark", "light"]) {
     const corpus = loadFixtures();
     const documents = [
       { kind: 'tex', text: corpus.find(f => f.id === 'latex-core').source + '\\begin{document}\n$x+1$\n\\end{document}\n',
-        tokens: [['command', '\\section*'], ['environment', 'document'], ['delimiter', '{'], ['operator', '~'], ['math', '$x+1$'], ['comment', '% commento']] },
+         tokens: [['structure', '\\section*'], ['command', '\\includegraphics'], ['environment', 'document'], ['delimiter', '$'], ['operator', '+'], ['math', 'x'], ['number', '1'], ['path', 'image.pdf'], ['comment', '% commento']] },
       { kind: 'ly', text: corpus.find(f => f.id === 'lilypond-core').source,
         tokens: [['command', '\\version'], ['string', '"2.26.0"'], ['delimiter', '{'], ['comment', '% c4 \\score fake']] },
     ];
@@ -589,6 +589,81 @@ for (const theme of ["dark", "light"]) {
     t.diagnostic(`HP02 palette-only ${theme}: ${samples.length} samples; minimum ${Math.min(...samples.map(s => s.ratio)).toFixed(3)}:1`);
   });
 }
+
+test('HP04 mounted TeX guard, reload, reconfiguration, read-only and collaboration lifecycle', { ...options, timeout: 60000 }, async t => {
+  const { page } = await pageFor(t, variants[0]);
+  await selectFile(page, 'draft');
+  const result = await page.evaluate(async () => {
+    const { EditorView } = await import('@codemirror/view');
+    const { ensureSyntaxTree, syntaxTreeAvailable } = await import('@codemirror/language');
+    const { highlightTree } = await import('@lezer/highlight');
+    const { roleHighlighter } = await import('./iris-syntax-style.mjs');
+    const view = EditorView.findFromDOM(document.querySelector('.cm-editor'));
+    const roles = () => {
+      const tree = ensureSyntaxTree(view.state, view.state.doc.length, 1000), result = Array(view.state.doc.length).fill('text');
+      if (tree) highlightTree(tree, roleHighlighter, (from, to, role) => result.fill(role, from, to));
+      return result;
+    };
+    const guarded = () => {
+      const tree = ensureSyntaxTree(view.state, view.state.doc.length, 5);
+      return (!tree || !tree.type.name && tree.children.length === 0) && !syntaxTreeAvailable(view.state, view.state.doc.length);
+    };
+    const result = [];
+    for (const text of ['$x+1$', '$y_2$']) { IrisEditor.load(text, 'tex'); result.push(roles()); }
+    IrisEditor.setLanguage('ly'); result.push(roles());
+    IrisEditor.setLanguage('tex'); result.push(roles());
+    view.dispatch({ changes: { from: 0, to: 5, insert: 'x'.repeat(1048577) }, filter: false });
+    result.push({ guarded: guarded(), covered: syntaxTreeAvailable(view.state, view.state.doc.length) });
+    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: '$z^3$' }, filter: false });
+    result.push(roles());
+    IrisEditor.load('x'.repeat(1048577), 'tex');
+    result.push({ guarded: guarded() });
+    IrisEditor.loadCollab('$a=4$', 'tex', { version: 0 }); result.push(roles());
+    IrisEditor.setReadOnly(true);
+    result.push({ readonly: view.state.readOnly, edit: IrisEditor.applyChanges([{ from: 1, to: 2, insert: 'b' }], IrisEditor.snapshot()) });
+    IrisEditor.setReadOnly(false);
+    IrisEditor.load('$b+5$', 'tex'); result.push(roles());
+    return result;
+  });
+  const math = ['delimiter', 'math', 'operator', 'number', 'delimiter'];
+  assert.deepEqual(result, [math, math, Array(5).fill('text'), math, { guarded: true, covered: false }, math, { guarded: true }, math, { readonly: true, edit: 'readonly' }, math]);
+  await page.locator('.cm-content .t-math').filter({ hasText: 'b' }).waitFor({ state: 'attached' });
+  assert.equal(await page.locator('.cm-content .t-number').textContent(), '5');
+});
+
+test('HP04 mounted review: literal-prefix edits refresh roles and prototype environment names remain editable', { ...options, timeout: 60000 }, async t => {
+  const { page } = await pageFor(t, variants[0]);
+  await selectFile(page, 'draft');
+  const result = await page.evaluate(async () => {
+    const { EditorView } = await import('@codemirror/view');
+    const { ensureSyntaxTree } = await import('@codemirror/language');
+    const { highlightTree } = await import('@lezer/highlight');
+    const { roleHighlighter } = await import('./iris-syntax-style.mjs');
+    const { loadLanguage } = await import('./iris-language-service.mjs');
+    const adapter = await loadLanguage('tex'), view = EditorView.findFromDOM(document.querySelector('.cm-editor'));
+    const text = '\\begin{minted}{tex}\nX' + ' '.repeat(5000) + '\\end{minted}\n\\section{Visible}\n' + 'literal body '.repeat(800) + '\n\\end{minted}\n\\section{Tail}';
+    IrisEditor.load(text, 'tex');
+    const before = ensureSyntaxTree(view.state, view.state.doc.length, 2000);
+    const initial = adapter.summarize(before, view.state.doc).outline.map(x => x.title);
+    view.dispatch({ changes: { from: 20, to: 21, insert: ' ' }, filter: false });
+    const tree = ensureSyntaxTree(view.state, view.state.doc.length, 2000), pos = text.indexOf('\\section{Visible}');
+    const updated = adapter.summarize(tree, view.state.doc).outline.map(x => x.title);
+    let role = 'text';
+    highlightTree(tree, roleHighlighter, (from, to, value) => { if (from <= pos && pos < to) role = value; });
+    const mode = adapter.contextAt(tree, view.state.doc, pos).mode;
+    const environments = [];
+    for (const name of ['constructor', 'toString', '__proto__']) {
+      IrisEditor.load(`\\begin{${name}}x\\end{${name}}`, 'tex');
+      const tree = ensureSyntaxTree(view.state, view.state.doc.length, 1000);
+      environments.push(adapter.summarize(tree, view.state.doc).regions.map(x => [x.name, x.certainty]));
+    }
+    IrisEditor.replaceRange(view.state.doc.length, view.state.doc.length, '\n\\section{After}');
+    return { initial, updated, role, mode, environments, edited: IrisEditor.getValue().endsWith('\\section{After}') };
+  });
+  assert.deepEqual(result, { initial: ['Tail'], updated: ['Visible', 'Tail'], role: 'structure', mode: 'text',
+    environments: [[['constructor', 'exact']], [['toString', 'exact']], [['__proto__', 'exact']]], edited: true });
+  await page.locator('.cm-content .t-structure').filter({ hasText: '\\section' }).waitFor({ state: 'attached' });
+});
 
 test("R10 light peer initials and marker boundaries remain readable for fallback and bright identities", options, async (t) => {
   const { page, fixture } = await pageFor(t, { ...variants[0], theme: "light" });

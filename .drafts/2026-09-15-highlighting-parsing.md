@@ -6,7 +6,10 @@ Trasferimento richiesto dall'utente il 17 settembre 2026.
 
 **Allineamento al 17 settembre:** l'utente ha autorizzato HP-03…HP-08 con commit
 su `main` per ogni punto completato. HP-03 ha completato implementazione e
-revisione: gate richiesto 38/38, controlli adiacenti 40/40, build/check riproducibili.
+revisione ed è integrato in `c510f5b`: gate richiesto 38/38, controlli adiacenti
+40/40, build/check riproducibili. HP-04 ha completato la revisione del parser
+LaTeX e dell'highlighting montato; la selezione iniziale dei profili da estensione
+`.sty/.cls` resta un collegamento esplicito da chiudere in HP-07.
 La prova ha portato a una policy esplicita di
 analisi limitata oltre 1.048.576 unità UTF-16; il limite e le latenze ordinarie
 richiedono la qualifica nell'editor montato. La personalizzazione di temi/colori
@@ -495,6 +498,13 @@ ridotta, ma la prova deve includere i contesti difficili indicati.
 
 ## HP-04: parser LaTeX e copertura dei contesti
 
+**Avanzamento:** implementazione e revisione completate il 17 settembre.
+Corpus TX annotato e casi indipendenti verificati. Gate completo 124/124 e
+browser mirato 6/6; dopo l'ultima correzione alle query, gate coprente 75/75.
+La revisione ha incluso riuso reale dei sottoalberi, commenti negli header,
+nomi personalizzati, codice differito nelle definizioni e lavoro limitato per
+step/query. I consumatori legacy restano previsti per HP-07.
+
 **File:** completare i moduli `public/languages/latex/`, creare
 `test/latex-language.test.js`, aggiornare `test/editor-stream.test.js`,
 `public/iris-editor.js` per l'attivazione del solo highlighting LaTeX.
@@ -504,7 +514,7 @@ ridotta, ma la prova deve includere i contesti difficili indicati.
 **Produce:** adapter TeX con grammatica e query TX-01…TX-09; il servizio espone
 `data` da `analyze()` per test e futura migrazione dei consumatori.
 
-- [ ] Scrivere prima i test di protezione di commenti e literal. Esempio:
+- [x] Scrivere prima i test di protezione di commenti e literal. Esempio:
 
 ```js
 const {analyze} = await import('../public/iris-language-service.mjs');
@@ -514,18 +524,18 @@ assert.deepEqual(result.data.outline.map(item => item.title), ['Vera']);
 assert.equal(result.data.regions.some(item => item.label === 'Esempio'), false);
 ```
 
-- [ ] Implementare gruppi, control word/symbol, commenti ed escape. I tokenizer
+- [x] Implementare gruppi, control word/symbol, commenti ed escape. I tokenizer
   contestuali devono consumare input oppure non accettare un token: nessun loop
   a lunghezza zero. Distinguere lettere normali, profilo interno e profilo expl3.
-- [ ] Implementare le quattro coppie matematiche e gli ambienti TX-03. Gestire
+- [x] Implementare le quattro coppie matematiche e gli ambienti TX-03. Gestire
   `%` prima di cercare la chiusura matematica; `\text` crea un gruppo di testo
   che può contenere matematica annidata. Applicare tag ai figli, non a un nodo
   genitore con selettore che sovrascrive tutta la formula.
-- [ ] Implementare `verb` e ambienti TX-04, rispettando argomenti dell'apertura,
+- [x] Implementare `verb` e ambienti TX-04, rispettando argomenti dell'apertura,
   escape e regole di chiusura proprie di ciascun ambiente. Le stringhe
   `\end{…}` in un corpo letterale devono seguire il suo delimitatore reale,
   non il matcher generale degli ambienti. Provare righe vuote e fine file.
-- [ ] Definire il catalogo delle firme con ruoli e contesti; schema iniziale:
+- [x] Definire il catalogo delle firme con ruoli e contesti; schema iniziale:
 
 ```js
 export const commandSignatures = {
@@ -542,17 +552,17 @@ export const commandSignatures = {
   Segnalare come `unknown` gli argomenti dinamici, riconoscendo almeno le forme
   braced di include richieste. Le forme TeX senza parentesi possono restare
   comando generico finché non hanno una fixture dedicata.
-- [ ] Estrarre indice e regioni dallo stesso albero, con titoli annidati,
+- [x] Estrarre indice e regioni dallo stesso albero, con titoli annidati,
   sette ranghi, stelle e argomenti brevi. Ignorare commenti/literal e corpi di
   definizione quando si estraggono elementi di documento. Gli ambienti chiusi
   male restituiscono regioni `recovered`, mai intervalli fuori documento.
-- [ ] Aggiungere raccolta di simboli, riferimenti e include letterali; verificare
+- [x] Aggiungere raccolta di simboli, riferimenti e include letterali; verificare
   che macro/xparse mantengano i nomi già suggeriti dalla versione corrente.
   Includere dichiarazioni Unicode, `@`, `_`, `:` solo nel profilo corretto.
-- [ ] Confrontare ogni prefisso delle fixture corte e sequenze di riparazione
+- [x] Confrontare ogni prefisso delle fixture corte e sequenze di riparazione
   con il parsing da zero. Aggiungere `\begin{a}\begin{a}…\end{a}`,
   `\begin{a}…\end{b}`, CRLF e caratteri astrali prima delle strutture.
-- [ ] Attivare l'adapter LaTeX nell'editor, mantenendo LilyPond/BibTeX/RIS sugli
+- [x] Attivare l'adapter LaTeX nell'editor, mantenendo LilyPond/BibTeX/RIS sugli
   stream finché non arriva il loro task. Aggiornare i test del percorso montato:
   le aspettative nuove devono verificare i ruoli interni delle formule.
 

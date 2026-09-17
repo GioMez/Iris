@@ -89,7 +89,7 @@ test("language archive retains generator inputs/runtime and regenerates without 
   const repo = path.resolve(__dirname, "..");
   const languageFiles = ["scripts/build-languages.cjs", "public/iris-language-service.mjs", "public/iris-language-state.mjs", "public/iris-syntax-style.mjs",
     "public/iris-language-policy.mjs", "public/iris-language-tasks.mjs",
-    ...["latex.grammar", "tokens.mjs", "catalog.mjs", "queries.mjs", "reuse.mjs", "index.mjs", "parser.mjs", "parser.terms.mjs"].map(name => `public/languages/latex/${name}`),
+    ...["latex.grammar", "tokens.mjs", "names.mjs", "catalog.mjs", "queries.mjs", "reuse.mjs", "index.mjs", "parser.mjs", "parser.terms.mjs"].map(name => `public/languages/latex/${name}`),
     "test/fixtures/languages/lilypond-boundaries.grammar"];
   for (const name of [...languageFiles, "package.json", "package-lock.json"]) {
     await fs.mkdir(path.dirname(path.join(f.source, name)), { recursive: true });

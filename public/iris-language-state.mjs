@@ -31,6 +31,17 @@ function captureSyntax(state) {
   return { tree, parsedTo, ready: parsedTo === state.doc.length && syntaxTreeAvailable(state, state.doc.length) };
 }
 
+/** Shared installation guard. Also usable for highlighting before HP07 installs
+ * a summary owner. A Language has no disposable jobs, so setState may reuse it. */
+export function createGuardedLanguage(adapter) {
+  return new Language(adapter.language.data, new class extends Parser {
+    createParse(input, fragments, ranges) {
+      const parser = analysisPolicy(input.length).mode === "limited" ? ParseContext.getSkippingParser() : adapter.language.parser;
+      return parser.startParse(input, fragments, ranges);
+    }
+  }, [], adapter.language.name);
+}
+
 /** One owner per editor. StateField stores identity in transactions; ViewPlugin
  * observes committed states. Headless callers use update(state) or read(state).
  *
@@ -52,12 +63,7 @@ export function createLanguageState(adapter, onSyntax, hooks = {}) {
   // skipping parser records unparsed ranges, so syntaxTreeAvailable stays false.
   // This also guards initial creation, growth past the limit and filter:false
   // remote changes; observing a transaction afterwards would be too late.
-  const boundedLanguage = new Language(adapter.language.data, new class extends Parser {
-    createParse(input, fragments, ranges) {
-      const parser = analysisPolicy(input.length).mode === "limited" ? ParseContext.getSkippingParser() : adapter.language.parser;
-      return parser.startParse(input, fragments, ranges);
-    }
-  }, [], adapter.language.name);
+  const boundedLanguage = createGuardedLanguage(adapter);
   const identityEffect = StateEffect.define();
   const identity = StateField.define({
     create: () => Object.freeze({ revision: 0, generation }),

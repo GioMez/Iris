@@ -278,8 +278,8 @@ test("summary prunes scalar visitor work while preserving nested regions and rec
   let count = 0, data;
   for (;;) { const step = steps.next(); if (step.done) { data = step.value; break; } count++; }
   assert.ok(count < 100, `scalar text should not require ${count} visitor yields`);
-  assert.deepEqual(data.outline, [{ level: 2, num: "", title: "A {B}", offset: 4000, to: 4015, certainty: "exact" }]);
-  assert.deepEqual(data.regions.map(r => [r.from, r.to, r.certainty, r.openEnded]), [[4008, 4015, "exact", false], [4011, 4014, "exact", false], [4016, 4021, "recovered", true]]);
+  assert.deepEqual(data.outline, [{ level: 2, num: "1", title: "A {B}", offset: 4000, to: 4015, certainty: "exact" }]);
+  assert.deepEqual(data.regions.map(r => [r.from, r.to, r.certainty, r.openEnded]), [[4000, 4021, "exact", false], [4008, 4015, "exact", false], [4011, 4014, "exact", false], [4016, 4021, "recovered", true]]);
 });
 
 test("direct queries refuse oversized summary traversal and return conservative contexts", async () => {

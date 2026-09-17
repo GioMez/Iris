@@ -64,7 +64,7 @@
   }
 
   async function createCodeMirror() {
-    const [S, V, L, C, syntaxStyle, CO, A] = await Promise.all([
+    const [S, V, L, C, syntaxStyle, CO, A, texHighlighting] = await Promise.all([
       import("@codemirror/state"),
       import("@codemirror/view"),
       import("@codemirror/language"),
@@ -72,6 +72,7 @@
       import("./iris-syntax-style.mjs"),
       import("@codemirror/collab"),
       import("@codemirror/autocomplete"),
+      import("./iris-tex-highlighting.mjs"),
     ]);
 
     const { legacyTokenTable, bibliographyTokenTable, syntaxExtension } = syntaxStyle;
@@ -83,7 +84,9 @@
       tokenTable,
     });
     const languages = {
-      tex: streamDefinition(window.IrisLatex.stream),
+      // load()/loadCollab() currently receive a kind, not a filename. The initial
+      // profile is standard until HP07 threads .sty/.cls identity into this API.
+      tex: (await texHighlighting.createTexHighlighting())(),
       ly: streamDefinition(window.IrisLilyPond.stream),
       bib: streamDefinition(window.IrisBibtex.stream, bibliographyTokenTable),
       ris: streamDefinition(window.IrisRis.stream, bibliographyTokenTable),

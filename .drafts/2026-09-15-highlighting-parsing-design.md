@@ -16,8 +16,9 @@ e completion dovranno installare il linguaggio attraverso la guardia condivisa.
 
 **Stato:** HP-01 e HP-02 implementati e integrati su `main` il 15 settembre 2026,
 con commit `4d37c4e` e `f6d8783`. Il riscontro visivo e il corpus reale dell'utente
-restano aperti. HP-03 ha completato la revisione delle fondazioni il 17 settembre;
-HP-04…HP-08 sono autorizzati e restano da eseguire.
+restano aperti. HP-03 è integrato con `c510f5b`; HP-04 ha completato la revisione
+di parser e highlighting LaTeX. HP-05…HP-08 sono autorizzati e restano da eseguire.
+La scelta automatica del profilo TeX da `.sty/.cls` rientra nell'integrazione HP-07.
 
 **Base analizzata:** Iris 1.0.1, commit `0402762`.
 

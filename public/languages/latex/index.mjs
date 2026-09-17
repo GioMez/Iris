@@ -7,12 +7,20 @@ import { recoverySafeParser } from "./reuse.mjs";
 import { summarize, summarySteps, contextAt } from "./queries.mjs";
 
 const styled = recoverySafeParser(parser.configure({ props: [styleTags({
-  "ControlWord! ControlSymbol": tags.command,
+  "ControlWord! ControlSymbol CatalogCommand ProfileCommand BeginCommand EndCommand LiteralEndCommand": tags.command,
   HeadingCommand: tags.structure,
-  "OpenBrace CloseBrace MathOpen MathClose": tags.delimiter,
-  "Math/...": tags.math,
+  "OpenBrace CloseBrace MathOpen MathClose OptionalOpen ArgumentOpen DefaultOpen OptionalClose ParameterDelimiter HeadingOpen TextOpen LabelOpen ReferenceOpen ReferenceListOpen CitationOpen PathOpen PathListOpen DefinitionOpen BodyOpen SpecOpen EnvOpen EnvClose EndClose OrphanClose": tags.delimiter,
+  "EnvironmentName!": tags.environment,
+  "DefinitionWord! DefinitionSymbol DefinitionText": tags.definition,
+  ReferenceText: tags.reference,
+  CitationText: tags.citation,
+  PathText: tags.path,
+  MathText: tags.math,
+  Number: tags.number,
+  Operator: tags.operator,
+  Parameter: tags.variable,
   "LineComment!": tags.comment,
-  "Verb! Verbatim!": tags.literal,
+  "Verb! RejectedEnd! LiteralText LiteralSpace LiteralNewline": tags.literal,
 })] }));
 
 export function createAdapter(options) {
