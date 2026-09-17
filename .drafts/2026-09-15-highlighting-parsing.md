@@ -11,8 +11,9 @@ revisione ed è integrato in `c510f5b`: gate richiesto 38/38, controlli adiacent
 LaTeX e dell'highlighting montato; la selezione iniziale dei profili da estensione
 `.sty/.cls` resta un collegamento esplicito da chiudere in HP-07.
 HP-04 è integrato con `39da07c`. HP-05 ha completato implementazione e revisione
-del parser musicale: gate 147/147, build/check riproducibili; l'attivazione in
-editor segue la qualifica Scheme in HP-06.
+del parser musicale ed è integrato in `b0c6974`: gate 147/147, build/check
+riproducibili. HP-06 ha completato revisione e attivazione del parser LilyPond,
+con datum Scheme, musica annidata e test browser dei nuovi contesti.
 La prova ha portato a una policy esplicita di
 analisi limitata oltre 1.048.576 unità UTF-16; il limite e le latenze ordinarie
 richiedono la qualifica nell'editor montato. La personalizzazione di temi/colori
@@ -660,6 +661,12 @@ dei casi LY-01…LY-07; HP-06 è necessario per qualificare sorgenti misti reali
 
 ## HP-06: Scheme annidato e recupero dei contesti
 
+**Avanzamento:** implementazione e revisione completate. Gate Node 165/165;
+dopo le correzioni di confini degli atomi, storia delle direttive e proprietà
+dei datum scartati, gate coprente 91/91 e browser mirato 8/8. Probe nativi su
+LilyPond 2.26.0/Guile 3 confermano i casi del reader. Le estensioni non qualificate
+restano incerte e opache; limiti dettagliati in `docs/editor-languages.md`.
+
 **File:** creare `public/languages/lilypond/scheme-tokens.mjs`,
 `test/lilypond-scheme.test.js`; modificare grammatica, tokenizer, query e
 catalogo LilyPond; attivare il nuovo highlighting in `iris-editor.js`.
@@ -668,22 +675,23 @@ catalogo LilyPond; attivare il nuovo highlighting in `iris-editor.js`.
 
 **Produce:** LY-08, confini di datum e transizioni musica/Scheme qualificati.
 
-- [ ] Scrivere i casi che un semplice conteggio di parentesi sbaglia: `#\)`,
+- [x] Scrivere i casi che un semplice conteggio di parentesi sbaglia: `#\)`,
   stringa `")"`, commento `; )`, commento datum `#;`, quote e liste annidate.
   Inserire un comando LilyPond successivo per verificare il ritorno al linguaggio.
-- [ ] Implementare un lettore del confine del datum per `#`, `$`, `#@`, `$@`:
+- [x] Implementare un lettore del confine del datum per `#`, `$`, `#@`, `$@`:
   liste/vettori, quote/quasiquote/unquote, booleani e atomi, caratteri, stringhe,
   commenti `;`, `#|…|#`, `#;`, `#!…!#`. Ogni commento deve consumare la forma
   prevista da Guile, con gestione della profondità solo dove prevista.
-- [ ] Inserire le produzioni Scheme nella grammatica LilyPond. Contratto del
+- [x] Inserire le produzioni Scheme nella grammatica LilyPond. Contratto del
   lettore esterno, interno al tokenizer:
 
 ```js
 // Il reader non valuta l'espressione. Offset e stato restano nel parser.
-// readSchemeDatum(input, context) ->
-// {end:number, complete:boolean, certainty:'exact'|'recovered'|'unknown'}
-// input usa l'InputStream Lezer; context è immutabile.
-// end indica il confine letto nel documento, anche quando si raggiunge EOF.
+// Contratto implementato in scheme-tokens.mjs:
+// schemeIntroduction(input) -> [term, width]
+// schemeToken(input, stack) -> accettazione di token limitati nell'InputStream
+// La grammatica conserva i confini del datum e i figli; il context tracker
+// immutabile e le query espongono completezza e certezza senza valutazione.
 ```
 
   Il lettore fornisce i confini; la grammatica conserva i nodi interni necessari
@@ -691,11 +699,11 @@ catalogo LilyPond; attivare il nuovo highlighting in `iris-editor.js`.
   nasconda i figli o una scansione monolitica senza limiti su un datum enorme.
   Suddividere stringhe/commenti lunghi in segmenti, lasciando al parser il
   controllo dei budget.
-- [ ] Trattare `#{…#}` come musica annidata con un proprio terminatore e ritorno
+- [x] Trattare `#{…#}` come musica annidata con un proprio terminatore e ritorno
   al contesto Scheme. Definire nodi `SchemeExpression`, `SchemeString`,
   `SchemeComment`, `SchemeAtom`, `SchemeNumber`, `MusicLiteral`, e tag dei figli.
   La semplice presenza di `#}` in una stringa non chiude la musica.
-- [ ] Verificare la sequenza bidirezionale con ruoli e indice:
+- [x] Verificare la sequenza bidirezionale con ruoli e indice:
 
 ```js
 const {analyze} = await import('../public/iris-language-service.mjs');
@@ -711,11 +719,11 @@ assert.equal(roles[source.indexOf('define')], 'scheme');
   Il titolo di fallback `Score 1` deve seguire la convenzione attuale; il parser
   puro può usare una chiave/dato strutturato internamente, ma la query pubblica
   deve produrre il titolo previsto dal contratto di test.
-- [ ] Definire il recupero: EOF in lista/stringa/commento produce incompletezza;
+- [x] Definire il recupero: EOF in lista/stringa/commento produce incompletezza;
   un reader sconosciuto rende incerto il contesto; la prima chiusura compatibile
   ristabilisce il livello esterno. Non interpretare `%` come commento LilyPond
   quando il reader Scheme è attivo.
-- [ ] Provare cancellazione/reinserimento di ogni delimitatore, passaggi annidati
+- [x] Provare cancellazione/reinserimento di ogni delimitatore, passaggi annidati
   e modifica remota prima dell'isola. Confrontare alberi, ruoli e query con il
   parsing da zero. Attivare LilyPond nell'editor dopo questa verifica.
 

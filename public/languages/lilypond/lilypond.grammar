@@ -14,16 +14,21 @@
   RelativeCommand, FixedCommand, TransposeCommand, RepeatCommand, TupletCommand, WrapperCommand,
   LanguageCommand, IncludeCommand, VersionCommand, PropertyCommand, PropertyEndCommand, TweakCommand,
   Equals, NameDot, Operator, Articulation,
-  SchemeAtom, SchemeNumber, SchemeAtomStart, SchemeNumberStart, SchemePart, SchemeScalarEnd, SchemeStart, SchemeText, SchemeEnd
+  SchemeAtom, SchemeNumber, SchemeAtomStart, SchemeNumberStart, SchemePart, SchemeScalarEnd,
+  SchemeIntro, SchemeAtomIntro, SchemeNumberIntro, SchemeFinish, SchemeSpace, SchemeQuotedSpace,
+  SchemeListOpen, SchemeListClose, SchemeQuotedOpen, SchemeQuotedClose, SchemeVectorOpen, SchemeQuoteMark, SchemeDot,
+  SchemeStringOpen, SchemeStringText, SchemeStringEscape, SchemeStringClose,
+  SchemeLineStart, SchemeLineText, SchemeLineEnd, SchemeBlockStart, SchemeBlockNest, SchemeBlockUnnest, SchemeBlockText, SchemeBlockEnd,
+  SchemeGuileStart, SchemeGuileText, SchemeGuileEnd, SchemeDiscard,
+  SchemeUnknownStart, SchemeUnknownText, SchemeUnknownEnd, MusicLiteralOpen, MusicLiteralClose
 }
 @skip { Space | LineComment | BlockComment }
 @precedence { assign @right, tempo }
 item { Assignment | expression | Pitch | Rest | Duration | Lyric | Text | MarkupText | LongMarkupText | Operator | Articulation | PropertyChange }
 expression { Group | MusicGroup | LyricsGroup | MarkupGroup | ChordsGroup | DrumsGroup | FiguresGroup | ConfigGroup | UnknownGroup | Simultaneous | Chord | ModeExpression | MarkupCall | UnknownMarkup | NumericCommand | Block | Context | Wrapper | Directive | scalar }
-scalar { Identifier | String | LyricString | PathString | Number | Command | LongCommand | Variable | schemeScalar | SchemeOpaque }
-schemeScalar { SchemeAtom | SchemeNumber | LongSchemeAtom | LongSchemeNumber }
-LongSchemeAtom { SchemeAtomStart SchemePart* SchemeScalarEnd }
-LongSchemeNumber { SchemeNumberStart SchemePart* SchemeScalarEnd }
+scalar { Identifier | String | LyricString | PathString | Number | Command | LongCommand | Variable | schemeScalar }
+schemeScalar { SchemeExpression | MusicLiteral }
+MusicLiteral { MusicLiteralOpen item* MusicLiteralClose }
 Identifier { Word | LongWord }
 LongWord { WordStart WordPart* WordEnd }
 LongCommand { CommandStart CommandPart* CommandEnd }
@@ -50,7 +55,7 @@ MarkupCall {
   MarkupStringCommand (String | MarkupText | LongMarkupText) |
   MarkupNullaryCommand
 }
-MarkupNumberArgument { Number | schemeScalar | SchemeOpaque }
+MarkupNumberArgument { Number | schemeScalar }
 LongMarkupText { MarkupTextStart MarkupPart* MarkupEnd }
 UnknownMarkup { UnknownMarkupStart UnknownMarkupText* UnknownMarkupEnd }
 NumericCommand { TimeCommand Number | TempoCommand (String (!tempo TempoSetting)? | TempoSetting) }
@@ -67,13 +72,28 @@ Wrapper {
   TupletCommand Number body |
   WrapperCommand body
 }
-Directive { (LanguageCommand | IncludeCommand | VersionCommand) (String | PathString | Command | schemeScalar | SchemeOpaque) }
-PropertyChange { (PropertyCommand Property Equals | TweakCommand Property) (String | schemeScalar | SchemeOpaque | Number | Command) | PropertyEndCommand Property }
+Directive { (LanguageCommand | IncludeCommand | VersionCommand) (String | PathString | Command | schemeScalar) }
+PropertyChange { (PropertyCommand Property Equals | TweakCommand Property) (String | schemeScalar | Number | Command) | PropertyEndCommand Property }
 @skip {} {
   String { StringOpen (StringText | StringEscape)* StringClose }
   LyricString { LyricOpen (StringText | StringEscape)* StringClose }
   PathString { PathOpen (PathText | StringEscape)* StringClose }
   LineComment { LineStart LineText* LineEnd }
   BlockComment { BlockStart BlockText* BlockEnd }
-  SchemeOpaque { SchemeStart SchemeText* SchemeEnd }
+  SchemeExpression { (SchemeIntro | SchemeAtomIntro | SchemeNumberIntro) schemeTrivia* schemeDatum SchemeFinish }
+  schemeTrivia { SchemeSpace | SchemeQuotedSpace | SchemeComment | SchemeDatumComment }
+  schemeDatum { SchemeAtom | SchemeNumber | LongSchemeAtom | LongSchemeNumber | SchemeList | SchemeVector | SchemeQuote | SchemeString | SchemeUnknown | MusicLiteral }
+  LongSchemeAtom { SchemeAtomStart SchemePart* SchemeScalarEnd }
+  LongSchemeNumber { SchemeNumberStart SchemePart* SchemeScalarEnd }
+  SchemeList { (SchemeListOpen | SchemeQuotedOpen) schemeTrivia* (schemeDatum (schemeTrivia | schemeDatum)* SchemeTail?)? (SchemeListClose | SchemeQuotedClose) }
+  SchemeTail { SchemeDot schemeTrivia* schemeDatum schemeTrivia* SchemeUnknown? }
+  SchemeVector { SchemeVectorOpen (schemeTrivia | schemeDatum)* SchemeListClose }
+  SchemeQuote { SchemeQuoteMark schemeTrivia* schemeDatum }
+  SchemeString { SchemeStringOpen (SchemeStringText | SchemeStringEscape)* SchemeStringClose }
+  SchemeComment { SchemeLineComment | SchemeBlockComment | SchemeGuileComment }
+  SchemeLineComment { SchemeLineStart SchemeLineText* SchemeLineEnd }
+  SchemeBlockComment { SchemeBlockStart (SchemeBlockText | SchemeBlockNest | SchemeBlockUnnest)* SchemeBlockEnd }
+  SchemeGuileComment { SchemeGuileStart SchemeGuileText* SchemeGuileEnd }
+  SchemeDatumComment { SchemeDiscard schemeTrivia* schemeDatum }
+  SchemeUnknown { SchemeUnknownStart SchemeUnknownText* SchemeUnknownEnd }
 }

@@ -26,7 +26,11 @@ const styled = recoverySafeParser(parser.configure({ props: [styleTags({
   "OpenBrace MusicOpen CloseBrace SimOpen SimClose ChordOpen ChordClose LyricsOpen MarkupOpen ChordsOpen DrumsOpen FiguresOpen ConfigOpen UnknownOpen": t.delimiter,
   "Equals TempoEquals NameDot Operator": t.operator,
   Articulation: t.articulation,
-  "SchemeAtom LongSchemeAtom! SchemeOpaque!": t.scheme,
+  "SchemeAtom SchemeAtomIntro LongSchemeAtom! SchemeQuoteMark SchemeQuotedSpace SchemeQuotedOpen SchemeQuotedClose SchemeDot SchemeUnknown!": t.scheme,
+  SchemeNumberIntro: t.number,
+  "SchemeIntro SchemeListOpen SchemeListClose SchemeVectorOpen MusicLiteralOpen MusicLiteralClose": t.delimiter,
+  "SchemeString!": t.string,
+  "SchemeComment! SchemeDatumComment!": t.comment,
 })] }));
 export function createAdapter(options = Object.freeze({ initialNoteLanguage: "nederlands" })) {
   const language = LRLanguage.define({ name: "iris-ly", parser: styled.configure({ contextTracker: createContext(options.initialNoteLanguage) }), languageData: { commentTokens: { line: "%", block: { open: "%{", close: "%}" } } } });

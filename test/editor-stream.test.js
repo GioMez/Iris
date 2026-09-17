@@ -1,4 +1,4 @@
-// Explicit syntax expectations for mounted paths and the retained legacy TeX stream.
+// Mounted guarded Lezer paths and explicitly retained legacy TeX/LY streams.
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -94,7 +94,7 @@ const syntaxCorpora = {
 for (const [kind, fragments] of Object.entries(syntaxCorpora)) {
   const text = fragments.map(([value]) => value).join("");
   const expected = fragments.flatMap(([value, style]) => value.split("").map(char => char === "\n" ? null : style));
-  test(`${kind === "latex" ? "legacy latex" : kind} tokens cover commands, delimiters, escapes, multiline and Unicode source in real CodeMirror`, async () => {
+  test(`legacy ${kind} tokens cover commands, delimiters, escapes, multiline and Unicode source in real CodeMirror`, async () => {
     const { stream } = loadSyntaxModules()[kind];
     assert.deepEqual(streamClasses(stream, text), expected);
     const { StreamLanguage, highlightTree, legacyTokenTable: tokenTable, roleHighlighter, cssHighlighter } = await highlighting();
@@ -112,7 +112,7 @@ for (const [kind, fragments] of Object.entries(syntaxCorpora)) {
     }
   });
 
-  test(`${kind === "latex" ? "legacy latex" : kind} every in-progress prefix advances and copied multiline states branch independently`, () => {
+  test(`legacy ${kind} every in-progress prefix advances and copied multiline states branch independently`, () => {
     const spec = loadSyntaxModules()[kind].stream;
     for (let end = 0; end <= text.length; end++) {
       const state = spec.startState();
@@ -158,6 +158,33 @@ test("mounted TeX extension uses guarded Lezer with separate math roles across r
   // The factory is also used on setState/load: each installation owns its life.
   state = EditorState.create({ doc: "$z^3$", extensions: [tex()] });
   assert.deepEqual(semantic(), ["delimiter", "math", "operator", "number", "delimiter"]);
+});
+
+test('HP06 mounted LY extension guards initial/growing documents and survives replacement/reconfiguration', async () => {
+  assert.ok(fs.existsSync(path.join(__dirname, '../public/iris-lilypond-highlighting.mjs')), 'guarded LY highlighting factory');
+  const { createLilyPondHighlighting } = await import('../public/iris-lilypond-highlighting.mjs');
+  const { EditorState, Compartment, ensureSyntaxTree, syntaxTreeAvailable, highlightTree, roleHighlighter } = await highlighting();
+  const ly = await createLilyPondHighlighting(), compartment = new Compartment();
+  let state = EditorState.create({ doc: '#{ c4 #}', extensions: [compartment.of(ly())] });
+  const semantic = () => {
+    const tree = ensureSyntaxTree(state, state.doc.length, 1000), result = Array(state.doc.length).fill(null);
+    if (tree) highlightTree(tree, roleHighlighter, (from, to, role) => result.fill(role, from, to));
+    return result;
+  };
+  const music = ['delimiter', 'delimiter', null, 'pitch', 'duration', null, 'delimiter', 'delimiter'];
+  assert.deepEqual(semantic(), music);
+  state = state.update({ effects: compartment.reconfigure([]) }).state;
+  assert.deepEqual(semantic(), Array(8).fill(null));
+  state = state.update({ effects: compartment.reconfigure(ly()) }).state;
+  assert.deepEqual(semantic(), music);
+  state = state.update({ changes: { from: 0, to: 8, insert: 'x'.repeat(1048577) }, filter: false }).state;
+  assert.equal(semantic().some(Boolean), false); assert.equal(syntaxTreeAvailable(state, state.doc.length), false);
+  state = state.update({ changes: { from: 0, to: state.doc.length, insert: '#{ d8 #}' }, filter: false }).state;
+  assert.deepEqual(semantic(), music);
+  state = EditorState.create({ doc: 'x'.repeat(1048577), extensions: [ly()] });
+  assert.equal(semantic().some(Boolean), false); assert.equal(syntaxTreeAvailable(state, state.doc.length), false);
+  state = EditorState.create({ doc: '#{ e2 #}', extensions: [ly()] });
+  assert.deepEqual(semantic(), music);
 });
 
 const bibliographyCorpora = [

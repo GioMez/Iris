@@ -3,16 +3,29 @@ import { invocableName } from "./catalog.mjs";
 import { normalizeNoteLanguage } from "./pitches.mjs";
 export { emptySummary, unknownContext } from "../../iris-language-policy.mjs";
 
-const groups = new Set(["Group", "MusicGroup", "LyricsGroup", "MarkupGroup", "ChordsGroup", "DrumsGroup", "FiguresGroup", "ConfigGroup", "UnknownGroup", "Simultaneous", "Chord"]);
-const modeNames = Object.freeze(Object.assign(Object.create(null), { MusicGroup: "music", LyricsGroup: "lyrics", MarkupGroup: "markup", ChordsGroup: "chords", DrumsGroup: "drums", FiguresGroup: "figures", ConfigGroup: "text", UnknownGroup: "music" }));
-const closers = Object.freeze(Object.assign(Object.create(null), { Simultaneous: "SimClose", Chord: "ChordClose", String: "StringClose", LyricString: "StringClose", PathString: "StringClose", LineComment: "LineEnd", BlockComment: "BlockEnd", SchemeOpaque: "SchemeEnd" }));
+const groups = new Set(["Group", "MusicGroup", "LyricsGroup", "MarkupGroup", "ChordsGroup", "DrumsGroup", "FiguresGroup", "ConfigGroup", "UnknownGroup", "Simultaneous", "Chord", "MusicLiteral"]);
+const modeNames = Object.freeze(Object.assign(Object.create(null), { MusicLiteral: "music", MusicGroup: "music", LyricsGroup: "lyrics", MarkupGroup: "markup", ChordsGroup: "chords", DrumsGroup: "drums", FiguresGroup: "figures", ConfigGroup: "text", UnknownGroup: "music" }));
+const closers = Object.freeze(Object.assign(Object.create(null), { Simultaneous: "SimClose", Chord: "ChordClose", String: "StringClose", LyricString: "StringClose", PathString: "StringClose", LineComment: "LineEnd", BlockComment: "BlockEnd",
+  MusicLiteral: "MusicLiteralClose", SchemeExpression: "SchemeFinish", SchemeVector: "SchemeListClose", SchemeString: "SchemeStringClose", SchemeLineComment: "SchemeLineEnd", SchemeBlockComment: "SchemeBlockEnd", SchemeGuileComment: "SchemeGuileEnd" }));
+const reader = new Set(["SchemeExpression", "SchemeList", "SchemeVector", "SchemeQuote", "SchemeAtom", "SchemeNumber", "LongSchemeAtom", "LongSchemeNumber"]);
 const isString = name => ["String", "LyricString", "PathString"].includes(name);
-function boundary(node) {
+function boundary(node, budget = { remaining: 128 }) {
+  // Transparent reader wrappers have no delimiter of their own. Bound the
+  // descent for cold caret queries even for an adversarial chain of quotes.
+  while (["SchemeExpression", "SchemeQuote", "SchemeDatumComment", "SchemeComment"].includes(node.name)) {
+    if (--budget.remaining < 0) return { closed: false, openEnded: true };
+    const last = node.lastChild;
+    const child = node.name === "SchemeExpression" && last?.name === "SchemeFinish" ? last.prevSibling : last;
+    if (!child || child.type.isError || !reader.has(child.name) && !["MusicLiteral", "SchemeString", "SchemeUnknown", "SchemeLineComment", "SchemeBlockComment", "SchemeGuileComment"].includes(child.name)) return { closed: false, openEnded: true };
+    node = child;
+  }
   if (node.name === "UnknownMarkup") return { closed: true, openEnded: true };
+  if (node.name === "SchemeUnknown") return { closed: false, openEnded: true };
+  if (node.name === "SchemeList") { const closed = ["SchemeListClose", "SchemeQuotedClose"].includes(node.lastChild?.name); return { closed, openEnded: !closed }; }
   const closer = closers[node.name] || (groups.has(node.name) ? "CloseBrace" : null);
   if (!closer) return { closed: true, openEnded: false };
   const closed = node.lastChild?.name === closer;
-  return { closed, openEnded: !closed || node.name === "LineComment" && node.lastChild.from === node.lastChild.to };
+  return { closed, openEnded: !closed || ["LineComment", "SchemeLineComment"].includes(node.name) && node.lastChild.from === node.lastChild.to };
 }
 function* rawSteps(node, doc) {
   const parts = [];
@@ -73,16 +86,26 @@ function languageAt(tree, doc, pos, initial) {
   if (events) {
     let lo = 0, hi = events.length;
     while (lo < hi) { const mid = (lo + hi) >> 1; if (events[mid].from <= pos) lo = mid + 1; else hi = mid; }
-    return lo ? events[lo - 1].language : language;
+    return lo ? events[lo - 1].language ?? language : language;
   }
   // A cold caret never builds a whole-file summary. Small trees can be decided
   // directly; larger unknown histories remain conservative until a state job.
-  const cursor = tree.cursor();
+  const cursor = tree.cursor(), frames = [];
+  let entering = true;
   for (let count = 0; count < 128; count++) {
-    if (cursor.from > pos) return language;
-    const event = languageEvent(cursor.node, doc);
+    if (entering) {
+      if (cursor.from > pos) return language;
+      const opaque = frames.at(-1)?.opaque || cursor.name === "SchemeDatumComment";
+      frames.push({ language, opaque });
+      if (cursor.firstChild()) continue;
+    }
+    const frame = frames.pop();
+    const event = !frame.opaque && languageEvent(cursor.node, doc);
     if (event && event.from <= pos) language = event.language;
-    if (!cursor.next()) return language;
+    if (cursor.name === "MusicLiteral" && cursor.to <= pos && boundary(cursor.node).closed) language = frame.language;
+    if (cursor.nextSibling()) { entering = true; continue; }
+    if (!cursor.parent()) return language;
+    entering = false;
   }
   return "unknown";
 }
@@ -94,7 +117,7 @@ export function* summarySteps(tree, doc) {
   requireAnalysisLength(doc.length);
   const data = { outline: [], regions: [], symbols: [], references: [], includes: [] };
   const cursor = tree.cursor(), frames = [], cache = cacheFor(tree), languageEvents = [];
-  let entering = true, score = 0, skipped = 0;
+  let entering = true, score = 0, skipped = 0, language = null;
   for (;;) {
     if (entering) {
       const node = cursor.node, name = node.name, parent = frames.at(-1);
@@ -105,11 +128,10 @@ export function* summarySteps(tree, doc) {
         entering = false;
         continue;
       }
-      const event = languageEvent(node, doc);
-      if (event) languageEvents.push(event);
-      const f = { name, error: node.type.isError, config: parent?.config || name === "ConfigGroup", opaque: parent?.opaque || name === "SchemeOpaque",
-        depth: (parent?.depth || 0) + (groups.has(name) ? 1 : 0), score: parent?.score || null, header: parent?.header || false,
-        outline: null, region: null, title: null, symbol: null, unknown: name === "UnknownMarkup" || name === "SchemeOpaque" };
+      const f = { name, error: node.type.isError, config: name === "MusicLiteral" ? false : parent?.config || name === "ConfigGroup", opaque: parent?.opaque || name === "SchemeDatumComment" || name === "SchemeUnknown",
+        entryLanguage: language,
+        depth: (parent?.depth || 0) + (groups.has(name) ? 1 : 0), score: name === "MusicLiteral" ? null : parent?.score || null, header: name !== "MusicLiteral" && parent?.header || false,
+        outline: null, region: null, title: null, symbol: null, unknown: name === "UnknownMarkup" || name === "SchemeUnknown" };
       const structural = ["Block", "Context", "ModeExpression", "Assignment", "Directive"].includes(name);
       if (structural && !f.opaque) {
         const command = node.firstChild;
@@ -173,13 +195,19 @@ export function* summarySteps(tree, doc) {
       if (cursor.firstChild()) continue;
     }
     const f = frames.pop(), node = cursor.node, edge = boundary(node), recovered = f.error || !edge.closed;
-    const certainty = recovered ? "recovered" : f.unknown ? "unknown" : "exact";
+    // Directive effects belong after their datum, just as in the tracker.
+    // Postorder endpoints also keep the timeline sorted, with child restoration
+    // before a containing directive at the same offset (no bulk sorting pass).
+    const event = !f.opaque && languageEvent(node, doc);
+    if (event) { languageEvents.push(event); language = event.language; }
+    if (node.name === "MusicLiteral" && !f.opaque && edge.closed) { language = f.entryLanguage; languageEvents.push({ from: node.to, language }); }
+    const certainty = f.unknown ? "unknown" : recovered ? "recovered" : "exact";
     if (node.name === "AssignmentHead" && frames.at(-1)?.symbol) {
       const symbol = frames.at(-1).symbol;
       symbol.certainty = certainty;
       if (certainty !== "exact") symbol.kind = "variable";
     }
-    if (groups.has(node.name) || Object.hasOwn(closers, node.name) || ["ModeExpression", "MarkupCall"].includes(node.name)) cache.set(key(node), certainty);
+    if (groups.has(node.name) || reader.has(node.name) || Object.hasOwn(closers, node.name) || ["ModeExpression", "MarkupCall", "SchemeDatumComment", "SchemeComment"].includes(node.name)) cache.set(key(node), certainty);
     if (f.region) { f.region.certainty = certainty; f.region.openEnded = edge.openEnded || f.error && node.to === doc.length; }
     if (f.outline) {
       f.outline.certainty = certainty;
@@ -214,7 +242,7 @@ function certaintyAt(tree, node, budget) {
   for (;;) {
     if (--budget.remaining < 0) return "unknown";
     if (cursor.type.isError) return "recovered";
-    if (cursor.name === "UnknownMarkup" || cursor.name === "SchemeOpaque") return "unknown";
+    if (cursor.name === "UnknownMarkup" || cursor.name === "SchemeUnknown") return "unknown";
     if (cursor.firstChild()) { depth++; continue; }
     while (depth > 0 && !cursor.nextSibling()) { cursor.parent(); depth--; }
     if (!depth) return boundary(node).closed ? "exact" : "recovered";
@@ -224,17 +252,19 @@ export function contextAt(tree, doc, pos, bias = -1, initialNoteLanguage = "nede
   if (!Number.isInteger(pos) || pos < 0 || pos > doc.length) throw new RangeError("Cursor outside source");
   if (analysisPolicy(doc.length).mode === "limited" || tree.type.name !== "Document" || pos > tree.length) return unknownContext(pos);
   let node = tree.resolveInner(pos, pos === doc.length ? -1 : 1), depth = 0, semantic = null, group = null, uncertain = false, argumentRole = null;
-  const leaf = node, budget = { remaining: 128 };
+  const leaf = node, budget = { remaining: 128 }, boundaryBudget = { remaining: 128 };
   for (; node && depth < 256; node = node.parent, depth++) {
-    const edge = boundary(node);
+    const edge = boundary(node, boundaryBudget);
+    if (boundaryBudget.remaining < 0) return unknownContext(pos);
     if (pos === node.to && (pos !== doc.length || !edge.openEnded)) continue;
-    if (node.name === "SchemeOpaque") return Object.freeze({ mode: "scheme", argumentRole: null, from: node.from, to: node.to, certainty: "unknown" });
-    if (node.name === "UnknownMarkup") return Object.freeze({ mode: "markup", argumentRole: null, from: node.from, to: node.to, certainty: "unknown" });
-    if (["SchemeAtom", "SchemeNumber", "LongSchemeAtom", "LongSchemeNumber"].includes(node.name)) return Object.freeze({ mode: "scheme", argumentRole: null, from: node.from, to: node.to, certainty: "exact" });
+    if (node.name === "SchemeUnknown") semantic = { mode: "scheme", argumentRole: null, from: node.from, to: node.to, certainty: "unknown" };
+    if (node.name === "SchemeDatumComment") return Object.freeze({ mode: "comment", argumentRole: null, from: node.from, to: node.to, certainty: certaintyAt(tree, node, budget) });
+    // Keep walking: an enclosing datum discard owns even unknown markup.
+    if (node.name === "UnknownMarkup") semantic = { mode: "markup", argumentRole: null, from: node.from, to: node.to, certainty: "unknown" };
     if (node.name === "Property") argumentRole = "property";
     if (node.name === "Word" || node.name === "LongWord") uncertain = true;
     if (groups.has(node.name) && !group) group = node;
-    const mode = node.name === "LineComment" || node.name === "BlockComment" ? "comment" : isString(node.name) ? node.name === "LyricString" ? "lyrics" : "string" :
+    const mode = node.name === "LineComment" || node.name === "BlockComment" || node.name === "SchemeComment" ? "comment" : isString(node.name) || node.name === "SchemeString" ? node.name === "LyricString" ? "lyrics" : "string" : reader.has(node.name) ? "scheme" :
       node.name === "MarkupCall" || node.name === "ModeExpression" && node.firstChild?.name === "MarkupCommand" ? "markup" : modeNames[node.name];
     // One ancestor walk: generic groups inherit the first explicit mode. Chord
     // structure does not itself switch figuremode back to pitched music.

@@ -8,12 +8,14 @@ import * as terms from "./parser.terms.mjs";
 const views = new WeakMap();
 const globalEffects = new Set(["Assignment", "Equals", "LanguageCommand", "IncludeCommand"]);
 const scopes = new Set(["Group", "MusicGroup", "LyricsGroup", "MarkupGroup", "ChordsGroup", "DrumsGroup", "FiguresGroup", "ConfigGroup", "UnknownGroup", "Simultaneous", "Chord",
-  "ModeExpression", "Block", "Context", "WithBlock", "Wrapper", "SchemeOpaque", "MarkupCall", "UnknownMarkup", "LongMarkupText", "MarkupNumberArgument", "NumericCommand"]);
+  "ModeExpression", "Block", "Context", "WithBlock", "Wrapper", "MarkupCall", "UnknownMarkup", "LongMarkupText", "MarkupNumberArgument", "NumericCommand"]);
 const identity = Object.freeze({ name: null, nameValid: null, pending: null, defining: null, compound: null, modifier: null, language: null });
 const clear = Object.freeze({ name: "", nameValid: false, pending: "clear", defining: false, compound: false, modifier: false, language: null });
 const atom = Object.freeze({ name: "", nameValid: false, pending: "atom", defining: false, compound: null, modifier: null, language: "unknown" });
 function effect(name, inner, length) {
-  if (name === "SchemeOpaque") return { ...clear, pending: "opaque" };
+  if (name === "SchemeExpression" || name === "MusicLiteral") return { ...clear, pending: "opaque" };
+  if (["SchemeList", "SchemeTail", "SchemeVector", "SchemeQuote", "SchemeString", "SchemeComment", "SchemeLineComment", "SchemeBlockComment", "SchemeGuileComment", "SchemeDatumComment", "SchemeUnknown", "LongSchemeAtom", "LongSchemeNumber"].includes(name)) return identity;
+  if (["SchemeAtom", "SchemeNumber", "SchemeDot", "SchemeSpace", "SchemeQuotedSpace", "SchemePart", "SchemeStringText", "SchemeStringEscape", "SchemeLineText", "SchemeBlockText", "SchemeGuileText", "SchemeUnknownText"].includes(name)) return identity;
   if (name === "TempoBeat") return { ...atom, pending: "tempo-equals" };
   if (name === "TempoSetting") return { ...clear, pending: "tempo-count" };
   if (scopes.has(name) || name === "LongWord" || name === "LongCommand") return clear;

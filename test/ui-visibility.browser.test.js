@@ -421,8 +421,11 @@ for (const theme of ["dark", "light"]) {
     const documents = [
       { kind: 'tex', text: corpus.find(f => f.id === 'latex-core').source + '\\begin{document}\n$x+1$\n\\end{document}\n',
          tokens: [['structure', '\\section*'], ['command', '\\includegraphics'], ['environment', 'document'], ['delimiter', '$'], ['operator', '+'], ['math', 'x'], ['number', '1'], ['path', 'image.pdf'], ['comment', '% commento']] },
-      { kind: 'ly', text: corpus.find(f => f.id === 'lilypond-core').source,
-        tokens: [['command', '\\version'], ['string', '"2.26.0"'], ['delimiter', '{'], ['comment', '% c4 \\score fake']] },
+      { kind: 'ly', text: corpus.find(f => f.id === 'lilypond-core').source + '\\markup { plain source }\n',
+        tokens: [['command', '\\version'], ['structure', '\\score'], ['string', '"2.26.0"'], ['delimiter', '{'], ['comment', '% c4 \\score fake'],
+          ['pitch', 'cis'], ['duration', '4.'], ['rest', 'r'], ['articulation', '\\f']] },
+      { kind: 'ly', text: '#(list #; #{ fake = { c4 } #} 12 "#}" #{ d8 r4 #}) \\markup { plain source }',
+        tokens: [['scheme', 'list'], ['comment', 'fake'], ['number', '12'], ['string', '"#}"'], ['delimiter', '#{'], ['pitch', 'd'], ['duration', '8'], ['rest', 'r']] },
     ];
     const samples = [];
     for (const { kind, text, tokens } of documents) {
@@ -626,7 +629,7 @@ test('HP04 mounted TeX guard, reload, reconfiguration, read-only and collaborati
     return result;
   });
   const math = ['delimiter', 'math', 'operator', 'number', 'delimiter'];
-  assert.deepEqual(result, [math, math, Array(5).fill('text'), math, { guarded: true, covered: false }, math, { guarded: true }, math, { readonly: true, edit: 'readonly' }, math]);
+  assert.deepEqual(result, [math, math, Array(5).fill('scheme'), math, { guarded: true, covered: false }, math, { guarded: true }, math, { readonly: true, edit: 'readonly' }, math]);
   await page.locator('.cm-content .t-math').filter({ hasText: 'b' }).waitFor({ state: 'attached' });
   assert.equal(await page.locator('.cm-content .t-number').textContent(), '5');
 });
@@ -663,6 +666,101 @@ test('HP04 mounted review: literal-prefix edits refresh roles and prototype envi
   assert.deepEqual(result, { initial: ['Tail'], updated: ['Visible', 'Tail'], role: 'structure', mode: 'text',
     environments: [[['constructor', 'exact']], [['toString', 'exact']], [['__proto__', 'exact']]], edited: true });
   await page.locator('.cm-content .t-structure').filter({ hasText: '\\section' }).waitFor({ state: 'attached' });
+});
+
+test('HP06 mounted LY embedded contexts, guard, undo, reconfiguration, read-only and collaborative replacement', { ...options, timeout: 60000 }, async t => {
+  const { page } = await pageFor(t, variants[0]);
+  await selectFile(page, 'draft');
+  const result = await page.evaluate(async () => {
+    const { EditorView } = await import('@codemirror/view');
+    const { ensureSyntaxTree, syntaxTreeAvailable } = await import('@codemirror/language');
+    const { highlightTree } = await import('@lezer/highlight');
+    const { roleHighlighter } = await import('./iris-syntax-style.mjs');
+    const { loadLanguage } = await import('./iris-language-service.mjs');
+    const a = await loadLanguage('ly'), view = EditorView.findFromDOM(document.querySelector('.cm-editor'));
+    const text = '#(list #; #{ \\score { r4 } #} "fake \\score" #{ c4 #(list #{ d8 #}) #})\n\\score { e1 }';
+    const inspect = () => {
+      const tree = ensureSyntaxTree(view.state, view.state.doc.length, 2000), roles = Array(view.state.doc.length).fill(null), doc = view.state.doc;
+      if (tree) highlightTree(tree, roleHighlighter, (from, to, role) => roles.fill(role, from, to));
+      const data = a.summarize(tree, doc), current = doc.toString();
+      return { roles: ['r4', 'c4', 'd8', 'e1'].map(s => roles[current.indexOf(s)]), outline: data.outline.map(x => x.title),
+        modes: ['r4', 'c4', 'd8', 'e1'].map(s => a.contextAt(tree, doc, current.indexOf(s)).mode) };
+    };
+    IrisEditor.load(text, 'ly'); const first = inspect();
+    IrisEditor.replaceRange(0, 0, '% edit\n'); const edited = IrisEditor.getValue();
+    const undo = IrisEditor.undo() && IrisEditor.getValue() === text;
+    IrisEditor.setLanguage('tex'); IrisEditor.setLanguage('ly'); const switched = inspect();
+    IrisEditor.loadCollab(text, 'ly', { version: 4 }); const collab = inspect();
+    const { ChangeSet } = await import('@codemirror/state');
+    IrisEditor.collabReceive([{ clientID: 'hp06-remote', changes: ChangeSet.of({ from: 0, insert: '% remote 😀\r\n' }, view.state.doc.length).toJSON() }]);
+    const remote = inspect(), version = IrisEditor.collabVersion();
+    const close = view.state.doc.toString().indexOf('d8 #}') + 3;
+    IrisEditor.replaceRange(close, close + 2, '');
+    const damagedTree = ensureSyntaxTree(view.state, view.state.doc.length, 1000);
+    const damaged = a.contextAt(damagedTree, view.state.doc, view.state.doc.length).certainty;
+    IrisEditor.replaceRange(close, close, '#}'); const repaired = inspect();
+    IrisEditor.setReadOnly(true);
+    const readonly = { value: view.state.readOnly, edit: IrisEditor.applyChanges([{ from: 0, to: 0, insert: 'x' }], IrisEditor.snapshot()) };
+    IrisEditor.setReadOnly(false);
+    const guarded = () => {
+      const tree = ensureSyntaxTree(view.state, view.state.doc.length, 5);
+      return (!tree || !tree.type.name && tree.children.length === 0) && !syntaxTreeAvailable(view.state, view.state.doc.length);
+    };
+    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: 'x'.repeat(1048577) }, filter: false }); const growth = guarded();
+    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text }, filter: false }); const shrunk = inspect();
+    IrisEditor.load('x'.repeat(1048577), 'ly'); const initial = guarded();
+    IrisEditor.load(text, 'ly'); const final = inspect();
+    return { first, switched, collab, remote, repaired, damaged, version, shrunk, final, undo, edited: edited.startsWith('% edit\n'), readonly, growth, initial };
+  });
+  const expected = { roles: ['comment', 'pitch', 'pitch', 'pitch'], outline: ['Score 1'], modes: ['comment', 'music', 'music', 'music'] };
+  assert.deepEqual(result, { first: expected, switched: expected, collab: expected, remote: expected, repaired: expected, damaged: 'recovered', version: 5, shrunk: expected, final: expected,
+    undo: true, edited: true, readonly: { value: true, edit: 'readonly' }, growth: true, initial: true });
+  for (const [role, text] of [['pitch', 'c'], ['duration', '4'], ['scheme', 'list'], ['structure', '\\score']])
+    await page.locator(`.cm-content .t-${role}`).filter({ hasText: text }).first().waitFor({ state: 'attached' });
+});
+
+test('HP06 mounted R1–R3 atom paint, directive history and discarded unknown markup stay consistent', { ...options, timeout: 60000 }, async t => {
+  const { page } = await pageFor(t, variants[0]);
+  await selectFile(page, 'draft');
+  const inspect = (text, needles) => page.evaluate(async ({ text, needles }) => {
+    const { EditorView } = await import('@codemirror/view');
+    const { ensureSyntaxTree } = await import('@codemirror/language');
+    const { highlightTree } = await import('@lezer/highlight');
+    const { roleHighlighter } = await import('./iris-syntax-style.mjs');
+    const { loadLanguage } = await import('./iris-language-service.mjs');
+    IrisEditor.load(text, 'ly');
+    const a = await loadLanguage('ly'), view = EditorView.findFromDOM(document.querySelector('.cm-editor'));
+    const tree = ensureSyntaxTree(view.state, view.state.doc.length, 1000), doc = view.state.doc;
+    const semantic = Array(doc.length).fill(null), positions = needles.map(s => text.indexOf(s));
+    highlightTree(tree, roleHighlighter, (from, to, role) => semantic.fill(role, from, to));
+    const cold = positions.map(pos => a.contextAt(tree, doc, pos)), data = a.summarize(tree, doc);
+    return { cold, warm: positions.map(pos => a.contextAt(tree, doc, pos)), outline: data.outline.map(x => x.title),
+      roles: needles.map((s, i) => semantic.slice(positions[i], positions[i] + s.length)) };
+  }, { text, needles });
+
+  const atoms = await inspect("#foo'c4\n#foo,\\score { e4 }\n\\score { d8 }", ["#foo'c4", '#foo,\\score', 'e4', 'd8']);
+  assert.deepEqual(atoms.roles, [Array(7).fill('scheme'), Array(11).fill('scheme'), ['pitch', 'duration'], ['pitch', 'duration']]);
+  assert.deepEqual(atoms.outline, ['Score 1']);
+  assert.deepEqual(atoms.warm, atoms.cold);
+  await page.locator('.cm-content .t-scheme').filter({ hasText: "foo'c4" }).waitFor({ state: 'attached' });
+  assert.equal(await page.locator('.cm-content .t-structure').filter({ hasText: '\\score' }).count(), 1);
+
+  const invalid = await inspect("##x2a'\\score { c4 }", ['c4']);
+  assert.deepEqual(invalid.roles, [['scheme', 'scheme']]); assert.deepEqual(invalid.outline, []);
+  assert.equal(invalid.warm[0].certainty, 'unknown');
+  assert.equal(await page.locator('.cm-content .t-pitch, .cm-content .t-structure').count(), 0);
+
+  const directive = await inspect('\\include #(list #{ c4 #} #{ d4 #}) { e4 }', ['c4', 'd4', 'e4']);
+  assert.deepEqual(directive.warm, directive.cold);
+  assert.deepEqual(directive.warm.map(c => c.certainty), ['exact', 'exact', 'unknown']);
+  assert.deepEqual(directive.roles, [['pitch', 'duration'], ['pitch', 'duration'], [null, 'duration']]);
+
+  const discarded = await inspect('#(list #; #{ \\markup \\future c4 #} x) { d4 }', ['c4', 'd4']);
+  const comment = { mode: 'comment', argumentRole: null, from: 7, to: 44, certainty: 'unknown' };
+  assert.deepEqual(discarded.cold, [comment, comment]); assert.deepEqual(discarded.warm, discarded.cold);
+  assert.deepEqual(discarded.roles, [['comment', 'comment'], ['comment', 'comment']]);
+  assert.deepEqual(discarded.outline, []);
+  await page.locator('.cm-content .t-comment').filter({ hasText: '\\future c4' }).waitFor({ state: 'attached' });
 });
 
 test("R10 light peer initials and marker boundaries remain readable for fallback and bright identities", options, async (t) => {

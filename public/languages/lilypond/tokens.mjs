@@ -4,11 +4,11 @@ import { noteNames, normalizeNoteLanguage } from "./pitches.mjs";
 import { inputModes, blockModes, wrappers, markupSignatures, numericSignatures, propertyCommands, dynamics, commands, invocableName } from "./catalog.mjs";
 import { addSymbol, hasSymbol } from "./symbols.mjs";
 import { reuseEffect } from "./reuse.mjs";
+import { schemeToken, schemeIntroduction } from "./scheme-tokens.mjs";
 
 const limit = 256;
 const space = c => c === 32 || c === 9 || c === 10 || c === 13 || c === 12;
 const digit = c => c >= 48 && c <= 57;
-const scalarChar = c => c >= 0 && !space(c) && ![123, 125, 34, 40, 41].includes(c);
 const markupChar = c => c >= 0 && !space(c) && ![37, 34, 92, 123, 125, 35, 36].includes(c);
 const letter = c => c >= 0 && /\p{L}/u.test(String.fromCodePoint(c));
 function point(input, offset = 0) {
@@ -33,24 +33,38 @@ const short = text => text.length <= 128 ? text : "";
 function state(parent, fields = {}) {
   const value = { parent, scope: "root", from: -1, mode: parent?.mode || "music", language: parent?.language || "nederlands",
     symbols: parent?.symbols || null, pending: "", lastName: "", nameValid: parent?.nameValid || false, end: parent?.end || 0, defining: false, compound: false, chord: false, modifier: false,
-    string: "", escaped: false, depth: 0, quoted: false, line: false, blocked: false, ...fields };
+    string: "", escaped: false, depth: 0, quoted: false, readerQuoted: parent?.readerQuoted || false, musicLiteral: parent?.musicLiteral || false, ...fields };
   let hash = parent?.hash || 0;
   const key = [value.scope, value.mode, value.language, value.symbols?.hash, value.pending, value.lastName, value.defining,
-    value.nameValid, value.compound, value.chord, value.modifier, value.string, value.escaped, value.depth, value.quoted, value.line, value.blocked].join("|");
+    value.nameValid, value.compound, value.chord, value.modifier, value.string, value.escaped, value.depth, value.quoted, value.readerQuoted, value.musicLiteral].join("|");
   for (let i = 0; i < key.length; i++) hash = (Math.imul(hash, 31) + key.charCodeAt(i)) | 0;
   return Object.freeze({ ...value, hash });
 }
 const replace = (value, fields) => state(value.parent, { ...value, ...fields });
 const clear = value => replace(value, { pending: "", lastName: "", nameValid: false, defining: false, compound: false, modifier: false });
 const pop = value => value.parent ? replace(value.parent, { language: value.language, symbols: value.symbols, end: value.end }) : value;
+const restore = value => value.parent ? replace(value.parent, { end: value.end }) : value;
 const groupTerms = () => new Map([[t.OpenBrace, null], [t.MusicOpen, "music"], [t.LyricsOpen, "lyrics"], [t.MarkupOpen, "markup"], [t.ChordsOpen, "chords"],
   [t.DrumsOpen, "drums"], [t.FiguresOpen, "figures"], [t.ConfigOpen, "config"], [t.UnknownOpen, null], [t.SimOpen, null], [t.ChordOpen, null]]);
 const scopeRules = () => new Set([t.Group, t.MusicGroup, t.LyricsGroup, t.MarkupGroup, t.ChordsGroup, t.DrumsGroup, t.FiguresGroup, t.ConfigGroup, t.UnknownGroup,
   t.Simultaneous, t.Chord, t.ModeExpression, t.Block, t.Context, t.WithBlock, t.Wrapper, t.String, t.LyricString, t.PathString,
-  t.LineComment, t.BlockComment, t.LongWord, t.LongCommand, t.LongSchemeAtom, t.LongSchemeNumber, t.SchemeOpaque, t.MarkupCall, t.LongMarkupText, t.UnknownMarkup, t.NumericCommand]);
+  t.LineComment, t.BlockComment, t.LongWord, t.LongCommand, t.LongSchemeAtom, t.LongSchemeNumber, t.MarkupCall, t.LongMarkupText, t.UnknownMarkup, t.NumericCommand]);
+const readerRules = () => new Set([t.SchemeExpression, t.SchemeList, t.SchemeVector, t.SchemeQuote, t.SchemeString,
+  t.SchemeLineComment, t.SchemeBlockComment, t.SchemeGuileComment, t.SchemeDatumComment, t.SchemeUnknown, t.MusicLiteral]);
 export function createContext(initialNoteLanguage = "nederlands") {
-  const base = state(null, { language: normalizeNoteLanguage(initialNoteLanguage) }), groups = groupTerms(), rules = scopeRules();
+  const base = state(null, { language: normalizeNoteLanguage(initialNoteLanguage) }), groups = groupTerms(), rules = scopeRules(), readers = readerRules();
   const transition = (value, term, stack, input) => {
+      if ([t.SchemeIntro, t.SchemeAtomIntro, t.SchemeNumberIntro].includes(term)) return state(value, { scope: "scheme-expression", mode: "scheme", from: input.pos });
+      if (term === t.SchemeFinish) return restore(value);
+      if ([t.SchemeListOpen, t.SchemeQuotedOpen, t.SchemeVectorOpen, t.SchemeQuoteMark, t.SchemeDiscard].includes(term)) return state(value, {
+        scope: term === t.SchemeVectorOpen ? "scheme-vector" : term === t.SchemeQuoteMark ? "scheme-quote" : term === t.SchemeDiscard ? "scheme-discard" : "scheme-list",
+        mode: "scheme", from: input.pos, readerQuoted: value.readerQuoted || term === t.SchemeQuoteMark });
+      if ([t.SchemeListClose, t.SchemeQuotedClose, t.SchemeStringClose, t.SchemeLineEnd, t.SchemeBlockEnd, t.SchemeGuileEnd, t.SchemeUnknownEnd, t.MusicLiteralClose].includes(term)) return restore(value);
+      if (term === t.MusicLiteralOpen) return state(value, { scope: "music-literal", mode: "music", from: input.pos, readerQuoted: false, musicLiteral: true });
+      if (term === t.SchemeStringOpen) return state(value, { scope: "scheme-string", mode: "scheme-string", from: input.pos });
+      if ([t.SchemeLineStart, t.SchemeBlockStart, t.SchemeGuileStart].includes(term)) return state(value, { scope: term === t.SchemeLineStart ? "scheme-line" : term === t.SchemeBlockStart ? "scheme-block" : "scheme-guile", mode: "scheme-comment", from: input.pos, depth: 1 });
+      if (term === t.SchemeBlockNest || term === t.SchemeBlockUnnest) return replace(value, { depth: value.depth + (term === t.SchemeBlockNest ? 1 : -1) });
+      if (term === t.SchemeUnknownStart) return state(value, { scope: "scheme-unknown", mode: "scheme-unknown", from: input.pos });
       if (groups.has(term)) return state(clear(value), { scope: "group", from: input.pos, mode: groups.get(term) || value.mode,
         chord: term === t.ChordOpen, language: value.language });
       if ([t.CloseBrace, t.SimClose, t.ChordClose].includes(term)) return value.scope === "group" ? clear(pop(value)) : clear(value);
@@ -100,24 +114,17 @@ export function createContext(initialNoteLanguage = "nederlands") {
       if (term === t.WordEnd || term === t.CommandEnd) return clear(pop(value));
       if (term === t.SchemeAtomStart || term === t.SchemeNumberStart) return state(value, { scope: "scalar", mode: "scheme-scalar", from: input.pos });
       if (term === t.SchemeScalarEnd) {
-        const parent = pop(value);
-        return ["include", "language"].includes(parent.pending) ? replace(clear(parent), { language: "unknown" }) : replace(parent, { lastName: "", nameValid: false, defining: false });
+        return restore(value);
       }
-      // Retain the entry frame, including a pending directive, until the opaque
-      // value ends (or recovers). This preserves its reusable entry hash too.
-      if (term === t.SchemeStart) return state(value, { scope: "scheme", mode: "scheme", from: input.pos, pending: input.peek(1) === 123 ? "music" : "list", depth: 1,
-        blocked: ![40, 123].includes(input.peek(1)) });
-      if (term === t.SchemeText) return replace(value, opaqueChunk(input, value).state);
-      if (term === t.SchemeEnd) return pop(value);
       if (term === t.Operator && input.next === 58 && value.mode === "chords") return replace(value, { modifier: true });
       if (term === t.Space && value.modifier) return replace(value, { modifier: false });
-      if ([t.Pitch, t.Rest, t.Duration, t.Command, t.Variable, t.SchemeAtom, t.SchemeNumber, t.Number, t.Text, t.MarkupText, t.Lyric].includes(term)) {
+      if ([t.Pitch, t.Rest, t.Duration, t.Command, t.Variable, t.Number, t.Text, t.MarkupText, t.Lyric].includes(term)) {
         if (value.pending === "include" || value.pending === "language") return replace(clear(value), { language: "unknown" });
         return replace(value, { lastName: "", nameValid: false, defining: false });
       }
       return value;
   };
-  const zeroWidth = new Set([t.LineEnd, t.WordEnd, t.CommandEnd, t.MarkupEnd, t.UnknownMarkupEnd, t.SchemeScalarEnd]);
+  const zeroWidth = new Set([t.LineEnd, t.WordEnd, t.CommandEnd, t.MarkupEnd, t.UnknownMarkupEnd, t.SchemeScalarEnd, t.SchemeFinish, t.SchemeUnknownEnd, t.SchemeLineEnd]);
   const shift = (value, term, stack, input) => {
     // Lezer deletes recovery tokens without a context shift. A discontinuity
     // between actual shifted spans invalidates a pending declaration name.
@@ -130,13 +137,16 @@ export function createContext(initialNoteLanguage = "nederlands") {
   return new ContextTracker({
     start: base, shift,
     reduce(value, term, stack, input) {
+      if (readers.has(term)) {
+        if (value.parent && value.from >= input.pos) value = restore(value);
+        return term === t.SchemeExpression || term === t.MusicLiteral ? ["include", "language"].includes(value.pending) ? value : clear(value) : value;
+      }
       if (term === t.TempoBeat) return replace(value, { pending: "tempo-equals" });
       if (term === t.Directive) return clear(["include", "language"].includes(value.pending) ? replace(value, { language: "unknown" }) : value);
       if (term === t.Assignment || term === t.PropertyChange || term === t.MarkupNumberArgument) return clear(value);
       if (rules.has(term)) {
         // One frame per syntactic reduction, including inserted closers at EOF.
         if (value.parent && value.from >= input.pos) value = pop(value);
-        if (term === t.SchemeOpaque) return ["include", "language"].includes(value.pending) ? value : clear(value);
         if ([t.ModeExpression, t.Block, t.Context, t.WithBlock, t.Wrapper, t.MarkupCall, t.NumericCommand].includes(term)) return clear(value);
       }
       return value;
@@ -167,33 +177,6 @@ export function createContext(initialNoteLanguage = "nederlands") {
 }
 export const context = createContext();
 
-// HP05 boundary quarantine, not a Scheme reader. Unsupported datums are kept
-// opaque through their compatible list/music closer (or EOF). HP06 replaces
-// this with grammar-visible Scheme datum forms and qualified reader semantics.
-function opaqueChunk(input, value) {
-  let { depth, escaped, quoted, line, blocked } = value, size = 0;
-  const music = value.pending === "music";
-  for (; size < limit && input.peek(size) >= 0; size++) {
-    const c = input.peek(size), next = input.peek(size + 1);
-    if (blocked) continue;
-    if (line) { if (c === 10 || c === 13) line = false; continue; }
-    if (quoted) {
-      if (escaped) escaped = false;
-      else if (c === 92) escaped = true;
-      else if (c === 34) quoted = false;
-      continue;
-    }
-    if (c === 34) { quoted = true; continue; }
-    if (!music && c === 59) { line = true; continue; }
-    // Unsupported reader dispatch or LilyPond comments in opaque music cannot
-    // establish a safe ending in HP05. Keep the rest unknown until HP06's reader.
-    if (!music && (c === 35 || c === 36) || music && (c === 37 || c === 35 && next === 123)) { blocked = true; continue; }
-    if (music && c === 35 && next === 125) break;
-    if (!music && c === 41) { if (depth === 1) break; depth--; }
-    if (!music && c === 40) depth++;
-  }
-  return { size, state: { depth, escaped, quoted, line, blocked } };
-}
 const known = new Set(commands), dynamic = new Set(dynamics);
 export const tokens = new ExternalTokenizer((input, stack) => {
   const value = stack.context;
@@ -203,6 +186,7 @@ export const tokens = new ExternalTokenizer((input, stack) => {
     while (size < limit && input.next >= 0 && predicate(input.next)) { input.advance(); size++; }
     if (size) input.acceptToken(term);
   };
+  if (value.mode.startsWith("scheme")) return schemeToken(input, stack);
   if (value.mode === "unknown-markup") return input.next < 0 ? emit(t.UnknownMarkupEnd, 0) : chunk(t.UnknownMarkupText, () => true);
   if (value.mode === "markup-word") {
     let size = 0;
@@ -221,17 +205,6 @@ export const tokens = new ExternalTokenizer((input, stack) => {
     if (input.next === 34) return emit(t.StringClose, 1);
     if (input.next === 92) return emit(t.StringEscape, input.peek(1) < 0 ? 1 : 2);
     return chunk(value.pending === "include" ? t.PathText : t.StringText, c => c !== 34 && c !== 92);
-  }
-  if (value.mode === "scheme") {
-    const part = opaqueChunk(input, value);
-    if (part.size) return emit(t.SchemeText, part.size);
-    if (input.next >= 0) return emit(t.SchemeEnd, value.pending === "music" ? 2 : 1);
-    return;
-  }
-  if (value.mode === "scheme-scalar") {
-    let size = 0;
-    while (size < limit && scalarChar(input.peek(size))) size++;
-    return emit(scalarChar(input.peek(size)) ? t.SchemePart : t.SchemeScalarEnd, size);
   }
   if (value.scope === "word") {
     const word = readWord(input), command = value.mode === "command-word";
@@ -253,16 +226,9 @@ export const tokens = new ExternalTokenizer((input, stack) => {
   if (input.next === 61) return emit(value.pending === "tempo-equals" ? t.TempoEquals : t.Equals, 1);
   if (input.next === 46 && (input.peek(1) === 34 || letter(point(input, 1)) || stack.canShift(t.NameDot))) return emit(t.NameDot, 1);
   if (input.next === 35 || input.next === 36) {
-    // A reader dispatch can have an arbitrarily long name before its delimiter
-    // (e.g. #vu8). Only the complete scalar booleans are qualified in HP05.
-    // Quarantine other dispatch immediately, without looking ahead for '(' .
-    const boolean = input.peek(1) === 35 && [116, 102].includes(input.peek(2)) &&
-      (input.peek(3) < 0 || space(input.peek(3)) || input.peek(3) === 125);
-    if ([40, 123, 39, 96, 44, 64, 92, 124, 59, 33].includes(input.peek(1)) || input.peek(1) === 35 && !boolean) return emit(t.SchemeStart, 2);
-    let size = 1;
-    while (size < limit && scalarChar(input.peek(size))) size++;
-    const numeric = /^[#$][+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:\/\d+)?$/.test(textAt(input, size));
-    return emit(scalarChar(input.peek(size)) ? numeric ? t.SchemeNumberStart : t.SchemeAtomStart : numeric ? t.SchemeNumber : t.SchemeAtom, size);
+    if (input.next === 35 && input.peek(1) === 123) return emit(t.MusicLiteralOpen, 2);
+    if (input.next === 35 && input.peek(1) === 125 && value.musicLiteral) return emit(t.MusicLiteralClose, 2);
+    return emit(...schemeIntroduction(input));
   }
   if (input.next === 92) {
     const word = readWord(input, 1), name = word.text;

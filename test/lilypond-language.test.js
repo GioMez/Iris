@@ -157,13 +157,18 @@ test("long with headers bind the actual context body and configuration never def
   for (const x of Object.values(r.data)) assert.ok(Object.isFrozen(x));
 });
 
-test("property paths and basic Scheme scalars are isolated; unqualified Scheme cannot invent music", async () => {
+test("property paths and basic Scheme scalars are isolated; HP06 qualifies actual embedded music only", async () => {
   const text = '{ \\override NoteHead.color = #red \\set Staff.foo = ##t \\unset Staff.foo \\revert NoteHead.color \\tweak color #blue c4 } #(list "\\score { d4 }" c4) #{ \\score { e4 } #} \\score { f4 }';
   const r = await parse(text);
   for (const s of ["#red", "##t", "#blue"]) role(r, text, s, "scheme");
   for (const p of ["NoteHead.color", "Staff.foo", "color"]) role(r, text, p, "property");
-  assert.deepEqual(r.data.outline.map(x => x.title), ["Score 1"]);
-  for (const p of [text.indexOf("d4"), text.indexOf("e4")]) { assert.notEqual(r.roles[p], "pitch"); assert.equal(r.adapter.contextAt(r.tree, r.doc, p).certainty, "unknown"); }
+  assert.deepEqual(r.data.outline.map(x => x.title), ["Score 1", "Score 2"]);
+  assert.equal(r.roles[text.indexOf('d4')], 'string');
+  assert.equal(r.roles[text.indexOf('e4')], 'pitch');
+  assert.equal(r.adapter.contextAt(r.tree, r.doc, text.indexOf('e4')).certainty, 'exact');
+  const literal = r.tree.topNode.getChild('MusicLiteral');
+  assert.equal(literal.toString(), 'MusicLiteral(MusicLiteralOpen,Space,Block(BlockCommand,Space,MusicGroup(MusicOpen,Space,Pitch,Duration,Space,CloseBrace)),Space,MusicLiteralClose)');
+  assert.equal(r.tree.topNode.getChild('SchemeExpression').toString(), 'SchemeExpression(SchemeIntro,SchemeList(SchemeListOpen,SchemeAtom,SchemeSpace,SchemeString(SchemeStringOpen,SchemeStringEscape,SchemeStringText,SchemeStringClose),SchemeSpace,SchemeAtom,SchemeListClose),SchemeFinish)');
 });
 
 function sharedTrees(a, b) {
@@ -331,7 +336,9 @@ test("large escaped include values decode cooperatively without a whole-value re
 });
 
 test("unsupported Scheme reader forms remain quarantined instead of exposing fake music", async () => {
-  for (const prefix of ['#(list #\\) ', "#'( ", '#@( ', '$@( ', '#(list #; ', '#(list #| ) |# ', '#{ % #}\n', '#{ #{ c4 #} ', '##( ', '$#( ']) {
+  // HP06 qualifies characters, quotes, vectors, comments and music literals;
+  // these independent unsupported dispatches retain the HP05 quarantine contract.
+  for (const prefix of ['#(list #future ', "#'(#future ", '#@(#future ', '$@(#future ', '#(list #; #future ', '##vu8(', '##u8(', '##reader-extension(']) {
     const text = prefix + '\\score { c4 }', r = await parse(text);
     assert.equal(r.data.outline.length, 0, prefix);
     assert.notEqual(r.roles[text.indexOf('c4')], 'pitch', prefix);
@@ -519,7 +526,7 @@ function sharedNamedTrees(before, after, name) {
   return shared.size;
 }
 
-test('F2/F7 actual large markup and opaque directive reuse preserves mode and language effects', async t => {
+test('F2/F7 actual large markup and HP06 qualified datum reuse preserves mode and language effects', async t => {
   const a = await load(), { TreeFragment } = await import('@lezer/common');
   const prefix = '% head\n' + ' '.repeat(300);
   const opaque = '#(list ' + 'x '.repeat(1200) + ')';
@@ -529,8 +536,11 @@ test('F2/F7 actual large markup and opaque directive reuse preserves mode and la
   const old = tree, from = 2;
   text = text.slice(0, from) + 'new ' + text.slice(from);
   tree = a.language.parser.parse(text, TreeFragment.applyChanges(TreeFragment.addTree(old), [{ fromA: from, toA: from, fromB: from, toB: from + 4 }]));
-  const opaqueReuse = sharedNamedTrees(old, tree, 'SchemeOpaque'), markupReuse = sharedNamedTrees(old, tree, 'MarkupCall');
-  assert.ok(opaqueReuse > 0, 'the unchanged opaque datum itself is reused');
+  const opaqueReuse = sharedNamedTrees(old, tree, 'SchemeExpression'), markupReuse = sharedNamedTrees(old, tree, 'MarkupCall');
+  assert.ok(opaqueReuse > 0, 'the unchanged qualified datum itself is reused');
+  assert.equal(nodes(tree).filter(n => n[0] === 'SchemeAtom').length, 1201);
+  assert.equal(nodes(tree).filter(n => n[0] === 'SchemeList').length, 1);
+  assert.deepEqual(nodes(tree).filter(n => n[0] === '⚠'), []);
   assert.ok(markupReuse > 0, 'the unchanged markup call itself is reused');
   await parity(a, tree, text);
   const roles = await treeRoles(tree, text.length), doc = source(text);
@@ -538,7 +548,7 @@ test('F2/F7 actual large markup and opaque directive reuse preserves mode and la
   assert.equal(roles[text.indexOf('c do r')], null, 'reused markup is text');
   assert.equal(roles[text.indexOf('d4')], 'pitch', 'reused markup restores mode');
   assert.equal(a.contextAt(tree, doc, text.indexOf('c4')).certainty, 'unknown');
-  t.diagnostic(`${opaqueReuse} shared SchemeOpaque; ${markupReuse} shared MarkupCall; ${sharedTrees(old, tree)} total shared nonempty Trees`);
+  t.diagnostic(`${opaqueReuse} shared SchemeExpression; ${markupReuse} shared MarkupCall; ${sharedTrees(old, tree)} total shared nonempty Trees`);
 });
 
 test('F1–F7 composed edit/repair sequences have independent semantics and real reuse', async t => {

@@ -88,9 +88,9 @@ test("language archive retains generator inputs/runtime and regenerates without 
   const f = await fixture(t);
   const repo = path.resolve(__dirname, "..");
   const languageFiles = ["scripts/build-languages.cjs", "public/iris-language-service.mjs", "public/iris-language-state.mjs", "public/iris-syntax-style.mjs",
-    "public/iris-language-policy.mjs", "public/iris-language-tasks.mjs",
+    "public/iris-language-policy.mjs", "public/iris-language-tasks.mjs", "public/iris-tex-highlighting.mjs", "public/iris-lilypond-highlighting.mjs",
     ...["latex.grammar", "tokens.mjs", "names.mjs", "catalog.mjs", "queries.mjs", "reuse.mjs", "index.mjs", "parser.mjs", "parser.terms.mjs"].map(name => `public/languages/latex/${name}`),
-    ...["lilypond.grammar", "tokens.mjs", "pitches.mjs", "catalog.mjs", "queries.mjs", "symbols.mjs", "reuse.mjs", "index.mjs", "parser.mjs", "parser.terms.mjs"].map(name => `public/languages/lilypond/${name}`),
+    ...["lilypond.grammar", "tokens.mjs", "scheme-tokens.mjs", "pitches.mjs", "catalog.mjs", "queries.mjs", "symbols.mjs", "reuse.mjs", "index.mjs", "parser.mjs", "parser.terms.mjs"].map(name => `public/languages/lilypond/${name}`),
     "test/fixtures/languages/lilypond-boundaries.grammar"];
   for (const name of [...languageFiles, "package.json", "package-lock.json"]) {
     await fs.mkdir(path.dirname(path.join(f.source, name)), { recursive: true });
@@ -128,6 +128,11 @@ test("language archive retains generator inputs/runtime and regenerates without 
   assert.equal(ly.language.parser.parse("{c4}").toString(), "Document(Group(OpenBrace,Pitch,Duration,CloseBrace))");
   const { analyze } = await import(pathToFileURL(path.join(packaged, "public/iris-language-service.mjs")));
   assert.deepEqual((await analyze("ly", '\\score { c4 }')).data.outline.map(x => x.title), ["Score 1"]);
+  assert.deepEqual((await analyze('ly', '#(list #; #{ \\score { c4 } #} #{ \\score { d4 } #})')).data.outline.map(x => x.title), ['Score 1']);
+  const { createLilyPondHighlighting } = await import(pathToFileURL(path.join(packaged, 'public/iris-lilypond-highlighting.mjs')));
+  const { EditorState } = await import('@codemirror/state'), { ensureSyntaxTree } = await import('@codemirror/language');
+  const state = EditorState.create({ doc: '#{ c4 #}', extensions: [(await createLilyPondHighlighting())()] });
+  assert.equal(ensureSyntaxTree(state, state.doc.length, 1000).toString(), 'Document(MusicLiteral(MusicLiteralOpen,Space,Pitch,Duration,Space,MusicLiteralClose))');
 });
 
 test("grammar packaging is restricted to intended language source and fixture trees", () => {
