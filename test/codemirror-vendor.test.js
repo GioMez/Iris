@@ -88,7 +88,7 @@ test("every vendored module resolves to an installed ES module", () => {
   });
 });
 
-test("all shipped language bare imports are locally mapped and relative imports exist", () => {
+test("all shipped language bare imports are locally mapped and relative imports exist", async () => {
   const imports = importMap();
   const walk = dir => fs.readdirSync(dir, { withFileTypes: true }).flatMap(entry => entry.isDirectory() ? walk(path.join(dir, entry.name)) : [path.join(dir, entry.name)]);
   const files = ["public/iris-language-service.mjs", "public/iris-language-state.mjs", "public/iris-language-policy.mjs", "public/iris-language-tasks.mjs", "public/iris-syntax-style.mjs"].map(file => path.join(root, file));
@@ -98,6 +98,8 @@ test("all shipped language bare imports are locally mapped and relative imports 
     if (specifier.startsWith(".")) assert.ok(fs.existsSync(path.resolve(path.dirname(file), specifier)), `${file}: missing ${specifier}`);
     else assert.ok(imports[specifier], `${file}: unmapped ${specifier}`);
   }
+  const { loadLanguage } = await import("../public/iris-language-service.mjs");
+  for (const kind of ["tex", "ly"]) assert.ok((await loadLanguage(kind)).language.parser.parse("{}").type.isTop);
 });
 
 test("the editor adapter loads after the syntax modules and before the app", () => {

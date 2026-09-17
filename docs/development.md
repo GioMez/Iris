@@ -13,8 +13,9 @@ allowlisted installed dependency paths.
 
 ### Generated language sources (HP03)
 
-The experimental Lezer foundation lives in `public/languages/latex/`. Edit
-`latex.grammar`, `tokens.mjs`, `catalog.mjs` and `queries.mjs`; regenerate the
+The Lezer languages live in `public/languages/latex/` and
+`public/languages/lilypond/`. Edit each language's `.grammar`, `tokens.mjs`,
+`catalog.mjs` and `queries.mjs`; regenerate the
 checked-in runtime and term table with the locked development dependency:
 
 ```sh
@@ -24,10 +25,10 @@ node --test test/language-build.test.js test/language-state.test.js test/codemir
 ```
 
 `scripts/build-languages.cjs` uses `@lezer/generator` 1.8.0 and writes only
-`public/languages/latex/parser.mjs` and `parser.terms.mjs`. Check mode generates
+`parser.mjs` and `parser.terms.mjs` in those two directories. Check mode generates
 in memory, reports every changed/missing output, and writes nothing. Runtime
 installs use the committed generated files and need no generator. The explicit
-language manifest can be extended when the LilyPond runtime is implemented.
+generator manifest includes both languages.
 All browser imports resolve through relative `.mjs` paths or the local import
 map/vendor whitelist; no CDN or bundler is involved.
 
@@ -51,16 +52,13 @@ inclusion is restricted to `public/languages/` and `test/fixtures/languages/`.
 
 `iris-language-service.mjs` exports `loadLanguage`, `analyze`, the shared
 `runCooperatively` visitor runner, `analysisPolicy` and `MAX_ANALYSIS_LENGTH`.
-Only `tex` is registered. The current slice
-recognizes brace groups, control words/symbols, comments, `$…$`, `$$…$$`,
-`\(…\)`, `\[…\]`, `\verb`/`\verb*` and the basic `verbatim` environment.
-Three explicit TeX profiles control command-letter scanning; runtime profile
-switch commands, arbitrary environments and the full HP04 corpus remain future
-work. Summaries derive from tree nodes, with top-level unstarred headings and
-group/math/literal regions. Heading titles are raw-source previews capped at
-4096 UTF-16 units (longer previews are `recovered`); numbering, symbols,
-references and includes are not interpreted yet. Enter/format methods deliberately
-return `null`/`[]` until HP07. These modules are not installed in `iris-editor.js`.
+Both `tex` and `ly` are registered. HP04 supplies the TeX grammar and highlighting;
+HP05 supplies LilyPond music/text/configuration, four versioned note catalogs and
+tree-derived summaries. LilyPond highlighting remains on the legacy editor stream
+until HP06 qualifies Scheme boundaries. `initialNoteLanguage` defaults to
+`nederlands`; unsupported strings share one conservative `unknown` adapter/cache
+entry. The UI locale does not affect it. See [language support and provenance](editor-languages.md).
+Enter/format methods deliberately return `null`/`[]` until HP07.
 
 `createLanguageState(adapter, onSyntax, hooks)` owns one editor's summary jobs.
 Its extension combines a size-guarded language, transaction identity field and view plugin.

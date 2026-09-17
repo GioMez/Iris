@@ -34,14 +34,19 @@ function normalizeOptions(kind, options) {
     if (!["standard", "internal", "expl3"].includes(texProfile)) throw new RangeError("Invalid texProfile");
     return Object.freeze({ texProfile });
   }
-  throw new RangeError("Language ly is not registered (HP05)");
+  if (options.texProfile !== undefined) throw new RangeError("texProfile applies only to tex");
+  if (options.initialNoteLanguage !== undefined && typeof options.initialNoteLanguage !== "string") throw new TypeError("initialNoteLanguage must be a string");
+  const name = options.initialNoteLanguage === undefined ? "nederlands" : options.initialNoteLanguage;
+  // A finite cache: arbitrary unsupported spellings all mean unknown, never
+  // allocate one parser/cache entry per untrusted source-language string.
+  return Object.freeze({ initialNoteLanguage: ["nederlands", "italiano", "english", "deutsch"].includes(name) ? name : "unknown" });
 }
 
 /** @returns {Promise<LanguageAdapter>} */
 export async function loadLanguage(kind, options = {}) {
   const normalized = normalizeOptions(kind, options), key = `${kind}:${JSON.stringify(normalized)}`;
   if (!cache.has(key)) {
-    const pending = import("./languages/latex/index.mjs").then(module => module.createAdapter(normalized));
+    const pending = (kind === "tex" ? import("./languages/latex/index.mjs") : import("./languages/lilypond/index.mjs")).then(module => module.createAdapter(normalized));
     cache.set(key, pending);
     pending.catch(() => cache.delete(key));
   }

@@ -24,7 +24,7 @@ function clock() {
   };
 }
 
-test("language loading validates options, isolates profiles, caches defaults and refuses unregistered ly", async () => {
+test("language loading validates options, isolates profiles and caches both registered languages", async () => {
   const { loadLanguage } = await service();
   const a = await loadLanguage("tex");
   assert.equal(await loadLanguage("tex", { texProfile: "standard" }), a);
@@ -47,9 +47,53 @@ test("language loading validates options, isolates profiles, caches defaults and
   const roles = tree => { const out = []; highlightTree(tree, roleHighlighter, (from, to, role) => out.push([from, to, role])); return out; };
   assert.deepEqual(roles(reused), roles(full));
   assert.deepEqual(b.summarize(reused, doc(larger)), b.summarize(full, doc(larger)));
-  for (const [kind, opts] of [["ly", {}], ["other", {}], ["tex", { typo: 1 }], ["tex", { texProfile: "invalid" }], ["tex", { texProfile: null }], ["tex", { initialNoteLanguage: "italiano" }], ["tex", null], ["tex", new Map()], ["tex", { [Symbol("option")]: 1 }]]) {
+  assert.equal((await loadLanguage("ly")).kind, "ly");
+  assert.equal(await loadLanguage("ly"), await loadLanguage("ly", { initialNoteLanguage: "nederlands" }));
+  for (const [kind, opts] of [["ly", { texProfile: "standard" }], ["ly", { initialNoteLanguage: null }], ["other", {}], ["tex", { typo: 1 }], ["tex", { texProfile: "invalid" }], ["tex", { texProfile: null }], ["tex", { initialNoteLanguage: "italiano" }], ["tex", null], ["tex", new Map()], ["tex", { [Symbol("option")]: 1 }]]) {
     await assert.rejects(loadLanguage(kind, opts));
   }
+});
+
+test("LilyPond shares guarded startup, unfiltered growth, unavailable distinction and recovery", async () => {
+  const { EditorState } = await import("@codemirror/state");
+  const { ensureSyntaxTree } = await import("@codemirror/language");
+  const { loadLanguage, analyze, MAX_ANALYSIS_LENGTH } = await service();
+  const { createLanguageState, createGuardedLanguage } = await stateService();
+  const { Tree } = await import("@lezer/common");
+  const { rolesFor, analysisRolesFor } = require("./helpers/language-fixtures.cjs");
+  const a = await loadLanguage("ly"), scheduler = clock(), seen = [];
+  const client = createLanguageState(a, value => seen.push(value), scheduler);
+  let state = EditorState.create({ doc: '\\score { c4 }', extensions: client.extension });
+  ensureSyntaxTree(state, state.doc.length, 1000); client.read(state); scheduler.drain();
+  assert.deepEqual(client.read(state).outline.map(x => x.title), ["Score 1"]);
+  const original = a.language.parser.startParse;
+  a.language.parser.startParse = () => { throw new Error("Oversized LY reached LR"); };
+  try {
+    const text = "x".repeat(MAX_ANALYSIS_LENGTH + 1);
+    const huge = EditorState.create({ doc: text, extensions: [createGuardedLanguage(a)] });
+    assert.equal(ensureSyntaxTree(huge, huge.doc.length, 5).type.isTop, false);
+    state = state.update({ changes: { from: 0, to: state.doc.length, insert: text }, filter: false }).state;
+    assert.equal(client.read(state).status, "unavailable");
+    assert.equal(client.contextAt(state, 1).mode, "unknown");
+    const result = await analyze("ly", { length: text.length, sliceString() { throw new Error("Oversized read"); } });
+    assert.equal(result.tree, Tree.empty); assert.equal(result.limitReason, "source-too-large");
+    assert.equal(await rolesFor("ly", text), null);
+    assert.equal((await analysisRolesFor("ly", text)).status, "unavailable");
+  } finally { a.language.parser.startParse = original; }
+  state = state.update({ changes: { from: 0, to: state.doc.length, insert: '😀\r\n\\lyricmode { do }\n\\score { c4 }' } }).state;
+  client.update(state); ensureSyntaxTree(state, state.doc.length, 1000); scheduler.drain();
+  assert.equal(client.read(state).status, "ready");
+  assert.deepEqual(client.read(state).outline.map(x => x.title), ["\\lyricmode", "Score 1"]);
+  client.dispose(); assert.equal(scheduler.pending, 0);
+  const parser = a.language.parser, parse = parser.parse;
+  parser.parse = () => { throw new Error("Synchronous batch LY parse"); };
+  try {
+    const result = await analyze("ly", '😀\r\n\\score { c4 }');
+    assert.equal(result.data.outline[0].offset, 4);
+    const controller = new AbortController(), pending = analyze("ly", '{ c4 } '.repeat(100000), {}, { signal: controller.signal });
+    setTimeout(() => controller.abort(), 0);
+    await assert.rejects(pending, { name: "AbortError" });
+  } finally { parser.parse = parse; }
 });
 
 test("shared UTF-16 policy keeps the normal corpus supported and oversized results explicitly unavailable", async () => {

@@ -81,6 +81,35 @@ The HP03 TeX grammar/catalog and LilyPond boundary probe are original Iris
 sources, not copied third-party language catalogs. Regenerate the parser with
 `npm run build:languages`; see [the development workflow](docs/development.md#generated-language-sources-hp03).
 
+### LilyPond note-name data (HP05)
+
+`public/languages/lilypond/pitches.mjs` adapts the spelling membership of the
+`nederlands`, `italiano`, `english`, and `deutsch` catalogs from **LilyPond 2.26.0**:
+https://github.com/lilypond/lilypond/blob/v2.26.0/scm/define-note-names.scm.
+It expresses the regular spellings as root/suffix products, retains the explicit
+exceptions and aliases, and omits pitch values and other language catalogs.
+
+Upstream credits for these data:
+
+- Copyright (C) 1996–2026 Han-Wen Nienhuys (Nederlands, English).
+- Copyright (C) 1997–2026 Roland Meier and Bjoern Jacke (Deutsch).
+- Copyright (C) 1998–2026 Paolo Zuliani and Eric Wurbel (Italiano).
+- Copyright (C) 2010–2026 Valentin Villenave et al. (common catalog).
+
+LilyPond is free software, redistributable and modifiable under the GNU General
+Public License, version 3 or (at your option) any later version. It is distributed
+without any warranty, including implied warranties of merchantability or fitness
+for a particular purpose. The full GPL version 3 is included in Iris's `LICENSE`;
+see also https://www.gnu.org/licenses/gpl-3.0.html.
+
+The HP05 grammar, tokenizer and query implementation are original Iris code.
+Comment semantics were checked against the versioned reference lexer:
+https://github.com/lilypond/lilypond/blob/v2.26.0/lily/lexer.ll.
+The `<longcomment>` rules close at the first `%}` and do not nest on `%{`.
+
+Catalog coverage, update procedure and the current Scheme boundary are documented
+in [Editor language support](docs/editor-languages.md).
+
 ## ws
 
 Iris uses `ws` on the server for the WebSocket transport that carries realtime

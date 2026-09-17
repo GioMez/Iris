@@ -1,0 +1,79 @@
+@top Document { item* }
+@context context from "./tokens.mjs"
+@external tokens tokens from "./tokens.mjs" {
+  Space, LineStart, LineText, LineEnd, BlockStart, BlockText, BlockEnd,
+  StringOpen, StringText, StringEscape, StringClose, LyricOpen, PathOpen, PathText,
+  Word, WordStart, WordPart, WordEnd, Command, CommandStart, CommandPart, CommandEnd,
+  Variable, Pitch, Rest, Duration, Number, Lyric, Text, Property, ContextName,
+  OpenBrace, MusicOpen, CloseBrace, SimOpen, SimClose, ChordOpen, ChordClose,
+  LyricsOpen, MarkupOpen, ChordsOpen, DrumsOpen, FiguresOpen, ConfigOpen, UnknownOpen,
+  ModeCommand, BlockCommand, ContextCommand, WithCommand,
+  MarkupCommand, MarkupUnaryCommand, MarkupNumberCommand, MarkupListCommand, MarkupStringCommand, MarkupNullaryCommand,
+  MarkupText, MarkupTextStart, MarkupPart, MarkupEnd, UnknownMarkupStart, UnknownMarkupText, UnknownMarkupEnd,
+  TimeCommand, TempoCommand, TempoEquals,
+  RelativeCommand, FixedCommand, TransposeCommand, RepeatCommand, TupletCommand, WrapperCommand,
+  LanguageCommand, IncludeCommand, VersionCommand, PropertyCommand, PropertyEndCommand, TweakCommand,
+  Equals, NameDot, Operator, Articulation,
+  SchemeAtom, SchemeNumber, SchemeAtomStart, SchemeNumberStart, SchemePart, SchemeScalarEnd, SchemeStart, SchemeText, SchemeEnd
+}
+@skip { Space | LineComment | BlockComment }
+@precedence { assign @right, tempo }
+item { Assignment | expression | Pitch | Rest | Duration | Lyric | Text | MarkupText | LongMarkupText | Operator | Articulation | PropertyChange }
+expression { Group | MusicGroup | LyricsGroup | MarkupGroup | ChordsGroup | DrumsGroup | FiguresGroup | ConfigGroup | UnknownGroup | Simultaneous | Chord | ModeExpression | MarkupCall | UnknownMarkup | NumericCommand | Block | Context | Wrapper | Directive | scalar }
+scalar { Identifier | String | LyricString | PathString | Number | Command | LongCommand | Variable | schemeScalar | SchemeOpaque }
+schemeScalar { SchemeAtom | SchemeNumber | LongSchemeAtom | LongSchemeNumber }
+LongSchemeAtom { SchemeAtomStart SchemePart* SchemeScalarEnd }
+LongSchemeNumber { SchemeNumberStart SchemePart* SchemeScalarEnd }
+Identifier { Word | LongWord }
+LongWord { WordStart WordPart* WordEnd }
+LongCommand { CommandStart CommandPart* CommandEnd }
+Assignment { AssignmentHead expression }
+AssignmentHead { (Identifier | String) (!assign NameDot (Identifier | String))* !assign Equals }
+Group { OpenBrace item* CloseBrace }
+MusicGroup { MusicOpen item* CloseBrace }
+LyricsGroup { LyricsOpen item* CloseBrace }
+MarkupGroup { MarkupOpen item* CloseBrace }
+ChordsGroup { ChordsOpen item* CloseBrace }
+DrumsGroup { DrumsOpen item* CloseBrace }
+FiguresGroup { FiguresOpen item* CloseBrace }
+ConfigGroup { ConfigOpen item* CloseBrace }
+UnknownGroup { UnknownOpen item* CloseBrace }
+Simultaneous { SimOpen item* SimClose }
+Chord { ChordOpen item* ChordClose }
+body { Group | MusicGroup | Simultaneous | LyricsGroup | MarkupGroup | ChordsGroup | DrumsGroup | FiguresGroup | ConfigGroup | UnknownGroup | Variable | Command | LongCommand | Wrapper | ModeExpression | Context }
+ModeExpression { ModeCommand (body | String | LyricString | Identifier) | MarkupCommand markupValue }
+markupValue { MarkupGroup | String | MarkupText | LongMarkupText | MarkupCall | UnknownMarkup | Block }
+MarkupCall {
+  MarkupUnaryCommand markupValue |
+  MarkupNumberCommand MarkupNumberArgument markupValue |
+  MarkupListCommand MarkupGroup |
+  MarkupStringCommand (String | MarkupText | LongMarkupText) |
+  MarkupNullaryCommand
+}
+MarkupNumberArgument { Number | schemeScalar | SchemeOpaque }
+LongMarkupText { MarkupTextStart MarkupPart* MarkupEnd }
+UnknownMarkup { UnknownMarkupStart UnknownMarkupText* UnknownMarkupEnd }
+NumericCommand { TimeCommand Number | TempoCommand (String (!tempo TempoSetting)? | TempoSetting) }
+TempoSetting { TempoBeat TempoEquals Number }
+TempoBeat { Duration }
+Block { BlockCommand body }
+Context { ContextCommand ContextName (Equals (String | Identifier))? WithBlock? body }
+WithBlock { WithCommand ConfigGroup }
+Wrapper {
+  RelativeCommand Pitch? body |
+  FixedCommand Pitch body |
+  TransposeCommand Pitch Pitch body |
+  RepeatCommand Identifier Number body |
+  TupletCommand Number body |
+  WrapperCommand body
+}
+Directive { (LanguageCommand | IncludeCommand | VersionCommand) (String | PathString | Command | schemeScalar | SchemeOpaque) }
+PropertyChange { (PropertyCommand Property Equals | TweakCommand Property) (String | schemeScalar | SchemeOpaque | Number | Command) | PropertyEndCommand Property }
+@skip {} {
+  String { StringOpen (StringText | StringEscape)* StringClose }
+  LyricString { LyricOpen (StringText | StringEscape)* StringClose }
+  PathString { PathOpen (PathText | StringEscape)* StringClose }
+  LineComment { LineStart LineText* LineEnd }
+  BlockComment { BlockStart BlockText* BlockEnd }
+  SchemeOpaque { SchemeStart SchemeText* SchemeEnd }
+}

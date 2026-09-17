@@ -184,4 +184,18 @@ function generateFixture(kind, bytes, { singleLine = false } = {}) {
   return { source, metrics: metrics(source) };
 }
 
-module.exports = { FIXTURE_ROOT, REQUIREMENT_IDS, ROLE_NAMES, CONTEXT_MODES, resolveFixturePath, validateCase, validateManifest, loadFixtures, loadBaselineModules, collectBaseline, generateFixture };
+// Semantic identities must all come from ESM, just like the browser adapter.
+// Callers needing availability metadata can use analysisRolesFor directly.
+async function analysisRolesFor(kind, source, options = {}) {
+  const [{ analyze }, { highlightTree }, { roleHighlighter }] = await Promise.all([
+    import("../../public/iris-language-service.mjs"), import("@lezer/highlight"), import("../../public/iris-syntax-style.mjs"),
+  ]);
+  const result = await analyze(kind, source, options);
+  const roles = result.status === "unavailable" ? null : Array(result.doc.length).fill(null);
+  if (roles) highlightTree(result.tree, roleHighlighter, (from, to, role) => roles.fill(role, from, to));
+  return { ...result, roles };
+}
+async function rolesFor(kind, source, options = {}) {
+  return (await analysisRolesFor(kind, source, options)).roles;
+}
+module.exports = { FIXTURE_ROOT, REQUIREMENT_IDS, ROLE_NAMES, CONTEXT_MODES, resolveFixturePath, validateCase, validateManifest, loadFixtures, loadBaselineModules, collectBaseline, generateFixture, rolesFor, analysisRolesFor };

@@ -90,6 +90,7 @@ test("language archive retains generator inputs/runtime and regenerates without 
   const languageFiles = ["scripts/build-languages.cjs", "public/iris-language-service.mjs", "public/iris-language-state.mjs", "public/iris-syntax-style.mjs",
     "public/iris-language-policy.mjs", "public/iris-language-tasks.mjs",
     ...["latex.grammar", "tokens.mjs", "names.mjs", "catalog.mjs", "queries.mjs", "reuse.mjs", "index.mjs", "parser.mjs", "parser.terms.mjs"].map(name => `public/languages/latex/${name}`),
+    ...["lilypond.grammar", "tokens.mjs", "pitches.mjs", "catalog.mjs", "queries.mjs", "symbols.mjs", "reuse.mjs", "index.mjs", "parser.mjs", "parser.terms.mjs"].map(name => `public/languages/lilypond/${name}`),
     "test/fixtures/languages/lilypond-boundaries.grammar"];
   for (const name of [...languageFiles, "package.json", "package-lock.json"]) {
     await fs.mkdir(path.dirname(path.join(f.source, name)), { recursive: true });
@@ -115,7 +116,7 @@ test("language archive retains generator inputs/runtime and regenerates without 
   // the candidate and extracted tree have no Git metadata or build fallback.
   const run = (...args) => spawnSync(process.execPath, ["scripts/build-languages.cjs", ...args], { cwd: packaged, encoding: "utf8" });
   assert.equal(run("--check").status, 0);
-  for (const name of ["parser.mjs", "parser.terms.mjs"]) await fs.rm(path.join(packaged, "public/languages/latex", name));
+  for (const language of ["latex", "lilypond"]) for (const name of ["parser.mjs", "parser.terms.mjs"]) await fs.rm(path.join(packaged, `public/languages/${language}`, name));
   const rebuilt = run();
   assert.equal(rebuilt.status, 0, rebuilt.stderr);
   assert.equal(run("--check").status, 0);
@@ -123,11 +124,16 @@ test("language archive retains generator inputs/runtime and regenerates without 
   const { loadLanguage } = await import(pathToFileURL(path.join(packaged, "public/iris-language-service.mjs")));
   const adapter = await loadLanguage("tex");
   assert.equal(adapter.language.parser.parse("{x}").toString(), "Document(Group(OpenBrace,Text,CloseBrace))");
+  const ly = await loadLanguage("ly");
+  assert.equal(ly.language.parser.parse("{c4}").toString(), "Document(Group(OpenBrace,Pitch,Duration,CloseBrace))");
+  const { analyze } = await import(pathToFileURL(path.join(packaged, "public/iris-language-service.mjs")));
+  assert.deepEqual((await analyze("ly", '\\score { c4 }')).data.outline.map(x => x.title), ["Score 1"]);
 });
 
 test("grammar packaging is restricted to intended language source and fixture trees", () => {
   const { included } = require(release);
   assert.equal(included("public/languages/latex/latex.grammar"), true);
+  assert.equal(included("public/languages/lilypond/lilypond.grammar"), true);
   assert.equal(included("test/fixtures/languages/lilypond-boundaries.grammar"), true);
   for (const name of ["public/unrelated.grammar", "src/private.grammar", "test/unrelated.grammar", "public/languages/.private/x.grammar", "public/languages/tmp/x.grammar", "docs/superpowers/x.grammar"]) assert.equal(included(name), false, name);
 });

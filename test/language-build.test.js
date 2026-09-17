@@ -36,12 +36,12 @@ async function roles(tree) {
 test("generated modules are deterministic; check reports drift/missing outputs without writing", async t => {
   const dir = await fs.mkdtemp(path.join(root, ".language-build-"));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
-  for (const file of ["scripts/build-languages.cjs", "public/languages/latex/latex.grammar", "public/languages/latex/tokens.mjs"]) {
+  for (const file of ["scripts/build-languages.cjs", ...["latex", "lilypond"].flatMap(name => [`public/languages/${name}/${name}.grammar`, `public/languages/${name}/tokens.mjs`])]) {
     await fs.mkdir(path.dirname(path.join(dir, file)), { recursive: true });
     await fs.copyFile(path.join(root, file), path.join(dir, file));
   }
   const run = (...args) => spawnSync(process.execPath, [path.join(dir, "scripts/build-languages.cjs"), ...args], { cwd: dir, encoding: "utf8" });
-  const outputs = ["parser.mjs", "parser.terms.mjs"].map(file => path.join(dir, "public/languages/latex", file));
+  const outputs = ["latex", "lilypond"].flatMap(name => ["parser.mjs", "parser.terms.mjs"].map(file => path.join(dir, `public/languages/${name}`, file)));
   assert.equal(run().status, 0);
   const first = await Promise.all(outputs.map(file => fs.readFile(file, "utf8")));
   assert.equal(run().status, 0);
@@ -49,17 +49,23 @@ test("generated modules are deterministic; check reports drift/missing outputs w
   assert.equal(run("--check").status, 0);
   await fs.writeFile(outputs[0], "drift");
   await fs.rm(outputs[1]);
+  await fs.writeFile(outputs[2], "lilypond drift");
+  await fs.rm(outputs[3]);
   const check = run("--check");
   assert.equal(check.status, 1);
   assert.match(check.stderr, /parser\.mjs/);
   assert.match(check.stderr, /parser\.terms\.mjs/);
   assert.equal(await fs.readFile(outputs[0], "utf8"), "drift");
   await assert.rejects(fs.stat(outputs[1]), { code: "ENOENT" });
+  assert.match(check.stderr, /lilypond[\\/]parser\.mjs/);
+  assert.equal(await fs.readFile(outputs[2], "utf8"), "lilypond drift");
+  await assert.rejects(fs.stat(outputs[3]), { code: "ENOENT" });
   assert.equal(run("--invalid").status, 1);
   assert.equal(run().status, 0);
   assert.deepEqual(await Promise.all(outputs.map(file => fs.readFile(file, "utf8"))), first);
   // Only declared outputs, no generator cache or terms.js side product.
   assert.deepEqual((await fs.readdir(path.dirname(outputs[0]))).sort(), ["latex.grammar", "parser.mjs", "parser.terms.mjs", "tokens.mjs"]);
+  assert.deepEqual((await fs.readdir(path.dirname(outputs[2]))).sort(), ["lilypond.grammar", "parser.mjs", "parser.terms.mjs", "tokens.mjs"]);
 });
 
 test("TeX LR slice preserves raw offsets, groups, four math pairs and literal/comment boundaries", async () => {

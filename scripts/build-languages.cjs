@@ -4,7 +4,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { buildParserFile } = require("@lezer/generator");
 
-const languages = ["latex"];
+const languages = ["latex", "lilypond"];
 async function build({ check = false, root = path.resolve(__dirname, "..") } = {}) {
   const outputs = [];
   for (const name of languages) {

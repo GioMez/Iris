@@ -10,6 +10,9 @@ revisione ed è integrato in `c510f5b`: gate richiesto 38/38, controlli adiacent
 40/40, build/check riproducibili. HP-04 ha completato la revisione del parser
 LaTeX e dell'highlighting montato; la selezione iniziale dei profili da estensione
 `.sty/.cls` resta un collegamento esplicito da chiudere in HP-07.
+HP-04 è integrato con `39da07c`. HP-05 ha completato implementazione e revisione
+del parser musicale: gate 147/147, build/check riproducibili; l'attivazione in
+editor segue la qualifica Scheme in HP-06.
 La prova ha portato a una policy esplicita di
 analisi limitata oltre 1.048.576 unità UTF-16; il limite e le latenze ordinarie
 richiedono la qualifica nell'editor montato. La personalizzazione di temi/colori
@@ -580,6 +583,12 @@ dell'intero editor finché quei consumatori non sono migrati.
 
 ## HP-05: LilyPond musicale, testuale e di configurazione
 
+**Avanzamento:** implementazione e revisione completate il 17 settembre.
+Coperti i ruoli/contesti/indici annotati LY-01…07, la composizione di contesti e
+wrapper, markup noto e firme numeriche, pause nelle percussioni e incertezza degli
+include. I quattro cataloghi 2.26.0 comprendono 302 nomi verificati. Scheme generale
+resta opaco/conservativo fino a HP-06; le arità markup sconosciute restano incerte.
+
 **File:** creare/completare moduli `public/languages/lilypond/` salvo la parte
 Scheme avanzata, creare `test/lilypond-language.test.js`; estendere servizio,
 generatore e test di build al secondo linguaggio.
@@ -589,7 +598,7 @@ generatore e test di build al secondo linguaggio.
 **Produce:** adapter LilyPond con LY-01…LY-07; HP-06 ne completa i confini prima
 dell'attivazione nell'editor.
 
-- [ ] Definire nel helper HP-01 `rolesFor(kind, source, options)` usando
+- [x] Definire nel helper HP-01 `rolesFor(kind, source, options)` usando
   `analyze()` e `highlightTree(result.tree, roleHighlighter, callback)`, tutti
   importati come ESM per condividere le identità dei tag. Restituire un ruolo o
   `null` per ogni code unit. Primo test discriminante:
@@ -604,19 +613,19 @@ assert.equal(roles[9], 'rest');
 assert.equal(roles[10], 'duration');
 ```
 
-- [ ] Implementare stringhe/commenti prima delle categorie musicali; aggiungere
+- [x] Implementare stringhe/commenti prima delle categorie musicali; aggiungere
   fixture che fissino il comportamento di `%{…%}` sulla versione di riferimento,
   anche in presenza di un'altra apertura nel corpo. Non importare implicitamente
   le regole dei commenti Scheme.
-- [ ] Costruire i quattro cataloghi dei nomi, alias e alterazioni da riferimenti
+- [x] Costruire i quattro cataloghi dei nomi, alias e alterazioni da riferimenti
   versionati. Pubblicare `noteNames(language)` come `ReadonlySet<string>` o
   `null` per lingua sconosciuta; un tokenizer riconosce il nome intero, poi
   ottave/forzature. Aggiornare contesto e hash a `\language`.
-- [ ] Implementare durate numeriche e simboliche, punti e moltiplicatori;
+- [x] Implementare durate numeriche e simboliche, punti e moltiplicatori;
   pause, accordi, `q`, polifonia, barre, legature/travature, articolazioni e
   dinamiche. La durata viene riconosciuta nella posizione musicale consentita,
   evitando di interpretare un numero di proprietà come durata.
-- [ ] Gestire input mode e firme dei wrapper. Caso negativo obbligatorio:
+- [x] Gestire input mode e firme dei wrapper. Caso negativo obbligatorio:
 
 ```js
 const text = '\\lyricmode { do re mi }';
@@ -627,14 +636,14 @@ assert.equal(roles.slice(text.indexOf('{') + 1, text.lastIndexOf('}')).includes(
   Aggiungere analoghi casi per `markup`, `chordmode`, `drummode`, `figuremode`,
   proprietà, e un ritorno alla musica dopo la loro chiusura. Le parole dei testi
   rimangono testo anche se coincidono con nomi di note o pause.
-- [ ] Estrarre assegnazioni, include, contesti e blocchi dai nodi, con intestazioni
+- [x] Estrarre assegnazioni, include, contesti e blocchi dai nodi, con intestazioni
   multilinea e `\with` oltre 240 caratteri. Le variabili con nomi composti o
   quotati restano nell'indice; proporre come comando soltanto i nomi invocabili
   riconosciuti con certezza. Riutilizzare la stessa distinzione nei simboli.
-- [ ] Gestire `initialNoteLanguage`, provenienza locale e include secondo la
+- [x] Gestire `initialNoteLanguage`, provenienza locale e include secondo la
   specifica; aggiungere un `.ily` senza direttiva, lingua sconosciuta e cambio
   lingua nel mezzo del file. Niente risoluzione della lingua tramite locale UI.
-- [ ] Rigenerare e confrontare parsing incrementale/completo dopo cambi di
+- [x] Rigenerare e confrontare parsing incrementale/completo dopo cambi di
   `\language`, modo, commento e stringa. Espressioni Scheme ancora non
   qualificate restano in regioni conservative, senza azioni strutturali.
 
