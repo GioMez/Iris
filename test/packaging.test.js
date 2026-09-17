@@ -2,16 +2,17 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
-const os = require("node:os");
 const { spawnSync } = require("node:child_process");
 const { createHash } = require("node:crypto");
+const { gunzipSync } = require("node:zlib");
+const { pathToFileURL } = require("node:url");
 
 const release = path.resolve(__dirname, "../scripts/release.cjs");
 const required = ["LICENSE", "THIRD_PARTY_NOTICES.md", "README.md", ".npmrc", ".env.example",
   ".dockerignore", "Dockerfile", "docker-compose.yml", "db/schema.sql", "db/init/01-create-iris-user.sh",
   "src/server.js", "public/Iris.html", "public/templates/.metadata.json", "scripts/test.cjs", "scripts/smoke.cjs"];
 async function fixture(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "iris-package-test-"));
+  const root = await fs.mkdtemp(path.resolve(__dirname, "../.iris-package-test-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const source = path.join(root, "source"), output = path.join(root, "out"), manifest = path.join(root, "manifest.json");
   const files = { ...Object.fromEntries(required.map((name) => [name, name])),
@@ -53,7 +54,17 @@ test("candidate archive is byte-reproducible, extractable, and ignores unlisted 
     entry.isDirectory() ? walk(path.join(dir, entry.name), `${prefix}${entry.name}/`) : [`${prefix}${entry.name}`]))).flat();
   assert.deepEqual((await walk(path.join(extracted, "iris-1.0.0"))).sort(), Object.keys(f.files).sort());
   for (const [name, data] of Object.entries(f.files)) assert.deepEqual(await fs.readFile(path.join(extracted, "iris-1.0.0", name)), Buffer.from(data));
-  assert.equal((await fs.stat(path.join(extracted, "iris-1.0.0/db/init/01-create-iris-user.sh"))).mode & 0o777, 0o755);
+  // Windows extraction does not preserve POSIX mode bits. Assert the portable
+  // release contract against the actual ustar header, on every platform.
+  const bytes = gunzipSync(first);
+  let scriptMode;
+  for (let offset = 0; offset < bytes.length && bytes[offset];) {
+    const header = bytes.subarray(offset, offset + 512);
+    const field = (from, to) => header.subarray(from, to).toString().replace(/\0.*$/, "");
+    if (field(0, 100).endsWith("db/init/01-create-iris-user.sh")) scriptMode = parseInt(field(100, 108), 8);
+    offset += 512 + Math.ceil(parseInt(field(124, 136), 8) / 512) * 512;
+  }
+  assert.equal(scriptMode, 0o755);
 });
 
 test("explicit manifests cannot smuggle excluded paths, traversal, duplicate names or symlinks", async (t) => {
@@ -65,12 +76,60 @@ test("explicit manifests cannot smuggle excluded paths, traversal, duplicate nam
     assert.match(result.stderr, /excluded|unsafe|duplicate/i, name);
     await assert.rejects(fs.stat(f.output), { code: "ENOENT" });
   }
-  await fs.symlink(path.join(f.source, "README.md"), path.join(f.source, "src/link.js"));
+  await fs.symlink(path.join(f.source, process.platform === "win32" ? "db" : "README.md"), path.join(f.source, "src/link.js"), process.platform === "win32" ? "junction" : "file");
   await fs.writeFile(f.manifest, JSON.stringify([...Object.keys(f.files), "src/link.js"]));
   assert.match(f.run().stderr, /symbolic link/i);
-  await fs.symlink(path.join(f.source, "src"), path.join(f.source, "alias"));
+  await fs.symlink(path.join(f.source, "src"), path.join(f.source, "alias"), process.platform === "win32" ? "junction" : "dir");
   await fs.writeFile(f.manifest, JSON.stringify([...Object.keys(f.files), "alias/server.js"]));
   assert.equal(f.run().status, 1);
+});
+
+test("language archive retains generator inputs/runtime and regenerates without Git", async t => {
+  const f = await fixture(t);
+  const repo = path.resolve(__dirname, "..");
+  const languageFiles = ["scripts/build-languages.cjs", "public/iris-language-service.mjs", "public/iris-language-state.mjs", "public/iris-syntax-style.mjs",
+    "public/iris-language-policy.mjs", "public/iris-language-tasks.mjs",
+    ...["latex.grammar", "tokens.mjs", "catalog.mjs", "queries.mjs", "reuse.mjs", "index.mjs", "parser.mjs", "parser.terms.mjs"].map(name => `public/languages/latex/${name}`),
+    "test/fixtures/languages/lilypond-boundaries.grammar"];
+  for (const name of [...languageFiles, "package.json", "package-lock.json"]) {
+    await fs.mkdir(path.dirname(path.join(f.source, name)), { recursive: true });
+    f.files[name] = await fs.readFile(path.join(repo, name));
+    await fs.writeFile(path.join(f.source, name), f.files[name]);
+  }
+  await fs.writeFile(f.manifest, JSON.stringify(Object.keys(f.files)));
+  const built = f.run();
+  assert.equal(built.status, 0, built.stderr);
+  const version = JSON.parse(f.files["package.json"]).version;
+  const bytes = await fs.readFile(path.join(f.output, `iris-${version}.tar.gz`));
+  const second = f.run("--output", path.join(f.root, "second"));
+  assert.equal(second.status, 0, second.stderr);
+  assert.deepEqual(await fs.readFile(path.join(f.root, `second/iris-${version}.tar.gz`)), bytes);
+  const extracted = path.join(f.root, "extracted");
+  await fs.mkdir(extracted);
+  const tar = spawnSync("tar", ["-xzf", path.join(f.output, `iris-${version}.tar.gz`), "-C", extracted], { encoding: "utf8" });
+  assert.equal(tar.status, 0, tar.stderr);
+  const packaged = path.join(extracted, `iris-${version}`);
+  await assert.rejects(fs.stat(path.join(packaged, ".git")), { code: "ENOENT" });
+  for (const name of languageFiles) assert.deepEqual(await fs.readFile(path.join(packaged, name)), f.files[name]);
+  // Dependency resolution uses the installed locked ancestor node_modules;
+  // the candidate and extracted tree have no Git metadata or build fallback.
+  const run = (...args) => spawnSync(process.execPath, ["scripts/build-languages.cjs", ...args], { cwd: packaged, encoding: "utf8" });
+  assert.equal(run("--check").status, 0);
+  for (const name of ["parser.mjs", "parser.terms.mjs"]) await fs.rm(path.join(packaged, "public/languages/latex", name));
+  const rebuilt = run();
+  assert.equal(rebuilt.status, 0, rebuilt.stderr);
+  assert.equal(run("--check").status, 0);
+  for (const name of languageFiles) assert.deepEqual(await fs.readFile(path.join(packaged, name)), f.files[name]);
+  const { loadLanguage } = await import(pathToFileURL(path.join(packaged, "public/iris-language-service.mjs")));
+  const adapter = await loadLanguage("tex");
+  assert.equal(adapter.language.parser.parse("{x}").toString(), "Document(Group(OpenBrace,Text,CloseBrace))");
+});
+
+test("grammar packaging is restricted to intended language source and fixture trees", () => {
+  const { included } = require(release);
+  assert.equal(included("public/languages/latex/latex.grammar"), true);
+  assert.equal(included("test/fixtures/languages/lilypond-boundaries.grammar"), true);
+  for (const name of ["public/unrelated.grammar", "src/private.grammar", "test/unrelated.grammar", "public/languages/.private/x.grammar", "public/languages/tmp/x.grammar", "docs/superpowers/x.grammar"]) assert.equal(included(name), false, name);
 });
 
 test("release rejects mismatched metadata, incomplete manifests, implicit checkout and existing output", async (t) => {

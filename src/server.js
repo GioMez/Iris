@@ -189,6 +189,7 @@ const CODEMIRROR_MODULES = {
   "autocomplete.js": path.join(path.dirname(require.resolve("@codemirror/autocomplete")), "index.js"),
   "lezer-common.js": path.join(path.dirname(require.resolve("@lezer/common")), "index.js"),
   "lezer-highlight.js": path.join(path.dirname(require.resolve("@lezer/highlight")), "index.js"),
+  "lezer-lr.js": path.join(path.dirname(require.resolve("@lezer/lr")), "index.js"),
   "style-mod.js": path.join(path.dirname(require.resolve("style-mod")), "..", "src", "style-mod.js"),
   "w3c-keyname.js": path.join(path.dirname(require.resolve("w3c-keyname")), "index.js"),
   "crelt.js": path.join(path.dirname(require.resolve("crelt")), "..", "index.js"),

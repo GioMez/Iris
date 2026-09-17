@@ -33,7 +33,7 @@ Source: https://github.com/tabler/tabler-icons
 Iris serves CodeMirror 6 (`@codemirror/state`, `@codemirror/view`,
 `@codemirror/language`, `@codemirror/commands`, `@codemirror/collab`,
 `@codemirror/autocomplete`) and its
-runtime dependencies (`@lezer/common`, `@lezer/highlight`, `style-mod`,
+runtime dependencies (`@lezer/common`, `@lezer/highlight`, `@lezer/lr`, `style-mod`,
 `w3c-keyname`, `crelt`, `@marijn/find-cluster-break`) to the browser as
 unmodified ES modules from `node_modules` via `/vendor/codemirror/`. The backend
 also uses `@codemirror/state` and `@codemirror/collab` directly, as the
@@ -62,6 +62,24 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 Source: https://github.com/codemirror/dev
+
+### Lezer language foundations
+
+Iris directly depends on `@lezer/common` **1.5.2**, `@lezer/highlight` **1.2.3**
+and `@lezer/lr` **1.4.10**, and uses `@lezer/generator` **1.8.0** only during
+development to generate the committed native-ESM parser and term table. These
+packages are MIT licensed under the Marijn Haverbeke and contributors notice
+and permission text above; their installed distributions retain their `LICENSE`
+files. The generator is not served to the browser and is not required to start
+a production installation.
+
+Sources: https://github.com/lezer-parser/common,
+https://github.com/lezer-parser/highlight, https://github.com/lezer-parser/lr,
+https://github.com/lezer-parser/generator.
+
+The HP03 TeX grammar/catalog and LilyPond boundary probe are original Iris
+sources, not copied third-party language catalogs. Regenerate the parser with
+`npm run build:languages`; see [the development workflow](docs/development.md#generated-language-sources-hp03).
 
 ## ws
 

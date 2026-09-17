@@ -1,0 +1,17 @@
+@top Document { item* }
+
+item { Group | Math | LineComment | Verb | Verbatim | ControlWord | HeadingCommand | ControlSymbol | Text | Space }
+Group { OpenBrace item* CloseBrace }
+Math { MathOpen item* MathClose }
+LineComment { CommentStart CommentText* CommentEnd }
+Verb { VerbOpen LiteralText* (VerbClose | VerbBreak) }
+Verbatim { VerbatimOpen LiteralText* VerbatimClose }
+ControlWord { CommandStart CommandPart* CommandEnd }
+
+@external tokens tokens from "./tokens.mjs" {
+  OpenBrace, CloseBrace, MathOpen, MathClose,
+  CommentStart, CommentText, CommentEnd,
+  VerbOpen, VerbClose, VerbBreak, VerbatimOpen, VerbatimClose, LiteralText,
+  CommandStart, CommandPart, CommandEnd, HeadingCommand, ControlSymbol, Text, Space
+}
+@context context from "./tokens.mjs"

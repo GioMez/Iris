@@ -11,6 +11,135 @@ For an interactive local instance, follow [native installation](installation.md#
 frontend bundling step. The server serves browser modules from `public/` and
 allowlisted installed dependency paths.
 
+### Generated language sources (HP03)
+
+The experimental Lezer foundation lives in `public/languages/latex/`. Edit
+`latex.grammar`, `tokens.mjs`, `catalog.mjs` and `queries.mjs`; regenerate the
+checked-in runtime and term table with the locked development dependency:
+
+```sh
+npm run build:languages
+npm run check:languages
+node --test test/language-build.test.js test/language-state.test.js test/codemirror-vendor.test.js test/packaging.test.js
+```
+
+`scripts/build-languages.cjs` uses `@lezer/generator` 1.8.0 and writes only
+`public/languages/latex/parser.mjs` and `parser.terms.mjs`. Check mode generates
+in memory, reports every changed/missing output, and writes nothing. Runtime
+installs use the committed generated files and need no generator. The explicit
+language manifest can be extended when the LilyPond runtime is implemented.
+All browser imports resolve through relative `.mjs` paths or the local import
+map/vendor whitelist; no CDN or bundler is involved.
+
+`tokens.mjs` tracks lexical and group scopes, restoring their entry context when
+error recovery reduces a rule without its closer. Scope starts locate those
+reductions; hashes exclude absolute positions so unchanged subtrees can move.
+`reuse.mjs` supplies recovery-safe fragment views: recovered nodes and their
+ancestors cannot be reused atomically, while healthy descendant trees retain
+their identities. It memoizes views weakly and prepares them in bounded parse
+steps. The parser's public `createParse` hook survives configuration in pinned
+Lezer 1.4.10; configuration/stop-position regressions cover that assumption.
+Incremental tests exceed Lezer's 4096-unit reuse threshold and assert object
+identity reuse, not merely the presence of a fragment argument.
+
+Source archives retain the grammar, external tokenizer, catalog, queries,
+generated modules and test-only `test/fixtures/languages/lilypond-boundaries.grammar`.
+After extraction and `npm ci`, the same build/check commands work without Git.
+The archive test regenerates deleted outputs using the installed locked ancestor
+dependencies, checks byte parity, and imports the extracted runtime. Grammar
+inclusion is restricted to `public/languages/` and `test/fixtures/languages/`.
+
+`iris-language-service.mjs` exports `loadLanguage`, `analyze`, the shared
+`runCooperatively` visitor runner, `analysisPolicy` and `MAX_ANALYSIS_LENGTH`.
+Only `tex` is registered. The current slice
+recognizes brace groups, control words/symbols, comments, `$…$`, `$$…$$`,
+`\(…\)`, `\[…\]`, `\verb`/`\verb*` and the basic `verbatim` environment.
+Three explicit TeX profiles control command-letter scanning; runtime profile
+switch commands, arbitrary environments and the full HP04 corpus remain future
+work. Summaries derive from tree nodes, with top-level unstarred headings and
+group/math/literal regions. Heading titles are raw-source previews capped at
+4096 UTF-16 units (longer previews are `recovered`); numbering, symbols,
+references and includes are not interpreted yet. Enter/format methods deliberately
+return `null`/`[]` until HP07. These modules are not installed in `iris-editor.js`.
+
+`createLanguageState(adapter, onSyntax, hooks)` owns one editor's summary jobs.
+Its extension combines a size-guarded language, transaction identity field and view plugin.
+Headless consumers use real `EditorState` and call `update(state)` or `read(state)`
+after applying a transaction. Dispatch `identityEffect.of({generation})` with a
+strictly increasing generation when replacing a document, even if its bytes are
+identical. Revision increases on document edits and identity replacement; parse-only
+updates preserve revision. Reads return frozen snapshots with explicit coverage
+and status; document edits invalidate summaries rather than reuse unmapped offsets.
+Summary jobs capture a tree and its coverage together. A public context query can
+advance CodeMirror's mutable parse context before `syntaxTree(state)` changes;
+the service reads that already-available tree with a zero-budget public API call.
+It can publish a complete summary from the ensured tree before an empty parse-only
+transaction, without mistaking the earlier partial tree for ready data.
+Consumers must keep existing UI entries provisional while a snapshot is partial,
+and must dispose the owner on close. Historical reads cannot reinstall stale jobs.
+Optional `schedule(fn, delay)`, `cancel(handle)` and `now()` hooks control scheduling
+without replacing CodeMirror's parsing. Preserve raw CRLF in source tests with
+`EditorState.lineSeparator.of("\n")`.
+
+Context ownership follows half-open ranges: an adjacent region's start belongs
+to the region on the right. The `bias` argument still defaults to `-1` and guides
+the fallback text-leaf lookup; explicit `-1` or `+1` does not override semantic
+region ownership. A line-terminated `\verb` has a known endpoint at the end of
+its raw CR, LF or CRLF, with recovered certainty and `openEnded: false`. The
+following position is outside the literal. Unterminated EOF literals/math still
+own the EOF caret; an EOF line comment also continues to own it.
+
+#### Shared normal/large-file policy
+
+`analysisPolicy(length)` accepts a nonnegative safe-integer UTF-16 length and
+returns a frozen, serializable `{mode, length, maxLength, reason}`. Up to and
+including **1,048,576 UTF-16 units**, `mode` is `full` and `reason` is null.
+Above that limit, `mode` is `limited` and `reason` is `source-too-large`. Both
+declared 1 MiB UTF-8 TeX/LY workloads fit this limit. Future editor/completion
+entry points must check this policy before choosing LR or automatic editing.
+The raw `adapter.language.parser` remains available for explicit parser tests;
+it does not apply the service policy by itself.
+
+`analyze` now returns `{tree, doc, data, status, parsedTo, limitReason}`. Supported
+results are `ready` with full coverage and a null reason. Oversized input returns
+`Tree.empty`, frozen empty summary arrays, `unavailable`, coverage 0 and
+`source-too-large`, without reading or parsing source content. This sentinel
+means unavailable syntax, not a successfully parsed empty document. Check status
+before consuming it. Direct `summarize`/`summarySteps` reject oversized sources
+with `RangeError` code `IRIS_ANALYSIS_LIMIT`; direct context queries return unknown.
+
+The state extension checks size **before** delegating to LR's `startParse`,
+including initial creation, edits crossing the limit and unfiltered remote
+transactions. Above the limit it uses CodeMirror's public skipping parser to
+keep plain/neutral editing and unavailable syntax. CodeMirror may return a
+neutral placeholder tree from `ensureSyntaxTree`; `syntaxTreeAvailable` remains
+false and the service reports `unavailable`, `parsedTo: 0` and a limit reason.
+It cancels prior summary work and returns unknown contexts. Shrinking below the
+limit resumes LR parsing. Snapshots now include `limitReason` (null when not limited).
+No second structural scanner or worker is involved.
+
+The owned task queue uses Node `setImmediate` or browser `MessageChannel` for
+continuations, with timers for the 250 ms debounce and as a compatibility fallback.
+Disposal/cancellation closes ports and cancels pending tasks. Node MessageChannel
+was rejected after a cancellation test exposed timer starvation. Summary traversal
+prunes scalar frames/exit events, checking for a yield after at most 128 skipped
+leaves while preserving structural nodes and recovery propagation.
+
+**Performance targets for normal files remain unchanged.** State summaries still
+use 250 ms debounce/8 ms chunks; context requests pass a 5 ms parsing budget.
+These are cooperative budgets, since an upstream `advance()` is not preemptible.
+The corrective Windows i7-1355U/Node 24/Chrome 153 experiment measured 1 MiB
+maintained-tree summary p95 including debounce at 408 ms/447 ms.
+The first Node summary in that targeted run took 543 ms. Cold batch
+analysis also builds the whole tree and is not an input-to-render or post-idle
+summary measurement. Repeated cold-analysis event-loop gaps reached 117 ms in
+Node and 113 ms in Chrome, so no universal no-long-task or mounted input-latency
+qualification is claimed. The 5 MiB production paths started zero LR parses.
+Further work should attribute the normal-file gaps and test mounted local/remote
+edits before activation; size refusal alone does not prove normal-file latency.
+The HP03 review accepts the enforced large-file policy and assigns the remaining
+ordinary-file mounted performance qualification to HP08, with its targets intact.
+
 ## Repository map
 
 | Path | Responsibility |

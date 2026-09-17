@@ -16,7 +16,8 @@ e completion dovranno installare il linguaggio attraverso la guardia condivisa.
 
 **Stato:** HP-01 e HP-02 implementati e integrati su `main` il 15 settembre 2026,
 con commit `4d37c4e` e `f6d8783`. Il riscontro visivo e il corpus reale dell'utente
-restano aperti. HP-03…HP-08 restano pianificati.
+restano aperti. HP-03 ha completato la revisione delle fondazioni il 17 settembre;
+HP-04…HP-08 sono autorizzati e restano da eseguire.
 
 **Base analizzata:** Iris 1.0.1, commit `0402762`.
 
@@ -433,6 +434,8 @@ visiva della palette. La proposta assume pari priorità funzionale, quattro
 convenzioni delle note nella prima qualifica e parser locali nel browser.
 
 ## 10. Riferimenti
+
+- [Valutazione di temi, colori e comandi personalizzati dopo HP-08](../docs/highlighting-customization.md).
 
 - [Contratto colori di Iris](../docs/ui-colors.md), [guida utente](../docs/user-guide.md), [sviluppo e gate](../docs/development.md).
 - [Roadmap R11](NEXT_STEPS.md) e [registro di avanzamento](backend-implementation-status.md).

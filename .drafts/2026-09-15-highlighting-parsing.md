@@ -5,12 +5,18 @@ Per gli aggiornamenti usare questa copia e la specifica nella stessa directory.
 Trasferimento richiesto dall'utente il 17 settembre 2026.
 
 **Allineamento al 17 settembre:** l'utente ha autorizzato HP-03…HP-08 con commit
-su `main` per ogni punto completato. HP-03 è in revisione nel worktree esistente;
-non risulta ancora consegnato. La prova ha portato a una policy esplicita di
+su `main` per ogni punto completato. HP-03 ha completato implementazione e
+revisione: gate richiesto 38/38, controlli adiacenti 40/40, build/check riproducibili.
+La prova ha portato a una policy esplicita di
 analisi limitata oltre 1.048.576 unità UTF-16; il limite e le latenze ordinarie
 richiedono la qualifica nell'editor montato. La personalizzazione di temi/colori
 e comandi è oggetto di valutazione architetturale per un seguito dopo HP-08,
 senza anticiparne l'implementazione.
+
+La [valutazione della personalizzazione](../docs/highlighting-customization.md)
+documenta temi/palette e regole per comandi, i confini di configurazione e cache,
+e un possibile HP-09 dopo HP-08. L'architettura offre i punti di estensione
+necessari; questa valutazione non aggiunge la funzione al runtime.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. Avviare l'implementazione dopo l'approvazione della proposta; eseguire i task in sequenza, con verifica a ogni consegna.
 
@@ -384,9 +390,9 @@ modificare manifest/lockfile, `Iris.html`, `src/server.js`,
 literal e matematica sufficiente alla prova, senza attivazione in produzione.
 `loadLanguage('ly')` entra nel registro solo in HP-05.
 
-- [ ] Aggiungere test fallenti per caricamento ESM in Node, generazione
+- [x] Aggiungere test fallenti per caricamento ESM in Node, generazione
   deterministica, file `.grammar` nel pacchetto e vendor `@lezer/lr`.
-- [ ] Aggiungere versioni esatte e script npm `build:languages` e
+- [x] Aggiungere versioni esatte e script npm `build:languages` e
   `check:languages`. Usare API/CLI installati, senza risoluzione di pacchetti
   online durante build o avvio:
 
@@ -401,7 +407,7 @@ literal e matematica sufficiente alla prova, senza attivazione in produzione.
   `parser.terms.mjs` con import relativi corretti. `--check` genera in memoria,
   confronta con i file salvati e fallisce indicando ogni file diverso, senza
   sovrascriverlo. Provare esplicitamente i nomi `.mjs` prodotti dal generatore.
-- [ ] Aggiungere import map e whitelist vendor:
+- [x] Aggiungere import map e whitelist vendor:
 
 ```json
 "@lezer/lr": "/vendor/codemirror/lezer-lr.js"
@@ -413,7 +419,7 @@ literal e matematica sufficiente alla prova, senza attivazione in produzione.
 
   Mantenere il modello di whitelist attuale e aggiornare entrambe le tabelle
   in `test/codemirror-vendor.test.js`.
-- [ ] Implementare il primo adapter come factory, con parser configurato dai
+- [x] Implementare il primo adapter come factory, con parser configurato dai
   tag condivisi; forma d'integrazione:
 
 ```js
@@ -437,7 +443,7 @@ export const language = LRLanguage.define({
   Questi sono i nomi dei nodi iniziali da definire nella grammatica. I file
   `tokens.mjs` e `catalog.mjs` gestiscono apertura/fine dei literal e stato
   matematico; introdurre subito il context hash per verificarne il riuso.
-- [ ] Prova di parità incrementale, da adattare al test del servizio:
+- [x] Prova di parità incrementale, da adattare al test del servizio:
 
 ```js
 const {EditorState} = await import('@codemirror/state');
@@ -456,7 +462,7 @@ assert.equal(incremental.toString(), full.toString());
   Oltre alla forma dell'albero confrontare tutti i nodi con nome/from/to, ruoli
   e sintesi; `toString()` da solo non verifica gli offset. Ripetere per un
   delimitatore matematico e una chiusura literal cancellati e reinseriti.
-- [ ] Prima della decisione Lezer, compilare in memoria la grammatica di prova
+- [x] Prima della decisione Lezer, compilare in memoria la grammatica di prova
   `lilypond-boundaries.grammar` nel test di build. Deve modellare `{…}`, liste
   `#(…)`, stringhe/commenti Scheme e musica `#{…#}`; usare come caso
   `#(define motif #{ c4 #})` e varianti con `)` in stringa e `#\)`.
@@ -464,14 +470,14 @@ assert.equal(incremental.toString(), full.toString());
   riparazione. Registrare il risultato insieme alla prova TeX. Questa fixture
   serve a decidere la fattibilità; HP-05/HP-06 realizzano il parser completo
   del sottoinsieme dichiarato, con tutti i relativi test.
-- [ ] Implementare nel servizio di stato la gestione di copertura, budget e
+- [x] Implementare nel servizio di stato la gestione di copertura, budget e
   identità del §3. Se il parser non copre il cursore, restituire contesto
   `unknown`; pubblicare lo stato parziale senza cancellare dati validi di altre
   porzioni. Verificare i timer con scheduler controllato.
-- [ ] Estendere il filtro di `scripts/release.cjs` a `.grammar` nei percorsi
+- [x] Estendere il filtro di `scripts/release.cjs` a `.grammar` nei percorsi
   previsti. Verificare che il pacchetto includa anche tokenizer/cataloghi `.mjs`
   e termini generati, e che il comando di rigenerazione funzioni senza `.git`.
-- [ ] Misurare il prototipo sui tre volumi del corpus e su modifiche in testa al
+- [x] Misurare il prototipo sui tre volumi del corpus e su modifiche in testa al
   file. Registrare risultati e decisione Lezer nel rapporto di qualifica e
   riportare la procedura nel documento di sviluppo.
 

@@ -27,6 +27,7 @@ function vendorFiles() {
     "autocomplete.js": path.join(path.dirname(require.resolve("@codemirror/autocomplete")), "index.js"),
     "lezer-common.js": path.join(path.dirname(require.resolve("@lezer/common")), "index.js"),
     "lezer-highlight.js": path.join(path.dirname(require.resolve("@lezer/highlight")), "index.js"),
+    "lezer-lr.js": path.join(path.dirname(require.resolve("@lezer/lr")), "index.js"),
     "style-mod.js": path.join(path.dirname(require.resolve("style-mod")), "..", "src", "style-mod.js"),
     "w3c-keyname.js": path.join(path.dirname(require.resolve("w3c-keyname")), "index.js"),
     "crelt.js": path.join(path.dirname(require.resolve("crelt")), "..", "index.js"),
@@ -45,6 +46,7 @@ test("the import map points every bare specifier at the vendor route", () => {
     "@codemirror/autocomplete": "autocomplete.js",
     "@lezer/common": "lezer-common.js",
     "@lezer/highlight": "lezer-highlight.js",
+    "@lezer/lr": "lezer-lr.js",
     "style-mod": "style-mod.js",
     "w3c-keyname": "w3c-keyname.js",
     "crelt": "crelt.js",
@@ -84,6 +86,18 @@ test("every vendored module resolves to an installed ES module", () => {
       assert.ok(imports[m[1]], `${name} imports unmapped specifier ${m[1]}`);
     }
   });
+});
+
+test("all shipped language bare imports are locally mapped and relative imports exist", () => {
+  const imports = importMap();
+  const walk = dir => fs.readdirSync(dir, { withFileTypes: true }).flatMap(entry => entry.isDirectory() ? walk(path.join(dir, entry.name)) : [path.join(dir, entry.name)]);
+  const files = ["public/iris-language-service.mjs", "public/iris-language-state.mjs", "public/iris-language-policy.mjs", "public/iris-language-tasks.mjs", "public/iris-syntax-style.mjs"].map(file => path.join(root, file));
+  files.push(...walk(path.join(root, "public/languages")).filter(file => file.endsWith(".mjs")));
+  for (const file of files) for (const match of fs.readFileSync(file, "utf8").matchAll(/(?:from\s*|import\s*\()(["'])([^"']+)\1/g)) {
+    const specifier = match[2];
+    if (specifier.startsWith(".")) assert.ok(fs.existsSync(path.resolve(path.dirname(file), specifier)), `${file}: missing ${specifier}`);
+    else assert.ok(imports[specifier], `${file}: unmapped ${specifier}`);
+  }
 });
 
 test("the editor adapter loads after the syntax modules and before the app", () => {

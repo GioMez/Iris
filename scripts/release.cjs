@@ -40,6 +40,7 @@ function included(name) {
   if (name.startsWith("docs/superpowers/")) return false;
   const parts = name.split("/");
   if (parts.some((part) => part.startsWith(".") || /^(node_modules|data|storage|coverage|tmp|temp|dist|build|artifacts)$/i.test(part)) && name !== "public/templates/.metadata.json") return false;
+  if (name.endsWith(".grammar")) return /^(public\/languages|test\/fixtures\/languages)\//.test(name);
   return /\.(?:js|cjs|mjs|json|html|css|sql|sh|md|svg|png|jpg|jpeg|webp|tex|ly|ily|woff2?)$/.test(name);
 }
 async function candidateFiles(root, manifest) {

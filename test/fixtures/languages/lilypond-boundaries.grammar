@@ -1,0 +1,27 @@
+// Test-only feasibility probe, not a registered LilyPond language.
+// Single-character content tokens bound scanner work even in long literals.
+@top Document { item* }
+@skip { Space }
+item { Group | Scheme | Music | String | LineComment | BlockComment | Atom }
+datum { List | Music | String | Character | SchemeComment | Atom }
+Group { "{" item* "}" }
+Scheme { "#(" datum* ")" }
+List { "(" datum* ")" }
+Music { "#{" item* "#}" }
+Atom { AtomChar }
+@skip {} {
+  String { "\"" (StringChar | Escape)* "\"" }
+  SchemeComment { ";" CommentChar* LineEnd }
+  LineComment { "%" CommentChar* LineEnd }
+  BlockComment { "%{" BlockChar* "%}" }
+}
+@tokens {
+  Space { $[ \t\n\r] }
+  AtomChar { ![ \t\n\r#{}()";%] }
+  StringChar { !["\\] }
+  Escape { "\\" _ }
+  Character { "#\\" _ }
+  CommentChar { ![\r\n] }
+  LineEnd { "\r\n" | $[\r\n] }
+  BlockChar { ![%] | "%" ![}] }
+}

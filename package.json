@@ -13,6 +13,8 @@
     "test:browser": "node scripts/test.cjs --browser",
     "test:native": "node scripts/test.cjs --native test/source-mapping.native.test.js",
     "release:source": "node scripts/release.cjs",
+    "build:languages": "node scripts/build-languages.cjs",
+    "check:languages": "node scripts/build-languages.cjs --check",
     "smoke": "node scripts/smoke.cjs"
   },
   "dependencies": {
@@ -22,6 +24,9 @@
     "@codemirror/language": "6.12.4",
     "@codemirror/state": "6.7.1",
     "@codemirror/view": "6.43.7",
+    "@lezer/common": "1.5.2",
+    "@lezer/highlight": "1.2.3",
+    "@lezer/lr": "1.4.10",
     "argon2": "0.44.0",
     "pdf-lib": "1.17.1",
     "pdfjs-dist": "6.3.289",
@@ -32,6 +37,7 @@
     "node": ">=24"
   },
   "devDependencies": {
+    "@lezer/generator": "1.8.0",
     "playwright-core": "1.63.0"
   }
 }
