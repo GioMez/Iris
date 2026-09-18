@@ -91,7 +91,7 @@ test("every vendored module resolves to an installed ES module", () => {
 test("all shipped language bare imports are locally mapped and relative imports exist", async () => {
   const imports = importMap();
   const walk = dir => fs.readdirSync(dir, { withFileTypes: true }).flatMap(entry => entry.isDirectory() ? walk(path.join(dir, entry.name)) : [path.join(dir, entry.name)]);
-  const files = ["public/iris-language-service.mjs", "public/iris-language-state.mjs", "public/iris-language-policy.mjs", "public/iris-language-tasks.mjs", "public/iris-syntax-style.mjs", "public/iris-tex-highlighting.mjs", "public/iris-lilypond-highlighting.mjs"].map(file => path.join(root, file));
+  const files = ["public/iris-language-service.mjs", "public/iris-language-state.mjs", "public/iris-language-policy.mjs", "public/iris-language-tasks.mjs", "public/iris-language-completion.mjs", "public/iris-language-editing.mjs", "public/iris-syntax-style.mjs", "public/iris-tex-highlighting.mjs", "public/iris-lilypond-highlighting.mjs"].map(file => path.join(root, file));
   files.push(...walk(path.join(root, "public/languages")).filter(file => file.endsWith(".mjs")));
   for (const file of files) for (const match of fs.readFileSync(file, "utf8").matchAll(/(?:from\s*|import\s*\()(["'])([^"']+)\1/g)) {
     const specifier = match[2];
@@ -109,9 +109,7 @@ test("the editor adapter loads after the syntax modules and before the app", () 
     assert.notEqual(index, -1, `Iris.html does not load ${nameToFind}`);
     return index;
   };
-  // The adapter reads window.IrisLatex/IrisLilyPond when it builds the languages.
-  assert.ok(position("iris-latex.js") < position("iris-editor.js"));
-  assert.ok(position("iris-lilypond.js") < position("iris-editor.js"));
+  assert.ok(position("iris-completion.js") < position("iris-editor.js"));
   for (const module of ["iris-bibtex.js", "iris-ris.js", "iris-bibliography.js"]) {
     assert.ok(position(module) < position("iris-editor.js"));
   }

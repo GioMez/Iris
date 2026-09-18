@@ -89,8 +89,9 @@ test("language archive retains generator inputs/runtime and regenerates without 
   const repo = path.resolve(__dirname, "..");
   const languageFiles = ["scripts/build-languages.cjs", "public/iris-language-service.mjs", "public/iris-language-state.mjs", "public/iris-syntax-style.mjs",
     "public/iris-language-policy.mjs", "public/iris-language-tasks.mjs", "public/iris-tex-highlighting.mjs", "public/iris-lilypond-highlighting.mjs",
-    ...["latex.grammar", "tokens.mjs", "names.mjs", "catalog.mjs", "queries.mjs", "reuse.mjs", "index.mjs", "parser.mjs", "parser.terms.mjs"].map(name => `public/languages/latex/${name}`),
-    ...["lilypond.grammar", "tokens.mjs", "scheme-tokens.mjs", "pitches.mjs", "catalog.mjs", "queries.mjs", "symbols.mjs", "reuse.mjs", "index.mjs", "parser.mjs", "parser.terms.mjs"].map(name => `public/languages/lilypond/${name}`),
+    "public/iris-language-editing.mjs", "public/iris-language-completion.mjs",
+    ...["latex.grammar", "tokens.mjs", "names.mjs", "catalog.mjs", "queries.mjs", "editing.mjs", "reuse.mjs", "index.mjs", "parser.mjs", "parser.terms.mjs"].map(name => `public/languages/latex/${name}`),
+    ...["lilypond.grammar", "tokens.mjs", "scheme-tokens.mjs", "pitches.mjs", "catalog.mjs", "queries.mjs", "editing.mjs", "symbols.mjs", "reuse.mjs", "index.mjs", "parser.mjs", "parser.terms.mjs"].map(name => `public/languages/lilypond/${name}`),
     "test/fixtures/languages/lilypond-boundaries.grammar"];
   for (const name of [...languageFiles, "package.json", "package-lock.json"]) {
     await fs.mkdir(path.dirname(path.join(f.source, name)), { recursive: true });

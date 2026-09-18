@@ -53,6 +53,7 @@ function contents(node, doc) {
   return { from: node.from + 1, to: node.to - (boundary(node).closed ? 1 : 0) };
 }
 function argumentRole(node, doc) {
+  if (node.name === "EnvironmentName") return "environment";
   if (node.name === "HeadingGroup") return "heading";
   if (node.name === "TextGroup" || node.name === "OptionalArgument") return "text";
   if (node.name === "BodyGroup") return "body";
@@ -256,8 +257,19 @@ export function contextAt(tree, doc, pos, bias = -1) {
   if (tree.type.name !== "Document" || pos > tree.length) return unknownContext(pos);
   let node = tree.resolveInner(pos, pos === doc.length ? -1 : 1), depth = 0, argument = null, semantic = null, dynamic = false;
   const certaintyBudget = { remaining: 128 };
-  const leaf = node;
+  const leaf = node, completion = {};
   for (; node && depth < 256; node = node.parent, depth++) {
+    if (["ControlWord", "ControlSymbol"].includes(node.name) || node.name.endsWith("Command")) {
+      completion.commandFrom = node.from;
+      completion.commandTo = node.to === tree.length && tree.length < doc.length ? null : node.to;
+    }
+    if (node.name === "Begin" || node.name === "End") {
+      const last = node.lastChild, tail = last?.type.isError || ["EnvClose", "EndClose", "OrphanClose"].includes(last?.name) ? last.prevSibling : last;
+      const name = tail?.name === "EnvironmentName" ? tail : null, open = name ? name.prevSibling : tail;
+      if (open?.name === "EnvOpen" && pos >= open.to && pos <= (name?.to ?? open.to)) {
+        argument = { node: name || open, role: "environment" };
+      }
+    }
     const edge = boundary(node);
     if (pos === node.to && (pos !== doc.length || edge.ended && !edge.eofComment)) continue;
     const role = argumentRole(node, doc);
@@ -269,14 +281,19 @@ export function contextAt(tree, doc, pos, bias = -1) {
     if (mode && !semantic) semantic = { mode, from: node.from, to: node.to, certainty: edge.closed ? "exact" : "recovered" };
   }
   if (node) return unknownContext(pos);
-  if (semantic) return Object.freeze({ ...semantic, argumentRole: argument?.role || null, certainty: dynamic ? "unknown" : semantic.certainty });
+  if (argument && ["environment", "reference", "reference-list", "citation-list"].includes(argument.role)) {
+    const arg = argument.node, span = arg.name === "EnvironmentName" ? arg : arg.name === "EnvOpen" ? { from: arg.to, to: arg.to } : contents(arg, doc);
+    completion.argumentFrom = span.from;
+    completion.argumentTo = arg.to === tree.length && tree.length < doc.length && !boundary(arg).closed ? null : span.to;
+  }
+  if (semantic) return Object.freeze({ ...semantic, ...completion, argumentRole: argument?.role || null, certainty: dynamic ? "unknown" : semantic.certainty });
   if (argument) {
     const { node: arg, role } = argument;
-    return Object.freeze({ mode: "text", argumentRole: role, from: arg.from, to: arg.to,
+    return Object.freeze({ mode: "text", ...completion, argumentRole: role, from: arg.from, to: arg.to,
       certainty: dynamic ? "unknown" : boundary(arg).closed ? "exact" : "recovered" });
   }
   const preferred = tree.resolveInner(pos, bias);
   const contains = n => !n.type.isTop && n.from <= pos && pos < n.to;
   const text = contains(preferred) ? preferred : contains(leaf) ? leaf : null;
-  return Object.freeze({ mode: "text", argumentRole: null, from: text?.from ?? pos, to: text?.to ?? pos, certainty: text?.type.isError ? "recovered" : "exact" });
+  return Object.freeze({ mode: "text", ...completion, argumentRole: null, from: text?.from ?? pos, to: text?.to ?? pos, certainty: text?.type.isError ? "recovered" : "exact" });
 }

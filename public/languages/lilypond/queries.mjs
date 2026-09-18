@@ -252,8 +252,33 @@ export function contextAt(tree, doc, pos, bias = -1, initialNoteLanguage = "nede
   if (!Number.isInteger(pos) || pos < 0 || pos > doc.length) throw new RangeError("Cursor outside source");
   if (analysisPolicy(doc.length).mode === "limited" || tree.type.name !== "Document" || pos > tree.length) return unknownContext(pos);
   let node = tree.resolveInner(pos, pos === doc.length ? -1 : 1), depth = 0, semantic = null, group = null, uncertain = false, argumentRole = null;
-  const leaf = node, budget = { remaining: 128 }, boundaryBudget = { remaining: 128 };
+  const leaf = node, budget = { remaining: 128 }, boundaryBudget = { remaining: 128 }, completion = {};
   for (; node && depth < 256; node = node.parent, depth++) {
+    if (node.name.endsWith("Command") || node.name === "Variable") {
+      completion.commandFrom = node.from;
+      completion.commandTo = node.to === tree.length && tree.length < doc.length ? null : node.to;
+    }
+    // A missing body/name recovers at EOF, but its real header still owns the
+    // context-name slot. Inspect before half-open endpoint filtering, without
+    // inventing an argument after a complete name/body or recovery debris.
+    if (node.name === "Context" && pos > node.firstChild.to) {
+      let child = node.firstChild.nextSibling, count = 0;
+      for (; child && count++ < 128; child = child.nextSibling) {
+        if (child.name === "ContextName") {
+          if (pos <= child.to) {
+            argumentRole = "context"; completion.argumentFrom = child.from;
+            completion.argumentTo = child.to === tree.length && tree.length < doc.length ? null : child.to;
+          }
+          break;
+        }
+        if (["Space", "LineComment", "BlockComment"].includes(child.name)) continue;
+        if (child.type.isError && child.from === child.to && pos === doc.length && pos === child.from) {
+          argumentRole = "context"; completion.argumentFrom = completion.argumentTo = pos;
+        }
+        break;
+      }
+      if (count > 128) return unknownContext(pos);
+    }
     const edge = boundary(node, boundaryBudget);
     if (boundaryBudget.remaining < 0) return unknownContext(pos);
     if (pos === node.to && (pos !== doc.length || !edge.openEnded)) continue;
@@ -262,6 +287,7 @@ export function contextAt(tree, doc, pos, bias = -1, initialNoteLanguage = "nede
     // Keep walking: an enclosing datum discard owns even unknown markup.
     if (node.name === "UnknownMarkup") semantic = { mode: "markup", argumentRole: null, from: node.from, to: node.to, certainty: "unknown" };
     if (node.name === "Property") argumentRole = "property";
+    if (node.name === "ContextName") argumentRole = "context";
     if (node.name === "Word" || node.name === "LongWord") uncertain = true;
     if (groups.has(node.name) && !group) group = node;
     const mode = node.name === "LineComment" || node.name === "BlockComment" || node.name === "SchemeComment" ? "comment" : isString(node.name) || node.name === "SchemeString" ? node.name === "LyricString" ? "lyrics" : "string" : reader.has(node.name) ? "scheme" :
@@ -270,14 +296,14 @@ export function contextAt(tree, doc, pos, bias = -1, initialNoteLanguage = "nede
     // structure does not itself switch figuremode back to pitched music.
     if (mode && !semantic) {
       const owner = modeNames[node.name] ? group || node : node;
-      semantic = { mode, argumentRole: node.name === "PathString" ? "path" : node.name === "ConfigGroup" ? "property" : null,
+      semantic = { mode, argumentRole: node.name === "LyricString" ? "string" : node.name === "PathString" ? "path" : node.name === "ConfigGroup" ? "property" : null,
         from: owner.from, to: owner.to, certainty: certaintyAt(tree, owner, budget) };
     }
   }
   if (node) return unknownContext(pos);
   if (!semantic && group) semantic = { mode: "music", argumentRole: null, from: group.from, to: group.to, certainty: certaintyAt(tree, group, budget) };
-  if (semantic) return Object.freeze({ ...semantic, argumentRole: argumentRole || semantic.argumentRole, certainty: ["music", "chords"].includes(semantic.mode) && (uncertain || languageAt(tree, doc, pos, initialNoteLanguage) === "unknown") ? "unknown" : semantic.certainty });
+  if (semantic) return Object.freeze({ ...semantic, ...completion, argumentRole: argumentRole || semantic.argumentRole, certainty: ["music", "chords"].includes(semantic.mode) && (uncertain || languageAt(tree, doc, pos, initialNoteLanguage) === "unknown") ? "unknown" : semantic.certainty });
   const preferred = tree.resolveInner(pos, bias), text = !preferred.type.isTop && preferred.from <= pos && pos < preferred.to ? preferred : !leaf.type.isTop && pos < leaf.to ? leaf : null;
-  return Object.freeze({ mode: ["SchemeAtom", "SchemeNumber"].includes(text?.name) ? "scheme" : "music", argumentRole: text?.name === "Property" ? "property" : null,
-    from: text?.from ?? pos, to: text?.to ?? pos, certainty: uncertain || languageAt(tree, doc, pos, initialNoteLanguage) === "unknown" ? "unknown" : text?.type.isError ? "recovered" : "exact" });
+  return Object.freeze({ mode: ["SchemeAtom", "SchemeNumber"].includes(text?.name) ? "scheme" : "music", ...completion,
+    from: text?.from ?? pos, to: text?.to ?? pos, argumentRole: argumentRole || (text?.name === "Property" ? "property" : null), certainty: uncertain || languageAt(tree, doc, pos, initialNoteLanguage) === "unknown" ? "unknown" : text?.type.isError ? "recovered" : "exact" });
 }

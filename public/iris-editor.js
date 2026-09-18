@@ -4,13 +4,16 @@
 // and served from /vendor/codemirror.
 //
 // Contract:
-//   load(content, kind)        fresh document, no change event ("ly"|"tex"|"bib"|"ris"|null)
+//   load(content, kind, {path}) fresh document, no change event ("ly"|"tex"|"bib"|"ris"|null)
 //   getValue()                 current document text
 //   snapshot()                 { revision, text }, monotone across edits/reloads
+//   syntaxSnapshot()           immutable current syntax, same revision; null for Bib/RIS
+//   onSyntax(fn)               partial/ready/unavailable snapshots, or null on retirement
+//   format(expected?)          guarded granular structural indentation, one history event
 //   trackRange(from, to)        disposable bookmark; read() returns a copy or null
 //   applyChanges(changes, expected) guarded, single-history bibliography edit
 //   undo()                     boolean; refuses read-only documents
-//   setLanguage(kind)          reconfigure syntax without replacing the document
+//   setLanguage(kind, {path})  reconfigure syntax/profile without replacing the document
 //   requestMeasure()           remeasure after a pane visibility/size change
 //   applyText(text)            whole-document edit (formatter), applied granularly
 //   replaceRange(from, to, s)  ranged edit (find & replace)
@@ -39,12 +42,12 @@
   const INVISIBLE_SPACES = new RegExp(INVISIBLE_SPACE_CLASS, "g");
   const IS_INVISIBLE_SPACE = new RegExp(INVISIBLE_SPACE_CLASS);
   const codePointLabel = (code) => `U+${code.toString(16).toUpperCase().padStart(4, "0")}`;
-  const handlers = { change: [], cursor: [], sync: [], peers: [], load: [], sourceNavigate: [] };
+  const handlers = { change: [], cursor: [], sync: [], peers: [], load: [], syntax: [], sourceNavigate: [] };
   let impl = null;
   let revision = 0;
 
   function emit(type, payload) {
-    handlers[type].forEach((fn) => {
+    [...handlers[type]].forEach((fn) => {
       try { fn(payload); } catch (err) { console.error("IrisEditor handler failed", err); }
     });
   }
@@ -64,7 +67,7 @@
   }
 
   async function createCodeMirror() {
-    const [S, V, L, C, syntaxStyle, CO, A, texHighlighting, lilypondHighlighting] = await Promise.all([
+    const [S, V, L, C, syntaxStyle, CO, A, languageService, languageState, languageCompletion] = await Promise.all([
       import("@codemirror/state"),
       import("@codemirror/view"),
       import("@codemirror/language"),
@@ -72,8 +75,9 @@
       import("./iris-syntax-style.mjs"),
       import("@codemirror/collab"),
       import("@codemirror/autocomplete"),
-      import("./iris-tex-highlighting.mjs"),
-      import("./iris-lilypond-highlighting.mjs"),
+      import("./iris-language-service.mjs"),
+      import("./iris-language-state.mjs"),
+      import("./iris-language-completion.mjs"),
     ]);
 
     const { legacyTokenTable, bibliographyTokenTable, syntaxExtension } = syntaxStyle;
@@ -85,15 +89,43 @@
       tokenTable,
     });
     const languages = {
-      // load()/loadCollab() currently receive a kind, not a filename. The initial
-      // profile is standard until HP07 threads .sty/.cls identity into this API.
-      tex: (await texHighlighting.createTexHighlighting())(),
-      ly: (await lilypondHighlighting.createLilyPondHighlighting())(),
       bib: streamDefinition(window.IrisBibtex.stream, bibliographyTokenTable),
       ris: streamDefinition(window.IrisRis.stream, bibliographyTokenTable),
     };
 
     const flags = { wordWrap: false, autoIndent: true, readOnly: false, kind: null };
+    const adapters = {
+      tex: await languageService.loadLanguage("tex"),
+      internal: await languageService.loadLanguage("tex", { texProfile: "internal" }),
+      ly: await languageService.loadLanguage("ly"),
+    };
+    let languageOwner = null, adapter = null, generation = 0, fileMetadata = {}, lastSyntax = null;
+    const textRevision = S.StateField.define({
+      create: () => revision,
+      update: (value, tr) => value + (tr.docChanged ? 1 : 0),
+    });
+    function publishSyntax() {
+      if (!view) return;
+      const snapshot = languageOwner?.read(view.state) || null;
+      if (snapshot === lastSyntax) return;
+      lastSyntax = snapshot;
+      emit("syntax", snapshot);
+    }
+    function replaceLanguage() {
+      languageOwner?.dispose();
+      generation++;
+      adapter = flags.kind === "tex" ? adapters[/\.(sty|cls)$/i.test(fileMetadata.path || fileMetadata.name || "") ? "internal" : "tex"]
+        : flags.kind === "ly" ? adapters.ly : null;
+      languageOwner = null;
+      if (!adapter) return languages[flags.kind] || [];
+      const owner = languageState.createLanguageState(adapter, () => {
+        // Initial oversized notification can occur inside EditorView.setState.
+        // Publish only once its transaction/lifetime has actually been installed.
+        queueMicrotask(() => { if (languageOwner === owner) publishSyntax(); });
+      }, { generation, revision });
+      languageOwner = owner;
+      return owner.extension;
+    }
     // A document policy, not a language preference. A resync retains it even
     // when editing has removed the header that originally identified a .txt.
     let rawLines = false;
@@ -101,9 +133,35 @@
     let completionContext = {};
     let completionTitle = "";
     const completionPhrases = new S.Compartment();
-    const completionSyntax = { tex: window.IrisLatex, ly: window.IrisLilyPond };
+    const projectCache = languageCompletion.createProjectCache();
+    const currentLanguageState = state => state.doc === view.state.doc && state.facet(L.language) === view.state.facet(L.language);
+    function completionSnapshot(state, signal) {
+      const owner = languageOwner, first = owner?.read(state);
+      if (!first || first.status !== "partial") return first;
+      return new Promise(resolve => {
+        const timer = setTimeout(() => finish(owner === languageOwner && currentLanguageState(state) ? owner.read(state) : null), 250);
+        const finish = value => {
+          clearTimeout(timer);
+          const index = handlers.syntax.indexOf(changed);
+          if (index >= 0) handlers.syntax.splice(index, 1);
+          signal?.removeEventListener("abort", abort);
+          resolve(value);
+        };
+        const abort = () => finish(null);
+        const changed = value => {
+          if (owner !== languageOwner || !currentLanguageState(state)) finish(null);
+          else finish(value);
+        };
+        handlers.syntax.push(changed);
+        signal?.addEventListener("abort", abort, { once: true });
+        if (signal?.aborted) abort();
+      });
+    }
     const completionSources = Object.fromEntries(["tex", "ly"].map((kind) =>
-      [kind, window.IrisCompletion.createSource(kind, () => completionContext, completionSyntax)]));
+      [kind, languageCompletion.createSource(kind, () => completionContext, {
+        cache: projectCache, contextAt: (state, pos) => languageOwner?.contextAt(state, pos),
+        snapshot: completionSnapshot, isCurrent: currentLanguageState,
+      })]));
     const completions = A.autocompletion({
       activateOnTyping: true,
       override: [(context) => completionSources[flags.kind]?.(context) || null],
@@ -133,9 +191,12 @@
         return markers;
       },
     });
-    const canPairAt = (state, pos) => window.IrisCompletion.canPairBrace(
-      flags.kind === "bib" ? "tex" : flags.kind, state.sliceDoc(0, pos), completionSyntax
-    );
+    const canPairAt = (state, pos) => {
+      if (flags.kind !== "bib") return languageCompletion.canPairBrace(flags.kind, state, pos, languageOwner?.contextAt(state, pos));
+      const tree = L.ensureSyntaxTree(state, pos, 5), node = tree?.resolveInner(pos, -1);
+      const comment = node?.name === "comment" && node.to >= pos;
+      return tree && !comment && languageCompletion.canPairBrace("tex", state, pos, { mode: "text", certainty: "exact" });
+    };
     const singleSelection = (state, range) => state.update({ selection: S.EditorSelection.create([range]) }).state;
     const bracketInput = S.Prec.highest(V.EditorView.inputHandler.of((view, from, to, text) => {
       if ((text !== "{" && text !== "}") || view.state.readOnly || view.composing || view.compositionStarted) return false;
@@ -158,7 +219,7 @@
     const deleteBracePair = (view) => {
       const state = view.state;
       const between = (range) => range.empty && range.from > 0 && state.sliceDoc(range.from - 1, range.from + 1) === "{}";
-      if (state.readOnly || !state.selection.ranges.some(between)) return false;
+      if (state.readOnly || view.composing || view.compositionStarted || !state.selection.ranges.some(between)) return false;
       const changes = state.changeByRange((range) => {
         let tr = null;
         const target = { state: singleSelection(state, range), dispatch: (transaction) => { tr = transaction; } };
@@ -170,7 +231,6 @@
       view.dispatch(changes, { scrollIntoView: true, userEvent: "delete.backward" });
       return true;
     };
-    const syntax = () => (flags.kind === "ly" ? window.IrisLilyPond : window.IrisLatex);
     const languageCompartment = new S.Compartment();
     const wrapCompartment = new S.Compartment();
     const readOnlyCompartment = new S.Compartment();
@@ -200,37 +260,39 @@
     };
     const enterCommand = (view) => {
       if (view.state.readOnly) return true;
-      let value = view.state.doc.toString();
-      const language = syntax();
-      const plans = new Map();
-      const ranges = view.state.selection.ranges;
-      // Plan from right to left: earlier carets see the closers already added
-      // for inner blocks. Each original source prefix still has stable offsets.
+      if (view.composing || view.compositionStarted) return false;
+      const original = view.state, ranges = original.selection.ranges, carets = new Array(ranges.length);
+      let temporary = original, combined = original.changes([]);
+      const deadline = performance.now() + 5;
+      // Each plan sees the actual ChangeSet and tree after edits to its right.
+      // Temporary states never become the mounted syntax owner's active state.
       for (let i = ranges.length - 1; i >= 0; i--) {
         const range = ranges[i];
-        const line = view.state.doc.lineAt(range.from);
-        const nextLine = value.indexOf("\n", range.from);
-        const lineTo = nextLine < 0 ? value.length : nextLine;
-        const block = flags.kind === "tex" || flags.kind === "ly" ? language.blockAtEnter(value, range.from) : null;
-        const lead = flags.autoIndent ? line.text.match(/^[\t ]*/)[0] : "";
-        let insert = flags.autoIndent && flags.kind !== "ris" ? language.indentOnEnter(value, range.from, block) : "\n";
-        const caret = range.from + insert.length;
-        let to = range.to;
+        const from = combined.mapPos(range.from, -1), line = temporary.doc.lineAt(from);
+        const tree = adapter && performance.now() < deadline ? L.ensureSyntaxTree(temporary, temporary.doc.length, Math.max(0, deadline - performance.now())) : null;
+        const block = tree && L.syntaxTreeAvailable(temporary, temporary.doc.length) ? adapter.blockAtEnter(tree, temporary.doc, from) : null;
+        const lead = flags.autoIndent ? temporary.sliceDoc(line.from, Math.min(from, line.from + 256)).match(/^[\t ]*/)[0] : "";
+        let insert = "\n" + (flags.autoIndent && flags.kind !== "ris" ? lead + (block ? "  " : "") : "");
+        const caret = from + insert.length;
+        let to = combined.mapPos(range.to, 1);
         if (range.empty && block) {
-          if (block.closingFrom != null && /^[\t ]*$/.test(value.slice(range.from, block.closingFrom))) {
-            // Expand an inline pair, preserving the existing closing token.
+          if (block.closingFrom != null && block.closingFrom - from < 1024 && /^[\t ]*$/.test(temporary.sliceDoc(from, block.closingFrom))) {
             to = block.closingFrom;
             insert += "\n" + lead;
-          } else if (block.needsClose && /^[\t ]*$/.test(value.slice(range.from, lineTo))) {
-            to = lineTo;
+            if (block.needsClose) insert += block.close + "\n" + lead;
+          } else if (block.needsClose && line.to - from < 1024 && /^[\t ]*\r?$/.test(temporary.sliceDoc(from, line.to))) {
+            to = line.to;
             insert += "\n" + lead + block.close;
           }
         }
-        plans.set(range, { changes: { from: range.from, to, insert }, range: S.EditorSelection.cursor(caret) });
-        value = value.slice(0, range.from) + insert + value.slice(to);
+        const batch = temporary.changes({ from, to, insert });
+        for (let j = i + 1; j < carets.length; j++) carets[j] = batch.mapPos(carets[j], 1);
+        carets[i] = caret;
+        temporary = temporary.update({ changes: batch }).state;
+        combined = combined.compose(batch);
       }
-      const changes = view.state.changeByRange((range) => plans.get(range));
-      view.dispatch(changes, { scrollIntoView: true, userEvent: "input.type" });
+      view.dispatch({ changes: combined, selection: S.EditorSelection.create(carets.map(pos => S.EditorSelection.cursor(pos)), original.selection.mainIndex),
+        scrollIntoView: true, userEvent: "input.type" });
       return true;
     };
     const editorKeymap = [
@@ -458,7 +520,7 @@
       });
     }
     const peerSignature = (summary) =>
-      summary.map((peer) => `${peer.id}@${peer.fromLine}-${peer.toLine}:${peer.line}:${peer.role}`).join("|");
+      summary.map((peer) => `${peer.id}@${peer.anchor}-${peer.head}:${peer.fromLine}-${peer.toLine}:${peer.line}:${peer.role}`).join("|");
     let lastPeerSignature = "";
     function emitPeers(state) {
       const summary = peerSummary(state);
@@ -485,7 +547,7 @@
           range.from = update.changes.mapPos(range.from, 1);
           range.to = update.changes.mapPos(range.to, -1);
         }
-        revision++;
+        revision = update.state.field(textRevision);
       }
       if (rulerRanges.length && (update.docChanged || update.geometryChanged)) {
         if (update.docChanged) {
@@ -499,6 +561,7 @@
       }
       if (update.startState.field(peersField) !== update.state.field(peersField)) emitPeers(update.state);
       if (suppressEvents) return;
+      if (update.docChanged) { languageOwner?.update(update.state); publishSyntax(); }
       if (update.docChanged) emit("change");
       if (update.docChanged || update.selectionSet) emitCursor(update.view);
       // Local edits waiting to be pushed to the OT authority. Remote updates
@@ -534,6 +597,7 @@
       // A fresh document or a resync invalidates every recorded change: nothing
       // a peer reported against the old text can be replayed onto this one.
       collabLog = [];
+      const languageExtension = replaceLanguage();
       return S.EditorState.create({
         doc: content,
         extensions: [
@@ -621,7 +685,8 @@
           bracketInput,
           braceMarkers,
           V.keymap.of(editorKeymap),
-          languageCompartment.of(languages[flags.kind] || []),
+          textRevision,
+          languageCompartment.of(languageExtension),
           syntaxExtension,
           L.indentUnit.of("  "),
           wrapCompartment.of(flags.wordWrap ? V.EditorView.lineWrapping : []),
@@ -713,6 +778,7 @@
       getValue() { return view.state.doc.toString(); },
       /** @returns {Snapshot} */
       snapshot() { return { revision, text: view.state.doc.toString() }; },
+      syntaxSnapshot() { return languageOwner?.read(view.state) || null; },
       /** @returns {Bookmark} Nonempty, half-open UTF-16 range; invalid input is inert. */
       trackRange(from, to) {
         const range = { from, to };
@@ -747,40 +813,56 @@
         return "applied";
       },
       undo() { return !view.state.readOnly && C.undo(view); },
-      setLanguage(kind) {
-        if (flags.kind !== kind) A.closeCompletion(view);
+      format(expected = this.snapshot()) {
+        const state = view.state;
+        if (state.readOnly) return "readonly";
+        if (view.composing || view.compositionStarted) return "unavailable";
+        if (expected.revision !== revision || expected.text !== state.doc.toString()) return "stale";
+        if (!adapter || state.doc.length > 65536) return "unavailable";
+        const tree = L.ensureSyntaxTree(state, state.doc.length, 5);
+        if (!tree || !L.syntaxTreeAvailable(state, state.doc.length)) return "unavailable";
+        return this.applyChanges(adapter.formatChanges(tree, state.doc), expected);
+      },
+      setLanguage(kind, metadata = fileMetadata) {
+        if (flags.kind === kind && metadata.path === fileMetadata.path && metadata.name === fileMetadata.name) return;
+        A.closeCompletion(view);
         flags.kind = kind;
-        view.dispatch({ effects: languageCompartment.reconfigure(languages[kind] || []) });
+        fileMetadata = { ...metadata };
+        view.dispatch({ effects: languageCompartment.reconfigure(replaceLanguage()) });
+        publishSyntax();
       },
       requestMeasure() { view.requestMeasure(); },
-      load(content, kind) {
+      load(content, kind, metadata = {}) {
         const candidate = window.IrisBibliography.candidate(content || "", kind);
         rawLines = !!candidate;
         flags.kind = candidate || kind || null;
+        fileMetadata = { ...metadata };
         suppressEvents = true;
         try {
-          view.setState(makeState(content || ""));
           revision++;
+          view.setState(makeState(content || ""));
         } finally {
           suppressEvents = false;
         }
         clearRuler();
         emit("load");
+        publishSyntax();
         emitCursor(view);
       },
       // Realtime variant: the document starts from an authoritative version and
       // its edits flow through the OT update stream. Used on join and whenever
       // the server sends a full resync.
-      loadCollab(content, kind, { version }) {
+      loadCollab(content, kind, { version, ...metadata }) {
         const candidate = window.IrisBibliography.candidate(content || "", kind);
         rawLines = rawLines || !!candidate;
         flags.kind = candidate || kind || null;
+        fileMetadata = { ...fileMetadata, ...metadata };
         const wasFocused = view.hasFocus;
         const previous = view.state.selection.main;
         suppressEvents = true;
         try {
-          view.setState(makeState(content || "", Number(version) || 0));
           revision++;
+          view.setState(makeState(content || "", Number(version) || 0));
         } finally {
           suppressEvents = false;
         }
@@ -793,12 +875,14 @@
         }
         if (wasFocused) view.focus();
         emit("load");
+        publishSyntax();
         emitCursor(view);
       },
       setDiagnostics(items) { view.dispatch({ effects: diagnostics.effect.of(items) }); },
       diagnostics() { return diagnostics.read(view.state); },
       setCompletionContext(context) {
         completionContext = context || {};
+        projectCache.update(completionContext);
         A.closeCompletion(view);
         if (completionContext.suggestionsLabel && completionContext.suggestionsLabel !== completionTitle) {
           completionTitle = completionContext.suggestionsLabel;
@@ -957,6 +1041,7 @@
     ready: null,
     onChange(fn) { handlers.change.push(fn); },
     onLoad(fn) { handlers.load.push(fn); },
+    onSyntax(fn) { handlers.syntax.push(fn); },
     onCursor(fn) { handlers.cursor.push(fn); },
     onSourceNavigate(fn) { handlers.sourceNavigate.push(fn); },
     // Fires when local edits are waiting for the realtime transport to push.
@@ -967,9 +1052,11 @@
     ownsTarget(node) { return impl ? impl.ownsTarget(node) : false; },
     getValue() { return impl ? impl.getValue() : ""; },
     snapshot() { return impl ? impl.snapshot() : { revision, text: "" }; },
+    syntaxSnapshot() { return impl ? impl.syntaxSnapshot() : null; },
     trackRange(from, to) { return impl ? impl.trackRange(from, to) : { read() { return null; }, dispose() {} }; },
     applyChanges(changes, expected) { return impl ? impl.applyChanges(changes, expected) : "invalid"; },
     undo() { return impl ? impl.undo() : false; },
+    format(expected) { return impl ? impl.format(expected) : "unavailable"; },
     selection() { return impl ? impl.selection() : { from: 0, to: 0, text: "", anchor: 0, head: 0 }; },
     collaborative() { return impl ? impl.collaborative() : false; },
     collabVersion() { return impl ? impl.collabVersion() : 0; },

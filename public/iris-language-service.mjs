@@ -11,9 +11,9 @@
  * @typedef {{outline:OutlineItem[],regions:Region[],symbols:SymbolRecord[],references:ReferenceRecord[],includes:IncludeRecord[]}} SummaryData
  * @typedef {SummaryData & {kind:Kind,revision:number,generation:number,status:'ready'|'partial'|'unavailable',parsedTo:number,limitReason:'source-too-large'|null}} Snapshot
  * @typedef {Snapshot} SyntaxSnapshot
- * @typedef {{mode:'text'|'math'|'literal'|'comment'|'music'|'lyrics'|'markup'|'chords'|'drums'|'figures'|'scheme'|'string'|'unknown',argumentRole:string|null,from:number,to:number,certainty:Certainty}} CursorContext
+ * @typedef {{mode:'text'|'math'|'literal'|'comment'|'music'|'lyrics'|'markup'|'chords'|'drums'|'figures'|'scheme'|'string'|'unknown',argumentRole:string|null,from:number,to:number,certainty:Certainty,argumentFrom?:number,argumentTo?:number|null,commandFrom?:number,commandTo?:number|null}} CursorContext Optional completion spans exclude argument delimiters; a null end marks a partial-tree cutoff.
  * @typedef {{from:number,to:number,insert:string}} TextChange
- * @typedef {{close:string,closingFrom:number|null,needsClose:boolean}|null} BlockPlan Reserved for HP07; HP03 always returns null.
+ * @typedef {{close:string,closingFrom:number|null,needsClose:boolean}|null} BlockPlan Tree-based Enter plan; the editor owns its transaction.
  * @typedef {{kind:Kind,options:ParseOptions,language:import('@codemirror/language').Language,summarize(tree:import('@lezer/common').Tree,doc:Source):SummaryData,summarySteps(tree:import('@lezer/common').Tree,doc:Source):Generator<void,SummaryData>,contextAt(tree:import('@lezer/common').Tree,doc:Source,pos:number,bias?:number):CursorContext,blockAtEnter(tree:import('@lezer/common').Tree,doc:Source,pos:number):BlockPlan,formatChanges(tree:import('@lezer/common').Tree,doc:Source,range:Span|null):TextChange[]}} LanguageAdapter
  */
 

@@ -1,11 +1,171 @@
 # Editor language support
 
+## Shared editor consumers: HP07
+
+The editor installs one `createLanguageState` owner for its current TeX or
+LilyPond document. Highlighting, outline, region presence, completion and edit
+plans use that owner's CodeMirror language/tree. BibTeX and RIS keep their stream
+languages and bibliography policies.
+
+### Editor API and lifetime
+
+- `IrisEditor.syntaxSnapshot()` returns a frozen snapshot or `null` for a document
+  without a TeX/LY owner. Its `revision` equals `IrisEditor.snapshot().revision`.
+- `IrisEditor.onSyntax(fn)` follows the existing event-registration convention.
+  Listeners receive partial/ready/unavailable snapshots and `null` on retirement.
+  Parser progress can publish a better summary without changing text revision.
+- `load(content, kind, {path})` resets file metadata and creates a new generation.
+  `loadCollab(content, kind, {version, path})` also replaces the generation;
+  a resync that omits path retains the current metadata.
+- `setLanguage(kind, {path})` changes language/profile in place, preserving text,
+  revision, selections, bookmarks, history and collaborative version. `.sty` and
+  `.cls` select the internal TeX profile; `.tex` uses standard. Source profile
+  toggles still apply. App open, rename, restore, refresh and prepared source
+  navigation pass this metadata through the collaboration client. Included files
+  stored with generic `kind: "file"` use the same extension-derived language for
+  the outline and Format action.
+- Replacement disposes the old owner and rejects its queued publications.
+  Same-kind profile replacement closes pending and installed completion. Accepted
+  project replacement retires the source owner even for an image-active target;
+  a same-project image preview retains its source document. App consumers also
+  check the project/file association recorded at source load.
+  CodeMirror's phrase-only view redraw can destroy/remount the plugin in one
+  turn: retirement waits until the next microtask so this redraw retains the
+  owner and published snapshot. EN/IT changes translate labels at render time;
+  they do not select a pitch convention or advance text revision.
+
+Headless consumers call `owner.update(state)` to commit a new document state.
+`read` can start an idle owner; subsequent speculative/historical reads and
+context queries cannot adopt a different document or cancel its current job.
+The owner accepts initial `revision` and `generation` scheduler hooks. The
+headless `identityEffect` increments both identity revision and generation;
+the editor instead seeds each replacement owner from its text-revision field.
+
+After publishing a partial summary, the owner schedules continued parsing to EOF
+through `ensureSyntaxTree` on CodeMirror's maintained context. Each queued turn
+requests at most 5 ms, then yields through the existing task scheduler. A failed
+request does not dispatch or force partial-tree finalization. Full coverage
+triggers a parse-only view update and a fresh summary. Revision/generation
+replacement, disposal and the size guard cancel these continuations. This also
+works for headless committed states, without a second batch parser. CodeMirror's
+viewport lookahead no longer limits eventual summary coverage. These are requested
+budgets; parser finalization and GC can overrun a turn and still need HP08 timing.
+
+The outline uses full semantic levels and caps visual indent at four levels.
+`IrisStructure.fromRegions(regions, length)` preserves names, certainty and
+translation metadata, normalizes `heading` to `section`, and uses `[from,to)`
+ownership. Only `openEnded` regions include their EOF endpoint. During pending
+analysis the app disables stale outline links and suspends structural presence;
+line proximity remains the conservative fallback. EN/IT outline status text
+distinguishes partial analysis from the oversized unavailable state.
+Peer notification identity includes UTF-16 anchor/head offsets, so same-line
+boundary crossings and mapped edits refresh structural presence.
+
+### Completion and project summaries
+
+`iris-language-completion.mjs` exports `createProjectCache`, `createSource`,
+`fileOptions` and the context-based curly-pair policy. The source returns a
+Promise, observes CodeMirror aborts, and rechecks active document and cache
+identity after cooperative work. It uses catalog argument roles, exact summary
+symbols, generic builtins, project custom commands and BibTeX keys. Names in
+actual musical literals remain local to those literal regions, including their
+open EOF. Scalar references preserve comma-containing keys; list references and
+citations exclude already-used entries. A quoted lyric has the `string` argument
+role even though its highlighting mode is `lyrics`.
+Context-name completion also works in an unfinished `\new`/`\context` header.
+Context queries expose optional `argumentFrom/argumentTo` and
+`commandFrom/commandTo` raw UTF-16 spans. Arguments exclude delimiters; a `null`
+end marks an uncertified partial-tree cutoff. Completion supplies `[from, caret)`
+as CodeMirror's matching range, keeping its native prefix/fuzzy filtering. Each
+option's `apply` callback uses the separately captured full target span, including
+the suffix to the right of the caret. Scalar keys retain internal whitespace/commas, and list separators remain
+outside the edit. Queries decline argument containers above 2,048 units or
+individual targets above 1,024 units. Header comments cannot enter a replacement.
+Bibliography key extraction yields while reading long keys and does not truncate
+them to the chunk size.
+
+Empty leading, trailing and consecutive list slots leave adjacent commas intact.
+At acceptance, the callback checks document/owner identity, project scope,
+selection, readonly/composition state and matching coordinates. It uses
+CodeMirror's `insertCompletionText` and `pickedCompletion` annotation in one
+isolated history transaction. Completion of pending project analysis alone does
+not invalidate a displayed builtin; the source's publication-time cache checks
+still apply.
+
+`CompletionResult.map` discards an installed result on any document change,
+including an edit outside its matching range. Empty mappings preserve it. Normal
+typing can request a fresh result through CodeMirror's completion lifecycle.
+If an apply guard rejects an option that is still in the popup, the callback
+closes that popup without editing source. A discarded callback cannot close a
+newer result. This prevents stale completion from repeatedly consuming Tab/Enter.
+
+The editor waits for the next syntax publication or a 250 ms fallback, using
+exact records inside the available prefix. `cache.read(scope, signal, wait = Infinity)`
+adds an optional wait budget; browser completion requests 250 ms and then uses
+available project summaries. Abort and identity checks still apply.
+Builtins/custom commands therefore remain available while other analysis is
+pending. Reopening completion picks up subsequently analyzed symbols.
+
+The shared project cache keys its lifetime by project ID and load generation;
+entries compare path, file ID, kind, revision and content. File extension fixes
+the initial TeX options. It excludes generated/deleted/error files and the active
+path, whose symbols come from the live editor snapshot. Each changed non-open
+file starts in a later task, with one cooperative analysis in flight. Unchanged
+files reuse immutable summaries; the cache retains no Lezer trees. Replacement,
+deletion and project closure abort obsolete work. Completion symbol collection
+also yields in 8 ms turns. Cache refresh visits at most 4,096 project nodes and
+skips sources above the shared analysis limit.
+
+`iris-completion.js` now contains only the CommonJS/browser custom-command
+normalizer. Server callers require no CodeMirror imports. The obsolete
+`iris-latex.js` and `iris-lilypond.js` scanners and their HTML script entries
+have been removed; callers use the service rather than compatibility parsers.
+
+### Safe edits and bounds
+
+Both language `editing.mjs` modules export `blockAtEnter(tree, doc, pos)` and
+`formatChanges(tree, doc, range = null)`. Enter plans recognize complete openers,
+including open EOF blocks, and reserve missing same-name outer closers. Inline
+pairs expand their existing closer; a reserved outer closer also requires an
+inserted inner close, including multicursor plans. A comment after a real opener
+on the same line remains supported; comment-only fake openers do not produce plans. A
+verbatim opener can complete its environment; its body stays protected.
+Musical literals insert `#}`, and `SchemeFinish` supplies no source closer.
+
+The editor plans multiple cursors from right to left with updated temporary
+states and actual composed ChangeSets. Explicit parser requests share a 5 ms
+budget for the command, then fall back to newline/current indentation. Queries bound
+the line window to 1,024 units, inherited indentation to 256 units, and ancestor
+walks to 256 nodes. Curly pairing checks escape parity in a 256-unit window and
+does not insert ordinary `{}` after `#`. Read-only and composition guards apply
+to automatic edits, and existing brace markers govern overtype/backspace.
+Enter declines environment names longer than 64 UTF-16 units; syntax analysis
+and outline extraction retain their existing long-name support.
+
+`IrisEditor.format(expectedSnapshot?)` applies ordered indentation changes via
+the existing revision/text guard and an isolated history transaction. It returns
+`applied`, `unchanged`, `stale`, `readonly` or `unavailable`. The formatter preserves
+non-indentation bytes, including CRLF, blank lines and trailing whitespace; it
+protects literal, multiline string and Scheme bodies. During native composition
+it returns `unavailable` without changing text or revision. It declines recovered
+or incomplete structural trees. Synchronous formatting is limited to 65,536 UTF-16
+units, 4,096 lines, 32,768 visited nodes and an 8 ms planning deadline, with visual
+indent capped at 64 nesting levels (128 spaces). Larger sources remain editable
+with syntax support up to the shared 1,048,576-unit analysis limit.
+Internal unsafe-tree, line/node-cap and deadline declines return an empty plan
+and therefore `unchanged` / “No safe indentation changes.” Outer size, coverage
+and IME checks return `unavailable`. Neither path applies a partial format plan.
+
+These are functional/work bounds. HP08 still owns mounted latency/heap
+qualification, native compiler corpus QA and full-UI acceptance.
+
 ## LilyPond parser delivery: HP06
 
 The language service supports `loadLanguage("ly", options)` and
 `analyze("ly", source, options)` for music, text, configuration and embedded
-Scheme. The editor installs guarded Lezer highlighting through
-`iris-lilypond-highlighting.mjs`. The guard runs before LR startup and permits
+Scheme. The editor installs guarded Lezer highlighting through its document
+owner. `iris-lilypond-highlighting.mjs` also offers a standalone guarded factory.
+The guard runs before LR startup and permits
 neutral editing above 1,048,576 UTF-16 units; shrinking restores highlighting.
 
 The HP05 subset covers LY01–LY07: strings and LilyPond comments; pitches, rests,
@@ -212,8 +372,8 @@ datum discard owns the comment context even when its child is unknown markup.
   contexts. Frozen summaries belong to the supplied tree/document, not to a file
   path or a previous editor revision.
 
-HP07 owns full summary/completion/Enter migration. The editing methods still
-return `null` and an empty frozen array. The highlighting factories install a
-reusable guarded language, with no disposed summary owner or timer. Scoped
-mounted lifecycle/contrast tests cover both languages and embedded music;
-full-UI acceptance and mounted latency qualification remain HP08 work.
+HP07 implements summary/completion/Enter migration and the editing methods
+described above. Standalone highlighting factories install a reusable guarded
+language without a summary owner or timer. Scoped mounted lifecycle/contrast
+tests cover both languages and embedded music; full-UI acceptance and mounted
+latency qualification remain HP08 work.

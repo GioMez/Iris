@@ -39,7 +39,7 @@
     project: null,
     // The room the app wants open, kept across reconnections so the session is
     // restored automatically.
-    desired: null,       // { fileId, kind }
+    desired: null,       // { fileId, kind, metadata }
     joined: null,        // fileId confirmed open by the server
     opening: [],         // desired rooms awaiting a reply, in socket request order
     status: "off",       // off | connecting | live | offline | readonly | file-unavailable | revoked | error
@@ -256,7 +256,7 @@
       state.role = message.role;
       state.neededVersion = message.version;
       state.pulling = null;
-      ed().loadCollab(message.doc, state.desired.kind, { version: message.version });
+      ed().loadCollab(message.doc, state.desired.kind, { ...state.desired.metadata, version: message.version });
       setStatus(message.role === "viewer" ? "readonly" : "live");
       document.dispatchEvent(new CustomEvent("iris:collabrole", { detail: { role: message.role } }));
       // Anything typed before the room opened is now sendable.
@@ -324,7 +324,7 @@
       state.neededVersion = Math.max(state.neededVersion, message.version);
       // Keep an outstanding push gated until its ack, even though its old local
       // edits are discarded. That ack must not unlock a later push instead.
-      ed().loadCollab(message.doc, state.desired.kind, { version: message.version });
+      ed().loadCollab(message.doc, state.desired.kind, { ...state.desired.metadata, version: message.version });
       setStatus(state.role === "viewer" ? "readonly" : "live");
       pushPending();
       // Recompute after dropping old edits without releasing an in-flight push.
@@ -476,7 +476,7 @@
     if (Number.isFinite(config.presenceDebounceMs)) pacing.presence = Math.max(0, config.presenceDebounceMs);
   }
 
-  function prepareSource(fileId, kind, { signal } = {}) {
+  function prepareSource(fileId, kind, { signal, ...metadata } = {}) {
     preparedSource?.dispose();
     if (signal?.aborted || !state.socket || state.socket.readyState !== WebSocket.OPEN || state.pending) return Promise.resolve(null);
     return new Promise((resolve) => {
@@ -496,7 +496,7 @@
           if (!prepared.current()) return false;
           valid = false; cleanup(); preparedSource = null;
           window.IrisCollab.leave();
-          state.desired = { fileId, kind };
+          state.desired = { fileId, kind, metadata };
           state.opening.unshift(state.desired);
           handle(frame);
           return true;
@@ -528,11 +528,15 @@
     },
     // Opens a realtime session for a file. Only files with a canonical id can be
     // shared, so a document created this session joins after its first save.
-    join(fileId, kind) {
+    join(fileId, kind, metadata = {}) {
       if (!fileId) return;
-      if (state.desired && state.desired.fileId === fileId) return;
+      if (state.desired && state.desired.fileId === fileId) {
+        state.desired.kind = kind || null;
+        state.desired.metadata = { ...metadata };
+        return;
+      }
       if (state.desired) this.leave();
-      state.desired = { fileId, kind: kind || null };
+      state.desired = { fileId, kind: kind || null, metadata: { ...metadata } };
       state.attempt = 0;
       if (state.socket && state.socket.readyState === WebSocket.OPEN) {
         setStatus("connecting");

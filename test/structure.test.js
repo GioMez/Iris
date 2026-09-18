@@ -9,21 +9,44 @@ const vm = require("node:vm");
 
 const root = path.resolve(__dirname, "..");
 
-// The three modules run as browser scripts against a shared global, which is
-// what lets iris-lilypond.js reach IrisLatex by bare name.
+// The region tree consumes actual adapter summaries, as the app does.
 function load() {
   const context = { console: { error() {}, warn() {}, log() {} } };
   context.window = context;
   vm.createContext(context);
-  ["public/iris-latex.js", "public/iris-lilypond.js", "public/iris-structure.js"].forEach((file) => {
+  ["public/iris-structure.js"].forEach((file) => {
     vm.runInContext(fs.readFileSync(path.join(root, file), "utf8"), context);
   });
   return context;
 }
 
 const iris = load();
-const tex = (source) => iris.IrisLatex.regions(source);
-const ly = (source) => iris.IrisLilyPond.regions(source);
+test("HP07 summary regions keep metadata and use half-open and open EOF ownership", () => {
+  const tree = iris.IrisStructure.fromRegions([
+    { kind: "heading", name: "section", label: "A", from: 0, to: 10, certainty: "exact", openEnded: false },
+    { kind: "heading", name: "section", label: "B", from: 10, to: 30, certainty: "exact", openEnded: true },
+    { kind: "environment", name: "align", label: "Align", from: 12, to: 20, certainty: "exact", openEnded: false,
+      labelKey: "syntax.test", labelParams: { count: 1 } },
+  ], 30);
+  assert.equal(iris.IrisStructure.pathAt(tree, 10).at(-1).label, "B");
+  assert.equal(iris.IrisStructure.pathAt(tree, 10).at(-1).kind, "section");
+  assert.equal(iris.IrisStructure.pathAt(tree, 20).at(-1).label, "B");
+  assert.equal(iris.IrisStructure.pathAt(tree, 30).at(-1).label, "B");
+  const node = iris.IrisStructure.pathAt(tree, 12).at(-1);
+  assert.equal(node.name, "align");
+  assert.equal(node.labelKey, "syntax.test");
+  assert.equal(node.labelParams.count, 1);
+  const closed = iris.IrisStructure.fromRegions([{ kind: "group", name: "MusicLiteral", from: 0, to: 5, openEnded: false }], 5);
+  assert.equal(iris.IrisStructure.pathAt(closed, 5).length, 0);
+});
+const adapters = {
+  tex: require("../public/languages/latex/index.mjs").createAdapter({ texProfile: "standard" }),
+  ly: require("../public/languages/lilypond/index.mjs").createAdapter(),
+};
+const regions = (source, kind) => adapters[kind].summarize(adapters[kind].language.parser.parse(source),
+  { length: source.length, sliceString: (from, to) => source.slice(from, to) }).regions;
+const tex = source => regions(source, "tex").filter(r => r.kind !== "group");
+const ly = source => regions(source, "ly");
 // Array.from rebuilds the list in this realm: arrays made inside the vm carry
 // a different Array.prototype, which deepEqual compares.
 const labels = (nodes) => Array.from(nodes, (node) => node.label);
@@ -125,7 +148,7 @@ test("braces inside comments and strings do not unbalance the nesting", () => {
 
 /* ---- containment ---- */
 
-const structure = (source, kind) => iris.IrisStructure.index(source, kind);
+const structure = (source, kind) => iris.IrisStructure.fromRegions(regions(source, kind), source.length);
 const at = (tree, offset) => iris.IrisStructure.pathAt(tree, offset);
 
 test("the path names every region containing a position, outermost first", () => {
@@ -183,9 +206,7 @@ test("malformed markup is clamped rather than dropped", () => {
   assert.deepEqual(labels(path), ["Two"], "the second section is not swallowed by the open environment");
 });
 
-test("a parser that throws costs precision, not the editor", () => {
-  const broken = load();
-  broken.IrisLatex.regions = () => { throw new Error("boom"); };
-  const tree = broken.IrisStructure.index("\\section{One}\n", "tex");
-  assert.equal(broken.IrisStructure.pathAt(tree, 5).length, 0);
+test("empty or invalid region data cannot invent literal constructs", () => {
+  const tree = iris.IrisStructure.fromRegions([{ from: -1, to: 3 }, { from: 4, to: 2 }], 10);
+  assert.equal(iris.IrisStructure.pathAt(tree, 5).length, 0);
 });

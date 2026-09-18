@@ -26,6 +26,7 @@ function harness() {
     cursorHandlers: [],
     loadCollab(doc, kind, opts) {
       editor.loaded.push({ doc, kind, version: opts.version });
+      editor.metadata = { ...opts };
       editor.version = opts.version;
       editor.pending = null;
     },
@@ -151,6 +152,33 @@ test("joining a file opens the room and loads the authoritative document", () =>
   assert.equal(h.collab.status(), "live");
   assert.equal(h.collab.active(), true);
   assert.equal(h.collab.fileId(), "file-1");
+});
+
+test("file profile metadata survives reconnect/resync and updates on an in-place rename", () => {
+  const h = harness();
+  h.collab.join("file-1", "tex", { path: "package.sty" });
+  h.socket().fire("open");
+  h.socket().deliver({ t: "opened", fileId: "file-1", version: 1, doc: "x", role: "owner" });
+  assert.equal(h.editor.metadata.path, "package.sty");
+  h.collab.join("file-1", "tex", { path: "package.cls" });
+  h.socket().deliver({ t: "resync", fileId: "file-1", version: 2, doc: "y" });
+  assert.equal(h.editor.metadata.path, "package.cls");
+  h.socket().fire("close", { code: 1006 }); h.runTimers(); h.socket().fire("open");
+  h.socket().deliver({ t: "opened", fileId: "file-1", version: 3, doc: "z", role: "owner" });
+  assert.equal(h.editor.metadata.path, "package.cls");
+  h.collab.join("file-2", "tex", { path: "main.tex" });
+  h.socket().deliver({ t: "opened", fileId: "file-2", version: 0, doc: "a", role: "owner" });
+  assert.equal(h.editor.metadata.path, "main.tex");
+});
+
+test("prepared source navigation retains the destination profile when activating its authoritative frame", async () => {
+  const h = harness(), socket = joined(h);
+  const pending = h.collab.prepareSource("file-2", "tex", { path: "includes/local.sty" });
+  socket.deliver({ t: "opened", fileId: "file-2", version: 4, doc: "\\def\\local@name{}", role: "owner" });
+  const prepared = await pending;
+  assert.equal(prepared.activate(), true);
+  assert.equal(h.editor.metadata.path, "includes/local.sty");
+  assert.equal(h.editor.metadata.version, 4);
 });
 
 test("a viewer joins read-only and never pushes", () => {

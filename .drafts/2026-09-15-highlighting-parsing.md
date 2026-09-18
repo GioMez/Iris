@@ -13,7 +13,9 @@ LaTeX e dell'highlighting montato; la selezione iniziale dei profili da estensio
 HP-04 è integrato con `39da07c`. HP-05 ha completato implementazione e revisione
 del parser musicale ed è integrato in `b0c6974`: gate 147/147, build/check
 riproducibili. HP-06 ha completato revisione e attivazione del parser LilyPond,
-con datum Scheme, musica annidata e test browser dei nuovi contesti.
+con datum Scheme, musica annidata e test browser dei nuovi contesti, commit
+`be005d9`. HP-07 ha completato la revisione dell'integrazione dei consumatori e
+delle operazioni di editing; HP-08 resta la qualifica integrata e prestazionale.
 La prova ha portato a una policy esplicita di
 analisi limitata oltre 1.048.576 unità UTF-16; il limite e le latenze ordinarie
 richiedono la qualifica nell'editor montato. La personalizzazione di temi/colori
@@ -740,6 +742,17 @@ sconosciuto trattato come incerto senza compromettere la digitazione.
 
 ## HP-07: migrare i consumatori e il ciclo di vita
 
+**Avanzamento al 18 settembre:** implementazione ripresa dopo un'interruzione,
+completata e revisionata. Unico owner per documento, profili `.sty/.cls`, indice e
+presenza da snapshot, completamento asincrono con cache e invalidazione, Enter/
+pairing/formatting dall'albero; rimossi i moduli legacy LaTeX/LilyPond.
+Gate 66/66 Node mirati, 384/384 integrazione/project-client/browser, 199/199
+salvaguardie e 8/8 browser preesistenti. Le ultime correzioni della completion
+sono coperte da 23/23 Node e 15/15 browser mirati; tutte le findings chiuse.
+Formatting sincrono conservativo: massimo 65.536 unità, 4.096 righe, 32.768 nodi,
+deadline di pianificazione 8 ms. Il rifiuto conserva il sorgente e non equivale
+a formattazione applicata. Prestazioni effettive e qualifica completa restano HP-08.
+
 **File:** `iris-language-service.mjs`, `iris-language-state.mjs`,
 `public/languages/latex/editing.mjs`, `public/languages/lilypond/editing.mjs`,
 `iris-editor.js`, `iris-app.js`, `iris-completion.js`, `iris-structure.js`,
@@ -753,11 +766,11 @@ sconosciuto trattato come incerto senza compromettere la digitazione.
 **Produce:** un'unica sintesi attiva per indice/presenza; contesto condiviso con
 completion/pairing/Enter; protezione delle porzioni letterali nel formatter.
 
-- [ ] Prima scrivere i test sulle sintesi obsolete: richiesta su A, cambio a B,
+- [x] Prima scrivere i test sulle sintesi obsolete: richiesta su A, cambio a B,
   fine della richiesta A; modifica locale e remota durante un job; avanzamento
   del parser senza `docChanged`. Solo il risultato appartenente a B/revisione
   corrente può essere pubblicato. Usare timer controllati, non sleep arbitrari.
-- [ ] Integrare gli StateField del servizio nell'adapter. Usare
+- [x] Integrare gli StateField del servizio nell'adapter. Usare
   `syntaxTree(state)`, copertura e avanzamento a budget di CodeMirror; ricostruire
   le query solo a identità albero/documento diversa. Esempio di guardia del job:
 
@@ -770,11 +783,11 @@ const ownsResult = (started, current) => started.generation === current.generati
   Catturare `started` all'avvio; rivalidare prima della pubblicazione. Su load
   incrementare generation, annullare i job e svuotare le cache incompatibili.
   Il confronto non deve usare solo il percorso del file.
-- [ ] Sostituire `renderOutline()` e `rebuildStructure()` in `iris-app.js` con
+- [x] Sostituire `renderOutline()` e `rebuildStructure()` in `iris-app.js` con
   lettura/subscription della sintesi. Durante il caricamento mantenere una vista
   coerente con lo stato `partial/unavailable`, con copia EN/IT se occorre; non
   eseguire una regex di fallback che produca struttura discordante.
-- [ ] Aggiungere `IrisStructure.fromRegions(regions, length)` come ingresso
+- [x] Aggiungere `IrisStructure.fromRegions(regions, length)` come ingresso
   pubblico al costruttore esistente; migrare l'app a questo ingresso. Rendere
   half-open il containment, con eccezione esplicita per EOF di regioni aperte.
   Testare due sezioni adiacenti e presenza sul loro confine:
@@ -791,17 +804,17 @@ assert.equal(IrisStructure.pathAt(tree, 20).at(-1).label, 'B');
   Conservare `openEnded` nel tree builder. Per label UI mantenere la
   localizzazione corrente, in particolare i titoli fallback delle partiture,
   usando le chiavi/dati del §3. Includere un cambio EN/IT a sintesi invariata.
-- [ ] Modificare la source di completion per ricevere contesto/sintesi dal
+- [x] Modificare la source di completion per ricevere contesto/sintesi dal
   servizio invece di `completionText(prefix)`. Mantenere il normalizzatore
   CommonJS e la firma pubblica della sua parte server. La sorgente browser può
   restituire una Promise secondo l'API CodeMirror, con scarto delle richieste
   superate. Conservare cache valide dei file non aperti e ricalcolare soltanto
   i file cambiati; escludere file generati, cancellati e del progetto precedente.
-- [ ] Alimentare i cataloghi di completion con i dati dei linguaggi, mantenendo
+- [x] Alimentare i cataloghi di completion con i dati dei linguaggi, mantenendo
   comandi personalizzati e citazioni BibTeX. Estrarre i termini dalle sintesi,
   conservando la provenienza del file. Completare riferimento/citazione solo
   nell'argomento previsto dalla firma e con contesto affidabile.
-- [ ] Migrare Enter/pairing mantenendo le transazioni dell'editor. Il test di
+- [x] Migrare Enter/pairing mantenendo le transazioni dell'editor. Il test di
   base per il piano deve verificare la prenotazione della chiusura esterna:
 
 ```js
@@ -818,7 +831,7 @@ assert.equal(adapter.blockAtEnter(tree, doc, pos).needsClose, true);
   uno stato temporaneo con il ChangeSet già calcolato; non interrogare l'albero
   della stringa originale con offset del testo cambiato. In contesto incerto
   inserire solo newline/indentazione della riga senza chiusure aggiuntive.
-- [ ] Implementare `formatChanges()` come elenco di edit dell'indentazione,
+- [x] Implementare `formatChanges()` come elenco di edit dell'indentazione,
   proteggendo gli intervalli literal/string/Scheme non qualificato. Testare
   identità byte-per-byte del corpo protetto, idempotenza e undo singolo:
 
@@ -835,7 +848,7 @@ assert.equal(changes.some(change => change.from < bodyTo && change.to > bodyFrom
   Verificare anche inserimenti a lunghezza zero dentro il corpo protetto e
   risultato finale, perché il solo controllo di sovrapposizione sopra non li
   esclude. Rendere il formatter conservativo sui nodi recuperati.
-- [ ] Dopo parità dei consumatori eliminare i percorsi duplicati
+- [x] Dopo parità dei consumatori eliminare i percorsi duplicati
   `outline/regions/completionText/blockAtEnter` e i tokenizer TeX/LilyPond
   obsoleti, oppure ridurre le facciate a wrapper del servizio dove esistono
   ancora chiamanti. Aggiornare script order e test vendor soltanto dopo aver

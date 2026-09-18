@@ -139,15 +139,6 @@ function loadFixtures(root = FIXTURE_ROOT) {
   return validateManifest(manifest, root);
 }
 
-function loadBaselineModules() {
-  // Same realm as StringStream: its RegExp instanceof checks reject VM regexes.
-  const window = {};
-  for (const language of ["latex", "lilypond"]) {
-    new Function("window", fs.readFileSync(path.resolve(__dirname, `../../public/iris-${language}.js`), "utf8"))(window);
-  }
-  return { tex: window.IrisLatex, ly: window.IrisLilyPond };
-}
-
 function collectBaseline(spec, source) {
   const tokens = [], lines = [], classes = new Array(source.length).fill(null);
   const state = spec.startState();
@@ -198,4 +189,4 @@ async function analysisRolesFor(kind, source, options = {}) {
 async function rolesFor(kind, source, options = {}) {
   return (await analysisRolesFor(kind, source, options)).roles;
 }
-module.exports = { FIXTURE_ROOT, REQUIREMENT_IDS, ROLE_NAMES, CONTEXT_MODES, resolveFixturePath, validateCase, validateManifest, loadFixtures, loadBaselineModules, collectBaseline, generateFixture, rolesFor, analysisRolesFor };
+module.exports = { FIXTURE_ROOT, REQUIREMENT_IDS, ROLE_NAMES, CONTEXT_MODES, resolveFixturePath, validateCase, validateManifest, loadFixtures, collectBaseline, generateFixture, rolesFor, analysisRolesFor };

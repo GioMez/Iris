@@ -224,15 +224,6 @@ test("baseline collector refuses stalled and out-of-line tokenizers", () => {
   }
 });
 
-test("real baseline modules share the StringStream realm and do not share tokenizer state", () => {
-  const modules = helper("loadBaselineModules")();
-  const collect = helper("collectBaseline");
-  assert.deepEqual(collect(modules.tex.stream, "\\foo{x}\n").classes, ["cmd", "cmd", "cmd", "cmd", "brace", null, "brace", null]);
-  assert.equal(collect(modules.tex.stream, "$x").state.math, "$");
-  assert.deepEqual(collect(modules.tex.stream, "x").classes, [null]);
-  assert.deepEqual(collect(modules.ly.stream, "\\foo{}\n").classes, ["cmd", "cmd", "cmd", "cmd", "brace", "brace", null]);
-});
-
 for (const kind of ["tex", "ly"]) {
   for (const [bytes, singleLine] of [[102400, false], [1048576, false], [5242880, false], [102400, true]]) {
     test(`${kind} generator produces exactly ${bytes} UTF-8 bytes (${singleLine ? "single line" : "multiline"}) without cutting syntax or Unicode`, () => {

@@ -141,7 +141,7 @@ existing `included.ily` declares italiano locally; `included-default.ily` has no
 directive and documents the editor's nederlands assumption. Macro expansion is
 also outside local analysis.
 
-## Helpers and reproducible baseline
+## Helpers and historical baseline
 
 Use Node 24+ from the repository root:
 
@@ -160,9 +160,14 @@ node -e "const h=require('./test/helpers/language-fixtures.cjs'); console.log(h.
 | `validateCase(item, source)` | Validate metadata, ranges, anchors and coverage; return `item` without mutation. Filesystem checks belong to manifest validation. |
 | `validateManifest(manifest, root = FIXTURE_ROOT)` | Reject duplicate IDs/file aliases and invalid cases; return enriched cases with `source` and `metrics`. |
 | `loadFixtures(root = FIXTURE_ROOT)` | Read `cases.json`, then validate it. |
-| `loadBaselineModules()` | Fresh `{tex, ly}` from the current browser scripts, in the same realm as real CodeMirror `StringStream`. |
 | `collectBaseline(spec, source)` | Return `{tokens, lines, classes, state, metrics}` using a fresh tokenizer state. |
 | `generateFixture(kind, bytes, {singleLine = false} = {})` | Return `{source, metrics}` with exact UTF-8 byte size and a complete lexical envelope. |
+| `rolesFor(kind, source, options)` / `analysisRolesFor(...)` | Actual service roles; the latter includes tree, summary and availability metadata. |
+
+HP07 removed the legacy runtime TeX/LY scanners and `loadBaselineModules`.
+The observations below describe the HP01 checkout (`4d37c4e`) and remain
+historical evidence. Current gates exercise the Lezer service, its immutable
+summaries and the mounted editor. All annotated source fixtures remain in use.
 
 Metrics are `{bytes, codeUnits, lines}`. Lines include the final empty line after
 a trailing newline. The collector accepts LF, CRLF and CR and preserves their
@@ -180,7 +185,7 @@ fills the final remainder before the closer. They do not cut UTF-8, surrogate
 pairs, commands or comments. Unicode makes byte size differ from code-unit length.
 The generated inputs are synthetic lexical workloads, not native compiler tests.
 
-### Observed current differences (2026-09-15)
+### Historical differences observed in HP01 (2026-09-15)
 
 - In the exact math fixture, the stream consumes the comment's dollar as a
   closer, returns `state.math = null` at caret 17 and paints the following prose

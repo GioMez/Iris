@@ -27,7 +27,8 @@
       while (stack.length > 1 && region.from >= stack[stack.length - 1].to) stack.pop();
       const parent = stack[stack.length - 1];
       const node = {
-        kind: region.kind,
+        ...region,
+        kind: region.kind === "heading" ? "section" : region.kind,
         label: region.label || "",
         name: region.name || "",
         from: region.from,
@@ -41,23 +42,15 @@
     return root;
   }
 
-  function index(text, kind) {
-    const source = String(text == null ? "" : text);
-    const language = kind === "ly" ? window.IrisLilyPond : window.IrisLatex;
-    let regions = [];
-    // A parser failing must cost the warning its precision, never the editor.
-    try {
-      regions = (language && typeof language.regions === "function") ? language.regions(source) : [];
-    } catch (err) {
-      console.error("Structure parsing failed", err);
-      regions = [];
-    }
-    return { kind: kind || null, length: source.length, root: build(regions, source.length) };
+  function fromRegions(regions, length) {
+    const ordered = (regions || []).filter(r => Number.isInteger(r.from) && Number.isInteger(r.to)
+      && r.from >= 0 && r.to > r.from && r.from < length).slice().sort((a, b) => a.from - b.from || b.to - a.to);
+    return { length, root: build(ordered, length) };
   }
 
   // The last child starting at or before `offset`; the list is ordered, so the
   // search is a bisection rather than a scan.
-  function childContaining(node, offset) {
+  function childContaining(node, offset, length) {
     const children = node.children;
     let low = 0;
     let high = children.length - 1;
@@ -71,7 +64,7 @@
         high = mid - 1;
       }
     }
-    return candidate && offset <= candidate.to ? candidate : null;
+    return candidate && (offset < candidate.to || offset === length && offset === candidate.to && candidate.openEnded) ? candidate : null;
   }
 
   // The regions containing `offset`, outermost first. Empty when the position
@@ -82,7 +75,7 @@
     if (!tree || !tree.root || !Number.isFinite(offset)) return path;
     let node = tree.root;
     for (let depth = 0; depth < MAX_DEPTH; depth++) {
-      const child = childContaining(node, offset);
+      const child = childContaining(node, offset, tree.length);
       if (!child) break;
       path.push(child);
       node = child;
@@ -102,5 +95,5 @@
     };
   }
 
-  window.IrisStructure = { index, pathAt, shared };
+  window.IrisStructure = { fromRegions, pathAt, shared };
 })();

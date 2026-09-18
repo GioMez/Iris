@@ -73,6 +73,7 @@ test("LilyPond shares guarded startup, unfiltered growth, unavailable distinctio
     const huge = EditorState.create({ doc: text, extensions: [createGuardedLanguage(a)] });
     assert.equal(ensureSyntaxTree(huge, huge.doc.length, 5).type.isTop, false);
     state = state.update({ changes: { from: 0, to: state.doc.length, insert: text }, filter: false }).state;
+    client.update(state);
     assert.equal(client.read(state).status, "unavailable");
     assert.equal(client.contextAt(state, 1).mode, "unknown");
     const result = await analyze("ly", { length: text.length, sliceString() { throw new Error("Oversized read"); } });
@@ -142,6 +143,7 @@ test("state size guard prevents LR startup, cancels old work, and restores synta
   parser.startParse = () => { throw new Error("Oversized state reached LR"); };
   try {
     state = state.update({ changes: { from: 0, to: state.doc.length, insert: "x".repeat(MAX_ANALYSIS_LENGTH + 1) }, filter: false }).state;
+    client.update(state);
     const limited = client.read(state);
     assert.equal(limited.status, "unavailable");
     assert.equal(limited.limitReason, "source-too-large");
@@ -276,9 +278,11 @@ test("real EditorState snapshots debounce, are immutable, and invalidate on revi
   assert.ok(Object.isFrozen(first) && Object.isFrozen(first.outline[0]));
   assert.throws(() => first.outline.push({}));
   state = state.update({ changes: { from: 13, to: 18, insert: "Next" } }).state;
+  client.update(state);
   assert.equal(client.read(state).revision, first.revision + 1);
   assert.equal(client.read(state).outline.length, 0, "no stale summaries after edit");
   state = state.update({ effects: client.identityEffect.of({ generation: 7 }) }).state;
+  client.update(state);
   assert.equal(client.read(state).generation, 7);
   scheduler.drain();
   assert.equal(client.read(historical).outline.length, 0, "historical reads cannot reinstall old data");
@@ -305,12 +309,13 @@ test("partial trees never masquerade as complete and parse-only transactions pub
   const context = client.contextAt(state, text.length - 3);
   assert.equal(context.mode, "unknown");
   assert.equal(context.certainty, "unknown");
-  client.read(state); scheduler.drain();
+  client.read(state); scheduler.tick(250);
   const partial = client.read(state);
   assert.equal(partial.status, "partial");
   assert.ok(partial.parsedTo < text.length);
   assert.deepEqual(partial.outline.map(x => x.title), ["Head"]);
-  assert.ok(ensureSyntaxTree(state, text.length, 10000));
+  scheduler.drain();
+  assert.equal(syntaxTreeAvailable(state, text.length), true, "owned progress continues after the partial publication");
   const transaction = state.update({});
   assert.equal(transaction.docChanged, false);
   state = transaction.state;
@@ -405,10 +410,10 @@ test("summary chunks yield; disposal/replacement rejects captured obsolete work"
   client.read(state); scheduler.tick(250);
   assert.equal(seen.length, 0);
   state = state.update({ changes: { from: 0, to: state.doc.length, insert: "\\section{New}" }, effects: client.identityEffect.of({ generation: 1 }) }).state;
-  client.read(state); scheduler.drain();
+  client.update(state); scheduler.drain();
   assert.equal(seen.length, 1);
   assert.equal(seen[0].outline[0].title, "New");
-  client.read(state.update({ changes: { from: 0, insert: "{x}" } }).state);
+  client.update(state.update({ changes: { from: 0, insert: "{x}" } }).state);
   client.dispose(); scheduler.drain();
   assert.equal(seen.length, 1);
 });
@@ -421,4 +426,73 @@ test("unavailable language tree returns unknown without parsing another source",
   assert.equal(client.contextAt(state, 1).mode, "unknown");
   assert.equal(client.read(state).status, "unavailable");
   client.dispose();
+});
+
+test("HP07 owners start at the editor revision and historical reads cannot supersede committed jobs", async () => {
+  const { EditorState } = await import("@codemirror/state");
+  const { createLanguageState } = await stateService();
+  const scheduler = clock(), seen = [];
+  const owner = createLanguageState(await (await service()).loadLanguage("tex"), s => seen.push(s),
+    { ...scheduler, generation: 20, revision: 73 });
+  const first = EditorState.create({ doc: "\\section{A}", extensions: owner.extension });
+  owner.update(first);
+  assert.equal(owner.read(first).revision, 73);
+  const current = first.update({ changes: { from: 9, to: 10, insert: "B" } }).state;
+  owner.update(current);
+  owner.read(first);
+  scheduler.drain();
+  assert.deepEqual(seen.map(s => [s.revision, s.generation, s.outline[0].title]), [[74, 20, "B"]]);
+  owner.dispose();
+  assert.equal(scheduler.pending, 0);
+});
+
+test("HP07 speculative headless reads cannot adopt an uncommitted future document", async () => {
+  const { EditorState } = await import("@codemirror/state");
+  const scheduler = clock(), seen = [];
+  const owner = (await stateService()).createLanguageState(await (await service()).loadLanguage("tex"), s => seen.push(s), scheduler);
+  const current = EditorState.create({ doc: "\\section{Current}", extensions: owner.extension });
+  owner.update(current);
+  const temporary = current.update({ changes: { from: 9, to: 16, insert: "Temporary" } }).state;
+  owner.read(temporary); owner.contextAt(temporary, temporary.doc.length);
+  scheduler.drain();
+  assert.deepEqual(seen.map(s => s.outline[0].title), ["Current"]);
+  assert.equal(owner.read(current).status, "ready");
+  owner.dispose(); assert.equal(scheduler.pending, 0);
+});
+
+test("HP07 R1 scheduled progress finishes the maintained parse in bounded turns and cancels on replacement", async t => {
+  const { EditorState } = await import("@codemirror/state");
+  const { ParseContext, syntaxTreeAvailable } = await import("@codemirror/language");
+  const adapter = await (await service()).loadLanguage("tex"), scheduler = clock(), seen = [], contexts = new Set();
+  const parser = adapter.language.parser, start = parser.startParse, dateNow = Date.now;
+  let time = 0, advances = 0, maximum = 0, turns = 0;
+  Date.now = () => time;
+  parser.startParse = function (...args) {
+    contexts.add(ParseContext.get());
+    const parse = start.apply(this, args), advance = parse.advance.bind(parse);
+    parse.advance = () => { advances++; time++; return advance(); };
+    return parse;
+  };
+  const owner = (await stateService()).createLanguageState(adapter, s => seen.push(s), { ...scheduler,
+    schedule(fn, delay) { return scheduler.schedule(() => { advances = 0; turns++; fn(); maximum = Math.max(maximum, advances); }, delay); } });
+  t.after(() => { owner.dispose(); parser.startParse = start; Date.now = dateNow; });
+  const source = "\\section{Head}\n" + "x".repeat(216000) + "\\section{Tail}";
+  const first = EditorState.create({ doc: source, extensions: owner.extension });
+  owner.update(first); scheduler.drain();
+  assert.equal(owner.read(first).status, "ready");
+  assert.equal(syntaxTreeAvailable(first, first.doc.length), true);
+  assert.deepEqual(seen.at(-1).outline.map(x => x.title), ["Head", "Tail"]);
+  assert.equal(contexts.size, 1, "continue the same public ParseContext, not a batch parser");
+  assert.ok(!contexts.has(null));
+  assert.ok(turns > 2 && maximum <= 6, `progress yields: ${turns} turns, ${maximum} advances/turn under an advance-driven clock`);
+  t.diagnostic(`${turns} scheduled turns; maximum ${maximum} parse advances/turn with 1 ms charged per advance; one maintained ParseContext`);
+  const pending = first.update({ changes: { from: 0, to: first.doc.length, insert: source + " " } }).state;
+  owner.update(pending); scheduler.tick(250);
+  const current = pending.update({ changes: { from: 0, to: pending.doc.length, insert: "\\section{Replacement}" } }).state;
+  owner.update(current); owner.read(first); scheduler.drain();
+  assert.deepEqual(seen.at(-1).outline.map(x => x.title), ["Replacement"]);
+  const count = seen.length;
+  owner.update(current.update({ changes: { from: 0, insert: source } }).state);
+  owner.dispose(); scheduler.drain();
+  assert.equal(seen.length, count); assert.equal(scheduler.pending, 0);
 });

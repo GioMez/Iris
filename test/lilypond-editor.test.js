@@ -1,14 +1,12 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const fs = require("node:fs");
-const path = require("node:path");
-const vm = require("node:vm");
-
 function loadEditorSupport() {
-  const context = { window: {} };
-  vm.createContext(context);
-  vm.runInContext(fs.readFileSync(path.join(__dirname, "../public/iris-lilypond.js"), "utf8"), context);
-  return context.window.IrisLilyPond;
+  const adapter = require("../public/languages/lilypond/index.mjs").createAdapter();
+  const doc = text => ({ length: text.length, sliceString: (from, to) => text.slice(from, to) });
+  return {
+    outline: text => adapter.summarize(adapter.language.parser.parse(text), doc(text)).outline,
+    format: text => adapter.formatChanges(adapter.language.parser.parse(text), doc(text)).reduceRight((s, c) => s.slice(0, c.from) + c.insert + s.slice(c.to), text),
+  };
 }
 
 test("formats and outlines LilyPond source blocks", () => {
@@ -82,9 +80,9 @@ label = "Suite"
   const bookpart = outline.find((item) => item.title === "\\bookpart");
   const score = outline.find((item) => item.title === "Score 1");
   const staff = outline.find((item) => item.title === '\\new Staff = "violin"');
-  assert.equal(bookpart.level, 2);
-  assert.equal(score.level, 3);
-  assert.equal(staff.level, 4);
+  assert.equal(bookpart.level, 1);
+  assert.equal(score.level, 2);
+  assert.equal(staff.level, 5, "semantic nesting is no longer capped at four levels");
 });
 
 test("outlines the documented LilyPond input mode forms", () => {

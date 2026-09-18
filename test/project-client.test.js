@@ -4,7 +4,8 @@ const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
 const { createRequire } = require("node:module");
-const { ChangeSet } = require("@codemirror/state");
+const cm = name => require(path.join(path.dirname(require.resolve(name)), "index.js"));
+const { ChangeSet } = cm("@codemirror/state");
 const { CollabDocument } = require("../src/collab");
 
 // Keep CM's installed paste handler and facets in one realm. Only DOM rendering
@@ -13,7 +14,7 @@ const cmView = (() => {
   const filename = require.resolve("@codemirror/view");
   const exports = {};
   const { paste, viewPlugin } = vm.compileFunction(fs.readFileSync(filename, "utf8") + "\nreturn { paste: handlers.paste, viewPlugin };",
-    ["exports", "require"], { filename })(exports, createRequire(filename));
+    ["exports", "require"], { filename })(exports, name => /^(?:@codemirror|@lezer)\//.test(name) ? cm(name) : createRequire(filename)(name));
   return { exports, paste, viewPlugin };
 })();
 
@@ -106,6 +107,7 @@ function harness(language = "en", realtime = false) {
     return String(value || key).replace(/{{(\w+)}}/g, (match, name) => params[name] ?? match);
   };
   const requests = [];
+  const runtimeErrors = [];
   const timers = [];
   const windowEvents = element();
   const events = [];
@@ -118,7 +120,7 @@ function harness(language = "en", realtime = false) {
     value: "", revision: 0, ready: new Promise(() => {}),
     load(value) { this.value = value; this.revision++; load(); }, getValue() { return this.value; },
     snapshot() { return { text: this.value, revision: this.revision }; }, setLanguage() {}, requestMeasure() {},
-    onChange(fn) { change = fn; }, onCursor() {}, onPeers() {}, onSourceNavigate() {},
+    onChange(fn) { change = fn; }, onCursor() {}, onPeers() {}, onSourceNavigate() {}, onSyntax() {}, syntaxSnapshot() { return null; },
     setReadOnly() {}, setWordWrap() {}, setSharedRegion() {}, setDiagnostics() {}, setCompletionContext() {}, onLoad(fn) { load = fn; }, focus() {},
   };
   const sockets = [];
@@ -152,7 +154,7 @@ function harness(language = "en", realtime = false) {
     of(type) { return this.sent.filter((m) => m.t === type); }
   }
   const context = vm.createContext({
-    console: { error() {}, warn() {} }, document, URL, URLSearchParams, performance, WebSocket: Socket, Worker: WorkerTransport, TextDecoder, Uint8Array, atob,
+    console: { error(...args) { runtimeErrors.push(args.map(a => a?.stack || String(a)).join(" ")); }, warn() {} }, document, URL, URLSearchParams, performance, queueMicrotask, AbortController, WebSocket: Socket, Worker: WorkerTransport, TextDecoder, Uint8Array, atob,
     FileReader: class {
       readAsText(file) { this.result = new TextDecoder().decode(file.bytes); this.onload(); }
       readAsArrayBuffer(file) { this.result = Uint8Array.from(file.bytes).buffer; this.onload(); }
@@ -164,8 +166,6 @@ function harness(language = "en", realtime = false) {
       constructor(type, init = {}) { this.type = type; this.detail = init.detail; this.cancelable = !!init.cancelable; this.defaultPrevented = false; }
       preventDefault() { if (this.cancelable) this.defaultPrevented = true; }
     },
-    IrisLatex: { outline() { return []; } },
-    IrisLilyPond: { outline() { return []; } },
     fetch(url, init = {}) {
       return new Promise((resolve, reject) => requests.push({
         url, method: init.method || "GET", body: init.body ? JSON.parse(init.body) : undefined, signal: init.signal,
@@ -257,24 +257,25 @@ function harness(language = "en", realtime = false) {
     }
     Object.setPrototypeOf(HeadlessView, viewModule.EditorView);
     let completionConfig;
-    const autocomplete = require("@codemirror/autocomplete");
+    const autocomplete = cm("@codemirror/autocomplete");
     context.editorModules = {
-      "@codemirror/state": require("@codemirror/state"),
+      "@codemirror/state": cm("@codemirror/state"),
       "@codemirror/view": { ...viewModule, EditorView: HeadlessView },
-      "@codemirror/language": require("@codemirror/language"),
-      "@codemirror/commands": require("@codemirror/commands"),
-      "@lezer/highlight": require("@lezer/highlight"),
-      "@codemirror/collab": require("@codemirror/collab"),
+      "@codemirror/language": cm("@codemirror/language"),
+      "@codemirror/commands": cm("@codemirror/commands"),
+      "@lezer/highlight": cm("@lezer/highlight"),
+      "@codemirror/collab": cm("@codemirror/collab"),
+      "./iris-syntax-style.mjs": require("../public/iris-syntax-style.mjs"),
+      "./iris-language-service.mjs": { ...require("../public/iris-language-service.mjs"),
+        // VM options cross a realm boundary that does not exist in the browser.
+        loadLanguage: (kind, options) => require("../public/iris-language-service.mjs").loadLanguage(kind, options && clone(options)) },
+      "./iris-language-state.mjs": require("../public/iris-language-state.mjs"),
+      "./iris-language-completion.mjs": require("../public/iris-language-completion.mjs"),
       "@codemirror/autocomplete": { ...autocomplete, autocompletion(config) {
         completionConfig = config;
         return autocomplete.autocompletion(config);
       } },
     };
-    // StringStream checks instanceof RegExp, so syntax runs in CM's realm.
-    vm.compileFunction(read("iris-latex.js"), ["window"])(context.window);
-    context.IrisLatex = context.window.IrisLatex;
-    vm.compileFunction(read("iris-lilypond.js"), ["window", "IrisLatex"])(context.window, context.IrisLatex);
-    context.IrisLilyPond = context.window.IrisLilyPond;
     for (const name of ["iris-bibtex.js", "iris-ris.js", "iris-bibliography.js"]) {
       vm.compileFunction(read(name), ["window"])(context.window);
     }
@@ -332,7 +333,7 @@ function harness(language = "en", realtime = false) {
       input.dispatchEvent({ type: "change" });
     },
     async open(data = projectData()) {
-      if (realtime) { await editor.ready; assert.equal(editor.available, true); }
+      if (realtime) { await editor.ready; assert.equal(editor.available, true, runtimeErrors.join("\n")); }
       const pending = this.projects.openProject(data.id);
       await tick(); requests.at(-1).reply(data); await pending;
       assert.equal(this.projects.currentProjectId(), data.id);
@@ -1195,7 +1196,7 @@ test("a form update is one undoable transaction and rejects stale snapshots", op
   assert.equal(ed.view().transactions.length, before + 1);
   const tr = ed.view().transactions.at(-1);
   assert.equal(tr.isUserEvent("input.bibliography"), true);
-  assert.equal(tr.annotation(require("@codemirror/commands").isolateHistory), "full");
+   assert.equal(tr.annotation(cm("@codemirror/commands").isolateHistory), "full");
   assert.deepEqual(observed, [{ payload: undefined, snapshot: { revision: expected.revision + 1, text: ed.getValue() } }]);
   assert.equal(ed.applyChanges([{ from: 0, to: 0, insert: "!" }], expected), "stale");
   assert.equal(ed.view().transactions.length, before + 1);
@@ -1403,8 +1404,8 @@ for (const [kind, sources, tokens] of [
 ]) {
   test(`${kind} real adapter highlights bare-CR and mixed-ending bibliography at raw offsets`, options, async () => {
     const h = harness("en", true); await h.editor.ready;
-    const { EditorState } = require("@codemirror/state");
-    const { ensureSyntaxTree, highlightingFor } = require("@codemirror/language");
+    const { EditorState } = cm("@codemirror/state");
+    const { ensureSyntaxTree, highlightingFor } = cm("@codemirror/language");
     const { highlightTree } = require("@lezer/highlight");
     for (const source of sources) {
       // Generic text entry points rely on content candidacy before state creation.
@@ -1419,7 +1420,7 @@ for (const [kind, sources, tokens] of [
       for (const [literal, style] of tokens) {
         const from = source.indexOf(literal);
         assert.notEqual(from, -1);
-        assert.deepEqual(classes.slice(from, from + literal.length), new Array(literal.length).fill(style), `${literal} in ${JSON.stringify(source)}`);
+        assert.deepEqual(classes.slice(from, from + literal.length).map(c => c?.split(" ").at(-1)), new Array(literal.length).fill(style), `${literal} in ${JSON.stringify(source)}`);
       }
       assert.deepEqual(h.editor.snapshot(), snapshot, "highlighting must not change raw text or revision");
     }
@@ -1438,14 +1439,14 @@ for (const [kind, source] of [
     await h.open(data);
     const ed = h.editor;
     assert.equal(ed.getValue(), source, "actual file load must preserve raw CRLF before room join");
-    const { ensureSyntaxTree, highlightingFor } = require("@codemirror/language");
+    const { ensureSyntaxTree, highlightingFor } = cm("@codemirror/language");
     const { highlightTree } = require("@lezer/highlight");
     const state = ed.view().state, classes = new Array(source.length).fill(null);
     highlightTree(ensureSyntaxTree(state, state.doc.length, 1000), { style: (tags) => highlightingFor(state, tags) },
       (from, to, style) => classes.fill(style, from, to));
     const tokens = source.includes("@") ? [["@book", "t-cmd"], ["a,", "t-env"], ["title", "t-special"], ["A", "t-math"]]
       : [["BOOK", "t-cmd"], ["TI", "t-special"], ["A", "t-math"]];
-    for (const [literal, style] of tokens) assert.equal(classes[source.indexOf(literal)], style, literal);
+    for (const [literal, style] of tokens) assert.ok(classes[source.indexOf(literal)]?.split(" ").includes(style), literal);
     const room = new CollabDocument({ fileId: "main", projectId: "p1", path: `refs.${kind}`, content: source });
     // .txt entry points supply the generic TeX kind, not a bibliography hint.
     const editorKind = kind === "txt" ? "tex" : kind;
@@ -1595,21 +1596,21 @@ test("RIS has no TeX indentation, comment, completion or brace behavior", option
   ed.load("TY  - BOOK\nTI  - {}", "ris"); ed.select(ed.getValue().length - 1);
   ed.pressKey("Backspace"); assert.equal(ed.getValue(), "TY  - BOOK\nTI  - }");
   ed.load("TY  - BOOK\nTI  - \\sec", "ris"); ed.select(ed.getValue().length);
-  assert.deepEqual(clone(ed.complete()), [null]);
+  assert.deepEqual(clone(await Promise.all(ed.complete())), [null]);
 });
 
 test("switching to RIS cancels a pending TeX completion without changing the snapshot", options, async () => {
   const h = harness("en", true); await h.editor.ready;
-  const ed = h.editor, A = require("@codemirror/autocomplete");
+  const ed = h.editor, A = cm("@codemirror/autocomplete");
   ed.load("\\sec", "tex"); ed.select(4);
-  assert.ok(ed.complete()[0].options.some((option) => option.label === "\\section"));
+  assert.ok((await Promise.all(ed.complete()))[0].options.some((option) => option.label === "\\section"));
   A.startCompletion(ed.view());
   assert.equal(A.completionStatus(ed.view().state), "pending");
   const snapshot = ed.snapshot();
   ed.setLanguage("ris");
   assert.equal(A.completionStatus(ed.view().state), null);
   assert.deepEqual(ed.snapshot(), snapshot);
-  assert.deepEqual(clone(ed.complete()), [null]);
+  assert.deepEqual(clone(await Promise.all(ed.complete())), [null]);
 });
 
 test("RIS is editable text and persists the exact buffer", options, async () => {
@@ -1882,15 +1883,52 @@ for (const [source, positions, expected] of [
   });
 }
 
+test("renaming the active file to sty reconfigures its profile without resetting text, undo or revision", options, async () => {
+  const h = harness("en", true), data = projectData(4, "\\newcommand{\\private@name}{}");
+  await h.open(data);
+  h.editor.replaceRange(0, 0, "% edited\n");
+  const before = h.editor.snapshot(), loads = h.editor.view().loads, generation = h.editor.syntaxSnapshot().generation;
+  const changed = new Promise(resolve => h.editor.onSyntax(s => { if (s?.status === "ready" && s.symbols.some(x => x.name === "private@name")) resolve(s); }));
+  h.a.openTreeRename(h.a.findFile("main"), h.a.folderNodeByPath("").nodes, "");
+  h.get("treeRenameInput").value = "main.sty"; h.a.confirmTreeRename();
+  assert.ok(h.editor.syntaxSnapshot().generation > generation, "rename must install the new profile");
+  const snapshot = await changed;
+  assert.equal(snapshot.revision, before.revision);
+  assert.equal(h.editor.view().loads, loads);
+  assert.deepEqual(h.editor.snapshot(), before);
+  assert.equal(h.editor.undo(), true);
+  assert.equal(h.editor.getValue(), "\\newcommand{\\private@name}{}");
+});
+
+test("BibTeX pairing keeps comment and escape protection without a TeX owner", options, async () => {
+  const h = harness("en", true); await h.editor.ready;
+  h.editor.load("% comment", "bib"); h.editor.select(9); h.editor.typeText("{");
+  assert.equal(h.editor.getValue(), "% comment{");
+  assert.equal(h.editor.syntaxSnapshot(), null);
+  h.editor.load("\\", "bib"); h.editor.select(1); h.editor.typeText("{");
+  assert.equal(h.editor.getValue(), "\\{");
+  h.editor.load("", "bib"); h.editor.typeText("{");
+  assert.equal(h.editor.getValue(), "{}");
+});
+
+test("concurrent completion waits both finish on the same syntax publication", options, async () => {
+  const h = harness("en", true); await h.editor.ready;
+  h.editor.load("\\newcommand{\\live}{}\n\\", "tex"); h.editor.select(h.editor.getValue().length);
+  const [first, second] = await Promise.all([Promise.all(h.editor.complete()), Promise.all(h.editor.complete())]);
+  for (const result of [first[0], second[0]]) assert.ok(result.options.some(o => o.label === "\\live"));
+});
+
 test("ordinary character input never scans the source to configure brace pairing", options, async () => {
   const h = harness("en", true); await h.editor.ready;
   h.editor.load("Text ", "tex"); h.editor.select(5);
   let scans = 0;
-  const scan = h.window.IrisLatex.completionText;
-  h.window.IrisLatex.completionText = (text) => { scans++; return scan(text); };
+  const parser = (await import("../public/iris-language-service.mjs")).loadLanguage;
+  const adapter = await parser("tex"), original = adapter.language.parser.parse;
+  adapter.language.parser.parse = (...args) => { scans++; return original.apply(adapter.language.parser, args); };
   h.editor.typeText("a");
   assert.equal(h.editor.getValue(), "Text a");
   assert.equal(scans, 0);
+  adapter.language.parser.parse = original;
 });
 
 for (const main of [0, 1]) {
@@ -1916,7 +1954,7 @@ const ENTER_CASES = [
   ["nested same-name environment", "tex", "\\begin{itemize}\n  \\begin{itemize}¦\n\\end{itemize}", "\\begin{itemize}\n  \\begin{itemize}\n    ¦\n  \\end{itemize}\n\\end{itemize}"],
   ["wrapped same-name environment", "tex", "\\begin{document}\n\\begin{itemize}\n  \\begin{itemize}¦\n\\end{itemize}\n\\end{document}", "\\begin{document}\n\\begin{itemize}\n  \\begin{itemize}\n    ¦\n  \\end{itemize}\n\\end{itemize}\n\\end{document}"],
   ["earlier unclosed environment outside this scope", "tex", "\\begin{outer}\n\\begin{inner}\n\\end{outer}\n\\begin{inner}¦\n\\end{inner}", "\\begin{outer}\n\\begin{inner}\n\\end{outer}\n\\begin{inner}\n  ¦\n\\end{inner}"],
-  ["nested LaTeX inline pair", "tex", "\\begin{itemize}\n  \\begin{itemize}¦ \\end{itemize}", "\\begin{itemize}\n  \\begin{itemize}\n    ¦\n  \\end{itemize}"],
+  ["nested LaTeX inline pair reserves outer close", "tex", "\\begin{itemize}\n  \\begin{itemize}¦ \\end{itemize}", "\\begin{itemize}\n  \\begin{itemize}\n    ¦\n  \\end{itemize}\n  \\end{itemize}"],
   ["already balanced nested environments", "tex", "\\begin{itemize}\n  \\begin{itemize}¦\n  \\end{itemize}\n\\end{itemize}", "\\begin{itemize}\n  \\begin{itemize}\n    ¦\n  \\end{itemize}\n\\end{itemize}"],
   ["commented LaTeX end", "tex", "\\begin{itemize}¦\n% \\end{itemize}", "\\begin{itemize}\n  ¦\n\\end{itemize}\n% \\end{itemize}"],
   ["LaTeX trailing comment", "tex", "\\begin{itemize} % list¦", "\\begin{itemize} % list\n  ¦\n\\end{itemize}"],
@@ -1930,11 +1968,11 @@ const ENTER_CASES = [
   ["LilyPond inline pair", "ly", "music = {¦ }", "music = {\n  ¦\n}"],
   ["LilyPond existing close", "ly", "\\score {¦\n  c1\n}", "\\score {\n  ¦\n  c1\n}"],
   ["nested LilyPond braces", "ly", "\\score {\n  \\new Staff {¦\n}", "\\score {\n  \\new Staff {\n    ¦\n  }\n}"],
-  ["nested LilyPond inline pair", "ly", "\\score {\n  \\new Staff {¦ }", "\\score {\n  \\new Staff {\n    ¦\n  }"],
+  ["nested LilyPond inline pair reserves outer close", "ly", "\\score {\n  \\new Staff {¦ }", "\\score {\n  \\new Staff {\n    ¦\n  }\n  }"],
   ["nested LilyPond simultaneous music", "ly", "<<\n  <<¦\n>>", "<<\n  <<\n    ¦\n  >>\n>>"],
   ["wrapped LilyPond simultaneous music", "ly", "\\score {\n  <<\n    <<¦\n  >>\n}", "\\score {\n  <<\n    <<\n      ¦\n    >>\n  >>\n}"],
   ["earlier unclosed LilyPond block outside this scope", "ly", "{\n<<\n}\n<<¦\n>>", "{\n<<\n}\n<<\n  ¦\n>>"],
-  ["Scheme music-literal opener is not an ordinary brace", "ly", "#{¦", "#{\n¦"],
+  ["Scheme music-literal opener has its own two-unit closer", "ly", "#{¦", "#{\n  ¦\n#}"],
   ["LilyPond mixed blocks", "ly", "\\score {\n  <<¦\n}", "\\score {\n  <<\n    ¦\n  >>\n}"],
   ["LilyPond comment text", "ly", "% \\score {¦", "% \\score {\n¦"],
   ["LilyPond trailing comment", "ly", "\\score { % music¦", "\\score { % music\n  ¦\n}"],
@@ -3288,7 +3326,7 @@ for (const [renamed, closeFirst] of [["file", true], ["ancestor", true], ["file"
 }
 
 for (const [action, button, edited] of [
-  ["Format", "btnFormat", "needle needle"],
+  ["Format", "btnFormat", "needle needle  "],
   ["Replace One", "replaceOne", "  edited needle  "],
   ["Replace All", "replaceAll", "  edited edited  "],
 ]) {

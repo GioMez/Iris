@@ -299,6 +299,10 @@
   // scheduled. Without a session, the ordinary save path is unchanged.
   function wireEditorEvents() {
     ed().onSourceNavigate(navigateSource);
+    ed().onSyntax((snapshot) => {
+      rebuildStructure(snapshot);
+      renderOutline(snapshot);
+    });
     bibliographyView = window.IrisBibliographyView.create({ root: $("bibliographyPanel"), editor: ed(), t, onSource: showSource,
       onFormat: (key, format) => bibliographyHints.set(key, format),
       actions: { canWrite: canWriteBibliography, add: () => bibliographyForm.openAdd(),
@@ -313,6 +317,7 @@
         return context ? { ...context, canWrite } : null;
       } });
     ed().onLoad(() => {
+      syntaxDocument = { projectId: loadedProjectId, fileId: state.activeId };
       clearNavigationHighlight();
       // An authoritative reload may change main-file detection without an edit.
       const file = findFile(state.activeId);
@@ -334,10 +339,6 @@
         if (!realtime) markFileDirty(f.id);
         else state.editRevision += 1;
       }
-      renderOutline();
-      // The structure changed with the text; the index catches up once typing
-      // settles rather than on every keystroke.
-      scheduleStructure();
       if (!realtime) schedulePersist();
       updateDiagnosticPositions();
       renderMainFileMarker();
@@ -437,7 +438,7 @@
       renderSyncStatus();
       return;
     }
-    window.IrisCollab.join(fileId, editorLoadKind(node));
+    window.IrisCollab.join(fileId, editorLoadKind(node), { path: node.path || node.name });
   }
   const SYNC_LABEL = {
     connecting: "collab.connecting",
@@ -474,43 +475,35 @@
   }
 
   /* ---------------- document structure ---------------- */
-  // The tree of sections, environments and blocks for the open file. It belongs
-  // to the document rather than to the presence: it is rebuilt when the text
-  // settles and afterwards only consulted, so a caret moving never costs a
-  // parse. Being at most one debounce stale is harmless — the warning it feeds
-  // is advisory, and the next report corrects it.
-  const STRUCTURE_DEBOUNCE = 250;
+  // Both consumers use the editor-owned summary. Stale coordinates never drive
+  // containment while the new revision is being analyzed.
   let structureIndex = null;
-  let structureTimer = 0;
+  let syntaxDocument = null;
+  function currentSyntax(snapshot) {
+    return syntaxDocument?.projectId === loadedProjectId && syntaxDocument?.fileId === state.activeId ? snapshot : null;
+  }
 
-  function rebuildStructure() {
-    clearTimeout(structureTimer);
-    structureTimer = 0;
+  function rebuildStructure(snapshot = ed().syntaxSnapshot()) {
+    snapshot = currentSyntax(snapshot);
     const f = findFile(state.activeId);
-    // The model, not the editor: it is kept current by the change handler and it
-    // is what the outline parses, so the two can never disagree — and it is
-    // there even in the moment before the editor module has resolved.
-    structureIndex = f && (f.kind === "tex" || f.kind === "ly") && window.IrisStructure
-      ? window.IrisStructure.index(f.content || "", f.kind)
+    structureIndex = f && snapshot?.status === "ready" && window.IrisStructure
+      ? window.IrisStructure.fromRegions(snapshot.regions, ed().getValue().length)
       : null;
     renderPresence(lastPeers);
-  }
-  function scheduleStructure() {
-    if (structureTimer) return;
-    structureTimer = setTimeout(rebuildStructure, STRUCTURE_DEBOUNCE);
   }
 
   // The regions containing a position, innermost last. Empty where the document
   // has no structure to speak of, which is the signal to fall back to lines.
   function pathAtOffset(offset) {
     if (!structureIndex || offset == null || !window.IrisStructure) return [];
-    return window.IrisStructure.pathAt(structureIndex, offset);
+    const path = window.IrisStructure.pathAt(structureIndex, offset);
+    return path.some(node => node.certainty !== "exact") ? [] : path;
   }
   // Region names come from the document itself, so they are normalized and cut
   // to something that fits a status bar.
   function regionLabel(node) {
     if (!node) return "";
-    const label = String(node.label || "").replace(/\s+/g, " ").trim();
+    const label = syntaxLabel(node, "label").replace(/\s+/g, " ").trim();
     if (!label) return "";
     const short = label.length > 40 ? `${label.slice(0, 39)}…` : label;
     return node.kind === "section" ? `§ ${short}` : short;
@@ -664,6 +657,7 @@
     const offsets = rows.map((row) => Number(row.dataset.offset));
     const byRow = new Map();
     lastPeers.forEach((peer) => {
+      if (!structureIndex) return;
       if (peer.head == null) return;
       let index = -1;
       for (let i = 0; i < offsets.length; i++) {
@@ -1022,7 +1016,7 @@
     if (!state.openTabs.includes(id)) state.openTabs.push(id);
     // The error surface is not source text and must never enter the file model.
     if (prepared) prepared.activate();
-    else ed().load(f.sourceError ? t(`api.${f.sourceError}`) : (f.content || ""), f.sourceError ? null : editorLoadKind(f));
+    else ed().load(f.sourceError ? t(`api.${f.sourceError}`) : (f.content || ""), f.sourceError ? null : editorLoadKind(f), { path: f.path || f.name });
     applyEditorGate();
     renderTabs();
     renderOutline();
@@ -1332,6 +1326,12 @@
       if (node.kind === "img" && node.data && !state.assets[newPath]) state.assets[newPath] = node.data;
     }
     closeTreeRename();
+    const active = findFile(state.activeId);
+    if (active && active.kind !== "img" && !active.sourceError) {
+      const metadata = { path: active.path || active.name };
+      ed().setLanguage(editorLoadKind(active), metadata);
+      if (isRealtimeFile(active.id)) window.IrisCollab.join(canonicalFileId(active.id), editorLoadKind(active), metadata);
+    }
     renderTree();
     renderTabs();
     renderOutline();
@@ -1469,7 +1469,8 @@
   }
 
   function updateCompletionContext() {
-    ed().setCompletionContext({ nodes: project.nodes, activePath: findFile(state.activeId)?.path,
+    ed().setCompletionContext({ projectId: loadedProjectId, generation: state.projectLoadGeneration,
+      nodes: project.nodes, activePath: findFile(state.activeId)?.path || findFile(state.activeId)?.name,
       customCommands: state.customCommands, customLabel: t("completion.custom"), suggestionsLabel: t("completion.suggestions") });
   }
 
@@ -1568,7 +1569,7 @@
       previewImage(active);
       markTree(active.id);
     } else {
-      ed().load(active.sourceError ? t(`api.${active.sourceError}`) : (active.content || ""), active.sourceError ? null : editorLoadKind(active));
+      ed().load(active.sourceError ? t(`api.${active.sourceError}`) : (active.content || ""), active.sourceError ? null : editorLoadKind(active), { path: active.path || active.name });
       renderOutline();
       markTree(active.id);
       // Reloading the document leaves any realtime session behind, so it is
@@ -1635,26 +1636,44 @@
   function markFolder() {}
 
   /* ---------------- outline ---------------- */
-  function renderOutline() {
+  let displayedOutline = null;
+  function syntaxLabel(item, field) {
+    const key = item[`${field}Key`], translated = key && t(key, item[`${field}Params`]);
+    return translated && translated !== key ? translated : String(item[field] || "");
+  }
+  function renderOutline(snapshot = ed().syntaxSnapshot()) {
+    snapshot = currentSyntax(snapshot);
     const f = findFile(state.activeId);
     const box = $("outline");
-    if (!f || (f.kind !== "tex" && f.kind !== "ly")) { box.innerHTML = `<div class="ol-empty">${esc(t("tree.noOutline"))}</div>`; return; }
-    const items = (f.kind === "ly" ? IrisLilyPond : IrisLatex).outline(f.content);
-    if (!items.length) { box.innerHTML = `<div class="ol-empty">${esc(t("tree.noDocumentOutline"))}</div>`; return; }
+    if (!f || f.sourceError || !["tex", "ly"].includes(editorLoadKind(f))) { box.innerHTML = `<div class="ol-empty">${esc(t("tree.noOutline"))}</div>`; return; }
+    if (snapshot?.status === "ready" || snapshot?.outline.length) displayedOutline = snapshot;
+    const pending = snapshot?.status !== "ready";
+    const items = snapshot?.status === "unavailable" ? [] : snapshot?.outline.length ? snapshot.outline
+      : pending && displayedOutline && displayedOutline.generation === snapshot?.generation ? displayedOutline.outline : [];
     box.innerHTML = "";
+    if (pending) {
+      const status = document.createElement("div");
+      status.className = "ol-empty";
+      status.dataset.syntaxStatus = snapshot?.status || "partial";
+      status.setAttribute("role", "status");
+      status.textContent = t(snapshot?.limitReason === "source-too-large" ? "syntaxStatus.tooLarge" : "syntaxStatus.partial");
+      box.appendChild(status);
+    } else if (!items.length) { box.innerHTML = `<div class="ol-empty">${esc(t("tree.noDocumentOutline"))}</div>`; return; }
     items.forEach((it) => {
       const el = document.createElement("div");
       const level = Math.max(1, Math.min(4, Number(it.level) || 1));
+      el.dataset.level = String(it.level);
       el.className = "ol-item" + (level > 1 ? ` lvl${level}` : "");
       el.setAttribute("role", "button");
-      el.tabIndex = 0;
+      el.tabIndex = pending ? -1 : 0;
+      el.setAttribute("aria-disabled", String(pending));
       const num = document.createElement("span");
       num.className = "num";
       num.textContent = it.num || "";
       const label = document.createElement("span");
       label.className = "label";
-      label.textContent = it.title;
-      label.title = it.title;
+      label.textContent = syntaxLabel(it, "title");
+      label.title = label.textContent;
       // Filled by renderOutlinePresence with whoever is working under it.
       const pins = document.createElement("span");
       pins.className = "node-peers";
@@ -1662,18 +1681,15 @@
       pins.hidden = true;
       if (Number.isInteger(it.offset)) el.dataset.offset = String(it.offset);
       el.append(num, label, pins);
-      el.addEventListener("click", () => gotoSection(it));
-      activateOnKeyboard(el, () => gotoSection(it));
+      el.addEventListener("click", () => { if (!pending) gotoSection(it); });
+      activateOnKeyboard(el, () => { if (!pending) gotoSection(it); });
       box.appendChild(el);
     });
     renderOutlinePresence();
   }
   function gotoSection(item) {
-    const value = ed().getValue();
-    const idx = Number.isInteger(item.offset) ? item.offset : value.indexOf("{" + item.title + "}");
-    if (idx < 0) return;
-    const start = Number.isInteger(item.offset) ? idx : value.lastIndexOf("\\", idx);
-    showSource({ from: start, to: start }, { align: "top", margin: 2 });
+    if (!Number.isInteger(item.offset)) return;
+    showSource({ from: item.offset, to: item.offset }, { align: "top", margin: 2 });
   }
 
   /* ---------------- PDF preview ---------------- */
@@ -1796,7 +1812,7 @@
       return { text: snapshot.text, current: () => exists() && authoritative() && file.id === state.activeId && ed().snapshot().revision === snapshot.revision };
     }
     const dirtyRevision = state.dirtyFiles.get(file.id), localText = file.content;
-    const prepared = await window.IrisCollab.prepareSource(id, editorLoadKind(file), options);
+    const prepared = await window.IrisCollab.prepareSource(id, editorLoadKind(file), { ...options, path: file.path || file.name });
     if (!prepared) return null;
     const current = () => exists() && prepared.current() && state.dirtyFiles.get(file.id) === dirtyRevision &&
       (dirtyRevision === undefined || (file.content === localText && localText.replace(/\r\n?/g, "\n") === prepared.text.replace(/\r\n?/g, "\n")));
@@ -1806,7 +1822,7 @@
       // Equal authoritative text permits a jump, not replacement of local work.
       // Keep the exact buffer and dirty revision on the ordinary save path.
       window.IrisCollab.leave();
-      ed().load(localText, editorLoadKind(file));
+      ed().load(localText, editorLoadKind(file), { path: file.path || file.name });
       prepared.dispose();
       return true;
     } };
@@ -2214,7 +2230,11 @@
     // A queued replacement can be refused. Keep the current view until load is
     // accepted; close/logout clear currentId synchronously after this callback.
     Promise.resolve().then(() => {
-      if (window.IrisProjects?.currentProjectId() !== loadedProjectId) deactivateBibliography();
+      if (window.IrisProjects?.currentProjectId() !== loadedProjectId) {
+        deactivateBibliography();
+        ed().setCompletionContext({});
+        ed().setLanguage(null);
+      }
     });
     window.IrisCollab.disconnect();
     clearNewerBuild();
@@ -3097,12 +3117,12 @@
     $("btnWrap").addEventListener("click", () => setWordWrap(!state.wordWrap, true));
     $("btnFormat").addEventListener("click", () => {
       const f = findFile(state.activeId);
-      if (!f || (f.kind !== "tex" && f.kind !== "ly")) return;
+      if (!f || f.sourceError || !["tex", "ly"].includes(editorLoadKind(f))) return;
       if (isReadOnly()) { toast(t("projects.readOnlyNotice")); return; }
       // Applied as a granular change by the adapter, so the caret survives and
       // the formatter stops counting as a whole-document edit.
-      ed().applyText((f.kind === "ly" ? IrisLilyPond : IrisLatex).format(ed().getValue()));
-      toast(t("editor.formatted"));
+      const result = ed().format();
+      toast(t(result === "applied" ? "editor.formatted" : result === "unavailable" ? "syntaxStatus.formatUnavailable" : "syntaxStatus.formatUnchanged"));
     });
     $("btnSave").addEventListener("click", saveProject);
     $("btnNew").addEventListener("click", newFile);
@@ -3972,7 +3992,7 @@
         // restored text to every participant, this tab included, so replacing the
         // document here would drop it out of the session.
         if (node.id === state.activeId && !isRealtimeFile(node.id)) {
-          ed().load(out.content, editorLoadKind(node));
+          ed().load(out.content, editorLoadKind(node), { path: node.path || node.name });
           renderOutline();
         }
       }
@@ -4087,6 +4107,11 @@
         toast(t("tree.refreshChanged"), "err");
         return false;
       }
+      // Accepted replacement retires the old source even when the destination
+      // is an image/generated surface that bypasses openFile's source load.
+      syntaxDocument = null;
+      displayedOutline = null;
+      ed().setLanguage(null);
       deactivateBibliography();
       bibliographyImagePreview = false;
       loadedProjectId = data.id || `local:${generation}`;
@@ -4152,6 +4177,8 @@
       state.openTabs = tabs;
       state.activeId = active;
 
+      renderOutline();
+      rebuildStructure();
       renderTree();
       renderTabs();
       // reset preview / status

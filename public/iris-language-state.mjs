@@ -42,10 +42,11 @@ export function createGuardedLanguage(adapter) {
   }, [], adapter.language.name);
 }
 
-/** One owner per editor. StateField stores identity in transactions; ViewPlugin
- * observes committed states. Headless callers use update(state) or read(state).
+/** One owner per document. StateField stores identity in transactions; ViewPlugin
+ * observes committed states. Headless callers commit via update(state). Reads
+ * may start an idle owner, but never adopt speculative document replacements.
  *
- * hooks: {schedule(fn,delay):handle,cancel(handle),now():number,generation?:number}
+ * hooks: {schedule(fn,delay):handle,cancel(handle),now():number,generation?:number,revision?:number}
  * Default debounce=250ms and work budget=8ms. identityEffect.of({generation})
  * requires a strictly increasing nonnegative safe integer on file replacement.
  * Revision increases on docChanged OR identity replacement, never resets.
@@ -58,7 +59,9 @@ export function createLanguageState(adapter, onSyntax, hooks = {}) {
   const cancel = hooks.cancel || ownedTasks.cancel;
   const now = hooks.now || (() => performance.now());
   const generation = hooks.generation ?? 0;
+  const revision = hooks.revision ?? 0;
   if (!Number.isSafeInteger(generation) || generation < 0) throw new RangeError("Invalid generation");
+  if (!Number.isSafeInteger(revision) || revision < 0) throw new RangeError("Invalid revision");
   // Guard before LR.startParse constructs its input stream. CodeMirror's own
   // skipping parser records unparsed ranges, so syntaxTreeAvailable stays false.
   // This also guards initial creation, growth past the limit and filter:false
@@ -66,7 +69,7 @@ export function createLanguageState(adapter, onSyntax, hooks = {}) {
   const boundedLanguage = createGuardedLanguage(adapter);
   const identityEffect = StateEffect.define();
   const identity = StateField.define({
-    create: () => Object.freeze({ revision: 0, generation }),
+    create: () => Object.freeze({ revision, generation }),
     update(value, transaction) {
       let nextGeneration = value.generation, replaced = false;
       for (const effect of transaction.effects) if (effect.is(identityEffect)) {
@@ -77,7 +80,7 @@ export function createLanguageState(adapter, onSyntax, hooks = {}) {
       return transaction.docChanged || replaced ? Object.freeze({ revision: value.revision + 1, generation: nextGeneration }) : value;
     },
   });
-  let disposed = false, timer = null, active = null, published = null, sequence = 0;
+  let disposed = false, timer = null, active = null, published = null, sequence = 0, mounted = null;
   const snapshot = (id, status = "unavailable", parsedTo = 0, data = empty, limitReason = null) => Object.freeze({ ...data, kind: adapter.kind, ...id, status, parsedTo, limitReason });
   const stop = () => { sequence++; if (timer !== null) cancel(timer); timer = null; };
 
@@ -106,6 +109,7 @@ export function createLanguageState(adapter, onSyntax, hooks = {}) {
   }
 
   function update(state) {
+    if (mounted && mounted.state !== state) return;
     const id = state.field(identity, false);
     if (disposed || !id || state.facet(language) !== boundedLanguage) return;
     // Reading a historical state must not cancel current work or republish it.
@@ -114,7 +118,7 @@ export function createLanguageState(adapter, onSyntax, hooks = {}) {
     if (policy.mode === "limited") {
       if (sameIdentity(id, active?.id) && active.limited) return;
       stop();
-      active = { id, limited: true, parsedTo: 0 };
+      active = { state, id, limited: true, parsedTo: 0 };
       published = snapshot(id, "unavailable", 0, empty, policy.reason);
       onSyntax(published);
       return;
@@ -127,6 +131,19 @@ export function createLanguageState(adapter, onSyntax, hooks = {}) {
     const job = active = { state, id, ...captured };
     const token = sequence;
     const steps = summarize(job, previous);
+    function progress() {
+      timer = null;
+      if (disposed || token !== sequence) return;
+      const current = mounted?.state || job.state;
+      // Continue CM's existing mutable parse context. Do not dispatch a failed
+      // ensure: that would force partial-tree finalization in a state update.
+      const tree = ensureSyntaxTree(current, current.doc.length, 5);
+      if (disposed || token !== sequence) return;
+      if (tree && syntaxTreeAvailable(current, current.doc.length)) {
+        if (mounted && syntaxTree(current) !== tree) mounted.dispatch({});
+        else update(current);
+      } else timer = schedule(progress, 0);
+    }
     function chunk() {
       timer = null;
       if (disposed || token !== sequence) return;
@@ -134,7 +151,10 @@ export function createLanguageState(adapter, onSyntax, hooks = {}) {
       do {
         const step = steps.next();
         if (step.done) {
-          if (!disposed && token === sequence) { published = step.value; onSyntax(published); }
+          if (!disposed && token === sequence) {
+            published = step.value; onSyntax(published);
+            if (!job.ready && !disposed && token === sequence) timer = schedule(progress, 0);
+          }
           return;
         }
       } while (now() < until);
@@ -144,27 +164,34 @@ export function createLanguageState(adapter, onSyntax, hooks = {}) {
   }
 
   function read(state) {
-    const id = state.field(identity, false) || { generation, revision: 0 };
+    const id = state.field(identity, false) || { generation, revision };
     if (disposed || !state.field(identity, false) || state.facet(language) !== boundedLanguage) return snapshot(id);
-    update(state);
-    if (sameIdentity(id, published)) return published;
-    return snapshot(id, "partial", sameIdentity(id, active?.id) ? active.parsedTo : 0);
+    if (!active || mounted?.state === state || sameIdentity(id, active.id) && state.doc === active.state.doc) update(state);
+    if (sameIdentity(id, published) && state.doc === active?.state.doc) return published;
+    return snapshot(id, "partial", sameIdentity(id, active?.id) && state.doc === active.state.doc ? active.parsedTo : 0);
   }
 
   function contextAt(state, pos, bias = -1) {
     if (!Number.isInteger(pos) || pos < 0 || pos > state.doc.length) throw new RangeError("Cursor outside source");
     if (disposed || !state.field(identity, false) || state.facet(language) !== boundedLanguage) return unknown(pos);
-    if (analysisPolicy(state.doc.length).mode === "limited") { update(state); return unknown(pos); }
+    const canObserve = !active || mounted?.state === state || sameIdentity(state.field(identity), active.id) && state.doc === active.state.doc;
+    if (analysisPolicy(state.doc.length).mode === "limited") { if (canObserve) update(state); return unknown(pos); }
     const tree = ensureSyntaxTree(state, pos, 5);
-    update(state);
+    if (canObserve) update(state);
     return tree && syntaxTreeAvailable(state, pos) ? adapter.contextAt(tree, state.doc, pos, bias) : unknown(pos);
   }
 
-  function dispose() { if (!disposed) { disposed = true; stop(); ownedTasks?.dispose(); active = published = null; } }
+  function dispose() { if (!disposed) { disposed = true; stop(); ownedTasks?.dispose(); active = published = mounted = null; } }
   const plugin = ViewPlugin.fromClass(class {
-    constructor(view) { update(view.state); }
+    constructor(view) { mounted = view; update(view.state); }
     update(transaction) { update(transaction.state); }
-    destroy() { dispose(); }
+    destroy() {
+      mounted = null;
+      // CM redraws the view via setState when phrases change, even though this
+      // document, parser and extension survive. A synchronous remount retains
+      // ownership; an actual removal/destroy disposes before the next task.
+      queueMicrotask(() => { if (!mounted) dispose(); });
+    }
   });
   return Object.freeze({ extension: [boundedLanguage, identity, plugin], read, update, contextAt, dispose, identityEffect });
 }

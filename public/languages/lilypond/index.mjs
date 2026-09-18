@@ -5,6 +5,7 @@ import { parser } from "./parser.mjs";
 import { createContext } from "./tokens.mjs";
 import { recoverySafeParser } from "./reuse.mjs";
 import { summarize, summarySteps, contextAt } from "./queries.mjs";
+import { blockAtEnter, formatChanges } from "./editing.mjs";
 
 const styled = recoverySafeParser(parser.configure({ props: [styleTags({
   "Command LongCommand! LanguageCommand IncludeCommand VersionCommand RelativeCommand FixedCommand TransposeCommand RepeatCommand TupletCommand WrapperCommand PropertyCommand PropertyEndCommand TweakCommand ModeCommand": t.command,
@@ -36,5 +37,5 @@ export function createAdapter(options = Object.freeze({ initialNoteLanguage: "ne
   const language = LRLanguage.define({ name: "iris-ly", parser: styled.configure({ contextTracker: createContext(options.initialNoteLanguage) }), languageData: { commentTokens: { line: "%", block: { open: "%{", close: "%}" } } } });
   return Object.freeze({ kind: "ly", options, language, summarize, summarySteps,
     contextAt: (tree, doc, pos, bias) => contextAt(tree, doc, pos, bias, options.initialNoteLanguage),
-    blockAtEnter: () => null, formatChanges: () => Object.freeze([]) });
+    blockAtEnter, formatChanges });
 }

@@ -39,8 +39,24 @@ open it. The tree's toggle is in the bottom-left corner, beside Ready.
 Open files in tabs. The tab strip scrolls when the tabs exceed its width.
 The outline follows LaTeX headings and environments or LilyPond music structures.
 Use search and replace, formatting and editor settings to adjust how you work.
-Enter completes supported LaTeX environments and LilyPond `{ … }` / `<< … >>`
-blocks, using your auto-indent preference.
+Enter completes supported LaTeX environments and LilyPond `{ … }`, `<< … >>`
+and `#{ … #}` blocks, using your auto-indent preference. Comments, literal text
+and uncertain syntax do not create extra structures. `.sty` and `.cls` files
+start with TeX's internal command-name profile, including `@`.
+
+The outline, collaboration regions and completion share the current syntax
+summary. The outline shows an analysis status while it catches up after an edit.
+Sources above 1,048,576 UTF-16 units remain editable with neutral highlighting
+and an explicit unavailable-syntax message. Changing the interface language
+translates generated labels without changing LilyPond's note convention.
+
+**Format** changes leading structural indentation in one undoable operation.
+It preserves literal/string bodies, blank lines, trailing spaces and line
+endings. It can decline uncertain syntax; its current synchronous limit is
+65,536 UTF-16 units. Finish an active input-method composition before formatting.
+Included `.sty`, `.cls` and `.ily` sources use the same outline and formatting
+support as their language. See [Editor language support](editor-languages.md) for the
+supported syntax and work limits.
 
 ### Completion
 
@@ -54,6 +70,17 @@ variables in `.ly` and `.ily` files. Under **Settings → Editor → Custom comp
 commands**, add one command name per line, with or without a leading backslash.
 Each language accepts up to 200 names of at most 80 characters. Apply and save
 the project to share those lists and include them in exports.
+
+Iris continues background analysis beyond the visible part of the document.
+Completion uses available symbols after a short bounded wait, so builtins remain
+usable while changed files are still being analyzed. Reopen completion to include
+newly analyzed symbols. Iris reuses summaries for unchanged files and uses your
+live text for the open file. Suggestions match the prefix before the caret.
+Accepting a suggestion replaces the full current
+name or reference item, including text to the right of the caret.
+It suppresses automatic commands in comments, literal text, strings and unknown
+contexts. Reference and citation suggestions follow recognized argument roles.
+Definitions inside a LilyPond musical literal stay local to that literal.
 
 ### Save and snapshot
 

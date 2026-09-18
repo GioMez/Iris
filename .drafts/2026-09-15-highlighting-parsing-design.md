@@ -17,9 +17,9 @@ e completion dovranno installare il linguaggio attraverso la guardia condivisa.
 **Stato:** HP-01 e HP-02 implementati e integrati su `main` il 15 settembre 2026,
 con commit `4d37c4e` e `f6d8783`. Il riscontro visivo e il corpus reale dell'utente
 restano aperti. HP-03 è integrato con `c510f5b`, HP-04 con `39da07c`.
-HP-05 è integrato con `b0c6974`; HP-06 ha completato la revisione del reader Scheme
-e dell'highlighting LilyPond attivo. HP-07 e HP-08 restano da eseguire.
-La scelta automatica del profilo TeX da `.sty/.cls` rientra nell'integrazione HP-07.
+HP-05 è integrato con `b0c6974`, HP-06 con `be005d9`. HP-07 ha completato la
+revisione dell'integrazione, inclusa la scelta automatica del profilo TeX da
+`.sty/.cls`. HP-08 resta da eseguire; riscontro utente e corpus reale restano aperti.
 
 **Base analizzata:** Iris 1.0.1, commit `0402762`.
 

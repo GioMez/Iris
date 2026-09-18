@@ -1,4 +1,10 @@
 {
+  "syntaxStatus": {
+    "partial": "Analyzing syntax…",
+    "formatUnavailable": "Formatting needs complete syntax and a source of at most 65,536 UTF-16 units.",
+    "formatUnchanged": "No safe indentation changes.",
+    "tooLarge": "Syntax analysis unavailable: source exceeds 1,048,576 UTF-16 units."
+  },
   "navigation": {
     "enable": "Enable PDF–source mapping",
     "enableHint": "Move between PDF and source with Ctrl/Cmd-click. Disable to reduce compilation work and map storage.",

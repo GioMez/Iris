@@ -13,7 +13,7 @@ const app = fs.readFileSync(path.join(publicDir, "iris-app.js"), "utf8");
 const server = fs.readFileSync(path.join(root, "src/server.js"), "utf8");
 const uiScripts = [
   "iris-projects.js", "iris-builds.js", "iris-admin.js", "iris-admin-projects.js",
-  "iris-admin-templates.js", "iris-auth.js", "iris-lilypond.js", "iris-diagnostics.js",
+  "iris-admin-templates.js", "iris-auth.js", "iris-diagnostics.js",
   "iris-bibliography-view.js", "iris-bibliography-form.js",
 ]
   .map((file) => fs.readFileSync(path.join(publicDir, file), "utf8"));

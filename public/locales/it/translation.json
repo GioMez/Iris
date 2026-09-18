@@ -1,4 +1,10 @@
 {
+  "syntaxStatus": {
+    "partial": "Analisi della sintassi…",
+    "formatUnavailable": "La formattazione richiede una sintassi completa e un sorgente di massimo 65.536 unità UTF-16.",
+    "formatUnchanged": "Nessuna modifica sicura dell’indentazione.",
+    "tooLarge": "Analisi della sintassi non disponibile: il sorgente supera 1.048.576 unità UTF-16."
+  },
   "navigation": {
     "enable": "Abilita mappatura PDF–sorgente",
     "enableHint": "Permette di passare tra PDF e sorgente con Ctrl/Cmd+clic. Disattivala per ridurre il lavoro di compilazione e lo spazio delle mappe.",
