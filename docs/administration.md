@@ -161,9 +161,11 @@ origin. A proxy configuration that changes browser origin metadata can cause
 [request contract](development.md#http-and-session-boundaries) describes precedence
 and JSON media checks.
 
-The frontend loads interface fonts from Google Fonts and cdnfonts.com; the
-stylesheet has local font fallbacks. Editor modules, PDF.js and PDF geometry
-code come from installed packages served by Iris.
+The frontend serves its IBM Plex Sans, IBM Plex Mono and CMU Serif interface
+fonts locally, including on a cold browser cache. No font CDN access is needed.
+The [bundled font inventory](../public/fonts/README.md) records the original
+sources, pinned hashes and redistribution licenses. Editor modules, PDF.js and
+PDF geometry code come from installed packages served by Iris.
 
 ## Retention
 

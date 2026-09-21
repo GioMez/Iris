@@ -16,8 +16,12 @@ language-catalog extensions. A display preference must not silently change
 outline, completion, collaborative regions or editing behavior.
 
 There is no additional runtime change required now solely to keep this feature
-possible. Complete the shared parsers, context queries and lifecycle work in
-HP-03 through HP-08 first. A future HP-09 would need its own approved scope.
+possible. The shared parsers, context queries and consumer/lifecycle integration
+are implemented through HP-07. [HP-08 qualification](language-qualification.md)
+records passing final edit/viewport/publication and strict feature profiles,
+with Linux gates and their source scopes documented. User-source and visual
+acceptance remain follow-ups. A future HP-09 needs
+its own approved scope.
 
 ## Existing foundations and remaining work
 
@@ -27,7 +31,7 @@ HP-03 through HP-08 first. A future HP-09 would need its own approved scope.
 | Independent bibliography colors | Implemented with separate tags and `--bibliography-*` | Decide whether bibliography customization belongs in the first release |
 | System/light/dark preference | Implemented, browser-local | Syntax preset selection and per-role overrides |
 | Custom completion lists | Implemented, shared in project settings | Exact-name appearance rules and optional argument signatures |
-| Language-specific catalogs and tree contexts | HP-04 through HP-07 | A validated extension format for the supported kinds of declarations |
+| Language-specific catalogs and tree contexts | Implemented in HP-04 through HP-07 | A validated extension format for the supported kinds of declarations |
 | Normalized adapter options, document identities and cancellation | HP-03 foundation, integrated by HP-07 | Include rule-configuration identity when configuration becomes mutable |
 
 ## 1. Colors and themes

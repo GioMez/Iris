@@ -15,6 +15,8 @@
     "release:source": "node scripts/release.cjs",
     "build:languages": "node scripts/build-languages.cjs",
     "check:languages": "node scripts/build-languages.cjs --check",
+    "build:language-worker": "node scripts/build-language-worker.cjs",
+    "check:language-worker": "node scripts/build-language-worker.cjs --check",
     "smoke": "node scripts/smoke.cjs"
   },
   "dependencies": {
@@ -38,6 +40,7 @@
   },
   "devDependencies": {
     "@lezer/generator": "1.8.0",
+    "esbuild": "0.25.12",
     "playwright-core": "1.63.0"
   }
 }

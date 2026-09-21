@@ -11,6 +11,25 @@ For user controls, see [theme selection](user-guide.md#sign-in-and-choose-your-w
 
 ## Role families
 
+HP08 measures every one of the 23 syntax roles on real parser-emitted source
+spans, including selection and peer/search overlays: 2120 samples per theme,
+minimum 4.582:1 dark and 4.708:1 light on Chrome 153/Windows. Matching/nonmatching
+brackets and historical BibTeX/RIS paint also pass their mounted checks. These
+results preserve the **4.5:1** contract; CSS swatches alone are not recognition
+evidence. See [scope, raw results and outstanding gates](language-qualification.md).
+
+The local-font continuation repeats the mounted role/reflow/theme checks with
+Chrome 153.0.8010.53: 42 selected UI cases pass, with the same contrast minima.
+The performance report now distinguishes actual syntax publication from later
+paint observation; color qualification does not certify the separate 5/8 ms
+feature-work budgets.
+
+The final Linux nine-file browser aggregate passes 300/300, including UI
+visibility 124/124. The peer audit now resolves the selector and samples its
+connected node/styles atomically; absent pigments fail explicitly. It preserves
+the 4.5:1 text/3:1 indicator assertions and palette. Earlier detached-node audit
+failures remain historical, as detailed in the qualification report.
+
 | Roles | Use |
 | --- | --- |
 | `--bg`, `--editor-bg`, `--panel`, `--panel-2`, `--topbar` | Main surfaces. |
@@ -174,17 +193,14 @@ colors change without recoloring action/status controls or document paper/ink.
 Node checks also composite the existing 9% peer caret line over active and idle
 selection, using the fixed peer palette, fallback and white stress case. The
 lowest ratio across those combinations is **4.582:1 dark / 4.711:1 light**.
-Browser qualification must confirm the corresponding mounted paint.
+The mounted qualification above confirms the corresponding emitted-token paint.
 
-HP02 exposes the full vocabulary for later language work. The current streams
-emit command, environment, delimiter, math, comment, operator and string. The
-browser tests inspect these roles on mounted CodeMirror spans. They label CSS
-swatches as **palette-only** for the full vocabulary, including future roles.
-Those swatches check weights, role propagation and contrast across local
-selection, search, brackets and both peer/search stacking orders, using the
-eight server peer colors, fallback and white stress case. Grammar coverage for
-the future roles belongs to HP04-06; user-source corpus and subjective visual
-acceptance remain pending.
+HP02 originally prequalified the full vocabulary with **palette-only** swatches
+while the streams emitted a smaller role set. The implemented language adapters
+now emit all 23 syntax roles, and HP08 checks their real mounted spans. Swatches
+remain separate evidence for weights, role propagation and composed backgrounds,
+including the eight peer colors, fallback and white stress case. User-source
+corpus and subjective visual acceptance remain follow-ups.
 
 ### Bibliography compatibility
 

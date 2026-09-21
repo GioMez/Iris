@@ -21,6 +21,9 @@ function effect(name, inner, length) {
   if (scopes.has(name) || name === "LongWord" || name === "LongCommand") return clear;
   if (["LineComment", "BlockComment", "Articulation"].includes(name)) return identity;
   if (name === "Space") return { ...identity, modifier: false };
+  // Operators only set the chord modifier for ':'. Carry that conditional
+  // effect compositionally instead of making every bar-containing run unsafe.
+  if (name === "Operator") return { ...identity, modifier: { base: null, at: [0] } };
   if (["Pitch", "Rest", "Duration", "Number", "Command", "Variable", "Text", "MarkupText", "Lyric", "SchemeAtom", "SchemeNumber", "LongSchemeAtom", "LongSchemeNumber"].includes(name)) return atom;
   if (name === "Word") return { ...identity, name: { offset: 0 }, nameValid: true };
   if (["String", "LyricString", "PathString"].includes(name)) return { ...identity, pending: "clear", nameValid: true, name: { offset: 0, string: true, length: Math.max(0, length - 2) }, language: { offset: 0, string: true, length: Math.max(0, length - 2) } };
@@ -33,7 +36,15 @@ function positioned(value, offset) {
   if (!value) return null;
   if (value.ops) return { ops: value.ops.map(op => ({ ...op, offset: op.offset + offset })) };
   const move = v => v && typeof v === "object" ? { ...v, offset: v.offset + offset } : v;
-  return { ...value, name: move(value.name), language: move(value.language) };
+  return { ...value, name: move(value.name), language: move(value.language),
+    modifier: value.modifier && typeof value.modifier === "object" ? { base: value.modifier.base, at: value.modifier.at.map(pos => pos + offset) } : value.modifier };
+}
+function composeModifier(a, b) {
+  if (b === null) return a;
+  if (typeof b === "boolean" || b.base !== null) return b;
+  if (a === true) return true;
+  if (!a || typeof a === "boolean") return { base: a, at: b.at };
+  return a.at.length + b.at.length <= 16 ? { base: a.base, at: [...a.at, ...b.at] } : undefined;
 }
 function compose(a, b) {
   if (!a || !b) return null;
@@ -42,7 +53,9 @@ function compose(a, b) {
     if (b === identity) return a;
     return a.ops && b.ops && a.ops.length + b.ops.length <= 16 ? { ops: [...a.ops, ...b.ops] } : null;
   }
-  return { name: b.name ?? a.name, nameValid: b.nameValid ?? a.nameValid, defining: b.defining ?? a.defining, compound: b.compound ?? a.compound, modifier: b.modifier ?? a.modifier,
+  const modifier = composeModifier(a.modifier, b.modifier);
+  if (modifier === undefined) return null;
+  return { name: b.name ?? a.name, nameValid: b.nameValid ?? a.nameValid, defining: b.defining ?? a.defining, compound: b.compound ?? a.compound, modifier,
     pending: !b.pending ? a.pending : b.pending === "opaque" ? !a.pending || a.pending === "opaque" ? "opaque" : "clear" :
       b.pending === "atom" ? a.pending === "opaque" ? "clear" : a.pending || "atom" : b.pending,
     // The first directive-sensitive atom consumes that entry condition. A
@@ -117,18 +130,36 @@ function* prepare(fragments) {
 export function recoverySafeParser(parser) {
   const copy = parser.configure({});
   copy.createParse = function(input, fragments, ranges) {
-    if (!fragments.length) return LRParser.prototype.createParse.call(this, input, fragments, ranges);
     const steps = prepare(fragments), owner = this;
-    let parse = null, stoppedAt = null;
+    let parse = fragments.length ? null : LRParser.prototype.createParse.call(this, input, fragments, ranges);
+    let stoppedAt = null, tree = null, metadata = null;
     return {
       get parsedPos() { return parse ? parse.parsedPos : ranges[0].from; },
       get stoppedAt() { return stoppedAt; },
       stopAt(pos) {
         if (stoppedAt !== null && pos > stoppedAt) throw new RangeError("Can't move stoppedAt forward");
         stoppedAt = pos; if (parse) parse.stopAt(pos);
+        else if (pos <= ranges[0].from) {
+          // Finalizing an unstarted preflight consumes no reusable prefix.
+          // Never drain document-sized metadata synchronously in CM takeTree.
+          parse = LRParser.prototype.createParse.call(owner, input, [], ranges);
+          parse.stopAt(pos);
+        }
       },
       advance() {
-        if (parse) return parse.advance();
+        if (tree) {
+          if (stoppedAt !== null) return tree;
+          for (let i = 0; i < 128; i++) if (metadata.next().done) return tree;
+          return null;
+        }
+        if (parse) {
+          tree = parse.advance();
+          if (!tree || stoppedAt !== null) return tree;
+          // Publish full trees with compositional reuse metadata already cached.
+          // A subsequent stop still returns immediately, with honest coverage.
+          metadata = fragmentView(tree);
+          return null;
+        }
         for (let i = 0; i < 128; i++) {
           const step = steps.next();
           if (step.done) {

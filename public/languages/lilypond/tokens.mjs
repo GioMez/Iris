@@ -34,13 +34,29 @@ function state(parent, fields = {}) {
   const value = { parent, scope: "root", from: -1, mode: parent?.mode || "music", language: parent?.language || "nederlands",
     symbols: parent?.symbols || null, pending: "", lastName: "", nameValid: parent?.nameValid || false, end: parent?.end || 0, defining: false, compound: false, chord: false, modifier: false,
     string: "", escaped: false, depth: 0, quoted: false, readerQuoted: parent?.readerQuoted || false, musicLiteral: parent?.musicLiteral || false, ...fields };
-  let hash = parent?.hash || 0;
+  value.hash = contextHash(value);
+  return Object.freeze(value);
+}
+function contextHash(value) {
+  let hash = value.parent?.hash || 0;
   const key = [value.scope, value.mode, value.language, value.symbols?.hash, value.pending, value.lastName, value.defining,
     value.nameValid, value.compound, value.chord, value.modifier, value.string, value.escaped, value.depth, value.quoted, value.readerQuoted, value.musicLiteral].join("|");
   for (let i = 0; i < key.length; i++) hash = (Math.imul(hash, 31) + key.charCodeAt(i)) | 0;
-  return Object.freeze({ ...value, hash });
+  return hash;
 }
-const replace = (value, fields) => state(value.parent, { ...value, ...fields });
+function replace(value, fields) {
+  let changed = false, rehash = false;
+  for (const key in fields) if (fields[key] !== value[key]) {
+    changed = true;
+    // The consumed end guides recovery, but is deliberately not a reuse
+    // dependency. Preserve the exact hash for continuity-only token shifts.
+    if (key !== "end") rehash = true;
+  }
+  if (!changed) return value;
+  const next = { ...value, ...fields };
+  if (rehash) next.hash = contextHash(next);
+  return Object.freeze(next);
+}
 const clear = value => replace(value, { pending: "", lastName: "", nameValid: false, defining: false, compound: false, modifier: false });
 const pop = value => value.parent ? replace(value.parent, { language: value.language, symbols: value.symbols, end: value.end }) : value;
 const restore = value => value.parent ? replace(value.parent, { end: value.end }) : value;
@@ -170,7 +186,8 @@ export function createContext(initialNoteLanguage = "nederlands") {
           effect.pending === "clear" || effect.pending === "atom" && ["include", "language"].includes(value.pending) ? "" : effect.pending && effect.pending !== "atom" ? effect.pending : value.pending,
         defining: effect.defining === null ? value.defining : effect.defining,
         compound: effect.compound === null ? value.compound : effect.compound,
-        modifier: effect.modifier === null ? value.modifier : effect.modifier });
+        modifier: effect.modifier === null ? value.modifier : typeof effect.modifier === "boolean" ? effect.modifier :
+          (effect.modifier.base ?? value.modifier) || value.mode === "chords" && effect.modifier.at.some(offset => input.peek(offset) === 58) });
     },
     hash: value => value.hash,
   });

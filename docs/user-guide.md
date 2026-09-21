@@ -58,6 +58,15 @@ Included `.sty`, `.cls` and `.ily` sources use the same outline and formatting
 support as their language. See [Editor language support](editor-languages.md) for the
 supported syntax and work limits.
 
+Large supported files show a parsed visible prefix while a local Worker builds
+full syntax. The current synthetic Windows qualification meets the 1 MiB edit,
+first-viewport and post-edit summary targets; first full analysis/reloads can
+still take several seconds. Single 100 KiB lines remain editable. The size limit
+is an analysis policy, not a responsiveness guarantee for every source/browser.
+[Language qualification](language-qualification.md) records the passing final
+feature profiles and Linux gates, source/platform scope, cold-throughput limits
+and the remaining user-source/visual acceptance follow-up.
+
 ### Completion
 
 Suggestions appear for commands and supported arguments. **Ctrl+Space** requests

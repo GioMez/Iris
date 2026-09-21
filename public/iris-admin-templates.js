@@ -240,7 +240,8 @@
     updateFormLabels();
     setFormBusy(false);
     openDialog("adminTemplateModal");
-    setTimeout(() => $("adminTemplateTitle").focus(), 50);
+    // Finish initial focus during opening, before the user can choose a control.
+    $("adminTemplateTitle").focus();
   }
 
   async function loadDetail() {

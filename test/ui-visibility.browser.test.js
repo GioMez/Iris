@@ -41,7 +41,7 @@ async function cleanup(steps) {
   for (const [label, work] of steps) {
     try { await bounded(work, label); } catch (error) { errors.push(error); }
   }
-  if (errors.length) throw new AggregateError(errors, "Visibility browser cleanup failed");
+  if (errors.length) throw new AggregateError(errors, `Visibility browser cleanup failed: ${errors.map(e => e.message).join("; ")}`);
 }
 
 test.before(async (t) => {
@@ -361,8 +361,12 @@ for (const theme of ["dark", "light"]) {
 
 // Read the mounted consumer and composite its actual ancestor backgrounds in
 // paint order. In particular, a match's background can sit on a peer line.
+// Callers supply CSS selectors. Resolve and sample in one browser turn: a
+// locator's previously resolved handle may be detached by a presence refresh.
 async function renderedContrast(page, selector, { pseudo = null, shadow = false, minimum = 4.5, surrounding = false, paintProperty = "color", selected = false, plain = false } = {}) {
-  return page.locator(selector).first().evaluate((node, { pseudo, shadow, minimum, surrounding, paintProperty, selected, plain }) => {
+  return page.evaluate(({ selector, pseudo, shadow, minimum, surrounding, paintProperty, selected, plain }) => {
+    let node = document.querySelector(selector);
+    if (!node?.isConnected) throw new Error(`Missing connected contrast target: ${selector}`);
     // CodeMirror can wrap a syntax span in a decoration span. Measure the
     // actual text leaf rather than its outer wrapper's inherited text color.
     if (!pseudo && !shadow) {
@@ -384,7 +388,12 @@ async function renderedContrast(page, selector, { pseudo = null, shadow = false,
     const ctx = canvas.getContext("2d", { willReadFrequently: true });
     const paint = (layers) => {
       ctx.clearRect(0, 0, 1, 1);
-      for (const color of layers) { ctx.fillStyle = color; ctx.fillRect(0, 0, 1, 1); }
+      for (const color of layers) {
+        // Canvas silently retains its last fillStyle when assigned empty paint.
+        // A missing style is a sampling failure, not a measured contrast ratio.
+        if (typeof color !== "string" || !color.trim()) throw new Error(`Missing contrast pigment: ${selector}`);
+        ctx.fillStyle = color; ctx.fillRect(0, 0, 1, 1);
+      }
       return [...ctx.getImageData(0, 0, 1, 1).data].slice(0, 3);
     };
     const ancestors = [];
@@ -406,11 +415,11 @@ async function renderedContrast(page, selector, { pseudo = null, shadow = false,
     const a = luminance(fg), b = luminance(bg);
     return { foreground: fg, background: bg, ratio: (Math.max(a, b) + .05) / (Math.min(a, b) + .05), minimum,
       pigment, content: style.content, shadow: style.boxShadow, focusVisible: node.matches(":focus-visible") || !!node.querySelector(":focus-visible") };
-  }, { pseudo, shadow, minimum, surrounding, paintProperty, selected, plain });
+  }, { selector, pseudo, shadow, minimum, surrounding, paintProperty, selected, plain });
 }
 
 for (const theme of ["dark", "light"]) {
-  test(`HP02 ${theme}: mounted parser roles, local ESM delivery and stacked peer/search paint`, { ...options, timeout: 60000 }, async (t) => {
+  test(`HP02/HP08 ${theme}: mounted parser roles, local ESM delivery and stacked peer/search paint`, { ...options, timeout: 60000 }, async (t) => {
     const { page, syntaxAssets } = await pageFor(t, { ...variants[0], theme });
     assert.deepEqual(syntaxAssets.map(asset => ({ ...asset, type: asset.type.split(';')[0] })),
       [{ url: new URL('/iris-syntax-style.mjs', base).href, status: 200, type: 'application/javascript' }]);
@@ -426,7 +435,12 @@ for (const theme of ["dark", "light"]) {
           ['pitch', 'cis'], ['duration', '4.'], ['rest', 'r'], ['articulation', '\\f']] },
       { kind: 'ly', text: '#(list #; #{ fake = { c4 } #} 12 "#}" #{ d8 r4 #}) \\markup { plain source }',
         tokens: [['scheme', 'list'], ['comment', 'fake'], ['number', '12'], ['string', '"#}"'], ['delimiter', '#{'], ['pitch', 'd'], ['duration', '8'], ['rest', 'r']] },
+      { kind: 'tex', text: '\\newcommand{\\localname}{}\n\\label{live} \\ref{live} \\cite{book}\n\\verb|raw literal| plain source\n',
+        tokens: [['definition', '\\localname'], ['reference', 'live'], ['citation', 'book'], ['literal', 'raw literal']] },
+      { kind: 'ly', text: 'melody = { c4 }\n\\new Staff { \\melody \\override NoteHead.color = #red }\n\\lyricmode { sung words }\n\\markup { plain source }',
+        tokens: [['definition', 'melody'], ['variable', '\\melody'], ['context', 'Staff'], ['property', 'NoteHead.color'], ['lyric', 'sung']] },
     ];
+    assert.deepEqual([...new Set(documents.flatMap(d => d.tokens.map(([role]) => role)))].sort(), ROLE_NAMES.filter(r => r !== 'text').sort(), 'every semantic role is measured on emitted source tokens');
     const samples = [];
     for (const { kind, text, tokens } of documents) {
       await page.evaluate(({ kind, text }) => IrisEditor.load(text, kind), { kind, text });
@@ -639,17 +653,29 @@ test('HP04 mounted review: literal-prefix edits refresh roles and prototype envi
   await selectFile(page, 'draft');
   const result = await page.evaluate(async () => {
     const { EditorView } = await import('@codemirror/view');
-    const { ensureSyntaxTree } = await import('@codemirror/language');
+    const { ensureSyntaxTree, syntaxTreeAvailable } = await import('@codemirror/language');
     const { highlightTree } = await import('@lezer/highlight');
     const { roleHighlighter } = await import('./iris-syntax-style.mjs');
     const { loadLanguage } = await import('./iris-language-service.mjs');
     const adapter = await loadLanguage('tex'), view = EditorView.findFromDOM(document.querySelector('.cm-editor'));
+    const fullTree = async () => {
+      const doc = view.state.doc, { revision, generation } = IrisEditor.syntaxSnapshot(), deadline = performance.now() + 10000;
+      while (true) {
+        const current = IrisEditor.syntaxSnapshot();
+        if (view.state.doc !== doc || current.revision !== revision || current.generation !== generation)
+          throw new Error('Literal fixture identity changed while awaiting full syntax');
+        if (current.status === 'ready' && current.parsedTo === doc.length && syntaxTreeAvailable(view.state, doc.length))
+          return ensureSyntaxTree(view.state, doc.length, 0);
+        if (performance.now() >= deadline) throw new Error('Literal fixture full syntax did not settle');
+        await new Promise(requestAnimationFrame);
+      }
+    };
     const text = '\\begin{minted}{tex}\nX' + ' '.repeat(5000) + '\\end{minted}\n\\section{Visible}\n' + 'literal body '.repeat(800) + '\n\\end{minted}\n\\section{Tail}';
     IrisEditor.load(text, 'tex');
-    const before = ensureSyntaxTree(view.state, view.state.doc.length, 2000);
+    const before = await fullTree();
     const initial = adapter.summarize(before, view.state.doc).outline.map(x => x.title);
     view.dispatch({ changes: { from: 20, to: 21, insert: ' ' }, filter: false });
-    const tree = ensureSyntaxTree(view.state, view.state.doc.length, 2000), pos = text.indexOf('\\section{Visible}');
+    const tree = await fullTree(), pos = text.indexOf('\\section{Visible}');
     const updated = adapter.summarize(tree, view.state.doc).outline.map(x => x.title);
     let role = 'text';
     highlightTree(tree, roleHighlighter, (from, to, value) => { if (from <= pos && pos < to) role = value; });
@@ -657,7 +683,7 @@ test('HP04 mounted review: literal-prefix edits refresh roles and prototype envi
     const environments = [];
     for (const name of ['constructor', 'toString', '__proto__']) {
       IrisEditor.load(`\\begin{${name}}x\\end{${name}}`, 'tex');
-      const tree = ensureSyntaxTree(view.state, view.state.doc.length, 1000);
+      const tree = await fullTree();
       environments.push(adapter.summarize(tree, view.state.doc).regions.map(x => [x.name, x.certainty]));
     }
     IrisEditor.replaceRange(view.state.doc.length, view.state.doc.length, '\n\\section{After}');
@@ -761,6 +787,50 @@ test('HP06 mounted R1–R3 atom paint, directive history and discarded unknown m
   assert.deepEqual(discarded.roles, [['comment', 'comment'], ['comment', 'comment']]);
   assert.deepEqual(discarded.outline, []);
   await page.locator('.cm-content .t-comment').filter({ hasText: '\\future c4' }).waitFor({ state: 'attached' });
+});
+
+test("contrast sampler follows a live peer replacement at the browser-evaluation handoff", options, async t => {
+  const { page, fixture } = await pageFor(t, { ...variants[0], theme: "light" });
+  const selector = "#stPeers .peer-dot";
+  const replacePeer = async (name, color) => {
+    send(fixture, { t: "peers", fileId, peers: [{ ...peer, id: name, name, color }] });
+    await page.waitForFunction(name => document.querySelector('#stPeers .peer-count')?.textContent === name, name);
+  };
+  await replacePeer("Ada Before", "#9ece6a");
+  for (const [name, color, settings] of [["Ada White", "#ffffff", {}],
+    ["Ada Green", "#9ece6a", { shadow: true, surrounding: true, minimum: 3 }]]) {
+    const previous = await page.locator(selector).first().elementHandle();
+    let handoffs = 0;
+    const replace = async () => {
+      assert.equal(++handoffs, 1, "one measurement, not retries until a good color");
+      await replacePeer(name, color);
+      assert.equal(await previous.evaluate(node => node.isConnected), false, "the real presence renderer replaced the badge");
+    };
+    // Exercise either browser-evaluation API against the same adverse ordering.
+    // The live peer update, DOM nodes, computed styles and canvas remain real.
+    const handoffPage = {
+      locator(css) { return { first: () => ({ async evaluate(fn, args) {
+        const resolved = await page.locator(css).first().elementHandle();
+        try { await replace(); return await resolved.evaluate(fn, args); }
+        finally { await resolved.dispose(); }
+      } }) }; },
+      async evaluate(fn, args) { await replace(); return page.evaluate(fn, args); },
+    };
+    try {
+      const sample = await renderedContrast(handoffPage, selector, settings);
+      assert.equal(handoffs, 1);
+      assert.ok(sample.ratio >= (settings.minimum ?? 4.5), JSON.stringify(sample));
+      assert.ok(sample.pigment?.trim(), "sampled the replacement's real paint");
+      if (!settings.shadow) assert.deepEqual(sample.background, [255, 255, 255], "current white peer, not the prior green badge");
+    } finally { await previous.dispose(); }
+  }
+});
+
+test("contrast sampler rejects absent targets and missing pigments instead of retaining canvas paint", options, async t => {
+  const { page } = await pageFor(t, variants[0]);
+  assert.equal(await page.locator('.cm-content').evaluate(node => getComputedStyle(node).boxShadow), 'none');
+  await assert.rejects(renderedContrast(page, '.cm-content', { shadow: true }), /Missing contrast pigment/);
+  await assert.rejects(renderedContrast(page, '#absent-contrast-target'), /Missing connected contrast target/);
 });
 
 test("R10 light peer initials and marker boundaries remain readable for fallback and bright identities", options, async (t) => {
@@ -1261,6 +1331,110 @@ for (const variant of layoutVariants) {
   });
 }
 
+// Hold only the template-create initial-focus callback. All other timers, the
+// dialog controller, DOM focus and native keyboard events remain real.
+async function templateFocusPage(t) {
+  const browserInstance = { async newContext(settings) {
+    const context = await browser.newContext(settings);
+    await context.addInitScript(() => {
+      const schedule = window.setTimeout.bind(window), cancel = window.clearTimeout.bind(window), pending = new Map();
+      let next = -1;
+      const trace = [], active = () => document.activeElement?.id || document.activeElement?.tagName;
+      const record = (type, detail = {}) => trace.push({ type, at: performance.now(), active: active(), ...detail });
+      for (const type of ['focusin', 'focusout', 'keydown', 'keyup', 'click', 'invalid', 'submit'])
+        document.addEventListener(type, event => record(type, { target: event.target.id || event.target.tagName, key: event.key, trusted: event.isTrusted }), true);
+      window.setTimeout = (fn, ms, ...args) => {
+        const source = typeof fn === 'function' ? Function.prototype.toString.call(fn) : '';
+        if (ms !== 50 || !source.includes('adminTemplateTitle')) return schedule(fn, ms, ...args);
+        const id = next--;
+        pending.set(id, () => fn.apply(window, args));
+        record('queued-focus', { id, ms, source, stack: new Error().stack });
+        return id;
+      };
+      window.clearTimeout = id => { if (pending.delete(id)) record('cancelled-focus', { id }); else cancel(id); };
+      window.templateFocusProbe = {
+        trace,
+        sample(label) { const state = { label, active: active(), open: document.querySelector('#adminTemplateModal').classList.contains('on'), pending: pending.size }; record('sample', state); return state; },
+        release() {
+          const work = [...pending]; pending.clear();
+          for (const [id, fn] of work) { record('release-focus', { id }); fn(); record('released-focus', { id }); }
+          return work.length;
+        },
+      };
+    });
+    return context;
+  } };
+  const { page } = await pageFor(t, layoutVariants.find(v => v.name === 'tablet IT / light'), { openProject: false, browserInstance });
+  t.after(async () => { if (!page.isClosed()) t.diagnostic(`Template focus trace: ${JSON.stringify(await page.evaluate(() => templateFocusProbe.trace))}`); });
+  await page.locator('#pkAdmin').click();
+  await page.locator('#adminTabTemplates').click();
+  return page;
+}
+
+test('template create focus preserves Cancel through a late callback and native Enter closes', options, async t => {
+  const page = await templateFocusPage(t);
+  await page.locator('#adminTemplateNew').click();
+  const initial = await page.evaluate(() => templateFocusProbe.sample('initial'));
+  await page.locator('#adminTemplateCancel').focus();
+  const chosen = await page.evaluate(() => templateFocusProbe.sample('user-cancel'));
+  await page.evaluate(() => templateFocusProbe.release());
+  const released = await page.evaluate(() => templateFocusProbe.sample('after-release'));
+  await page.keyboard.press('Enter');
+  const after = await page.evaluate(() => templateFocusProbe.sample('after-native-enter'));
+  const events = await page.evaluate(() => templateFocusProbe.trace);
+  t.diagnostic(`Template Cancel handoff: ${JSON.stringify({ initial, chosen, released, after, events })}`);
+  assert.equal(initial.active, 'adminTemplateTitle', 'Title is focused immediately, even while any deferred work is held');
+  assert.equal(chosen.active, 'adminTemplateCancel');
+  assert.equal(released.active, 'adminTemplateCancel', 'initial-focus work cannot override explicit user focus');
+  assert.ok(events.some(e => e.type === 'keydown' && e.key === 'Enter' && e.target === 'adminTemplateCancel' && e.trusted));
+  assert.ok(events.some(e => e.type === 'click' && e.target === 'adminTemplateCancel' && e.trusted), 'native Enter activates Cancel');
+  await page.locator('#adminTemplateModal').waitFor({ state: 'hidden' });
+  assert.equal(after.active, 'adminTemplateNew');
+});
+
+test('template create focus from a closed opening cannot steal focus after rapid reopen', options, async t => {
+  const page = await templateFocusPage(t);
+  await page.locator('#adminTemplateNew').click();
+  await page.keyboard.press('Escape');
+  await page.locator('#adminTemplateModal').waitFor({ state: 'hidden' });
+  assert.equal(await page.evaluate(() => document.activeElement.id), 'adminTemplateNew');
+  await page.locator('#adminTemplateNew').click();
+  const initial = await page.evaluate(() => templateFocusProbe.sample('reopened-initial'));
+  await page.locator('#adminTemplateDescription').focus();
+  await page.evaluate(() => templateFocusProbe.release());
+  await page.keyboard.type('User destination');
+  const after = await page.evaluate(() => templateFocusProbe.sample('reopened-after-release'));
+  t.diagnostic(`Template reopen handoff: ${JSON.stringify({ initial, after, events: await page.evaluate(() => templateFocusProbe.trace) })}`);
+  assert.equal(initial.active, 'adminTemplateTitle');
+  assert.equal(after.active, 'adminTemplateDescription');
+  assert.equal(await page.locator('#adminTemplateDescription').inputValue(), 'User destination');
+  assert.equal(await page.locator('#adminTemplateTitle').inputValue(), '');
+  await page.locator('#adminTemplateCancel').click();
+  await page.locator('#adminTemplateModal').waitFor({ state: 'hidden' });
+  await page.evaluate(() => templateFocusProbe.release());
+  assert.equal(await page.evaluate(() => document.activeElement.id), 'adminTemplateNew');
+});
+
+test('template create focus preserves rapid user field changes before pending initial work', options, async t => {
+  const page = await templateFocusPage(t);
+  await page.locator('#adminTemplateNew').click();
+  await page.evaluate(() => {
+    for (const id of ['adminTemplateId', 'adminTemplateDescription', 'adminTemplateContent', 'adminTemplateCancel', 'adminTemplateId'])
+      document.getElementById(id).focus();
+    templateFocusProbe.sample('rapid-user-focus');
+    templateFocusProbe.release();
+  });
+  await page.keyboard.type('user-id');
+  const after = await page.evaluate(() => templateFocusProbe.sample('rapid-after-release'));
+  t.diagnostic(`Template rapid-focus handoff: ${JSON.stringify({ after, events: await page.evaluate(() => templateFocusProbe.trace) })}`);
+  assert.equal(after.active, 'adminTemplateId');
+  assert.equal(await page.locator('#adminTemplateId').inputValue(), 'user-id');
+  assert.equal(await page.locator('#adminTemplateTitle').inputValue(), '');
+  await page.locator('#adminTemplateCancel').focus();
+  await page.keyboard.press('Enter');
+  await page.locator('#adminTemplateModal').waitFor({ state: 'hidden' });
+});
+
 test("hidden invariant: ordinary inline display cannot expose an explicitly hidden app control", options, async (t) => {
   const { page } = await pageFor(t, variants[0]);
   const checks = hiddenChecks(t);
@@ -1657,7 +1831,9 @@ for (const language of ["en", "it"]) for (const touch of [false, true]) test(`fo
 for (const language of ["en", "it"]) for (const touch of [false, true]) test(`footer recomputes focus width after keyboard-to-pointer input / ${language} / touch=${touch}`, options, async (t) => {
   const { page } = await pageFor(t, { viewport: { width: 1024, height: 900 }, language, touch });
   const frame = () => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-  await page.keyboard.press("Tab"); await page.locator("#btnPreview").focus(); await frame();
+  // Project entry focuses the editor. Tab there is a real indentation edit and
+  // emits a collab push; establish keyboard modality on a UI control instead.
+  await page.locator("#btnPreview").focus(); await page.keyboard.press("Tab"); await page.locator("#btnPreview").focus(); await frame();
   await page.locator(".sb-actions").hover(); await page.mouse.wheel(500, 0); await frame();
   const wrap = page.locator("#btnWrap"), before = await wrap.boundingBox(), state = await wrap.getAttribute("aria-checked");
   await page.mouse.move(before.x + before.width / 2, before.y + before.height / 2);
@@ -1671,6 +1847,7 @@ for (const language of ["en", "it"]) for (const touch of [false, true]) test(`fo
     assert.ok(box.x >= 0 && box.x + box.width <= 320, `${id} stays inside the viewport after mixed-input resize`);
     assert.equal(await page.evaluate(({ x, y, width, height }) => document.elementFromPoint(x + width / 2, y + height / 2)?.closest("button")?.id, box), id);
   }
+  assert.equal(await page.evaluate(() => IrisEditor.getValue()), source, "footer interactions do not edit source");
 });
 
 for (const width of [1440, 320]) test(`admin header alignment is stable with classic scrollbars at ${width}px`, options, async (t) => {

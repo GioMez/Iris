@@ -88,8 +88,11 @@ test("language archive retains generator inputs/runtime and regenerates without 
   const f = await fixture(t);
   const repo = path.resolve(__dirname, "..");
   const languageFiles = ["scripts/build-languages.cjs", "public/iris-language-service.mjs", "public/iris-language-state.mjs", "public/iris-syntax-style.mjs",
-    "public/iris-language-policy.mjs", "public/iris-language-tasks.mjs", "public/iris-tex-highlighting.mjs", "public/iris-lilypond-highlighting.mjs",
+    "public/iris-language-policy.mjs", "public/iris-language-tasks.mjs", "public/iris-language-parser.mjs", "public/iris-tex-highlighting.mjs", "public/iris-lilypond-highlighting.mjs",
     "public/iris-language-editing.mjs", "public/iris-language-completion.mjs",
+    "public/iris-language-worker-client.mjs", "public/iris-language-worker.mjs", "public/iris-language-transfer.mjs",
+    "public/languages/parser-factory.mjs", "scripts/build-language-worker.cjs",
+    "public/vendor/language-worker/worker.mjs", "public/vendor/language-worker/version.mjs",
     ...["latex.grammar", "tokens.mjs", "names.mjs", "catalog.mjs", "queries.mjs", "editing.mjs", "reuse.mjs", "index.mjs", "parser.mjs", "parser.terms.mjs"].map(name => `public/languages/latex/${name}`),
     ...["lilypond.grammar", "tokens.mjs", "scheme-tokens.mjs", "pitches.mjs", "catalog.mjs", "queries.mjs", "editing.mjs", "symbols.mjs", "reuse.mjs", "index.mjs", "parser.mjs", "parser.terms.mjs"].map(name => `public/languages/lilypond/${name}`),
     "test/fixtures/languages/lilypond-boundaries.grammar"];
@@ -158,4 +161,24 @@ test("release rejects mismatched metadata, incomplete manifests, implicit checko
   result = f.run();
   assert.equal(result.status, 0, result.stderr);
   assert.equal(f.run().status, 1, "never replace an existing release directory");
+});
+
+test("archive preserves actual offline font CSS, binaries, pinned inventory and full licenses", async t => {
+  const f = await fixture(t), repo = path.resolve(__dirname, "..");
+  const inventory = JSON.parse(await fs.readFile(path.join(repo, "public/fonts/manifest.json"), "utf8"));
+  const names = ["public/Iris.html", "public/iris-fonts.css", "public/fonts/manifest.json", "public/fonts/README.md", "THIRD_PARTY_NOTICES.md",
+    ...inventory.assets.map(a => `public/fonts/${a.file}`), ...inventory.licenses.map(l => `public/fonts/${l.file}`)];
+  for (const name of names) {
+    await fs.mkdir(path.dirname(path.join(f.source, name)), { recursive: true });
+    f.files[name] = await fs.readFile(path.join(repo, name));
+    await fs.writeFile(path.join(f.source, name), f.files[name]);
+  }
+  await fs.writeFile(f.manifest, JSON.stringify(Object.keys(f.files)));
+  const built = f.run();
+  assert.equal(built.status, 0, built.stderr);
+  const extracted = path.join(f.root, "extracted");
+  await fs.mkdir(extracted);
+  const tar = spawnSync("tar", ["-xzf", path.join(f.output, "iris-1.0.0.tar.gz"), "-C", extracted], { encoding: "utf8" });
+  assert.equal(tar.status, 0, tar.stderr);
+  for (const name of names) assert.deepEqual(await fs.readFile(path.join(extracted, "iris-1.0.0", name)), f.files[name], name);
 });

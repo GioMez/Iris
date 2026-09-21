@@ -19,22 +19,57 @@ function matches(input, text, offset = 0) {
   return true;
 }
 const nameChar = code => code >= 0 && ![123, 125, 92, 37, 10, 13].includes(code);
+const commandPrefixes = { children: new Map(), name: null };
+for (const name of Object.keys(commandSignatures)) {
+  let node = commandPrefixes;
+  for (const character of name) {
+    const code = character.charCodeAt(0);
+    if (!node.children.has(code)) node.children.set(code, { children: new Map(), name: null });
+    node = node.children.get(code);
+  }
+  node.name = name;
+}
 function commandAt(input, profile) {
-  // Catalog names are bounded by their data, unknown words use chunked tokens.
-  for (const name of Object.keys(commandSignatures)) if (matches(input, "\\" + name) && !wordAt(input, name.length + 1, profile)) return name;
+  // Catalog lookup follows only the candidate prefix. Unknown words still use
+  // the ordinary unbounded/chunked control-word grammar, with no name cutoff.
+  if (input.peek(0) !== 92) return null;
+  let node = commandPrefixes;
+  for (let offset = 1; (node = node.children.get(input.peek(offset))); offset++) {
+    if (node.name && !wordAt(input, offset + 1, profile)) return node.name;
+  }
   return null;
 }
+const contextKeys = new Map();
 function state(parent, fields) {
   const value = { parent, mode: parent?.mode || "text", end: "", from: -1, scope: "root", profile: parent?.profile || "standard", role: parent?.role || null,
     deferred: parent?.deferred || false, pending: null, env: null, literal: false, direction: null, linePrefix: 2,
     name: emptyName, awaitingBody: false, closing: null, ...fields };
-  let hash = parent?.hash || 0;
+  value.hash = contextHash(value);
+  return Object.freeze(value);
+}
+function contextHash(value) {
   const key = [value.scope, value.mode, value.end, value.profile, value.role, value.deferred, value.env?.hash, value.env?.length, value.literal, value.direction,
     value.pending?.name, value.pending?.index, value.linePrefix, value.name.hash, value.name.length, value.awaitingBody, value.closing?.name.hash, value.closing?.name.length].join("|");
-  for (let i = 0; i < key.length; i++) hash = (hash * 31 + key.charCodeAt(i)) | 0;
-  return Object.freeze({ ...value, hash });
+  let part = contextKeys.get(key);
+  if (!part) {
+    let hash = 0, factor = 1;
+    for (let i = 0; i < key.length; i++) { hash = (Math.imul(hash, 31) + key.charCodeAt(i)) | 0; factor = Math.imul(factor, 31); }
+    part = { hash, factor };
+    // Bounded scalar keys, not contexts, trees, source text or long names.
+    if (contextKeys.size === 128) contextKeys.delete(contextKeys.keys().next().value);
+    contextKeys.set(key, part);
+  }
+  // Exactly the original polynomial hash, including the parent's hash seed.
+  return (Math.imul(value.parent?.hash || 0, part.factor) + part.hash) | 0;
 }
-const replace = (value, fields) => state(value.parent, { ...value, ...fields });
+function replace(value, fields) {
+  let changed = false;
+  for (const key in fields) if (fields[key] !== value[key]) { changed = true; break; }
+  if (!changed) return value;
+  const next = { ...value, ...fields };
+  next.hash = contextHash(next);
+  return Object.freeze(next);
+}
 function argument(value, optional) {
   const pending = value.pending;
   if (!pending) return null;
@@ -138,7 +173,7 @@ export function createContext(profile = "standard") {
     reduce(value, term, stack, input) {
       // Preserve HP03's restoration at forced reductions (including recovery).
       if ([t.Group, t.OptionalGroup, t.OptionalArgument, t.DefaultArgument, t.HeadingGroup, t.TextGroup, t.LabelGroup, t.ReferenceGroup, t.ReferenceListGroup, t.CitationGroup, t.PathGroup, t.PathListGroup, t.DefinitionGroup, t.BodyGroup, t.SpecGroup,
-        t.Math, t.Environment, t.LineComment, t.Verb, t.Verbatim, t.ControlWord, t.DefinitionWord, t.End].includes(term)) {
+        t.Math, t.Environment, t.LineComment, t.Verb, t.Verbatim, t.ControlWord, t.DefinitionWord, t.End, t.MatchedEnd].includes(term)) {
         while (value.parent && value.from >= input.pos) value = parentContext(value, base);
       }
       return value;
@@ -230,6 +265,13 @@ export function createTokens() {
     }
     if (value.mode === "literal") {
       if (literalClose(input, value)) return emit(t.LiteralEndCommand, 4);
+      // Kernel verbatim has no closing-line restriction. Its whitespace is
+      // literal content too, not a line-prefix transition. Keep chunks bounded
+      // while checking the exact own closer even across a chunk boundary.
+      if (!literalEnvironments[value.env.short].line) {
+        const closer = "\\end{" + value.env.short + "}";
+        return chunk(t.LiteralText, code => code !== 92 || !matches(input, closer));
+      }
       if (input.next === 10 || input.next === 13) return emit(t.LiteralNewline, input.next === 13 && input.peek(1) === 10 ? 2 : 1);
       if (input.next === 32 || input.next === 9) return chunk(t.LiteralSpace, code => code === 32 || code === 9);
       return chunk(t.LiteralText, code => !space(code) && !literalClose(input, value));

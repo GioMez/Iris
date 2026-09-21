@@ -4,7 +4,7 @@ const { chromium } = require("playwright-core");
 const { serverFixture } = require("./server-fixture.cjs");
 
 // Real shipped HTML, modules, app and EditorView. Only HTTP/WS data is controlled.
-async function languageBrowser(t) {
+async function languageBrowser(t, { beforeNavigate } = {}) {
   assert.ok(process.env.TEST_DATABASE_URL, "requires the disposable database driver");
   const { baseUrl } = await serverFixture(t, { PUBLIC_DIR: path.resolve(__dirname, "../../public") });
   const browser = await chromium.launch({ headless: true, timeout: 10000,
@@ -35,6 +35,7 @@ async function languageBrowser(t) {
       });
       socket.send(JSON.stringify({ t: "ready", sessionId: "language-test" }));
     });
+    if (beforeNavigate) await beforeNavigate(page);
     await page.goto(baseUrl, { waitUntil: "networkidle" });
     await page.evaluate(async ({ files, activeId }) => {
       await Promise.all([IrisEditor.ready, IrisI18n.ready]);

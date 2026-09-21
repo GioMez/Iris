@@ -7,6 +7,8 @@ Start with the [project introduction](../README.md) or choose a guide below.
 
 - [User guide](user-guide.md): sign in, create a project, edit, compile, share
   and recover work.
+- [Editor languages](editor-languages.md): TeX/LilyPond support, conservative
+  contexts and editing limits.
 - [PDF and source controls](user-guide.md#move-between-pdf-and-source): jump
   between the editor and a matching compiled PDF.
 - [Demonstration screenshots](images/README.md): synthetic sources and capture
@@ -27,6 +29,9 @@ Start with the [project introduction](../README.md) or choose a guide below.
   smokes, packaging and current persistence/collaboration contracts.
 - [Source-navigation contract](source-navigation.md): API coordinates, native
   adapters, resource budgets and qualification.
+- [Language qualification](language-qualification.md): final gate-v2 measurements,
+  strict profiles, Linux/native/navigation and package evidence with exact source
+  scopes, retained historical data and user-acceptance follow-ups.
 - [Interface colors](ui-colors.md) and [measurements](ui-measurements.md): shared
   tokens, exceptions and browser checks.
 - [Translation guide](../TRANSLATING.md) and

@@ -182,7 +182,7 @@ for (const phase of ["artifact read", "publication finalization"]) {
   }, async (t) => {
     const f = await multipassProject(t, { COMPILE_LOG_LIMIT: "16384" });
     if (phase === "artifact read") f.hooks.beforeReadFile = (file) => {
-      if (String(file).endsWith("/output/main.pdf")) throw new Error("fixture artifact read failure");
+      if (String(file).replace(/\\/g, "/").endsWith("/output/main.pdf")) throw new Error("fixture artifact read failure");
     };
     else f.hooks.beforeClientQuery = (sql) => {
       if (!sql.includes("UPDATE build_outputs SET")) return;

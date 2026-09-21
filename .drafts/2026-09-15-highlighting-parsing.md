@@ -4,7 +4,7 @@
 Per gli aggiornamenti usare questa copia e la specifica nella stessa directory.
 Trasferimento richiesto dall'utente il 17 settembre 2026.
 
-**Allineamento al 17 settembre:** l'utente ha autorizzato HP-03…HP-08 con commit
+**Allineamento al 21 settembre 2026:** l'utente ha autorizzato HP-03…HP-08 con commit
 su `main` per ogni punto completato. HP-03 ha completato implementazione e
 revisione ed è integrato in `c510f5b`: gate richiesto 38/38, controlli adiacenti
 40/40, build/check riproducibili. HP-04 ha completato la revisione del parser
@@ -14,11 +14,13 @@ HP-04 è integrato con `39da07c`. HP-05 ha completato implementazione e revision
 del parser musicale ed è integrato in `b0c6974`: gate 147/147, build/check
 riproducibili. HP-06 ha completato revisione e attivazione del parser LilyPond,
 con datum Scheme, musica annidata e test browser dei nuovi contesti, commit
-`be005d9`. HP-07 ha completato la revisione dell'integrazione dei consumatori e
-delle operazioni di editing; HP-08 resta la qualifica integrata e prestazionale.
-La prova ha portato a una policy esplicita di
-analisi limitata oltre 1.048.576 unità UTF-16; il limite e le latenze ordinarie
-richiedono la qualifica nell'editor montato. La personalizzazione di temi/colori
+`be005d9`. HP-07 è integrato con `2bdafe8`, con consumatori ed editing sul servizio
+comune. HP-08 ha completato implementazione e qualifica tecnica; le revisioni del
+task e dell'intero piano sono approvate, inclusa la correzione finale F1.
+Il percorso qualificato usa un Worker per gli alberi grandi e pubblica un prefisso
+visibile con lavoro limitato sul thread principale. Oltre 1.048.576 unità UTF-16
+resta l'editing neutro con analisi `unavailable`.
+La personalizzazione di temi/colori
 e comandi è oggetto di valutazione architetturale per un seguito dopo HP-08,
 senza anticiparne l'implementazione.
 
@@ -40,7 +42,7 @@ necessari; questa valutazione non aggiunge la funzione al runtime.
 ## Global Constraints
 
 - Node `>=24`; mantenere le versioni CodeMirror fissate in `package.json` salvo incompatibilità dimostrata.
-- Dipendenze dirette proposte: `@lezer/common` 1.5.2, `@lezer/highlight` 1.2.3, `@lezer/lr` 1.4.10; sviluppo: `@lezer/generator` 1.8.0. Versioni esatte nel manifest e nel lockfile.
+- Dipendenze dirette: `@lezer/common` 1.5.2, `@lezer/highlight` 1.2.3, `@lezer/lr` 1.4.10; sviluppo: `@lezer/generator` 1.8.0 ed `esbuild` 0.25.12 per il Worker locale. Versioni esatte nel manifest e nel lockfile.
 - Intervalli **UTF-16 `[from, to)`**, riferiti al documento CodeMirror effettivo. Nessuna normalizzazione del testo durante l'analisi.
 - **4,5:1** per ciascun colore sintattico contro lo sfondo effettivo, nei temi chiaro/scuro e su selezione attiva/inattiva, ricerca, parentesi e presenza.
 - Budget parser sincrono **5 ms**; sintesi con debounce **250 ms**, lavoro in tranche da **8 ms**.
@@ -93,6 +95,11 @@ elencati sono nuovi. I percorsi degli altri file esistono nella base analizzata.
 | `public/iris-syntax-style.mjs` | Tag, mappatura ruoli/classi, compatibilità stream e highlighter per i test |
 | `public/iris-language-service.mjs` | Caricamento adapter, analisi batch per test/file non aperti, query comuni |
 | `public/iris-language-state.mjs` | Integrazione con `EditorState`, copertura parziale, revisioni, scheduling e cache |
+| `public/iris-language-parser.mjs` | Parsing cooperativo e pubblicazione del prefisso reale durante il lavoro del Worker |
+| `public/iris-language-worker.mjs`, `iris-language-worker-client.mjs`, `iris-language-transfer.mjs` | Worker locale, protocollo con identità, cancellazione e trasferimento compatto di alberi/proprietà |
+| `public/languages/parser-factory.mjs` | Factory LR pura condivisa da editor e Worker |
+| `scripts/build-language-worker.cjs`, `public/vendor/language-worker/` | Bundle e versione riproducibili, inclusi nella distribuzione |
+| `public/iris-fonts.css`, `public/fonts/`, `scripts/vendor-fonts.cjs` | Font locali con licenze, hash e verifica offline |
 | `public/languages/latex/latex.grammar` | Sintassi strutturale e contesti TeX |
 | `public/languages/latex/tokens.mjs` | Tokenizer esterni e context tracker TeX |
 | `public/languages/latex/catalog.mjs` | Ambienti, profili, firme di comandi, categorie degli argomenti |
@@ -120,6 +127,7 @@ elencati sono nuovi. I percorsi degli altri file esistono nella base analizzata.
 | `test/language-state.test.js`, `language-editing.test.js` | Cache, revisioni, contesti ed edit |
 | `test/language-highlighting.browser.test.js`, `language-performance.browser.test.js` | Resa montata, interazioni e tempi |
 | `docs/editor-languages.md` | Contratto di supporto e limiti per utenti e manutentori |
+| `docs/language-qualification.md`, `docs/language-qualification*.json` | Qualifica pubblicata, identità dei candidati, misure finali e storico |
 | `.drafts/highlighting-parsing-qualification.md` | Risultati per task, baseline, macchina di benchmark e riscontro dell'utente |
 
 **Integrazioni esistenti:** `public/iris-editor.js`, `iris-app.js`,
@@ -751,7 +759,7 @@ salvaguardie e 8/8 browser preesistenti. Le ultime correzioni della completion
 sono coperte da 23/23 Node e 15/15 browser mirati; tutte le findings chiuse.
 Formatting sincrono conservativo: massimo 65.536 unità, 4.096 righe, 32.768 nodi,
 deadline di pianificazione 8 ms. Il rifiuto conserva il sorgente e non equivale
-a formattazione applicata. Prestazioni effettive e qualifica completa restano HP-08.
+a formattazione applicata. Commit `2bdafe8`; qualifica integrata nel successivo HP-08.
 
 **File:** `iris-language-service.mjs`, `iris-language-state.mjs`,
 `public/languages/latex/editing.mjs`, `public/languages/lilypond/editing.mjs`,
@@ -868,6 +876,39 @@ e collaborazione mantengono le garanzie esistenti.
 
 ## HP-08: qualifica integrata, performance e documentazione
 
+**Avanzamento al 21 settembre:** consegna tecnica completata, con revisione del
+task e dell'intero piano approvate, incluse R1/R2/R3 e la correzione finale F1. Il
+[rapporto pubblicato](../docs/language-qualification.md) identifica sorgenti,
+comandi, piattaforme e limiti di ciascuna esecuzione.
+
+- Matrice finale: **10/10**, 750 modifiche, 600 campioni misurati e 30 caricamenti.
+  Massimo di tutte le 300 pubblicazioni richieste su 1 MiB: **407,3 ms**; primo
+  viewport massimo **58,5 ms**. Nessun long task sovrapposto alle modifiche.
+- Profili rigorosi entro **5/8 ms**; copertura dell'ultima ottimizzazione TeX
+  **208/208**. Gate v2 `hp08-v2-publication-edit-scope`: timestamp effettivo di
+  `onSyntax`, identità corrente e copertura completa; osservazioni al caricamento
+  conservate, con verifica separata del primo viewport e del lavoro applicativo.
+- Linux: Node completo **1.725 PASS + 366 disabilitati**, browser finale
+  **300/300**, nativi **12/12**, navigazione **28/28**. Sono invocazioni distinte;
+  il browser Linux precede la sola ottimizzazione TeX coperta dai gate successivi.
+- Ciclo di vita: 200 riferimenti ritirati raccolti, 100/100 Worker chiusi. Font
+  locali: 30 binari, 919.740 byte, licenze OFL e hash verificati.
+- Pacchetto estratto da 338 file: **1/1**, avvio produzione, Worker/font senza CDN
+  e rigenerazione identica. Hash e inventario nel rapporto di qualifica.
+
+La revisione complessiva ha rilevato F1: metadato `%` mancante nella factory TeX,
+con regressione di `Ctrl+/` / `Cmd+/`. Correzione coperta da test prima fallenti
+sui tre profili TeX, poi gate **93/93** e nuovo pacchetto **1/1** da 338 file.
+Il rapporto distingue il candidato della matrice dal successivo delta F1;
+grammatiche, query e Worker restano invariati. Riesame mirato: **F1 chiuso,
+APPROVE**, nessuna finding residua; controllo indipendente delle regressioni
+10/10 e dei 338 membri dell'archivio.
+
+Il caricamento completo a freddo arriva a **3,74 s**; i task di caricamento neutro
+da **60/66 ms**, con zero avvii LR, restano diagnostiche dichiarate. La matrice
+attende la sintesi completa prima degli edit e non qualifica digitazione arbitraria
+durante quel caricamento. Corpus reale e accettazione visiva restano follow-up.
+
 **File:** creare helper browser e due suite browser della mappa,
 `docs/editor-languages.md`; aggiornare `docs/user-guide.md`, `docs/ui-colors.md`,
 `docs/development.md`, `docs/README.md`, eventuali aspettative in
@@ -875,21 +916,22 @@ e collaborazione mantengono le garanzie esistenti.
 
 **Consuma:** HP-07 e obiettivi numerici della specifica.
 
-**Produce:** rapporto di qualifica, istruzioni di manutenzione e corpus accettato.
+**Produce:** rapporto di qualifica tecnica e istruzioni di manutenzione;
+accettazione del corpus reale da completare con l'utente.
 
-- [ ] Costruire l'helper sull'editor reale e sui pattern di
+- [x] Costruire l'helper sull'editor reale e sui pattern di
   `test/ui-visibility.browser.test.js`: import map, asset locali, selezione,
   trasporto controllato, cleanup con scadenze. Tenere le nuove suite focalizzate
   sui linguaggi senza copiare l'intera suite UI.
-- [ ] Verificare nel DOM le classi su token esistenti, cambio lingua/file/tema,
+- [x] Verificare nel DOM le classi su token esistenti, cambio lingua/file/tema,
   testo errato e poi riparato, selezioni e overlay. Misurare il contrasto
   composito per ogni ruolo attivo e preservare la posizione di lettura del PDF
   durante il cambio tema e gli aggiornamenti della sintassi.
-- [ ] Provare la coerenza fra classe del token, contesto al cursore, indice e
+- [x] Provare la coerenza fra classe del token, contesto al cursore, indice e
   completion sui casi fittizi commentati/letterali. Inviare modifiche remote
   attraverso il percorso collaborativo reale del client; verificare che un
   aggiornamento solo dei peer non faccia ripartire il parsing.
-- [ ] Implementare misure input-to-render nel browser, distinguendo il tempo
+- [x] Implementare misure input-to-render nel browser, distinguendo il tempo
   trascorso dalla callback di parsing. Usare un `requestAnimationFrame` successivo
   alla comparsa della classe attesa; conservare tutte le misure e calcolare p95:
 
@@ -907,18 +949,18 @@ assert.ok(percentile95(samples1MiB) <= 100);
   Applicare soglie solo al runner qualificato; i test funzionali devono restare
   deterministici anche su macchine più lente. Se il budget fallisce, profilare
   lexer, query, conversioni di stringhe e rendering prima di proporre un worker.
-- [ ] Qualificare prima viewport ≤ 200 ms, sintesi entro 500 ms dopo pausa su
+- [x] Qualificare prima viewport ≤ 200 ms, sintesi entro 500 ms dopo pausa su
   1 MiB, tranche ≤ 8 ms e budget sincrono 5 ms. Cercare long task > 50 ms,
   file da 5 MiB, riga da 100 KiB e 100 cambi file. Controllare cache e heap dopo
   GC disponibile nel runner: nessuna crescita proporzionale ai file chiusi.
-- [ ] Sul sottoinsieme valido delle fixture eseguire LaTeX/LilyPond nativi per
+- [x] Sul sottoinsieme valido delle fixture eseguire LaTeX/LilyPond nativi per
   verificare la sintassi degli esempi; ripetere i gate di navigazione dato il
   cambiamento di offset e ciclo di vita. Non richiedere che le fixture incomplete
   compilino, né usare il successo del compilatore come test dell'highlighting.
-- [ ] Provare l'archivio sorgente estratto: parser già disponibili con dipendenze
+- [x] Provare l'archivio sorgente estratto: parser già disponibili con dipendenze
   di produzione; rigenerazione identica dopo installazione delle dipendenze di
   sviluppo; tutti gli asset caricati senza CDN o file provenienti dal checkout.
-- [ ] Documentare tabella di supporto TX/LY, aggiunta di costrutti con fixture,
+- [x] Documentare tabella di supporto TX/LY, aggiunta di costrutti con fixture,
   aggiornamento cataloghi, interpretazione di `partial/unknown`, convenzioni
   delle note, limiti di TeX dinamico e differenza fra analisi editoriale e build.
 - [ ] Sessione finale con l'utente sui sei sorgenti; registrare problemi residui
@@ -930,6 +972,8 @@ assert.ok(percentile95(samples1MiB) <= 100);
 
 ```sh
 npm run check:languages
+npm run check:language-worker
+node scripts/vendor-fonts.cjs
 node scripts/test.cjs
 node scripts/test.cjs --browser test/language-highlighting.browser.test.js test/language-performance.browser.test.js test/ui-visibility.browser.test.js test/bibliography.browser.test.js test/browser-lifecycle.browser.test.js
 node scripts/test.cjs --browser test/source-navigation.browser.test.js
@@ -941,6 +985,9 @@ POSIX documentato. I gate browser richiedono Chrome/Chromium; i gate di
 navigazione browser e nativi richiedono anche i compilatori. Su Windows eseguire
 i test puri con `node --test`; usare WSL o il runner POSIX qualificato per gli
 altri gate. Non conteggiare suite disabilitate o prerequisiti assenti come PASS.
+Il rapporto pubblicato conserva anche i comandi della qualifica Windows isolata,
+del container Linux, del pacchetto e dei profili rigorosi; questi ultimi richiedono
+il runner di riferimento e le opzioni descritte nella documentazione di sviluppo.
 
 ## 4. Matrice di chiusura
 

@@ -134,7 +134,17 @@ function* records(tree, node, doc, list, key, kind, split = false) {
   emit();
 }
 function* sortedRegions(regions) {
-  let src = regions, dest = new Array(regions.length), work = 0;
+  // Most regions arrive in tree preorder. Check final endpoints cooperatively:
+  // heading regions are appended on exit and recovery can change end positions.
+  // Equal keys keep their original order; only inversions need the stable merge.
+  let work = 0, ordered = true;
+  for (let i = 1; i < regions.length; i++) {
+    const previous = regions[i - 1], current = regions[i], from = previous.from, next = current.from;
+    if (from > next || from === next && previous.to < current.to) { ordered = false; break; }
+    if (++work === 128) { work = 0; yield; }
+  }
+  if (ordered) return regions;
+  let src = regions, dest = new Array(regions.length);
   for (let width = 1; width < regions.length; width *= 2) {
     for (let start = 0; start < regions.length; start += width * 2) {
       const mid = Math.min(start + width, src.length), end = Math.min(mid + width, src.length);
@@ -158,9 +168,9 @@ export function* summarySteps(tree, doc) {
   let entering = true, skipped = 0;
   for (;;) {
     if (entering) {
-      const parent = frames.at(-1), name = cursor.name, node = cursor.node;
+      const parent = frames.at(-1), name = cursor.name;
       const deferred = parent?.deferred || name === "BodyGroup" || name === "SpecGroup" || name === "DefaultArgument";
-      if (cursor.type.isError || name === "MissingEnd" || name === "End" && node.getChild("OrphanClose")) { if (parent) parent.error = true; }
+      if (cursor.type.isError || name === "MissingEnd") { if (parent) parent.error = true; }
       const structural = groups.has(name) || regionKinds[name] || name === "Document" || name === "LineComment" || name === "Begin" || name === "End" || name === "LiteralEnd" || name === "LiteralEndHeader" || name === "DefinitionWord" || name === "DefinitionSymbol";
       if (!structural && !cursor.type.isError) {
         if (++skipped === 128) { skipped = 0; yield; }
@@ -169,10 +179,15 @@ export function* summarySteps(tree, doc) {
         entering = false;
         continue;
       }
+      // Only closing/environment headers need a node on entry. Math/groups use
+      // cursor coordinates here, and materialize once on exit for their closer.
+      const end = name === "End" ? cursor.node : null;
+      if (end?.getChild("OrphanClose")) { if (parent) parent.error = true; }
       const current = { name, deferred, error: cursor.type.isError, region: null,
-        closingFrom: name === "End" && node.lastChild?.name === "EndClose" ? cursor.from : null };
+        closingFrom: end?.lastChild?.name === "EndClose" ? cursor.from : null };
       if (!deferred && (groups.has(name) || regionKinds[name])) {
         const isEnvironment = name === "Environment" || name === "Verbatim";
+        const node = isEnvironment ? cursor.node : null;
         const env = isEnvironment ? yield* rawSteps(environmentNameNode(node), doc) : "";
         const close = isEnvironment && node.firstChild?.lastChild;
         if (env !== "document" && (!isEnvironment || close?.name === "EnvClose" && close.to > close.from)) {

@@ -91,8 +91,9 @@ test("every vendored module resolves to an installed ES module", () => {
 test("all shipped language bare imports are locally mapped and relative imports exist", async () => {
   const imports = importMap();
   const walk = dir => fs.readdirSync(dir, { withFileTypes: true }).flatMap(entry => entry.isDirectory() ? walk(path.join(dir, entry.name)) : [path.join(dir, entry.name)]);
-  const files = ["public/iris-language-service.mjs", "public/iris-language-state.mjs", "public/iris-language-policy.mjs", "public/iris-language-tasks.mjs", "public/iris-language-completion.mjs", "public/iris-language-editing.mjs", "public/iris-syntax-style.mjs", "public/iris-tex-highlighting.mjs", "public/iris-lilypond-highlighting.mjs"].map(file => path.join(root, file));
+  const files = ["public/iris-language-service.mjs", "public/iris-language-state.mjs", "public/iris-language-parser.mjs", "public/iris-language-policy.mjs", "public/iris-language-tasks.mjs", "public/iris-language-completion.mjs", "public/iris-language-editing.mjs", "public/iris-syntax-style.mjs", "public/iris-tex-highlighting.mjs", "public/iris-lilypond-highlighting.mjs"].map(file => path.join(root, file));
   files.push(...walk(path.join(root, "public/languages")).filter(file => file.endsWith(".mjs")));
+  files.push(...["iris-language-worker-client.mjs", "iris-language-worker.mjs", "iris-language-transfer.mjs"].map(file => path.join(root, "public", file)));
   for (const file of files) for (const match of fs.readFileSync(file, "utf8").matchAll(/(?:from\s*|import\s*\()(["'])([^"']+)\1/g)) {
     const specifier = match[2];
     if (specifier.startsWith(".")) assert.ok(fs.existsSync(path.resolve(path.dirname(file), specifier)), `${file}: missing ${specifier}`);

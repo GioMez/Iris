@@ -11,7 +11,7 @@ For an interactive local instance, follow [native installation](installation.md#
 frontend bundling step. The server serves browser modules from `public/` and
 allowlisted installed dependency paths.
 
-### Generated language sources (HP03)
+### Generated language sources and qualification
 
 The Lezer languages live in `public/languages/latex/` and
 `public/languages/lilypond/`. Edit each language's `.grammar`, `tokens.mjs`,
@@ -29,8 +29,23 @@ node --test test/language-build.test.js test/language-state.test.js test/codemir
 in memory, reports every changed/missing output, and writes nothing. Runtime
 installs use the committed generated files and need no generator. The explicit
 generator manifest includes both languages.
-All browser imports resolve through relative `.mjs` paths or the local import
-map/vendor whitelist; no CDN or bundler is involved.
+Main-thread imports resolve through relative `.mjs` paths or the local import
+map/vendor whitelist. Module Workers do not inherit that map. After changes to
+grammars, tokens, recovery, the pure factory or Worker protocol, also run:
+
+```sh
+npm run build:language-worker
+npm run check:language-worker
+node --test test/language-worker-transfer.test.js test/language-worker-client.test.js
+```
+
+The pinned development-only esbuild 0.25.12 bundles the shared pure runtime into
+`public/vendor/language-worker/worker.mjs` with a generated version module.
+Both files ship in source archives and work with production-only dependencies.
+Build/check uses installed tools, LF output and a source/dependency/settings
+fingerprint independent of checkout path and CRLF. The generated vendor bundle
+uses the color checker's existing vendor boundary; its first-party source is
+still checked normally. Notices are in `THIRD_PARTY_NOTICES.md`.
 
 `tokens.mjs` tracks lexical and group scopes, restoring their entry context when
 error recovery reduces a rule without its closer. Scope starts locate those
@@ -54,11 +69,75 @@ inclusion is restricted to `public/languages/` and `test/fixtures/languages/`.
 `runCooperatively` visitor runner, `analysisPolicy` and `MAX_ANALYSIS_LENGTH`.
 Both `tex` and `ly` are registered. HP04 supplies the TeX grammar and highlighting;
 HP05 supplies LilyPond music/text/configuration, four versioned note catalogs and
-tree-derived summaries. LilyPond highlighting remains on the legacy editor stream
-until HP06 qualifies Scheme boundaries. `initialNoteLanguage` defaults to
+tree-derived summaries. Both languages now use guarded Lezer highlighting and
+the shared HP07 consumer/editing service, including HP06 Scheme boundaries.
+`initialNoteLanguage` defaults to
 `nederlands`; unsupported strings share one conservative `unknown` adapter/cache
 entry. The UI locale does not affect it. See [language support and provenance](editor-languages.md).
-Enter/format methods deliberately return `null`/`[]` until HP07.
+Enter/format methods use tree-derived plans with conservative work/size limits.
+
+For each new construct, add a short source and explicit UTF-16 role/context/
+outline annotations to `test/fixtures/languages/cases.json`. Record provenance,
+license, syntax version and whether the source is valid, incomplete or deliberately
+invalid. Add negative comment/literal/deferred-body examples and incremental
+edit/repair parity; check actual nonempty subtree identity for reuse. Review
+native validity on an explicitly wrapped subset. Generated files are not edited
+by hand. New tag classes need local vendor/import-map and mounted contrast checks.
+
+HP08 commands (on the disposable POSIX launcher):
+
+```sh
+npm run check:languages
+node scripts/test.cjs
+node scripts/test.cjs --browser --concurrency 1 --timeout 3600000 --test-timeout 600000 test/language-highlighting.browser.test.js test/language-performance.browser.test.js test/language-lifecycle.browser.test.js test/ui-visibility.browser.test.js test/bibliography.browser.test.js test/browser-lifecycle.browser.test.js
+node scripts/test.cjs --browser test/source-navigation.browser.test.js
+node scripts/test.cjs --native test/language-qualification.native.test.js test/source-mapping.native.test.js
+```
+
+Strict performance and fresh-install qualification are opt-in test-environment
+controls: `IRIS_LANGUAGE_QUALIFY=1` and an owned `IRIS_LANGUAGE_RESULTS` directory.
+They are passed by the retained Windows **session** driver (`--performance`),
+along with explicit timeouts/file selections. The POSIX launcher's sanitized
+environment does not forward arbitrary ambient variables; add these explicitly
+to a disposable test session rather than connecting to an ambient database.
+`test/language-package.test.js` records candidate hashes, fresh production/dev
+installs and extracted local browser loading. It uses a child lifetime to unload
+Windows native addons before replacing/removing node_modules. Unlike the fast
+packaging regression, it cannot inherit ancestor dependencies.
+
+See [HP08 qualification](language-qualification.md) for Windows/Linux commands,
+passing final technical gates, exact source scopes and all retained raw samples.
+Full Node/browser opt-in skips are not passes. The approved 50/100 ms edit,
+200 ms viewport, 500 ms summary and 5/8 ms work targets remain unchanged.
+
+The current performance gate is `hp08-v2-publication-edit-scope`. It retains the
+two-rAF visible-paint method and all warmups/raw samples. Every normal 1 MiB edit
+must receive its actual current `onSyntax` ready publication within 500 ms;
+`summaryObservedMs`/legacy `summaryMs` retain the later frame-based observation.
+Missing or stale identity cannot supply the publication time. Any >50 ms task
+overlapping editing fails, including warmups and tasks originating during load.
+Load tasks remain reported, with an independent ≤200 ms 1 MiB viewport check and
+a labelled legacy whole-window replay. Feature-attributed 5/8 ms work is measured
+separately, including load work, by `test/language-profile.browser.test.js`.
+The final selected strict profiles pass. Earlier failed profiles remain historical,
+including GC-containing overruns; no elapsed sample is subtracted or waived.
+Linux 300/300 precedes the final TeX query-only change, which has separate
+208/208 and strict profile/matrix coverage. Do not describe those as one combined
+unique-test count or a later-source Linux rerun.
+
+`test/language-metrics.test.js`, `language-metrics.browser.test.js` and
+`language-budget-metrics.test.js` protect the measurement/identity policy. They
+use actual mounted callbacks or explicit event data, without replacing clocks.
+The matrix records and verifies runtime/harness source manifests before/after.
+Use a fresh `--report`/`--results` name for each Windows session invocation.
+
+The delivery evidence expands the tested manifest to include the staged
+`test/latex-summary.test.js` regression. Keep generated Worker bytes and the
+native formatting fixture's significant literal spaces: `.gitattributes` has
+exact-path `whitespace=-blank-at-eol` rules for those two files only. Other
+whitespace checks still apply. Run both working and cached diff checks, and
+check cached attributes after staging; working-tree attributes can affect
+`git diff --cached --check` before the policy itself enters the index.
 
 `createLanguageState(adapter, onSyntax, hooks)` owns one editor's summary jobs.
 Its extension combines a size-guarded language, transaction identity field and view plugin.
@@ -114,7 +193,51 @@ neutral placeholder tree from `ensureSyntaxTree`; `syntaxTreeAvailable` remains
 false and the service reports `unavailable`, `parsedTo: 0` and a limit reason.
 It cancels prior summary work and returns unknown contexts. Shrinking below the
 limit resumes LR parsing. Snapshots now include `limitReason` (null when not limited).
-No second structural scanner or worker is involved.
+The size guard also applies before Worker submission.
+
+#### Owned full-tree Worker publication
+
+Browser source owners use `iris-language-parser.mjs` for a real bounded initial
+prefix and immediate verified-prefix rendering. From 32,768 UTF-16 units, full
+construction moves to the local Worker; this scheduling threshold does not lower
+the 1,048,576-unit support limit. Small sources, Node/headless and direct raw
+parsers retain cooperative parsing. Browser non-open `analyze` uses the same
+Worker client for large supported sources. Owner disposal retires its Worker,
+pending requests and exact-content history. Failed assets, errors, invalid
+responses and deadlines settle as unavailable (`limitReason: worker-unavailable`)
+while editing and already-verified prefix rendering remain usable.
+
+The protocol carries version/build, owner, request, generation, revision and
+normalized language/options identity plus exact UTF-16 source. Source objects
+are read in 4096-unit windows in owned tasks. The Worker computes validated
+edit ranges by exact content comparison against at most three completed versions;
+exact undo can return a retained root. Two Workers and sixteen waiting owners
+bound concurrency. Each owner has only one current request, a 15s deadline and
+three completed transfer registries; replacement/disposal settles old promises.
+
+Trees cross in pull-controlled chunks of up to 256 records (approximately 64KiB).
+Tree records contain type ID, length, child IDs, relative positions and named
+contextHash/lookAhead properties. TreeBuffer records retain compact Uint16 quads;
+only copies are detached for transfer. Cooperative decode constructs public
+Lezer Tree/TreeBuffer objects using the local styled NodeSet, preserving supported
+props, node/range semantics and acknowledged retained subtree identities. Unknown
+dynamic props/mounted trees are explicitly unsupported by this wire version.
+No flattened full-tree Tree.build runs on the UI thread. Main prefixes do not
+prepare document-sized recovery metadata from transferred trees; that work stays
+with Worker incrementality. Full readiness still requires real EOF coverage.
+
+Main-thread parsing uses a 3ms internal work allowance inside the 5ms target,
+with a reserved initial-prefix finish and a separate scheduled turn when a
+stopped LR parse reaches its finalization boundary. Worker-prefix continuations
+expose another 512 UTF-16 units per publication (a crossing token may extend
+the returned tree), up to the existing 3000-unit prefix limit. This also bounds
+new decoration/DOM work during cold viewport painting.
+
+Summary traversal uses a 5ms internal allowance within the 8ms application
+budget, and final consumer notification gets a separate owned task. Decode
+retains its 5ms internal allowance. Debounce
+remains 250ms. These mechanisms require measured qualification; the historical
+results below are not a performance certificate for the Worker correction.
 
 The owned task queue uses Node `setImmediate` or browser `MessageChannel` for
 continuations, with timers for the 250 ms debounce and as a compatibility fallback.
@@ -234,6 +357,15 @@ The suite uses several kinds of evidence:
 - Browser lifecycle cases run the capture and native-smoke entrypoints with
   real Chrome, Iris and disposable PostgreSQL. They interrupt launch, active
   browser work and close, and check process and storage cleanup.
+
+Capture and smoke share `withBrowser` in `scripts/lib/browser.cjs`. On POSIX it
+uses `browserTemp(work, env)` from the disposable runtime to give only Chromium
+a unique private `/tmp/iris-b-*` socket-temp root. Ownership is registered before
+the asynchronous launch and removal follows confirmed browser closure; workspace
+disposal retries failed cleanup. Playwright profiles stay in the owned workspace.
+Node, compiler and PostgreSQL temp paths retain their original absolute roots.
+Windows retains the qualified driver's temp paths. Tests cover a real Unix socket,
+launch failure, signals during launch/work/close, and absence of the short roots.
 
 Browser qualification uses Chrome 152.0.7977.83 on macOS arm64, including
 viewport/touch emulation. It does not establish physical-phone, screen-reader
