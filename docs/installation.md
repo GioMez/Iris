@@ -1,4 +1,4 @@
-# Install Iris 1.0.1
+# Install Iris 1.1.0
 
 Choose **native installation** for the documented LaTeX/LilyPond compilation
 workflow. The **local container build** runs Iris and PostgreSQL with Docker or
@@ -6,23 +6,23 @@ Podman; the lightweight Iris image contains no compiler toolchains.
 
 ## Obtain the release sources
 
-Use the source at the exact Git tag **`R1.0.1`**. From a directory where you want
+Use the source at the exact Git tag **`R1.1.0`**. From a directory where you want
 to keep the installation:
 
 ```sh
-git clone --branch R1.0.1 --depth 1 https://github.com/GioMez/Iris.git iris-1.0.1
-cd iris-1.0.1
+git clone --branch R1.1.0 --depth 1 https://github.com/GioMez/Iris.git iris-1.1.0
+cd iris-1.1.0
 ```
 
-Or download **`iris-1.0.1.tar.gz`** and **`SHA256SUMS`** from the
-[R1.0.1 release](https://github.com/GioMez/Iris/releases/tag/R1.0.1).
+Or download **`iris-1.1.0.tar.gz`** and **`SHA256SUMS`** from the
+[R1.1.0 release](https://github.com/GioMez/Iris/releases/tag/R1.1.0).
 Check the download before extracting it, using `sha256sum -c SHA256SUMS` on
 Linux or `shasum -a 256 -c SHA256SUMS` on macOS. The supplied source archive has
-one `iris-1.0.1/` directory:
+one `iris-1.1.0/` directory:
 
 ```sh
-tar -xzf iris-1.0.1.tar.gz
-cd iris-1.0.1
+tar -xzf iris-1.1.0.tar.gz
+cd iris-1.1.0
 ```
 
 Run the following installation commands from that source directory. The archive
@@ -120,7 +120,7 @@ configuration and allow a clean SIGTERM shutdown.
 
 Use the supplied [Dockerfile](../Dockerfile) and
 [docker-compose.yml](../docker-compose.yml) with either engine. Build the local
-image **`localhost/iris:1.0.1`** from the tagged or extracted source. You do not
+image **`localhost/iris:1.1.0`** from the tagged or extracted source. You do not
 need a published Iris image or registry credentials. The build downloads the
 official Node base image and locked npm dependencies; Compose downloads official
 PostgreSQL 18.
@@ -169,7 +169,7 @@ background.
 Start your Docker engine, then run:
 
 ```sh
-docker build -t localhost/iris:1.0.1 .
+docker build -t localhost/iris:1.1.0 .
 docker compose --env-file .env -f docker-compose.yml -p iris up -d
 ```
 
@@ -183,7 +183,7 @@ Start your Podman engine and make sure a Compose provider, such as
 detects an installed provider. These commands use your default Podman environment:
 
 ```sh
-podman build -t localhost/iris:1.0.1 .
+podman build -t localhost/iris:1.1.0 .
 podman compose --env-file .env -f docker-compose.yml -p iris up -d
 ```
 
@@ -270,7 +270,7 @@ Open **Admin** on the project dashboard to create additional users. There
 is no public signup. Existing accounts and roles survive restarts; Iris does
 not promote a familiar username or email on later startup.
 
-Iris 1.0.1 initializes **database schema 2** and reopens a matching schema.
+Iris 1.1.0 initializes **database schema 2** and reopens a matching schema.
 An unmarked nonempty schema, incompatible version or malformed marker stops
 startup with `IRIS_SCHEMA_INCOMPATIBLE` without changing the stored objects or
 rows. Keep the reported error and check the database selection; do not change

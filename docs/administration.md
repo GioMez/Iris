@@ -295,7 +295,7 @@ handle a custom `MAINTENANCE_FILE` at its configured path. Restore ownership
 and modes so the target service user can read and write its storage.
 
 Start the target with its own DB settings, `DATA_DIR`, `TEMPLATE_DIR`, port and
-session secret. Use Iris 1.0.1 with schema 2. The backed-up local passwords still
+session secret. Use Iris 1.1.0 with schema 2. The backed-up local passwords still
 work; a new signing secret requires fresh logins. Verify project contents,
 memberships, history and output downloads, then make a target-only change to
 check that the target uses separate storage/database state. Successful
@@ -333,7 +333,7 @@ PG_ID=$(engine ps -a -q --filter "label=com.docker.compose.project=$PROJECT" \
 WEB_ID=$(engine ps -a -q --filter "label=com.docker.compose.project=$PROJECT" \
   --filter "label=com.docker.compose.service=webapp")
 engine run --rm -i --name "$HELPER" --network none --user 0 \
-  -v "$DATA_VOLUME:/restore" --entrypoint node localhost/iris:1.0.1 \
+  -v "$DATA_VOLUME:/restore" --entrypoint node localhost/iris:1.1.0 \
   -e "require('fs').writeFileSync('/restore/.maintenance','')"
 ```
 
@@ -353,7 +353,7 @@ engine exec -i -e "PGPASSWORD=$DB_PASSWORD" "$PG_ID" \
   pg_dump -U iris -d iris --format=custom --no-owner --no-privileges \
   > "$BACKUP/database.dump"
 engine run --rm -i --name "$HELPER" --network none --user 0 \
-  -v "$DATA_VOLUME:/restore" --entrypoint tar localhost/iris:1.0.1 \
+  -v "$DATA_VOLUME:/restore" --entrypoint tar localhost/iris:1.1.0 \
   -cf - -C /restore . > "$BACKUP/storage.tar"
 ```
 
@@ -383,10 +383,10 @@ engine exec -i -e "PGPASSWORD=$TARGET_DB_PASSWORD" "$TARGET_PG_ID" \
   pg_restore -U iris -d iris --exit-on-error --no-owner --no-privileges \
   < "$BACKUP/database.dump"
 engine run --rm -i --name "$HELPER" --network none --user 0 \
-  -v "$TARGET_DATA_VOLUME:/restore" --entrypoint tar localhost/iris:1.0.1 \
+  -v "$TARGET_DATA_VOLUME:/restore" --entrypoint tar localhost/iris:1.1.0 \
   -xpf - -C /restore < "$BACKUP/storage.tar"
 engine run --rm -i --name "$HELPER" --network none --user 0 \
-  -v "$TARGET_DATA_VOLUME:/restore" --entrypoint node localhost/iris:1.0.1 \
+  -v "$TARGET_DATA_VOLUME:/restore" --entrypoint node localhost/iris:1.1.0 \
   -e "require('fs').unlinkSync('/restore/.maintenance')"
 target_compose up -d webapp
 ```

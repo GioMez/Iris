@@ -12,7 +12,7 @@ Write source, manage files and fonts, compile on your server, and read the
 result beside your code. You can work alone or share a project with other
 accounts on your instance.
 
-**Version 1.0.1** · [Installation](docs/installation.md) ·
+**Version 1.1.0** · [Installation](docs/installation.md) ·
 [User guide](docs/user-guide.md) · [All documentation](docs/README.md)
 
 ![A synthetic LilyPond project in Iris: score source on the left and the compiled two-staff Morning study in the PDF preview on the right.](docs/images/lilypond-workspace.png)
@@ -110,7 +110,7 @@ dark themes.
 For a complete editing-and-compilation setup, install **Node.js 24+**,
 **PostgreSQL 18+**, and the LaTeX and/or LilyPond tools you intend to use on the
 machine running Iris. Follow the [native installation guide](docs/installation.md#native-installation)
-to obtain the `R1.0.1` sources, install locked dependencies and create your first
+to obtain the `R1.1.0` sources, install locked dependencies and create your first
 administrator.
 
 You can also [build Iris with Docker or Podman](docs/installation.md#local-container-build).
