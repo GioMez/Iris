@@ -1,5 +1,5 @@
 {
-  "version": "1.0.1",
+  "version": "1.1.0",
   "schema": 2,
   "viewport": {
     "width": 1600,
@@ -8,11 +8,11 @@
   },
   "fixture": "scripts/fixtures/docs-demo.cjs",
   "versions": {
-    "node": "v26.8.2",
-    "postgres": "psql (PostgreSQL) 18.6 (Homebrew)",
-    "pdflatex": "pdfTeX 3.141592653-2.6-1.40.29 (TeX Live 2026/Homebrew)",
+    "node": "v24.21.0",
+    "postgres": "psql (PostgreSQL) 18.4",
+    "pdflatex": "pdfTeX 3.141592653-2.6-1.40.28 (TeX Live 2025)",
     "lilypond": "GNU LilyPond 2.26.0 (running Guile 3.0)",
-    "chromium": "152.0.7977.83"
+    "chromium": "153.0.8010.53"
   },
   "fonts": {
     "plexSans": true,
@@ -22,23 +22,23 @@
   "captures": [
     {
       "name": "lilypond-workspace.png",
-      "bytes": 205685,
-      "sha256": "09e04ccae035d439cd225c509d1da7f5d73b749db6dcca7b5716d5f569d526be"
+      "bytes": 178238,
+      "sha256": "3704e32843bb74d9f02e2f6689f455fdb40742a20b59f9fc37068d63af3be500"
     },
     {
       "name": "latex-workspace.png",
-      "bytes": 218481,
-      "sha256": "ebe0b15fb853c7a9b3dd28e25137ea25a05b4f56c8744abd249b4d4820a5a806"
+      "bytes": 176129,
+      "sha256": "bc925038825aba3480e0614e8d2168477a71a44616433268959b80d7251faee7"
     },
     {
       "name": "bibliography.png",
-      "bytes": 102743,
-      "sha256": "2fb6fa241c214af1f4a9c31b210594e8b5398f9ae92a0d0061c29d330d7a29a4"
+      "bytes": 92388,
+      "sha256": "4accd63f78e9cae9857e16d0df76735eab024036312c092693795fbd8a36961c"
     },
     {
       "name": "administration.png",
-      "bytes": 76019,
-      "sha256": "33f6b4dee1a7a462a721d1b0e2a7b70097def77da303052926df7c9215a09d8a"
+      "bytes": 67646,
+      "sha256": "bc8864134b77ecf84eb798b5200381dff9fb1af361d66ed0f7377f9995bdcdc1"
     }
   ]
 }
