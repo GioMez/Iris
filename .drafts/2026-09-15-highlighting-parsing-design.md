@@ -4,22 +4,27 @@
 Per gli aggiornamenti usare questa copia e il piano nella stessa directory.
 Trasferimento richiesto dall'utente il 17 settembre 2026.
 
-**Decisione tecnica in qualifica HP-03:** i servizi applicano un limite di
-1.048.576 unità UTF-16 per l'analisi completa sul thread principale. Oltre il
+**Decisione tecnica qualificata in HP-08:** i servizi applicano un limite di
+1.048.576 unità UTF-16 per l'analisi completa. Oltre il
 limite restituiscono analisi non disponibile e contesti conservativi, consentendo
 l'editing neutro. Il dato non equivale a un documento analizzato vuoto. Questa
-policy concretizza la modalità limitata dei casi di stress da 5 MiB; le soglie
-ordinarie di latenza restano obiettivi da verificare in HP-08. I chiamanti editor
-e completion dovranno installare il linguaggio attraverso la guardia condivisa.
+policy concretizza la modalità limitata dei casi di stress da 5 MiB. Editor e
+completion installano il linguaggio attraverso la guardia condivisa. Entro il
+limite, il percorso per alberi grandi usa un Worker locale e un prefisso reale
+con lavoro limitato sul thread principale; restano comuni grammatica, offset e
+identità dei risultati. Evidenze e limiti nel
+[rapporto HP-08](../docs/language-qualification.md).
 
 **Data:** 15 settembre 2026.
 
 **Stato:** HP-01 e HP-02 implementati e integrati su `main` il 15 settembre 2026,
 con commit `4d37c4e` e `f6d8783`. Il riscontro visivo e il corpus reale dell'utente
 restano aperti. HP-03 è integrato con `c510f5b`, HP-04 con `39da07c`.
-HP-05 è integrato con `b0c6974`, HP-06 con `be005d9`. HP-07 ha completato la
-revisione dell'integrazione, inclusa la scelta automatica del profilo TeX da
-`.sty/.cls`. HP-08 resta da eseguire; riscontro utente e corpus reale restano aperti.
+HP-05 è integrato con `b0c6974`, HP-06 con `be005d9`, HP-07 con `2bdafe8`, inclusa
+la scelta automatica del profilo TeX da `.sty/.cls`. Al 21 settembre HP-08 ha
+completato implementazione e qualifica tecnica. Le revisioni del task e dell'intero
+piano sono approvate, inclusa la correzione F1 del comando commento/decommento
+TeX. Riscontro utente e corpus reale restano aperti.
 
 **Base analizzata:** Iris 1.0.1, commit `0402762`.
 
@@ -50,7 +55,10 @@ tipografico o musicale continua a dipendere dai compilatori. Rinomina di simboli
 controllo cross-file dei riferimenti e navigazione semantica richiedono il
 successivo indice di progetto già previsto in R11.
 
-## 2. Stato attuale verificato
+## 2. Baseline verificata prima dell'implementazione
+
+Questa sezione conserva lo stato del commit `0402762` e le riproduzioni iniziali.
+Per il supporto attuale consultare [il contratto dei linguaggi](../docs/editor-languages.md).
 
 | Area | Evidenza nel codice | Conseguenza per l'utente |
 | --- | --- | --- |
@@ -257,6 +265,11 @@ Documento CodeMirror + transazioni locali/remote
   Node nel progetto CommonJS.
 - `public/iris-language-service.mjs`: contratti comuni, sintesi e contesti.
   `public/iris-syntax-style.mjs`: tag/classi; i valori cromatici restano nel CSS.
+- `public/iris-language-parser.mjs`: pubblicazione cooperativa e prefisso reale
+  con copertura esplicita. `iris-language-worker*.mjs` e
+  `iris-language-transfer.mjs`: albero completo nel Worker, protocollo versionato,
+  trasferimento compatto di `Tree`/`TreeBuffer` e proprietà dinamiche, cancellazione
+  e cronologia limitata. `languages/parser-factory.mjs` condivide la factory LR.
 - `public/iris-editor.js`: integrazione di linguaggio e ciclo di vita, senza
   inserire grammatiche nel già ampio adapter.
 - `public/iris-completion.js`: preservare il normalizzatore usato dal server;
@@ -269,6 +282,9 @@ Documento CodeMirror + transazioni locali/remote
 presenti nel lockfile come dipendenze transitive. Dichiararli diretti quando i
 nuovi moduli li importano. Aggiungere `@lezer/generator` 1.8.0 come dipendenza di
 sviluppo, con versioni esatte e verifica sul lockfile al momento dell'esecuzione.
+In HP-08 `esbuild` 0.25.12, solo di sviluppo, produce il bundle Worker locale con
+versione derivata dagli input. `check:language-worker` verifica entrambi i file
+generati senza riscriverli; la produzione li distribuisce già pronti.
 Lezer dichiara licenza MIT; aggiornare `THIRD_PARTY_NOTICES.md` per le dipendenze
 e registrare la provenienza di eventuali cataloghi derivati.
 
@@ -277,6 +293,9 @@ L'installazione di produzione deve avviarsi con i file generati già presenti.
 Aggiungere `@lezer/lr` all'import map e alla whitelist vendor in `src/server.js`.
 Lo script di release attuale esclude `.grammar`: estenderne il filtro e i test,
 così l'archivio sorgente contiene ciò che serve per rigenerare i parser.
+HP-08 distribuisce anche i font IBM Plex Sans/Mono e CMU Serif: 30 binari invariati,
+licenze OFL complete, manifest degli hash e CSS locale. Il pacchetto qualificato
+avvia server, Worker e font senza richieste a CDN.
 
 ### 6.2 Regole per riuso e recupero
 
@@ -331,6 +350,15 @@ cambio file, cambio progetto, resync o chiusura. Mappare le vecchie posizioni co
 `ChangeDesc` prima di riutilizzarle; sospendere gli avvisi di contenenza se la
 regione interessata non è più affidabile. Non trattare un albero parziale come
 una nuova sintesi completa che cancella le voci fuori viewport.
+
+Nel percorso Worker, il prefisso sul thread principale cresce in tranche mentre
+l'albero completo è in lavorazione. Le decorazioni mappate oltre la copertura non
+certificano il contesto in quelle posizioni. Client e Worker verificano protocollo,
+build, owner, richiesta, generazione, revisione e configurazione; i guasti producono
+`unavailable`, senza ripiego sincrono su un parsing completo grande. Entrambi
+limitano la cronologia degli alberi completati a tre versioni; il client limita
+anche concorrenza, attesa e durata delle richieste. La chiusura annulla i job e
+rilascia le risorse dell'owner.
 
 Per i file di progetto non aperti riusare le sintesi per identità e contenuto;
 analizzare solo gli elementi cambiati, in tranche a bassa priorità. Conservare
@@ -388,11 +416,28 @@ fornisce nodi e intervalli per realizzarle.
 | File da 5 MiB o singola riga da 100 KiB | editing utilizzabile, analisi differita e stato parziale esplicito; nessun crash |
 | Cambio file ripetuto | cache a crescita limitata: conservare sintesi, eliminare gli alberi dei documenti chiusi |
 
-Sono obiettivi da validare con HP-01/HP-03, non misure già ottenute. Registrare
+Questi obiettivi hanno guidato HP-01/HP-03 e la qualifica HP-08. Registrare
 CPU, RAM, OS, versione del browser, dimensioni e numero di righe, cold/warm run,
 20 esecuzioni dopo 5 di riscaldamento. Misurare separatamente inserimento locale,
 modifica remota e apertura/chiusura di un commento in testa al file: quest'ultimo
 caso può richiedere rianalisi estesa anche con un parser incrementale.
+
+**Esito tecnico HP-08, 21 settembre:** matrice finale 10/10, con 750 modifiche,
+600 campioni misurati e 30 caricamenti. Tutte le 300 pubblicazioni richieste su
+1 MiB rispettano 500 ms (massimo 407,3 ms); primo viewport massimo 58,5 ms. I
+profili applicabili rispettano 5/8 ms. Il gate revisionato
+`hp08-v2-publication-edit-scope` misura la disponibilità all'effettiva callback
+`onSyntax` della revisione/generazione corrente con copertura completa, conservando
+anche il tempo di osservazione successivo a due frame. Qualunque long task
+osservato >50 ms sovrapposto agli edit, inclusi warm-up e notifiche tardive, fallisce.
+Le osservazioni limitate al caricamento restano registrate; il lavoro della
+funzione durante il caricamento ha profili rigorosi separati.
+
+Il caricamento completo può raggiungere 3,74 s; task neutri da 60/66 ms su 5 MiB
+hanno zero avvii LR. La matrice attende la disponibilità completa prima degli
+edit, quindi non qualifica la digitazione arbitraria durante il caricamento.
+Il rapporto pubblicato conserva anche i fallimenti storici, le identità dei
+candidati e le differenze fra le invocazioni Linux, i gate coprenti e il pacchetto.
 
 ### Corpus e prova d'uso
 
@@ -407,7 +452,7 @@ Confrontare parsing incrementale e parsing completo dopo ogni modifica della
 sequenza. Usare il compilatore su un sottoinsieme valido per verificare che le
 fixture rappresentino sintassi reale; il compilatore non è l'oracolo dei colori.
 
-Due sessioni di riscontro, da circa 30 minuti: dopo la palette e dopo la
+Due sessioni di riscontro: dopo la palette e dopo la
 migrazione. L'utente deve poter individuare comandi, commenti, note/durate,
 verbatim e confini dei blocchi nei propri esempi, segnalando i casi ambigui.
 Registrare gli esiti per caso, oltre alla preferenza estetica.
@@ -429,11 +474,11 @@ riceve un commit su `main`, dopo sviluppo in worktree e revisione.
 | L'analisi penalizza la digitazione o mostra dati obsoleti | Budget, tranche, cache per revisione/generazione, test con risposte ritardate. |
 | L'archivio contiene solo i parser generati | Test di packaging per `.grammar`, `.mjs`, cataloghi e rigenerazione deterministica. |
 
-**Decisioni da confermare prima dell'esecuzione:** adozione di Lezer dopo prova
-tecnica; primo corpus dell'utente e convenzioni LilyPond prevalenti; priorità
-relativa dei due linguaggi se si desidera consegnarne uno prima; accettazione
-visiva della palette. La proposta assume pari priorità funzionale, quattro
-convenzioni delle note nella prima qualifica e parser locali nel browser.
+**Decisioni attuate:** Lezer dopo la prova tecnica, pari priorità funzionale dei
+linguaggi, quattro convenzioni delle note, parser locali nel browser e Worker
+per gli alberi grandi. Restano da raccogliere il corpus dell'utente, le convenzioni
+LilyPond prevalenti nel suo lavoro e l'accettazione visiva della palette. La
+valutazione della personalizzazione prepara un eventuale HP-09.
 
 ## 10. Riferimenti
 

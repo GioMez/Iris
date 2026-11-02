@@ -1,0 +1,11 @@
+public/vendor/language-worker/*.mjs text eol=lf
+public/fonts/*.woff binary
+public/fonts/*.woff2 binary
+public/fonts/*.md text eol=lf
+public/fonts/manifest.json text eol=lf
+public/iris-fonts.css text eol=lf
+
+# Preserve deterministic generator bytes and the native formatting fixture's
+# intentional protected literal spaces. Other whitespace checks stay enabled.
+public/vendor/language-worker/worker.mjs whitespace=-blank-at-eol
+test/language-qualification.native.test.js whitespace=-blank-at-eol

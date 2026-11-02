@@ -42,6 +42,10 @@ async function fixture(t, entrypoint, phase) {
       }
       await waitFor(() => !alive(pid) && (kind === "postgres" || !alive(-pid)), () => `test finalizer: ${kind} ${pid} still alive`);
     }
+    for (const { root: browserRoot, appTmp } of events.filter(event => event.kind === "browser-temp")) {
+      if (browserRoot !== appTmp && path.dirname(browserRoot) === "/tmp" && /^iris-b-[a-zA-Z0-9]+$/.test(path.basename(browserRoot)))
+        await fs.rm(browserRoot, { recursive: true, force: true });
+    }
     await fs.rm(root, { recursive: true, force: true });
   });
   const waitEvent = (kind) => waitFor(() => {
@@ -63,6 +67,14 @@ async function fixture(t, entrypoint, phase) {
         const completion = events.find((event) => event.kind === "workspace-closed" && event.root === root);
         assert.ok(completion, outputText);
         assert.deepEqual(completion.survivors, [], "workspace cleanup must finish after all owned processes, before driver exit handlers");
+      }
+      const browserTemps = events.filter(event => event.kind === "browser-temp");
+      assert.equal(browserTemps.length, 1, "the real launch received an owned socket temp root");
+      for (const { root, appTmp, mode } of browserTemps) {
+        assert.notEqual(root, appTmp, "only Chromium socket temp leaves the app workspace");
+        assert.equal(mode, 0o700);
+        assert.ok(Buffer.byteLength(path.join(root, "org.chromium.Chromium.abcdef", "SingletonSocket")) < 104);
+        assert.equal(await fs.stat(root).catch(() => null), null, `owned browser socket temp survived: ${root}`);
       }
       assert.deepEqual(await fs.readdir(tmp), [], "owned temporary storage must be removed after process cleanup");
       return result;

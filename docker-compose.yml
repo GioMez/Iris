@@ -1,6 +1,6 @@
 services:
   webapp:
-    image: localhost/iris:1.0.1
+    image: localhost/iris:1.1.0
     build: .
     restart: unless-stopped
     init: true

@@ -1,9 +1,12 @@
-import { StateEffect, StateField } from "@codemirror/state";
-import { ViewPlugin } from "@codemirror/view";
+import { StateEffect, StateField, RangeSetBuilder } from "@codemirror/state";
+import { ViewPlugin, Decoration } from "@codemirror/view";
 import { Language, ParseContext, ensureSyntaxTree, syntaxTree, syntaxTreeAvailable, language } from "@codemirror/language";
 import { Parser } from "@lezer/common";
 import { analysisPolicy, emptySummary as empty, unknownContext as unknown } from "./iris-language-policy.mjs";
 import { createTaskScheduler } from "./iris-language-tasks.mjs";
+import { createCooperativeParser } from "./iris-language-parser.mjs";
+import { highlightTree } from "@lezer/highlight";
+import { cssHighlighter } from "./iris-syntax-style.mjs";
 
 const keys = ["outline", "regions", "symbols", "references", "includes"];
 const sameIdentity = (a, b) => a && b && a.revision === b.revision && a.generation === b.generation;
@@ -36,8 +39,26 @@ function captureSyntax(state) {
 export function createGuardedLanguage(adapter) {
   return new Language(adapter.language.data, new class extends Parser {
     createParse(input, fragments, ranges) {
-      const parser = analysisPolicy(input.length).mode === "limited" ? ParseContext.getSkippingParser() : adapter.language.parser;
-      return parser.startParse(input, fragments, ranges);
+      if (analysisPolicy(input.length).mode === "limited") return ParseContext.getSkippingParser().startParse(input, fragments, ranges);
+      // Context reductions revisit distant scope openers. CM's line cursor
+      // walks backwards/forwards for each chunk seek, becoming quadratic inside
+      // a large environment/group. Its public read() is random-access. Use
+      // bounded UTF-16 windows, never flattening/caching the whole document.
+      const windows = new Map(), width = 4096;
+      const boundedInput = { length: input.length, lineChunks: false,
+        chunk(pos) {
+          const from = Math.floor(pos / width) * width;
+          let text = windows.get(from);
+          if (text === undefined) {
+            text = input.read(from, Math.min(input.length, from + width));
+            if (windows.size === 4) windows.delete(windows.keys().next().value);
+            windows.set(from, text);
+          }
+          return text.slice(pos - from);
+        },
+        read: (from, to) => input.read(from, to),
+      };
+      return adapter.language.parser.startParse(boundedInput, fragments, ranges);
     }
   }, [], adapter.language.name);
 }
@@ -45,8 +66,10 @@ export function createGuardedLanguage(adapter) {
 /** One owner per document. StateField stores identity in transactions; ViewPlugin
  * observes committed states. Headless callers commit via update(state). Reads
  * may start an idle owner, but never adopt speculative document replacements.
+ * The extension includes source highlighting for real published prefixes. Do
+ * not also install syntaxExtension's whole-viewport highlighter for this owner.
  *
- * hooks: {schedule(fn,delay):handle,cancel(handle),now():number,generation?:number,revision?:number}
+ * hooks: {schedule(fn,delay):handle,cancel(handle),now():number,parseNow?():number,generation?:number,revision?:number}
  * Default debounce=250ms and work budget=8ms. identityEffect.of({generation})
  * requires a strictly increasing nonnegative safe integer on file replacement.
  * Revision increases on docChanged OR identity replacement, never resets.
@@ -66,7 +89,20 @@ export function createLanguageState(adapter, onSyntax, hooks = {}) {
   // skipping parser records unparsed ranges, so syntaxTreeAvailable stays false.
   // This also guards initial creation, growth past the limit and filter:false
   // remote changes; observing a transaction afterwards would be too late.
-  const boundedLanguage = createGuardedLanguage(adapter);
+  const guarded = createGuardedLanguage(adapter);
+  const cooperative = createCooperativeParser(guarded.parser, { adapter, schedule, cancel, now: hooks.parseNow,
+    notify(doc) {
+      const current = mounted?.state || active?.state;
+      if (disposed || !current || current.doc !== doc || !sameIdentity(current.field(identity, false), active?.id)) return;
+      // Called in an owned task, never from a parser/transaction callback. This
+      // cheap public request installs the real prefix/full publication now.
+      ensureSyntaxTree(current, current.doc.length, 0);
+      const captured = captureSyntax(current);
+      if (mounted && syntaxTree(current) !== captured.tree) mounted.dispatch({});
+      else update(current);
+    },
+  });
+  const boundedLanguage = new Language(guarded.data, cooperative.parser, [], guarded.name);
   const identityEffect = StateEffect.define();
   const identity = StateField.define({
     create: () => Object.freeze({ revision, generation }),
@@ -117,50 +153,56 @@ export function createLanguageState(adapter, onSyntax, hooks = {}) {
     const policy = analysisPolicy(state.doc.length);
     if (policy.mode === "limited") {
       if (sameIdentity(id, active?.id) && active.limited) return;
+      cooperative.commit(null, id.generation);
       stop();
       active = { state, id, limited: true, parsedTo: 0 };
       published = snapshot(id, "unavailable", 0, empty, policy.reason);
       onSyntax(published);
       return;
     }
+    // A query can finish raw work before this first commit, while CM records
+    // only the query's shorter stop. Install the already-complete cached tree
+    // without waiting for a notification that preceded ownership.
+    if (cooperative.commit(state.doc, id.generation, id.revision) && !syntaxTreeAvailable(state, state.doc.length))
+      ensureSyntaxTree(state, state.doc.length, 0);
     const captured = captureSyntax(state), { tree, parsedTo } = captured;
+    if (cooperative.failure(state.doc)) {
+      if (active?.failed && sameIdentity(id, active.id)) return;
+      stop(); active = { state, id, ...captured, failed: true };
+      published = snapshot(id, "unavailable", parsedTo, empty, "worker-unavailable");
+      onSyntax(published); return;
+    }
     if (active && sameIdentity(id, active.id) && tree === active.tree && parsedTo === active.parsedTo) return;
+    // The debounce belongs to the document revision. Parse-only progress must
+    // not restart it (especially after the EOF progress job has just finished).
+    const debounceAt = sameIdentity(id, active?.id) ? active.debounceAt : now() + 250;
     stop();
     const previous = sameIdentity(id, published) ? published : null;
     if (!previous) published = null;
-    const job = active = { state, id, ...captured };
+    const job = active = { state, id, debounceAt, ...captured };
     const token = sequence;
     const steps = summarize(job, previous);
-    function progress() {
-      timer = null;
-      if (disposed || token !== sequence) return;
-      const current = mounted?.state || job.state;
-      // Continue CM's existing mutable parse context. Do not dispatch a failed
-      // ensure: that would force partial-tree finalization in a state update.
-      const tree = ensureSyntaxTree(current, current.doc.length, 5);
-      if (disposed || token !== sequence) return;
-      if (tree && syntaxTreeAvailable(current, current.doc.length)) {
-        if (mounted && syntaxTree(current) !== tree) mounted.dispatch({});
-        else update(current);
-      } else timer = schedule(progress, 0);
-    }
     function chunk() {
       timer = null;
       if (disposed || token !== sequence) return;
-      const until = now() + 8;
+      // The last visitor step is nonpreemptible. Reserve room for that step,
+      // bookkeeping and small observed GC pauses inside the 8ms callback budget.
+      const until = now() + 5;
       do {
         const step = steps.next();
         if (step.done) {
-          if (!disposed && token === sequence) {
-            published = step.value; onSyntax(published);
-            if (!job.ready && !disposed && token === sequence) timer = schedule(progress, 0);
-          }
+            // Consumers (outline/regions/completion) also do real application
+            // work. Do not append it to an already-spent summary visitor slice.
+            timer = schedule(function publishSyntax() {
+              timer = null;
+              if (!disposed && token === sequence) { published = step.value; onSyntax(published); }
+            }, 0);
           return;
         }
       } while (now() < until);
       timer = schedule(chunk, 0);
     }
-    timer = schedule(chunk, 250);
+    timer = schedule(chunk, Math.max(0, debounceAt - now()));
   }
 
   function read(state) {
@@ -176,15 +218,50 @@ export function createLanguageState(adapter, onSyntax, hooks = {}) {
     if (disposed || !state.field(identity, false) || state.facet(language) !== boundedLanguage) return unknown(pos);
     const canObserve = !active || mounted?.state === state || sameIdentity(state.field(identity), active.id) && state.doc === active.state.doc;
     if (analysisPolicy(state.doc.length).mode === "limited") { if (canObserve) update(state); return unknown(pos); }
-    const tree = ensureSyntaxTree(state, pos, 5);
+    cooperative.query(state.doc, pos, 5);
+    const tree = ensureSyntaxTree(state, pos, 0);
     if (canObserve) update(state);
     return tree && syntaxTreeAvailable(state, pos) ? adapter.contextAt(tree, state.doc, pos, bias) : unknown(pos);
   }
 
-  function dispose() { if (!disposed) { disposed = true; stop(); ownedTasks?.dispose(); active = published = mounted = null; } }
+  function dispose() { if (!disposed) { disposed = true; stop(); cooperative.dispose(); ownedTasks?.dispose(); active = published = mounted = null; } }
+  const marks = new Map();
   const plugin = ViewPlugin.fromClass(class {
-    constructor(view) { mounted = view; update(view.state); }
-    update(transaction) { update(transaction.state); }
+    constructor(view) {
+      mounted = view;
+      this.decorations = Decoration.none;
+      update(view.state); cooperative.viewport(view.state.doc, view.viewport.to); this.paint(view);
+    }
+    update(transaction) {
+      update(transaction.state);
+      cooperative.viewport(transaction.state.doc, transaction.view.viewport.to);
+      const captured = captureSyntax(transaction.state);
+      if (transaction.docChanged || transaction.viewportChanged || captured.tree !== this.tree || captured.parsedTo !== this.parsedTo)
+        this.paint(transaction.view, transaction.changes, captured);
+    }
+    paint(view, changes, captured = captureSyntax(view.state)) {
+      this.tree = captured.tree; this.parsedTo = captured.parsedTo;
+      if (analysisPolicy(view.state.doc.length).mode === "limited") { this.decorations = Decoration.none; return; }
+      const previous = changes ? this.decorations.map(changes) : this.decorations;
+      const builder = new RangeSetBuilder();
+      for (const { from, to } of view.visibleRanges) {
+        const end = Math.min(to, captured.parsedTo);
+        if (from < end) highlightTree(captured.tree, cssHighlighter, (start, finish, style) => {
+          let mark = marks.get(style);
+          if (!mark) marks.set(style, mark = Decoration.mark({ class: style }));
+          builder.add(start, finish, mark);
+        }, from, end);
+        // CM's built-in highlighter retains ALL old classes until the whole
+        // viewport is parsed. Update the verified prefix now and retain mapped
+        // known decoration only outside that coverage until real work arrives.
+        const retainFrom = Math.max(from, captured.parsedTo);
+        if (retainFrom < to) previous.between(retainFrom, to, (start, finish, mark) => {
+          start = Math.max(start, retainFrom); finish = Math.min(finish, to);
+          if (start < finish) builder.add(start, finish, mark);
+        });
+      }
+      this.decorations = builder.finish();
+    }
     destroy() {
       mounted = null;
       // CM redraws the view via setState when phrases change, even though this
@@ -192,6 +269,6 @@ export function createLanguageState(adapter, onSyntax, hooks = {}) {
       // ownership; an actual removal/destroy disposes before the next task.
       queueMicrotask(() => { if (!mounted) dispose(); });
     }
-  });
+  }, { decorations: value => value.decorations });
   return Object.freeze({ extension: [boundedLanguage, identity, plugin], read, update, contextAt, dispose, identityEffect });
 }

@@ -19,10 +19,13 @@ DefinitionGroup { DefinitionOpen item* CloseBrace }
 BodyGroup { BodyOpen item* CloseBrace }
 SpecGroup { SpecOpen item* CloseBrace }
 Math { MathOpen item* MathClose }
-Environment { Begin BodyStart item* (EnvironmentClose | MissingEnd) }
+// A matched closing header is outside the body repetition. Its transient
+// closing context must not become the reuse hash of every balanced body chunk.
+Environment { Begin BodyStart item* MatchedEnd? (EnvironmentClose | MissingEnd) }
 Begin { BeginCommand (HeaderSpace | LineComment)* EnvOpen EnvironmentName EnvClose }
 EnvironmentName { NameChunk+ }
-End { EndCommand (HeaderSpace | LineComment)* EnvOpen EnvironmentName (EndClose | OrphanClose) }
+End { EndCommand (HeaderSpace | LineComment)* EnvOpen EnvironmentName OrphanClose }
+MatchedEnd[@name=End] { EndCommand (HeaderSpace | LineComment)* EnvOpen EnvironmentName EndClose }
 LineComment { CommentStart CommentText* (CommentEnd | HeaderCommentEnd) }
 Verb { VerbOpen LiteralText* (VerbClose | VerbBreak) }
 Verbatim { Begin LiteralHeaderStart item* LiteralStart (LiteralText | LiteralSpace | LiteralNewline | RejectedEnd)* LiteralEnd }

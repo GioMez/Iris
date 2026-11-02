@@ -94,6 +94,16 @@
     };
 
     const flags = { wordWrap: false, autoIndent: true, readOnly: false, kind: null };
+    // Text is immutable. Public readers share one materialization of the current
+    // document, not a history cache. Clear both references before edits/load
+    // callbacks, including an empty load when the last tab/project closes.
+    let textDocument = null, textValue = "";
+    function clearTextValue() { textDocument = null; textValue = ""; }
+    function currentText() {
+      const doc = view.state.doc;
+      if (textDocument !== doc) { textValue = doc.toString(); textDocument = doc; }
+      return textValue;
+    }
     const adapters = {
       tex: await languageService.loadLanguage("tex"),
       internal: await languageService.loadLanguage("tex", { texProfile: "internal" }),
@@ -117,7 +127,7 @@
       adapter = flags.kind === "tex" ? adapters[/\.(sty|cls)$/i.test(fileMetadata.path || fileMetadata.name || "") ? "internal" : "tex"]
         : flags.kind === "ly" ? adapters.ly : null;
       languageOwner = null;
-      if (!adapter) return languages[flags.kind] || [];
+      if (!adapter) return [languages[flags.kind] || [], syntaxExtension];
       const owner = languageState.createLanguageState(adapter, () => {
         // Initial oversized notification can occur inside EditorView.setState.
         // Publish only once its transaction/lifetime has actually been installed.
@@ -536,6 +546,7 @@
 
     const listener = V.EditorView.updateListener.of((update) => {
       if (update.docChanged) {
+        clearTextValue();
         // Invalidate in old coordinates, then map every survivor before any
         // public callback can read a range alongside the new snapshot.
         update.changes.iterChangedRanges((from, to) => {
@@ -592,6 +603,7 @@
     // is null for a document edited on its own, which is what keeps the ordinary
     // save path in charge when realtime is not available for a file.
     function makeState(content, collabVersion = null) {
+      clearTextValue();
       bookmarks.clear();
       collaborative = collabVersion != null;
       // A fresh document or a resync invalidates every recorded change: nothing
@@ -687,7 +699,6 @@
           V.keymap.of(editorKeymap),
           textRevision,
           languageCompartment.of(languageExtension),
-          syntaxExtension,
           L.indentUnit.of("  "),
           wrapCompartment.of(flags.wordWrap ? V.EditorView.lineWrapping : []),
           readOnlyCompartment.of(S.EditorState.readOnly.of(flags.readOnly)),
@@ -775,9 +786,9 @@
       focus() { view.focus(); },
       focusTarget() { return view.contentDOM; },
       ownsTarget(node) { return host.contains(node); },
-      getValue() { return view.state.doc.toString(); },
+      getValue() { return currentText(); },
       /** @returns {Snapshot} */
-      snapshot() { return { revision, text: view.state.doc.toString() }; },
+      snapshot() { return { revision, text: currentText() }; },
       syntaxSnapshot() { return languageOwner?.read(view.state) || null; },
       /** @returns {Bookmark} Nonempty, half-open UTF-16 range; invalid input is inert. */
       trackRange(from, to) {

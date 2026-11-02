@@ -113,9 +113,9 @@ function* safeFragments(fragments) {
 export function recoverySafeParser(parser) {
   const copy = parser.configure({});
   copy.createParse = function(input, fragments, ranges) {
-    if (!fragments.length) return LRParser.prototype.createParse.call(this, input, fragments, ranges);
     const prepare = safeFragments(fragments), owner = this;
-    let parse = null, stoppedAt = null;
+    let parse = fragments.length ? null : LRParser.prototype.createParse.call(this, input, fragments, ranges);
+    let stoppedAt = null, tree = null, metadata = null;
     return {
       get parsedPos() { return parse ? parse.parsedPos : ranges[0].from; },
       get stoppedAt() { return stoppedAt; },
@@ -123,9 +123,29 @@ export function recoverySafeParser(parser) {
         if (stoppedAt !== null && pos > stoppedAt) throw new RangeError("Can't move stoppedAt forward");
         stoppedAt = pos;
         if (parse) parse.stopAt(pos);
+        else if (pos <= ranges[0].from) {
+          // CM takeTree must be able to finalize a preflight with no consumed
+          // input. There is no reusable prefix here; do not drain the old tree.
+          parse = LRParser.prototype.createParse.call(owner, input, [], ranges);
+          parse.stopAt(pos);
+        }
       },
       advance() {
-        if (parse) return parse.advance();
+        if (tree) {
+          // stopAt is a request for a partial tree, not synchronous metadata
+          // completion. Any finished children stay in the weak cache.
+          if (stoppedAt !== null) return tree;
+          for (let i = 0; i < 128; i++) if (metadata.next().done) return tree;
+          return null;
+        }
+        if (parse) {
+          tree = parse.advance();
+          if (!tree || stoppedAt !== null) return tree;
+          // Prepare while the full tree becomes available, before publishing it
+          // for the next edit. Unchanged subtrees already have cached effects.
+          metadata = fragmentView(tree);
+          return null;
+        }
         // Bound preflight work too; do not synchronously scan a whole old tree
         // when startParse/ensureSyntaxTree is called after an edit.
         for (let i = 0; i < 128; i++) {

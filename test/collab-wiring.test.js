@@ -276,17 +276,10 @@ test("the overlap warning is decided by structure, and falls back to lines", () 
   assert.match(app, /const mine = pathAtOffset\(lastCursor\.head\)/);
 });
 
-test("the index is rebuilt when the text settles, never when a caret moves", () => {
-  // Parsing on presence would put a parse behind every keystroke of every
-  // participant; the index belongs to the document and is only consulted.
-  assert.match(app, /const STRUCTURE_DEBOUNCE = 250/);
-  assert.match(app, /function scheduleStructure\(\)/);
-  assert.match(app, /structureTimer = setTimeout\(rebuildStructure, STRUCTURE_DEBOUNCE\)/);
-  const cursor = app.slice(app.indexOf("ed().onCursor("), app.indexOf("ed().onPeers("));
-  assert.doesNotMatch(cursor, /rebuildStructure|scheduleStructure/);
-  // Opening a different document has no typing to wait for.
-  const open = app.slice(app.indexOf("function openFile("), app.indexOf("/* ---------------- file tree"));
-  assert.match(open, /rebuildStructure\(\)/);
+test("editor structure remains browser-local and independent of the server", () => {
+  // Debounce/replacement are behavioral contracts in language-state.test.js;
+  // no-parse peer/caret updates are checked on the mounted HP08 lifecycle.
+  // The old app-level STRUCTURE_DEBOUNCE scanner was retired by HP07.
   // The parsing itself never reaches the server: it stays language-agnostic.
   assert.doesNotMatch(server, /IrisStructure|\\\\begin\{/);
   assert.match(html, /<script src="iris-structure\.js"><\/script>/);

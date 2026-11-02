@@ -81,6 +81,20 @@ The HP03 TeX grammar/catalog and LilyPond boundary probe are original Iris
 sources, not copied third-party language catalogs. Regenerate the parser with
 `npm run build:languages`; see [the development workflow](docs/development.md#generated-language-sources-hp03).
 
+### Bundled language Worker (HP08)
+
+`public/vendor/language-worker/worker.mjs` bundles the original Iris language
+runtime, the LilyPond note-name data described below, `@lezer/common` 1.5.2 and
+`@lezer/lr` 1.4.10. Lezer's MIT copyright and permission text above apply to the
+bundled copies too. Iris sources and adapted LilyPond data remain GPL-3.0-or-later.
+The generated module has no runtime network or development-dependency imports.
+
+`esbuild` **0.25.12** is a pinned development-only build tool (MIT, copyright
+2020 Evan Wallace; https://github.com/evanw/esbuild). It is not bundled or served.
+Regenerate with `npm run build:language-worker`; verify with
+`npm run check:language-worker`. Generated Worker files use LF. The version
+module fingerprints the source, locked bundled dependencies and build settings.
+
 ### LilyPond note-name data (HP05)
 
 `public/languages/lilypond/pitches.mjs` adapts the spelling membership of the
@@ -201,3 +215,23 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 Source: https://github.com/Hopding/pdf-lib
+
+## Offline interface fonts (HP08)
+
+Iris bundles unmodified IBM Plex Sans (Google Fonts webfont v23), IBM Plex Mono
+(webfont v20) and CMU Serif (embedded version 0.7.0) webfont binaries. These fonts
+remain under the **SIL Open Font License, Version 1.1**, not Iris's software
+license. The full copyright notices and license texts are shipped at:
+
+- [public/fonts/OFL-IBM-Plex.md](public/fonts/OFL-IBM-Plex.md): Copyright © 2017
+  IBM Corp., reserved font name "Plex".
+- [public/fonts/OFL-CMU.md](public/fonts/OFL-CMU.md): original Metafont authors
+  and Copyright (C) 2003-2009 Andrey V. Panov, reserved font family name
+  "Computer Modern Unicode fonts". Font metadata credits conversion by Panov
+  and, for Roman/Italic/Bold, glyphs from Blue Sky fonts released by AMS.
+
+Upstreams: https://github.com/IBM/plex and https://cm-unicode.sourceforge.io/.
+The [font inventory](public/fonts/manifest.json) pins every binary's source URL,
+size and SHA-256 and the full license sources/hashes. The
+[font README](public/fonts/README.md) describes the declared faces, preserved
+subsets, licensing verification and maintenance-time reproduction.

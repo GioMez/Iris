@@ -58,6 +58,8 @@ runtime.postgres = async (work, ...args) => {
 const { chromium } = require("playwright-core");
 const launch = chromium.launch.bind(chromium);
 chromium.launch = async (options) => {
+  send({ kind: "browser-temp", root: options.env.TMPDIR, appTmp: process.env.TMPDIR,
+    mode: fs.statSync(options.env.TMPDIR).mode & 0o777 });
   if (phase === "before-launch") await pause();
   const browser = await launch(options);
   send({ kind: "browser-ready", version: browser.version() });

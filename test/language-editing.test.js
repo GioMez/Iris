@@ -6,6 +6,39 @@ async function language(kind, text) {
 }
 const apply = (source, changes) => changes.reduceRight((s, c) => s.slice(0, c.from) + c.insert + s.slice(c.to), source);
 
+for (const [kind, options] of [
+  ["tex", { texProfile: "standard" }], ["tex", { texProfile: "internal" }],
+  ["tex", { texProfile: "expl3" }], ["ly", {}],
+]) test(`installed ${kind} ${options.texProfile || "default"} keeps the comment shortcut, undo and readonly behavior`, async t => {
+  const { EditorState, Compartment } = await import("@codemirror/state");
+  const { defaultKeymap, history, undo, redo } = await import("@codemirror/commands");
+  const { loadLanguage } = await import("../public/iris-language-service.mjs");
+  const { createLanguageState } = await import("../public/iris-language-state.mjs");
+  const owner = createLanguageState(await loadLanguage(kind, options), () => {});
+  t.after(() => owner.dispose());
+  const readonly = new Compartment(), source = "\\foo@bar\ntext 😀";
+  const commented = "% \\foo@bar\n% text 😀";
+  const target = {
+    state: EditorState.create({ doc: source, selection: { anchor: 0, head: source.length },
+      extensions: [owner.extension, history(), readonly.of(EditorState.readOnly.of(false))] }),
+    dispatch(transaction) { target.state = transaction.state; owner.update(target.state); },
+  };
+  const toggle = defaultKeymap.find(binding => binding.key === "Mod-/").run;
+  assert.equal(toggle(target), true);
+  assert.equal(target.state.doc.toString(), commented);
+  assert.equal(undo(target), true);
+  assert.equal(target.state.doc.toString(), source);
+  assert.equal(redo(target), true);
+  assert.equal(target.state.doc.toString(), commented);
+  assert.equal(toggle(target), true);
+  assert.equal(target.state.doc.toString(), source);
+  target.dispatch(target.state.update({ effects: readonly.reconfigure(EditorState.readOnly.of(true)) }));
+  const locked = target.state;
+  assert.equal(toggle(target), false);
+  assert.equal(target.state, locked, "readonly must not dispatch a transaction");
+  assert.equal(target.state.doc.toString(), source);
+});
+
 test("Enter reserves same-name outer closers and recognizes open EOF and inline environment pairs", async () => {
   for (const [source, pos, expected] of [
     ["\\begin{a}\n\\begin{a}\n\\end{a}", 19, ["\\end{a}", true]],

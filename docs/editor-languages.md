@@ -1,5 +1,31 @@
 # Editor language support
 
+**Qualification (21 September 2026):** the final gate-v2 matrix and selected strict
+5/8 ms profiles pass. All 300 normal 1 MiB edit publications, including warmups,
+meet 500 ms (maximum 407.3 ms). Linux full Node, covering, browser, native and
+navigation gates have run with their recorded source scopes; the final query-only
+optimization has separate 208/208 coverage. User-source/subjective acceptance
+remains a follow-up. See [qualification](language-qualification.md) for hashes,
+platform versions, invocation counts and historical results.
+
+## LaTeX support (TX01–TX09)
+
+| Cases | Editorial support |
+| --- | --- |
+| TX01 | Control words/symbols, escapes, comments, nested groups and optional arguments |
+| TX02–03 | Inline/display math and catalogued math environments; internal commands, numbers/operators, comments and nested text/math |
+| TX04 | `verb` and catalogued verbatim/listing/comment/filecontents bodies, with construct-specific boundaries |
+| TX05–06 | Seven heading levels, nested/multiline titles, custom literal environment names and recovery |
+| TX07 | Classic/xparse/primitive definitions, with deferred bodies excluded from document structure |
+| TX08 | Signature-based labels/references/citations/paths and literal includes |
+| TX09 | Standard, internal `.sty/.cls`, `makeatletter` and expl3 lexical profiles |
+
+Arbitrary catcodes, macro expansion, dynamic names and executed conditional
+branches are not inferred. Unknown commands remain editable generic commands;
+unsupported or incomplete contexts are conservative rather than compiler errors.
+Both adapters supply structural bracket metadata, including musical/Scheme
+delimiters, to CodeMirror's existing matching decoration.
+
 ## Shared editor consumers: HP07
 
 The editor installs one `createLanguageState` owner for its current TeX or
@@ -41,15 +67,32 @@ The owner accepts initial `revision` and `generation` scheduler hooks. The
 headless `identityEffect` increments both identity revision and generation;
 the editor instead seeds each replacement owner from its text-revision field.
 
-After publishing a partial summary, the owner schedules continued parsing to EOF
-through `ensureSyntaxTree` on CodeMirror's maintained context. Each queued turn
-requests at most 5 ms, then yields through the existing task scheduler. A failed
-request does not dispatch or force partial-tree finalization. Full coverage
-triggers a parse-only view update and a fresh summary. Revision/generation
-replacement, disposal and the size guard cancel these continuations. This also
-works for headless committed states, without a second batch parser. CodeMirror's
-viewport lookahead no longer limits eventual summary coverage. These are requested
-budgets; parser finalization and GC can overrun a turn and still need HP08 timing.
+The owner publishes real prefix/full trees through public CodeMirror APIs.
+Verified prefix roles paint before full coverage; a partial tree is never extended
+or labelled ready merely to refresh highlighting. For browser sources of at least
+32,768 UTF-16 units, a local bundled Worker constructs the full tree using the
+same generated grammar, tokens, contexts and recovery rules. Small sources and
+Node/headless owners retain cooperative parsing. Full publication triggers a
+parse-only view update and a fresh summary. The normal 1,048,576-unit support
+limit remains unchanged.
+
+Revision/generation replacement, disposal and the size guard cancel work. Worker
+asset/load/protocol failures or deadlines yield explicit unavailable syntax
+(`limitReason: "worker-unavailable"`), while editing remains available. Source
+windows and tree decoding are cooperative; transferred trees retain real Lezer
+nodes, compact buffers, local highlight/bracket props and supported dynamic props.
+A bounded owner/configuration-scoped history supports exact undo and validated
+incremental restoration. Cold and changed-content restores still require real
+parsing. The guarded main Input keeps four 4096-unit random-access windows; a
+fresh small prefix avoids preparing a whole transferred tree on the UI thread.
+The initial prefix target survives an early zero/short stopped tree. Owned 5 ms
+turns continue real prefix parsing while full Worker work is pending; viewport
+growth can request coverage up to the existing 3000-unit main-prefix bound.
+EOF/replacement/disposal retires pending prefix work. Beyond that bound, far or
+long-line viewports wait for Worker coverage rather than starting a full UI parse.
+The 5 ms parsing/query and 8 ms application budgets have passing final strict
+diagnostics. Earlier overruns remain historical evidence; finite measurements
+are not a hard real-time guarantee for arbitrary input or browser GC.
 
 The outline uses full semantic levels and caps visual indent at four levels.
 `IrisStructure.fromRegions(regions, length)` preserves names, certainty and
@@ -156,8 +199,10 @@ Internal unsafe-tree, line/node-cap and deadline declines return an empty plan
 and therefore `unchanged` / “No safe indentation changes.” Outer size, coverage
 and IME checks return `unavailable`. Neither path applies a partial format plan.
 
-These are functional/work bounds. HP08 still owns mounted latency/heap
-qualification, native compiler corpus QA and full-UI acceptance.
+These are functional/work bounds, not hard elapsed-time guarantees. HP08's
+synthetic native subset and mounted heap/lifecycle checks are recorded in the
+[qualification report](language-qualification.md), with passing latest gates,
+their exact source scopes and the remaining user-acceptance follow-up.
 
 ## LilyPond parser delivery: HP06
 
@@ -375,5 +420,5 @@ datum discard owns the comment context even when its child is unknown markup.
 HP07 implements summary/completion/Enter migration and the editing methods
 described above. Standalone highlighting factories install a reusable guarded
 language without a summary owner or timer. Scoped mounted lifecycle/contrast
-tests cover both languages and embedded music; full-UI acceptance and mounted
-latency qualification remain HP08 work.
+tests cover both languages and embedded music. HP08 records final passing gates
+and preserves earlier failures as history; subjective user acceptance remains external.

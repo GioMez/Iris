@@ -2,12 +2,13 @@
 // launch. Playwright's SIGINT default calls process.exit before PG/app cleanup.
 const { AsyncLocalStorage } = require("node:async_hooks");
 const { channel } = require("node:diagnostics_channel");
-const { trackProcess } = require("./disposable.cjs");
+const { trackProcess, browserTemp } = require("./disposable.cjs");
 const launches = new AsyncLocalStorage();
 async function withBrowser(work, options, use) {
   const signal = work.signal;
   signal.throwIfAborted();
   const { chromium } = require("playwright-core");
+  const temp = browserTemp(work, options.env || work.env);
   // Playwright allocates driver-side profiles before checking the executable.
   // Its env option only configures Chrome; scope driver temp files to our root
   // too, so a failed launch cannot leave profiles outside owned cleanup.
@@ -37,7 +38,7 @@ async function withBrowser(work, options, use) {
   try {
     pending = Promise.resolve().then(() => {
       signal.throwIfAborted();
-      return launches.run(token, () => chromium.launch({ headless: true, timeout: 10000, env: work.env, ...options,
+      return launches.run(token, () => chromium.launch({ headless: true, timeout: 10000, ...options, env: temp.env,
         handleSIGINT: false, handleSIGTERM: false, handleSIGHUP: false }));
     });
     const browser = await pending;
@@ -47,7 +48,7 @@ async function withBrowser(work, options, use) {
     return result;
   } finally {
     signal.removeEventListener("abort", cancel);
-    try { await close(); }
+    try { await close(); await temp.close(); }
     finally {
       children.unsubscribe(observe);
       for (const [key, value] of Object.entries(previous)) {

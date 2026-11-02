@@ -1,4 +1,5 @@
 const fs = require("node:fs/promises");
+const { mkdtempSync } = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
 const net = require("node:net");
@@ -138,6 +139,18 @@ async function until(check, label, timeout = 30000) {
 function cleanEnv() {
   return { PATH: process.env.PATH, ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}), LANG: "C.UTF-8", LC_ALL: "C.UTF-8" };
 }
+// Chromium appends a Unix socket directory and SingletonSocket to TMPDIR.
+// Nested verification workspaces can exceed even Linux's pathname limit. Only
+// the browser child gets this short private root; Node/compiler/PG paths retain
+// their original absolute roots. Synchronous acquisition registers ownership
+// before any asynchronous launch failure or cancellation can intervene.
+function browserTemp(work, env = work.env) {
+  work.signal.throwIfAborted();
+  if (process.platform === "win32") return { env, close: async () => {} };
+  const root = mkdtempSync("/tmp/iris-b-");
+  const close = work.defer(() => fs.rm(root, { recursive: true, force: true, maxRetries: 3 }));
+  return { env: { ...env, TMPDIR: root, TMP: root, TEMP: root }, close };
+}
 async function workspace(prefix = "iris-verify-") {
   if (process.platform === "win32") throw new Error("Disposable process-group cleanup requires a POSIX host (Linux/macOS)");
   const root = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -221,4 +234,4 @@ async function postgres(work, pgBin) {
   return { tool, env, port, user, password, url: `postgresql://${user}:${password}@127.0.0.1:${port}/postgres` };
 }
 const operationSignal = (timeout) => cleaning() ? AbortSignal.timeout(timeout) : AbortSignal.any([abortController.signal, AbortSignal.timeout(timeout)]);
-module.exports = { run, launch, trackProcess, workspace, postgres, freePort, until, cleanEnv, operationSignal };
+module.exports = { run, launch, trackProcess, workspace, postgres, freePort, until, cleanEnv, browserTemp, operationSignal };

@@ -31,12 +31,12 @@ test("HP07 mounted snapshot shares editor revision, replaces lifetime and select
 });
 
 test("HP07 mounted outline and region presence use the same literal-safe UTF-16 snapshot", options, async t => {
-  const source = "% 😀 \\section{Fake comment} \\label{commentFake}\n\\begin{verbatim}\n\\section{Fake literal} \\label{literalFake}\n\\end{verbatim}\n\\section{Real}\\label{live}\nbody\n\\subparagraph{Deep}\nend \\ref{}";
+  const source = "% 😀 \\section{Fake comment} \\label{commentFake}\n\\begin{verbatim}\n\\section{Fake literal} \\label{literalFake}\n\\end{verbatim}\n\\newcommand{\\later}{\\section{Fake deferred}\\label{deferredFake}}\n\\section{Real}\\label{live}\nbody\n\\subparagraph{Deep}\nend \\ref{}";
   const page = await pageFor(t, [{ id: "main", type: "file", name: "main.tex", path: "main.tex", kind: "tex", content: source }]);
   const snapshot = await readySyntax(page);
   assert.deepEqual(snapshot.outline.map(s => s.title), ["Real", "Deep"]);
   assert.deepEqual(await page.locator("#outline .label").allTextContents(), ["Real", "Deep"]);
-  assert.deepEqual(snapshot.symbols.map(s => s.name), ["live"]);
+  assert.deepEqual(snapshot.symbols.map(s => s.name), ["later", "live"]);
   await page.evaluate(async () => {
     const { startCompletion } = await import("@codemirror/autocomplete"), { EditorView } = await import("@codemirror/view");
     IrisEditor.select(IrisEditor.getValue().length - 1); IrisEditor.focus();

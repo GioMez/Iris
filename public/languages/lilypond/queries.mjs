@@ -120,14 +120,20 @@ export function* summarySteps(tree, doc) {
   let entering = true, score = 0, skipped = 0, language = null;
   for (;;) {
     if (entering) {
-      const node = cursor.node, name = node.name, parent = frames.at(-1);
-      if (!cursor.type.isTop && !cursor.type.isError && name !== "Variable" && !node.firstChild) {
-        if (++skipped === 128) { skipped = 0; yield; }
-        if (cursor.nextSibling()) continue;
-        if (!cursor.parent()) break;
-        entering = false;
-        continue;
+      const name = cursor.name;
+      if (!cursor.type.isTop && !cursor.type.isError && name !== "Variable") {
+        // Most nodes are irrelevant scalar leaves. Inspect the mutable cursor
+        // before materializing a SyntaxNode (and its buffer-parent wrappers).
+        if (!cursor.firstChild()) {
+          if (++skipped === 128) { skipped = 0; yield; }
+          if (cursor.nextSibling()) continue;
+          if (!cursor.parent()) break;
+          entering = false;
+          continue;
+        }
+        cursor.parent();
       }
+      const node = cursor.node, parent = frames.at(-1);
       const f = { name, error: node.type.isError, config: name === "MusicLiteral" ? false : parent?.config || name === "ConfigGroup", opaque: parent?.opaque || name === "SchemeDatumComment" || name === "SchemeUnknown",
         entryLanguage: language,
         depth: (parent?.depth || 0) + (groups.has(name) ? 1 : 0), score: name === "MusicLiteral" ? null : parent?.score || null, header: name !== "MusicLiteral" && parent?.header || false,

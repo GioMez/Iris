@@ -9,7 +9,7 @@
  * @typedef {{kind:'command'|'variable'|'label'|'citation',name:string,from:number,to:number,certainty:Certainty}} ReferenceRecord
  * @typedef {{path:string,from:number,to:number,certainty:Certainty}} IncludeRecord
  * @typedef {{outline:OutlineItem[],regions:Region[],symbols:SymbolRecord[],references:ReferenceRecord[],includes:IncludeRecord[]}} SummaryData
- * @typedef {SummaryData & {kind:Kind,revision:number,generation:number,status:'ready'|'partial'|'unavailable',parsedTo:number,limitReason:'source-too-large'|null}} Snapshot
+ * @typedef {SummaryData & {kind:Kind,revision:number,generation:number,status:'ready'|'partial'|'unavailable',parsedTo:number,limitReason:'source-too-large'|'worker-unavailable'|null}} Snapshot
  * @typedef {Snapshot} SyntaxSnapshot
  * @typedef {{mode:'text'|'math'|'literal'|'comment'|'music'|'lyrics'|'markup'|'chords'|'drums'|'figures'|'scheme'|'string'|'unknown',argumentRole:string|null,from:number,to:number,certainty:Certainty,argumentFrom?:number,argumentTo?:number|null,commandFrom?:number,commandTo?:number|null}} CursorContext Optional completion spans exclude argument delimiters; a null end marks a partial-tree cutoff.
  * @typedef {{from:number,to:number,insert:string}} TextChange
@@ -20,6 +20,7 @@
 import { Tree } from "@lezer/common";
 import { analysisPolicy, emptySummary } from "./iris-language-policy.mjs";
 import { createTaskScheduler } from "./iris-language-tasks.mjs";
+import { createWorkerClient, canUseLanguageWorker, WORKER_MIN_LENGTH } from "./iris-language-worker-client.mjs";
 export { analysisPolicy, MAX_ANALYSIS_LENGTH } from "./iris-language-policy.mjs";
 
 const cache = new Map();
@@ -84,7 +85,8 @@ export async function runCooperatively(steps, { signal } = {}) {
  * String inputs are wrapped without copying or line-ending normalization.
  * Above the shared size limit: Tree.empty + empty data, status unavailable,
  * parsedTo 0 and limitReason source-too-large. This is NOT an empty parsed file.
- * @returns {Promise<{tree:import('@lezer/common').Tree,doc:Source,data:SummaryData,status:'ready'|'unavailable',parsedTo:number,limitReason:'source-too-large'|null}>}
+ * Large browser inputs use the shared full-tree Worker; faults are unavailable.
+ * @returns {Promise<{tree:import('@lezer/common').Tree,doc:Source,data:SummaryData,status:'ready'|'unavailable',parsedTo:number,limitReason:'source-too-large'|'worker-unavailable'|null}>}
  */
 export async function analyze(kind, text, options = {}, { signal } = {}) {
   checkAbort(signal);
@@ -95,6 +97,17 @@ export async function analyze(kind, text, options = {}, { signal } = {}) {
   if (policy.mode === "limited") return Object.freeze({ tree: Tree.empty, doc, data: emptySummary, status: "unavailable", parsedTo: 0, limitReason: policy.reason });
   const adapter = await loadLanguage(kind, options);
   checkAbort(signal);
+  if (canUseLanguageWorker() && doc.length >= WORKER_MIN_LENGTH) {
+    const client = createWorkerClient(adapter), abort = () => client.cancel();
+    signal?.addEventListener("abort", abort, { once: true });
+    try {
+      const result = await client.parse(typeof text === "string" ? text : doc, { generation: 0, revision: 0 });
+      checkAbort(signal);
+      if (result.status !== "ready") return Object.freeze({ tree: Tree.empty, doc, data: emptySummary, status: "unavailable", parsedTo: 0, limitReason: "worker-unavailable" });
+      const data = await runCooperatively(adapter.summarySteps(result.tree, doc), { signal });
+      return Object.freeze({ tree: result.tree, doc, data, status: "ready", parsedTo: doc.length, limitReason: null });
+    } finally { signal?.removeEventListener("abort", abort); client.dispose(); }
+  }
   const input = { length: doc.length, lineChunks: false, chunk: pos => doc.sliceString(pos, Math.min(doc.length, pos + 4096)), read: (from, to) => doc.sliceString(from, to) };
   function* work() {
     const partial = adapter.language.parser.startParse(input);
