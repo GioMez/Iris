@@ -1,4 +1,5 @@
-const test = require("node:test");
+const nodeTest = require("node:test");
+const test = (name, fn) => nodeTest(name, { skip: process.env.IRIS_TEST_LUA !== "1" }, fn);
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const os = require("node:os");
@@ -7,6 +8,7 @@ const { createHash } = require("node:crypto");
 const { execFile, spawn } = require("node:child_process");
 const { watch } = require("node:fs");
 const { promisify } = require("node:util");
+const env = { PATH: process.env.PATH, LUA_BIN_PATH: process.env.LUA_BIN_PATH || "" };
 
 const hash = bytes => createHash("sha256").update(bytes).digest("hex");
 async function fixture(t, script, extra = {}) {
@@ -27,7 +29,7 @@ async function fixture(t, script, extra = {}) {
     const worker = path.resolve(__dirname, "../src/pipeline/lua-worker.js");
     const result = await promisify(execFile)(process.execPath, ["-e",
       `require(${JSON.stringify(worker)}).runLuaWorker(${JSON.stringify({ inputRoot, workRoot })}).catch(e=>{console.error(e.code||'worker failed');process.exitCode=1})`],
-    { env: { PATH: process.env.PATH }, timeout: 10000, maxBuffer: 2097152 });
+    { env, timeout: 10000, maxBuffer: 2097152 });
     return { response: JSON.parse(await fs.readFile(path.join(workRoot, "response/result.json"), "utf8")), log: result.stdout };
   } };
 }
@@ -110,7 +112,7 @@ test("Lua worker logging remains complete and bounded while the parent delays re
   const source = `require(${JSON.stringify(path.resolve(__dirname, "../src/pipeline/lua-worker.js"))}).runLuaWorker(${JSON.stringify({ inputRoot: f.inputRoot, workRoot: f.workRoot })})
     .then(()=>process.send('finished',()=>process.disconnect()),()=>{process.exitCode=1;process.disconnect()})`;
   const log = await new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, ["-e", source], { env: { PATH: process.env.PATH }, stdio: ["ignore", "pipe", "pipe", "ipc"] });
+    const child = spawn(process.execPath, ["-e", source], { env, stdio: ["ignore", "pipe", "pipe", "ipc"] });
     let output = "", stderr = "", code, signal, ended = false;
     const timer = setTimeout(() => child.kill("SIGKILL"), 10000);
     function finish() {
@@ -147,16 +149,16 @@ test("Lua diagnostic events drain after log saturation while project code keeps 
       if (file?.endsWith("include.ily")) { ready = true; child.stdout.resume(); }
     });
     const child = spawn(process.execPath, ["-e", `require(${JSON.stringify(worker)}).runLuaWorker(${JSON.stringify({ inputRoot: f.inputRoot, workRoot: f.workRoot })})`], {
-      env: { PATH: process.env.PATH }, stdio: ["ignore", "pipe", "ignore"],
+      env, stdio: ["ignore", "pipe", "ignore"], detached: true,
     });
     let output = "", diagnostics = [], timedOut = false;
-    const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, 5000);
+    const timer = setTimeout(() => { timedOut = true; process.kill(-child.pid, "SIGKILL"); }, 5000);
     child.on("error", error => { clearTimeout(timer); watcher.close(); reject(error); });
     child.stdout.on("data", bytes => {
       output += bytes;
       for (let end; (end = output.indexOf("\n")) !== -1;) {
         const event = JSON.parse(output.slice(0, end)); output = output.slice(end + 1);
-        if (event.diagnostic) { diagnostics.push(event.diagnostic); child.kill("SIGKILL"); }
+        if (event.diagnostic) { diagnostics.push(event.diagnostic); process.kill(-child.pid, "SIGKILL"); }
       }
     });
     child.stdout.pause();

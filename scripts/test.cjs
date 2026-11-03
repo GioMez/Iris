@@ -16,6 +16,8 @@ No Git or personal paths are needed. No supplied database URL is ever used.
 --native                   Enable native compiler suites; requires pdflatex,
                            lilypond and gs on PATH. Navigation browser suites
                            also use native compilers when --browser is enabled.
+--lua                      Enable installed-Lua suites; requires Lua 5.4 or 5.5.
+--lua-bin DIR              Enable Lua suites with DIR/lua instead of PATH.
 --pg-bin DIR               PostgreSQL binaries (default: pg_config --bindir).
 --pipeline-image DIGEST    Enable rootless Podman worker tests with this installed
                            digest-pinned image. No image is pulled or built.
@@ -34,8 +36,8 @@ TEST_DATABASE_URL. SIGINT/SIGTERM and failures trigger bounded owned cleanup.
 `;
 async function main() {
   const { values, positionals } = parseArgs({ allowPositionals: true, options: {
-    help: { type: "boolean" }, browser: { type: "boolean" }, native: { type: "boolean" },
-    ...Object.fromEntries(["browser-executable", "pg-bin", "pipeline-image", "podman-connection", "pattern", "concurrency", "timeout", "test-timeout"].map((key) => [key, { type: "string" }])),
+    help: { type: "boolean" }, browser: { type: "boolean" }, native: { type: "boolean" }, lua: { type: "boolean" },
+    ...Object.fromEntries(["browser-executable", "pg-bin", "lua-bin", "pipeline-image", "podman-connection", "pattern", "concurrency", "timeout", "test-timeout"].map((key) => [key, { type: "string" }])),
   } });
   if (values.help) return console.log(help);
   if (values["podman-connection"] && !values["pipeline-image"]) throw new Error("--podman-connection requires --pipeline-image");
@@ -53,13 +55,22 @@ async function main() {
     return file;
   }));
   const browser = values.browser || !!values["browser-executable"];
+  const lua = values.lua || values["lua-bin"] !== undefined;
+  const luaBin = values["lua-bin"] ? path.resolve(values["lua-bin"]) : "";
   const work = await workspace();
   try {
+    if (lua) {
+      try {
+        const version = await run(luaBin ? path.join(luaBin, "lua") : "lua", ["-E", "-e",
+          "assert(_VERSION == 'Lua 5.4' or _VERSION == 'Lua 5.5'); print(_VERSION)"], { env: work.env, timeout: 5000, quiet: true });
+        console.log(version.stdout.toString().trim());
+      } catch { throw new Error("Lua 5.4 or 5.5 is required for --lua/--lua-bin"); }
+    }
     const pg = await postgres(work, values["pg-bin"]);
     // serverFixture deliberately disables dotenv but its default static path is
     // cwd-relative. A read-only source link lets all suites share the empty cwd.
     await fs.symlink(path.join(root, "public"), path.join(work.cwd, "public"), "dir");
-    console.log(`Isolated suite: ${tests.length} files; browser=${browser ? "enabled" : "SKIPPED"}; native=${values.native ? "enabled" : "SKIPPED"}; pipeline=${values["pipeline-image"] ? "enabled" : "SKIPPED"}`);
+    console.log(`Isolated suite: ${tests.length} files; browser=${browser ? "enabled" : "SKIPPED"}; native=${values.native ? "enabled" : "SKIPPED"}; lua=${lua ? "enabled" : "SKIPPED"}; pipeline=${values["pipeline-image"] ? "enabled" : "SKIPPED"}`);
     const result = await run(process.execPath, ["--test", "--test-reporter=tap", `--test-concurrency=${concurrency}`, `--test-timeout=${testTimeout}`,
       ...(values.pattern ? [`--test-name-pattern=${values.pattern}`] : []), ...tests], {
       cwd: work.cwd, timeout, allowFailure: true,
@@ -68,6 +79,7 @@ async function main() {
         DB_HOST: "127.0.0.1", DB_PORT: String(pg.port), DB_USER: pg.user, DB_NAME: "postgres",
         DATA_DIR: path.join(work.root, "config-data"), PUBLIC_DIR: path.join(root, "public"), PORT: "0",
         IRIS_TEST_BROWSER: browser ? "1" : "0", IRIS_TEST_COMPILERS: values.native ? "1" : "0",
+        IRIS_TEST_LUA: lua ? "1" : "0", ...(lua ? { LUA_BIN_PATH: luaBin } : {}),
         ...(values["browser-executable"] ? { IRIS_BROWSER_EXECUTABLE: path.resolve(values["browser-executable"]) } : {}),
         ...(values["pipeline-image"] ? { IRIS_TEST_PIPELINE_IMAGE: values["pipeline-image"], IRIS_TEST_PODMAN_HOME: process.env.HOME,
           IRIS_TEST_PODMAN_CONNECTION: values["podman-connection"] || "" } : {}),

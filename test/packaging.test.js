@@ -147,9 +147,9 @@ test("grammar packaging is restricted to intended language source and fixture tr
   for (const name of ["public/unrelated.grammar", "src/private.grammar", "test/unrelated.grammar", "public/languages/.private/x.grammar", "public/languages/tmp/x.grammar", "docs/superpowers/x.grammar"]) assert.equal(included(name), false, name);
 });
 
-test("an extracted source archive runs the Lua VM with its trusted bootstrap", async t => {
+test("an extracted source archive runs installed Lua with its trusted bootstrap and codec", { skip: process.env.IRIS_TEST_LUA !== "1" }, async t => {
   const f = await fixture(t), repo = path.resolve(__dirname, "..");
-  for (const name of ["src/pipeline/lua-vm.js", "src/pipeline/lua-bootstrap.lua", "src/pipeline/contracts.js",
+  for (const name of ["src/pipeline/lua-vm.js", "src/pipeline/lua-bootstrap.lua", "src/pipeline/lua-process.lua", "src/pipeline/vendor/dkjson.lua", "src/pipeline/contracts.js",
     "test/fixtures/pipelines/generate.lua", "package.json", "package-lock.json"]) {
     await fs.mkdir(path.dirname(path.join(f.source, name)), { recursive: true });
     f.files[name] = await fs.readFile(path.join(repo, name));

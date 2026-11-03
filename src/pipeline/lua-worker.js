@@ -18,7 +18,7 @@ async function executeRequest({ inputRoot, workRoot }) {
     try { parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); }
     catch { fail("PIPELINE_LUA_REQUEST_INVALID", "Invalid Lua worker request"); }
     const code = "PIPELINE_LUA_REQUEST_INVALID", request = cloneValue(parsed, LUA_DATA_POLICY, code);
-    record(request, ["version", "mode", "script", "entrypoint", "modules", "context", "inputs", "outputs", "policy", "limits", "eventLimits", "memoryBytes", "expectedDescriptor"], code, "Lua worker request");
+    record(request, ["version", "mode", "script", "entrypoint", "modules", "context", "inputs", "outputs", "policy", "limits", "eventLimits", "expectedDescriptor"], code, "Lua worker request");
     if (request.version !== 1 || !["inspect", "plan", "transform"].includes(request.mode)) fail(code, "Unsupported Lua worker request");
     logicalPath(request.script, code);
     if (!Array.isArray(request.modules) || !request.modules.length || request.modules.length > 20000) fail(code, "Invalid Lua module manifest");
@@ -39,12 +39,12 @@ async function executeRequest({ inputRoot, workRoot }) {
       io = createLuaIO({ inputRoot, outputRoot, inputs: request.inputs, outputs: request.outputs,
         limits: request.limits, eventLimits: request.eventLimits,
         // The I/O layer bounds bytes before posting. The process event loop can
-        // drain these messages even while synchronous Lua keeps this thread busy.
+        // drain these messages while this thread reads or validates file bytes.
         emit: event => parentPort.postMessage(JSON.stringify(event) + "\n") });
       host = Object.fromEntries(["read", "list", "write", "log", "diagnostic"].map(key => [key, io[key]]));
     }
     const value = await executeLua({ mode: request.mode, script: request.script, modules, context: request.context,
-      entrypoint: request.entrypoint, host, policy, memoryBytes: request.memoryBytes, maxIoBytes: budget.maxArtifactBytes,
+      entrypoint: request.entrypoint, host, policy, maxIoBytes: budget.maxArtifactBytes,
       expectedDescriptor: request.expectedDescriptor });
     response = { version: 1, value };
   } catch (error) {

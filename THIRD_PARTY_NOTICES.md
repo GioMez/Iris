@@ -344,18 +344,15 @@ Sources: https://github.com/mafintosh/tar-stream,
 https://github.com/mafintosh/fast-fifo, https://github.com/mafintosh/streamx,
 https://github.com/mafintosh/teex and https://github.com/holepunchto.
 
-## Wasmoon and Lua
+## dkjson
 
-Iris pins **Wasmoon 1.16.0** for the contained pipeline worker. Its distribution
-includes the Lua WebAssembly runtime. Iris uses its raw C API for binary strings;
-the browser receives neither Wasmoon nor project Lua. The transitive
-`@types/emscripten` **1.39.10** package supplies TypeScript declarations.
+Iris ships unmodified **dkjson 2.11** in `src/pipeline/vendor/dkjson.lua` for
+metadata exchange with the installed Lua interpreter. The codec needs no
+LuaRocks packages or native extensions. Binary file contents use separate frames.
 
-- Wasmoon: Copyright (c) 2023 Gabriel Francisco.
-- Lua: Copyright (C) 1994-2022 Lua.org, PUC-Rio.
-- Emscripten declarations: Copyright (c) Microsoft Corporation.
+Copyright (C) 2010-2026 David Heiko Kolf
 
-These components use the MIT License:
+The component uses the MIT License:
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -375,10 +372,10 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-Sources: [Wasmoon 1.16.0 source revision](https://github.com/ceifa/wasmoon/tree/87c783a8d0bf65afeda933fa47d8dc996be53bb3),
-its [Lua submodule (5.4.5)](https://github.com/lua/lua/blob/be908a7d4d8130264ad67c5789169769f824c5d1/lua.h),
-and [DefinitelyTyped's Emscripten declarations](https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/emscripten).
-The installed Wasmoon and declarations packages retain their license files.
+Source: [dkjson 2.11](https://dkolf.de/dkjson-lua/dkjson-2.11.lua).
+Upstream [SHA-256 listing](https://dkolf.de/downloads):
+`197cb50834c642f84b4cf99fe724932c50e6d9c92faec7ad89aa25e91df4d481`.
+The source file retains the full license notice.
 
 ## Offline interface fonts (HP08)
 

@@ -102,10 +102,9 @@ test("contained Lua loops time out and release their worker reservation", contai
   assert.equal(result.drained, true);
 });
 
-test("contained Lua allocation and planner output limits return explicit failures", contained, async t => {
+test("Lua planner output limits return explicit failures", contained, async t => {
   const f = await fixture(t);
   for (const [source, extra, expected] of [
-    ["string.rep('x',16777216)", { memoryBytes: 4194304 }, "PIPELINE_LUA_MEMORY_LIMIT"],
     ["string.rep('x',1048576)", {}, "PIPELINE_LUA_VALUE_INVALID"],
   ]) {
     const result = await f.run({ mode: "plan", script: "iris.lua", modules: { "iris.lua": `return {plan=function() return ${source} end}` }, ...extra });

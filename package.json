@@ -35,7 +35,6 @@
     "pdfjs-dist": "6.3.289",
     "pg": "8.22.0",
     "tar-stream": "3.2.2",
-    "wasmoon": "1.16.0",
     "ws": "8.21.1"
   },
   "engines": {

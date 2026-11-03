@@ -1,14 +1,18 @@
-const test = require("node:test");
+const nodeTest = require("node:test");
+const test = (name, fn) => nodeTest(name, { skip: process.env.IRIS_TEST_LUA !== "1" }, fn);
 const assert = require("node:assert/strict");
 const path = require("node:path");
+const fs = require("node:fs/promises");
+const os = require("node:os");
 const { fork } = require("node:child_process");
+const { executeLua } = require("../src/pipeline/lua-vm");
 
 function run(request) {
   return new Promise((resolve, reject) => {
-    const child = fork(path.join(__dirname, "helpers/lua-vm-process.cjs"), { stdio: ["ignore", "pipe", "pipe", "ipc"],
-      env: { PATH: process.env.PATH } });
+    const child = fork(path.join(__dirname, "helpers/lua-vm-process.cjs"), { stdio: ["ignore", "pipe", "pipe", "ipc"], detached: true,
+      env: { PATH: process.env.PATH, LUA_BIN_PATH: process.env.LUA_BIN_PATH || "" } });
     let response, stderr = "";
-    const timer = setTimeout(() => { child.kill("SIGKILL"); }, 10000);
+    const timer = setTimeout(() => { process.kill(-child.pid, "SIGKILL"); }, 10000);
     child.stderr.on("data", bytes => { if (stderr.length < 4096) stderr += bytes; });
     child.on("message", value => { response = value; });
     child.on("error", reject);
@@ -20,6 +24,75 @@ function run(request) {
     child.send({ mode: "plan", script: "iris.lua", modules: { "iris.lua": "return { plan = function(ctx) return ctx end }" }, ...request });
   });
 }
+
+test("Lua uses the configured executable directory instead of an embedded interpreter", async () => {
+  const result = await run({ binPath: path.join(__dirname, "missing-lua-installation") });
+  assert.equal(result.error?.code, "PIPELINE_LUA_UNAVAILABLE", JSON.stringify(result));
+});
+
+test("Lua invocation deadlines terminate a planner loop", async () => {
+  const result = await run({ timeoutMs: 100, modules: { "iris.lua": "return {plan=function() while true do end end}" } });
+  assert.equal(result.error?.code, "PIPELINE_LUA_TIMEOUT", JSON.stringify(result));
+});
+
+test("Lua cancellation terminates a running planner and preserves the abort reason", async () => {
+  const result = await run({ abortAfterMs: 100, modules: { "iris.lua": "return {plan=function() while true do end end}" } });
+  assert.equal(result.error?.code, 20, JSON.stringify(result));
+});
+
+test("Lua cancellation from a host callback preserves authority failure and stops further I/O", async () => {
+  const controller = new AbortController(), reason = Object.assign(new Error("lost authority"), { code: "PIPELINE_RUN_AUTHORITY_CHANGED" });
+  let calls = 0;
+  await assert.rejects(executeLua({ mode: "transform", script: "iris.lua", entrypoint: "go", signal: controller.signal,
+    modules: { "iris.lua": "return {go=function(ctx) ctx.log('info','ready'); ctx.log('info','stale') end}" },
+    host: { log: () => { calls++; controller.abort(reason); } },
+  }), error => error === reason);
+  assert.equal(calls, 1);
+});
+
+test("Lua cancellation during a binary reply retains the abort reason rather than a pipe error", async () => {
+  const controller = new AbortController(), reason = new Error("cancel binary transfer");
+  await assert.rejects(executeLua({ mode: "transform", script: "iris.lua", entrypoint: "go", signal: controller.signal,
+    modules: { "iris.lua": "return {go=function(ctx) return #ctx.read('input','bytes.bin') end}" },
+    host: { read: () => { controller.abort(reason); return Buffer.alloc(1024 * 1024); } },
+  }), error => error === reason);
+});
+
+test("Lua data transport retains double precision and Unicode at the graph byte limit", async () => {
+  const context = { pi: 3.141592653589793, fraction: 1.2345678901234567, text: "\ufeff".repeat(100) };
+  const maxPlanBytes = Buffer.byteLength(JSON.stringify(context));
+  assert.deepEqual((await run({ context, policy: { maxPlanBytes } })).result, context);
+  assert.equal((await run({ context, policy: { maxPlanBytes: maxPlanBytes - 1 } })).error?.code, "PIPELINE_LUA_VALUE_INVALID");
+});
+
+test("Lua retains finite JavaScript numbers outside the safe-integer range as doubles", async () => {
+  const context = { value: 1e18, negative: -1e18, huge: Number.MAX_VALUE, tiny: Number.MIN_VALUE };
+  const result = await run({ context });
+  assert.equal(result.error, undefined, JSON.stringify(result.error));
+  assert.deepEqual(result.result, context);
+});
+
+test("Lua binary read and write frames enforce their byte budget even when caught by the plugin", async () => {
+  for (const body of ["pcall(ctx.read,'input','bytes.bin')", "pcall(ctx.write,'out','bytes.bin',string.rep('x',1025))"]) {
+    const result = await run({ mode: "transform", entrypoint: "go", maxIoBytes: 1024, bytes: Buffer.alloc(1025).toString("base64"),
+      modules: { "iris.lua": `return {go=function(ctx) ${body} end}` } });
+    assert.equal(result.error?.code, "PIPELINE_LUA_VALUE_INVALID", JSON.stringify(result));
+  }
+});
+
+test("Lua rejects malformed process frames before accepting a result", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "iris-lua-protocol-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const executable = path.join(root, "lua");
+  // Controlled executables exercise corruption that trusted Lua cannot emit.
+  for (const frame of [Buffer.from([255,255,255,255,0,0,0,0]), Buffer.from([0,0,0,1,0,0,0,0,255]),
+    Buffer.from([0,0,0,8,0,0,0,0,123])]) {
+    await fs.writeFile(executable, `#!${process.execPath}\nprocess.stdin.resume();process.stdout.end(Buffer.from('${frame.toString("base64")}','base64'),()=>process.exit(0));`, { mode: 0o700 });
+    const result = await run({ binPath: root });
+    assert.equal(result.error?.code, "PIPELINE_LUA_PROTOCOL_INVALID", JSON.stringify(result));
+    assert.ok(!result.error.message.includes(root));
+  }
+});
 
 test("Lua descriptor inspection leaves entrypoints uncalled and planner values retain JSON shape", async () => {
   const inspected = await run({ mode: "inspect", modules: { "iris.lua": `return { apiVersion=1, pluginId="sample",
@@ -115,31 +188,12 @@ test("Lua host callbacks reject extra arguments before interpreting their values
   assert.equal(result.error?.code, "PIPELINE_LUA_VALUE_INVALID", JSON.stringify(result));
 });
 
-test("unused approved modules do not consume the interpreter allocation allowance", async () => {
-  const result = await run({ memoryBytes: 4 * 1024 * 1024, modules: {
+test("unused approved modules are not read into the interpreter", async () => {
+  const result = await executeLua({ mode: "plan", script: "iris.lua", modules: {
     "iris.lua": "return {plan=function() return 42 end}",
-    "unused.lua": "--" + "x".repeat(8 * 1024 * 1024),
+    get "unused.lua"() { throw new Error("unused module was read"); },
   } });
-  assert.equal(result.error, undefined, JSON.stringify(result.error));
-  assert.equal(result.result, 42);
-});
-
-test("Lua source and context allocations fail within the protected interpreter call", async () => {
-  for (const request of [
-    { memoryBytes: 4194304, modules: { "iris.lua": "--" + "x".repeat(8388608) } },
-    { memoryBytes: 524288, context: Array.from({ length: 12 }, (_, i) => String(i).padEnd(65536, "x")) },
-  ]) {
-    const result = await run(request);
-    assert.equal(result.error?.code, "PIPELINE_LUA_MEMORY_LIMIT", JSON.stringify(result));
-  }
-});
-
-test("Lua host input allocation exhaustion returns the memory limit error", async () => {
-  const result = await run({ memoryBytes: 4194304, mode: "transform", entrypoint: "read",
-    bytes: Buffer.alloc(8388608).toString("base64"), modules: {
-      "iris.lua": "return {read=function(ctx) ctx.read('input','bytes.bin') end}",
-    } });
-  assert.equal(result.error?.code, "PIPELINE_LUA_MEMORY_LIMIT", JSON.stringify(result));
+  assert.equal(result, 42);
 });
 
 test("Lua boundary enforces byte, node and depth budgets before IPC", async () => {
@@ -151,10 +205,7 @@ test("Lua boundary enforces byte, node and depth budgets before IPC", async () =
   }
 });
 
-test("Lua allocation caps fail explicitly and pure randomness requires an explicit seed", async () => {
-  const exhausted = await run({ memoryBytes: 4 * 1024 * 1024,
-    modules: { "iris.lua": "return {plan=function() return string.rep('a',16*1024*1024) end}" } });
-  assert.equal(exhausted.error?.code, "PIPELINE_LUA_MEMORY_LIMIT", JSON.stringify(exhausted));
+test("Lua randomness requires an explicit seed", async () => {
   const random = await run({ modules: { "iris.lua": `return {plan=function()
     assert(not pcall(math.random)); assert(not pcall(math.randomseed))
     math.randomseed(123); local first=math.random(); math.randomseed(123)
@@ -175,9 +226,12 @@ test("integer parameters can seed the Lua random generator", async () => {
 
 test("Lua cannot hide a host I/O failure in pcall or a VM-close finalizer", async () => {
   for (const body of ["pcall(ctx.read,'denied','secret')", `keeper=setmetatable({}, {__gc=function()
-    pcall(ctx.read,'denied','secret') end})`]) {
+    pcall(ctx.read,'denied','secret') end})`, `keeper=setmetatable({}, {__gc=function()
+    pcall(ctx.read,'denied','secret') end}); error('action failed')`,
+    `keeper=setmetatable({}, {__gc=function() require('cleanup').run(ctx) end})`]) {
     const result = await run({ mode: "transform", entrypoint: "attempt", modules: {
       "iris.lua": `return {attempt=function(ctx) ${body} end}`,
+      "cleanup.lua": "return {run=function(ctx) pcall(ctx.read,'denied','secret') end}",
     } });
     assert.equal(result.error?.code, "PIPELINE_INPUT_INVALID", body + ": " + JSON.stringify(result));
   }

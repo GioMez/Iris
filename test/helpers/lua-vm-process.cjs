@@ -1,9 +1,11 @@
-// Controlled fixtures only. Production callers must use the contained worker.
+// Controlled fixtures only. Production callers use the checked worker.
 process.on("message", async request => {
+  const controller = new AbortController();
+  const timer = request.abortAfterMs === undefined ? null : setTimeout(() => controller.abort(), request.abortAfterMs);
   try {
     const { executeLua } = require("../../src/pipeline/lua-vm");
     const writes = [], logs = [];
-    const result = await executeLua({ ...request, host: {
+    const result = await executeLua({ ...request, signal: controller.signal, host: {
       read: (name, file) => {
         if (name !== "input" || file !== "bytes.bin") throw Object.assign(new Error("denied"), { code: "PIPELINE_INPUT_INVALID" });
         return Buffer.from(request.bytes || "", "base64");
@@ -16,5 +18,5 @@ process.on("message", async request => {
     process.send({ result, writes, logs }, () => process.disconnect());
   } catch (error) {
     process.send({ error: { code: error.code, message: error.message } }, () => process.disconnect());
-  }
+  } finally { clearTimeout(timer); }
 });

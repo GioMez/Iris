@@ -89,7 +89,7 @@ test("Lua snapshot creation detects edits after approval while preserving accept
   await assert.rejects(host.inspectLua({ approval }), { code: "PIPELINE_APPROVAL_REQUIRED" });
   assert.equal(f.starts(), 0);
   assert.equal(await fs.readFile(path.join(f.workspace.snapshot.root, "settings.lua"), "utf8"), "return {count=3}");
-  const policy = f.createHost({ memoryBytes: 134217728 });
+  const policy = f.createHost({ limits: { maxArtifactBytes: 67108864 } });
   await assert.rejects(policy.inspectLua({ approval }), { code: "PIPELINE_APPROVAL_REQUIRED" });
   const registry = createRegistry([{ ...definitions[0], implementationHash: "b".repeat(64) }]);
   await assert.rejects(f.createHost({ registry }).inspectLua({ approval }), { code: "PIPELINE_APPROVAL_REQUIRED" });

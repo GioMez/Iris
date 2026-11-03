@@ -15,7 +15,7 @@ const compare = (a, b) => a < b ? -1 : a > b ? 1 : 0;
 const workerPath = "/opt/iris/src/pipeline/lua-worker.js";
 // One MiB of diagnostics plus JSON-line envelopes for at most 1,000 events.
 const protocolBytes = 1048576 + 16000;
-const implementationHash = digest(["lua.js", "lua-worker.js", "lua-io.js", "lua-vm.js", "lua-bootstrap.lua", "contracts.js",
+const implementationHash = digest(["lua.js", "lua-worker.js", "lua-io.js", "lua-vm.js", "lua-bootstrap.lua", "lua-process.lua", "vendor/dkjson.lua", "contracts.js",
   "runtime.js", "transfers.js", "workspaces.js"].map(file => [file, hash(readFileSync(path.join(__dirname, file)))]));
 
 // The snapshot owner has already hashed byte-exact authoritative source. All
@@ -66,9 +66,9 @@ function metadata(value) {
     .filter(key => Object.hasOwn(value, key)).map(key => [key, value[key]]));
 }
 
-function createLuaCoordinator({ runtime, workspace, runId, registry, policy: overrides, limits = {}, memoryBytes = 268435456, deadlineAt }) {
+function createLuaCoordinator({ runtime, workspace, runId, registry, policy: overrides, limits = {}, deadlineAt }) {
   const policy = readPolicy(overrides), budget = readWorkspaceLimits(limits), bundle = luaBundle(workspace.snapshot);
-  if (!isUuid(runId) || !Number.isSafeInteger(memoryBytes) || memoryBytes < 1) fail("PIPELINE_LUA_REQUEST_INVALID", "Invalid Lua coordinator configuration");
+  if (!isUuid(runId)) fail("PIPELINE_LUA_REQUEST_INVALID", "Invalid Lua coordinator configuration");
   const registryManifest = registry.manifest();
   const runtimeManifest = runtime.manifest();
   deadlineAt ??= Date.now() + runtimeManifest.policy.runTimeoutMs;
@@ -80,7 +80,7 @@ function createLuaCoordinator({ runtime, workspace, runId, registry, policy: ove
   const plans = new WeakSet();
   const capabilities = [...new Set(registryManifest.flatMap(entry => entry.capabilities))].sort(compare);
   const identity = freeze({ bundleHash: bundle.bundleHash,
-    policyHash: digest({ version: 1, runtime: runtimeManifest, policy, limits: budget, memoryBytes, workerPath, implementationHash }),
+    policyHash: digest({ version: 1, runtime: runtimeManifest, policy, limits: budget, workerPath, implementationHash }),
     registryHash: digest([...registryManifest].sort((a, b) => compare(`${a.id}@${a.version}`, `${b.id}@${b.version}`))) });
   function approved(approval) {
     if (!approval || Object.entries(identity).some(([key, value]) => approval[key] !== value)) fail("PIPELINE_APPROVAL_REQUIRED", "Exact Lua bundle approval is required");
@@ -99,7 +99,7 @@ function createLuaCoordinator({ runtime, workspace, runId, registry, policy: ove
   async function invoke(mode, extra, signal, { context, emit = async () => {}, reportDiagnostic = async () => {} } = {}) {
     signal?.throwIfAborted();
     const request = cloneValue({ version: 1, mode, script: bundle.script, modules: bundle.modules,
-      policy, limits: budget, memoryBytes, eventLimits: { maxLogBytes }, ...extra }, LUA_DATA_POLICY, "PIPELINE_LUA_REQUEST_INVALID");
+      policy, limits: budget, eventLimits: { maxLogBytes }, ...extra }, LUA_DATA_POLICY, "PIPELINE_LUA_REQUEST_INVALID");
     const bytes = Buffer.from(JSON.stringify(request));
     const root = await fs.mkdtemp(path.join(workspace.root, "lua-"));
     let worker, recoveryRequired = false;

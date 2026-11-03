@@ -35,6 +35,8 @@ test("portable runner provisions its own PG18+, ignores ambient configuration an
       assert.equal(process.env.IRIS_TEST_BASE_URL, undefined);
       assert.equal(process.env.IRIS_TEST_BROWSER, '0');
       assert.equal(process.env.IRIS_TEST_COMPILERS, '0');
+      assert.equal(process.env.IRIS_TEST_LUA, '0');
+      assert.equal(process.env.LUA_BIN_PATH, undefined);
       assert.ok(process.env.TEST_DATABASE_URL.includes('127.0.0.1'));
       const result = spawnSync('psql', [process.env.TEST_DATABASE_URL, '-Atc', 'SHOW server_version_num'], { encoding: 'utf8' });
       assert.equal(result.status, 0, result.stderr);
@@ -44,13 +46,20 @@ test("portable runner provisions its own PG18+, ignores ambient configuration an
   `);
   const result = spawnSync(process.execPath, [path.join(root, "scripts/test.cjs")], {
     cwd: root, encoding: "utf8", timeout: 45000,
-    env: { ...process.env, TMPDIR: path.join(root, "temporary"), IRIS_SECRET: "ambient-secret", DB_PASSWORD: "ambient-password", DB_HOST: "must-not-contact", TEST_DATABASE_URL: "postgresql://must-not-contact/no", IRIS_TEST_BASE_URL: "http://must-not-contact", IRIS_TEST_BROWSER: "1", IRIS_TEST_COMPILERS: "1" },
+    env: { ...process.env, TMPDIR: path.join(root, "temporary"), IRIS_SECRET: "ambient-secret", DB_PASSWORD: "ambient-password", DB_HOST: "must-not-contact", TEST_DATABASE_URL: "postgresql://must-not-contact/no", IRIS_TEST_BASE_URL: "http://must-not-contact", IRIS_TEST_BROWSER: "1", IRIS_TEST_COMPILERS: "1", IRIS_TEST_LUA: "1", LUA_BIN_PATH: "/ambient-lua" },
   });
   assert.equal(result.status, 1, result.stderr);
-  assert.match(result.stdout, /ok 1 - isolated configuration/);
+  assert.match(result.stdout, /^ok 1 - isolated configuration/m);
   assert.match(result.stdout, /sentinel-suite-failure/);
   assert.match(result.stdout, /Cleanup confirmed/);
   assert.deepEqual(await fs.readdir(path.join(root, "temporary")), []);
+});
+
+test("explicit Lua test selection fails when the configured interpreter is absent", () => {
+  const result = spawnSync(process.execPath, [path.resolve(__dirname, "../scripts/test.cjs"),
+    "--lua-bin", path.join(__dirname, "missing-lua"), "test/pipeline-lua.test.js"], { encoding: "utf8", timeout: 15000 });
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /Lua 5\.4 or 5\.5 is required/);
 });
 
 test("bounded command timeout terminates an owned process group, including grandchildren", async () => {
