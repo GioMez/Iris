@@ -74,7 +74,10 @@ test("the contained Lua file protocol transfers binary outputs and logical diagn
     args: ["/opt/iris/src/pipeline/lua-worker.js"] });
   assert.equal(result.code, 0, result.log);
   assert.equal(result.drained, true);
-  assert.deepEqual(JSON.parse(result.log), { level: "info", message: "binary output" });
+  assert.deepEqual(result.log.trim().split("\n").map(line => JSON.parse(line)), [
+    { level: "info", message: "binary output" },
+    { diagnostic: { severity: "warning", message: "input note", input: "source", file: "bytes.bin", line: 1 } },
+  ]);
   const response = await f.runtime.exportWorkspace({ workspace: f.workspace, directory: "response", destination: path.join(root, "reply") });
   assert.deepEqual(JSON.parse(await fs.readFile(path.join(response.root, "response/result.json"), "utf8")), {
     version: 1, value: null, diagnostics: [{ severity: "warning", message: "input note", input: "source", file: "bytes.bin", line: 1 }], logsTruncated: false,

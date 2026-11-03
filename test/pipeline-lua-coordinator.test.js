@@ -43,7 +43,7 @@ async function fixture(t, { native = false, sources = { "iris.lua": script, "set
   t.after(async () => { await runtime?.close(); await disposeRunWorkspace(workspace); await fs.rm(root, { recursive: true }); });
   const policy = readRuntimePolicy({ image: image || `sha256:${"a".repeat(64)}`, memoryBytes: 268435456, totalMemoryBytes: 335544320,
     outputBytes: 16777216, tempBytes: 8388608, outputEntries: 1024, tempEntries: 64 });
-  const tools = [{ id: "lua-worker", path: "/usr/local/bin/node", timeoutMs: 5000 }];
+  const tools = [require("../src/pipeline/lua").createLuaTool()];
   if (native) runtime = await createPodmanRuntime({ root: path.join(root, "runtime"), coordinatorId: uuidv7(),
     transport: { connection: process.env.IRIS_TEST_PODMAN_CONNECTION, home: process.env.IRIS_TEST_PODMAN_HOME }, policy, tools });
   const boundary = native ? { ...runtime, createWorkspace: options => { starts++; admissions.push(options.stepId); return runtime.createWorkspace(options); } } : {
@@ -228,7 +228,7 @@ test("contained Lua transforms preserve binary products and bind source/generate
   assert.deepEqual(f.admissions, ["inspect", "plan", "generate", "check"]);
 });
 
-test("contained Lua transformation failure retains checked diagnostics and publishes no bytes", contained, async t => {
+for (const corruptReply of [false, true]) test(`contained Lua failure retains diagnostics with ${corruptReply ? "a changed final reply" : "a matching final reply"}`, contained, async t => {
   const { createLuaAdapter } = require("../src/pipeline/lua");
   let f, plan;
   const plugin = `return {apiVersion=1,pluginId='failure',plan=function() return {
@@ -240,26 +240,66 @@ test("contained Lua transformation failure retains checked diagnostics and publi
   f = await fixture(t, { native: true, sources: { "iris.lua": plugin }, adapters: [
     createLuaAdapter({ execute: context => f.host.transformLua({ approval: f.host.identity, plan, context }) }),
   ] });
+  if (corruptReply) f.host = f.createHost({ runtime: { ...f.boundary, async exportWorkspace(options) {
+    const exported = await f.boundary.exportWorkspace(options);
+    if (options.workspace.stepId !== "fail" || options.directory !== "response") return exported;
+    const file = exported.files[0], full = path.join(exported.root, file.path);
+    const response = JSON.parse(await fs.readFile(full, "utf8"));
+    response.diagnostics = [];
+    const bytes = JSON.stringify(response);
+    await fs.chmod(full, 0o600); await fs.writeFile(full, bytes);
+    return { ...exported, files: [{ ...file, size: Buffer.byteLength(bytes), contentHash: hash(bytes) }] };
+  } } });
   const descriptor = await f.host.inspectLua({ approval: f.host.identity });
   plan = await f.host.planLua({ approval: f.host.identity, descriptor });
   const result = await executePlan({ plan, target: "default", workspace: f.workspace, registry: f.registry,
     gate: new ConcurrencyGate({ limit: 1, queueLimit: 1 }) });
   assert.equal(result.state, "failed");
-  assert.equal(result.steps[0].errorCode, "PIPELINE_LUA_EXECUTION_FAILED");
+  assert.equal(result.steps[0].errorCode, corruptReply ? "PIPELINE_DIAGNOSTICS_CHANGED" : "PIPELINE_LUA_EXECUTION_FAILED");
   assert.deepEqual(result.steps[0].diagnostics, [{ severity: "error", message: "retained failure", stepId: "fail" }]);
   assert.deepEqual(result.artifacts, []);
   assert.deepEqual(await fs.readdir(path.join(f.workspace.root, "steps/fail/output")), []);
 });
 
+test("Lua timeout retains a live diagnostic after log saturation and publishes no product", contained, async t => {
+  const { createLuaAdapter } = require("../src/pipeline/lua");
+  let f, plan;
+  const logs = [], progress = [];
+  const plugin = `return {apiVersion=1,pluginId='timeout',plan=function() return {
+    apiVersion=1,pluginId='timeout',steps={{id='wait',adapter={id='iris.lua',version='1.0.0'},
+      options={script='iris.lua',entrypoint='wait'}}},targets={default={steps={'wait'},publish=iris.array{}}}} end,
+    wait=function(ctx)
+      for i=1,100 do ctx.log('info',string.rep('x',60000)) end
+      ctx.diagnostic({severity='warning',message='before timeout'})
+      while true do end
+    end}`;
+  f = await fixture(t, { native: true, sources: { "iris.lua": plugin }, adapters: [
+    createLuaAdapter({ execute: context => f.host.transformLua({ approval: f.host.identity, plan, context, emit: event => logs.push(event) }) }),
+  ] });
+  const descriptor = await f.host.inspectLua({ approval: f.host.identity });
+  plan = await f.host.planLua({ approval: f.host.identity, descriptor });
+  const result = await executePlan({ plan, target: "default", workspace: f.workspace, registry: f.registry,
+    gate: new ConcurrencyGate({ limit: 1, queueLimit: 1 }), emit: event => progress.push(structuredClone(event)) });
+  assert.equal(result.state, "failed");
+  assert.equal(result.steps[0].errorCode, "PIPELINE_LUA_TIMEOUT");
+  assert.deepEqual(result.steps[0].diagnostics, [{ severity: "warning", message: "before timeout", stepId: "wait" }]);
+  assert.deepEqual(progress[1], { stepId: "wait", diagnostic: result.steps[0].diagnostics[0] });
+  assert.equal(logs.length, 17);
+  assert.deepEqual(result.artifacts, []);
+  assert.deepEqual(await fs.readdir(path.join(f.root, "runtime")), ["installation.json"]);
+});
+
 test("cancelling a running Lua transform drains its worker and prevents partial product export", contained, async t => {
   const { createLuaAdapter } = require("../src/pipeline/lua");
   let f, plan;
-  const controller = new AbortController(), events = [];
+  const controller = new AbortController(), events = [], progress = [];
   const plugin = `return {apiVersion=1,pluginId='cancel',plan=function() return {
     apiVersion=1,pluginId='cancel',steps={{id='wait',adapter={id='iris.lua',version='1.0.0'},
       options={script='iris.lua',entrypoint='wait'},outputs={out={kind='file',mediaType='text/plain',path='out.txt'}}}},
     targets={default={steps={'wait'},publish={{step='wait',port='out'}}}}} end,
-    wait=function(ctx) ctx.write('out','out.txt','partial') ctx.log('info','ready') while true do end end}`;
+    wait=function(ctx) ctx.write('out','out.txt','partial')
+      ctx.diagnostic({severity='warning',message='before cancellation'})
+      ctx.log('info','ready') while true do end end}`;
   f = await fixture(t, { native: true, sources: { "iris.lua": plugin }, adapters: [
     createLuaAdapter({ execute: context => f.host.transformLua({ approval: f.host.identity, plan, context,
       emit: event => { events.push(event); controller.abort(); } }) }),
@@ -267,10 +307,12 @@ test("cancelling a running Lua transform drains its worker and prevents partial 
   const descriptor = await f.host.inspectLua({ approval: f.host.identity });
   plan = await f.host.planLua({ approval: f.host.identity, descriptor });
   const result = await executePlan({ plan, target: "default", workspace: f.workspace, registry: f.registry,
-    signal: controller.signal, gate: new ConcurrencyGate({ limit: 1, queueLimit: 1 }) });
+    signal: controller.signal, gate: new ConcurrencyGate({ limit: 1, queueLimit: 1 }), emit: event => progress.push(structuredClone(event)) });
   assert.equal(result.state, "cancelled", JSON.stringify(result.steps));
   assert.equal(result.steps[0].state, "cancelled");
   assert.deepEqual(events, [{ stepId: "wait", level: "info", message: "ready" }]);
+  assert.deepEqual(result.steps[0].diagnostics, [{ severity: "warning", message: "before cancellation", stepId: "wait" }]);
+  assert.deepEqual(progress[1], { stepId: "wait", diagnostic: result.steps[0].diagnostics[0] });
   assert.deepEqual(result.artifacts, []);
   assert.deepEqual(await fs.readdir(path.join(f.workspace.root, "steps/wait/output")), []);
   assert.deepEqual(await fs.readdir(path.join(f.root, "runtime")), ["installation.json"]);

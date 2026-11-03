@@ -131,6 +131,25 @@ test("editors cancel only their own runs; owners cancel any; terminal cancellati
   await assert.rejects(runs.getRun(f.store, own.id, f.principals.owner, uuidv7()), { statusCode: 404 });
 });
 
+test("cancellation releases the project gate before waiting for a worker's pending event write", options, async t => {
+  const f = await fixture(t), approval = await f.approve(), run = await f.accept(approval);
+  let observedState;
+  f.store.stop = async id => {
+    const write = f.store.mutations.gate(f.projectId, async () => {
+      observedState = (await f.pool.query("SELECT status FROM build_outputs WHERE id=$1", [id])).rows[0].status;
+    });
+    let timer;
+    try {
+      await Promise.race([write, new Promise((resolve, reject) => {
+        timer = setTimeout(() => reject(new Error("Worker event write is blocked by the cancellation gate")), 1000);
+      })]);
+    } finally { clearTimeout(timer); }
+  };
+  const result = await runs.cancelRun(f.store, run.id, f.principals.editor);
+  assert.equal(result.state, "cancelled");
+  assert.equal(observedState, "cancelled");
+});
+
 test("publication and cancellation have one terminal winner and never reopen a finished run", options, async t => {
   const f = await fixture(t), approval = await f.approve();
   for (const cancelFirst of [true, false]) {

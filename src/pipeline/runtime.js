@@ -100,10 +100,13 @@ async function createPodmanRuntime({ root, coordinatorId, transport = {}, policy
     if (registered.has(definition.id) || !/^\/[a-zA-Z0-9_./-]+$/.test(definition.path) || definition.path.split("/").includes("..")
       || !Number.isSafeInteger(definition.timeoutMs) || definition.timeoutMs < 1 || definition.timeoutMs > policy.runTimeoutMs) throw error("PIPELINE_TOOL_INVALID");
     const env = definition.env === undefined ? {} : definition.env;
+    const protocolBytes = definition.protocolBytes ?? 0;
+    if (!Number.isSafeInteger(protocolBytes) || protocolBytes < 0 || protocolBytes > 16777216
+      || !Number.isSafeInteger(policy.logBytes + protocolBytes)) throw error("PIPELINE_TOOL_INVALID");
     if (!env || typeof env !== "object" || Array.isArray(env) || Object.keys(env).length > 64
       || Object.entries(env).some(([key, value]) => !/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(key) || typeof value !== "string" || value.includes("\0"))
       || Buffer.byteLength(JSON.stringify(env)) > 65536) throw error("PIPELINE_TOOL_INVALID");
-    const tool = Object.freeze({ id: definition.id, path: definition.path, timeoutMs: definition.timeoutMs, env: Object.freeze({ ...env }) });
+    const tool = Object.freeze({ id: definition.id, path: definition.path, timeoutMs: definition.timeoutMs, protocolBytes, env: Object.freeze({ ...env }) });
     tokens.add(tool); registered.set(tool.id, tool);
   }
   const info = JSON.parse(await client.run(["info", "--format", "json"]));
@@ -379,7 +382,7 @@ async function createPodmanRuntime({ root, coordinatorId, transport = {}, policy
         return { code: null, signal: null, log: "", truncated: false, cancelled: true, timedOut: false, oomKilled: false, drained: true, durationMs: Date.now() - started };
       }
       worker.execution = client.start(["start", "--attach", worker.name], { timeoutMs: timeoutMs + 2 * policy.controlTimeoutMs,
-        maxBytes: Math.min(policy.logBytes, outputLimitBytes ?? policy.logBytes), onOutput, captureStreams, control: false,
+        maxBytes: Math.min(policy.logBytes + tool.protocolBytes, outputLimitBytes ?? policy.logBytes + tool.protocolBytes), onOutput, captureStreams, control: false,
         onOutputLimit: outputLimitBytes === undefined ? undefined : () => { outputLimited = true; stop(); } });
       signal?.addEventListener("abort", stop, { once: true });
       timer = setTimeout(() => { timedOut = true; stop(); }, timeoutMs);

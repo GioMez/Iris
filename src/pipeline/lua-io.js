@@ -108,6 +108,7 @@ function createLuaIO({ inputRoot, outputRoot, inputs, outputs, limits = {}, even
       const size = Buffer.byteLength(JSON.stringify(item)) + (diagnostics.length ? 1 : 0);
       if (diagnosticBytes + size > events.maxDiagnosticBytes || diagnostics.length >= events.maxEvents) fail("PIPELINE_DIAGNOSTICS_LIMIT", "Lua diagnostics exceed their limit");
       diagnosticBytes += size; diagnostics.push(item);
+      emit({ diagnostic: item });
     },
     result() { return { diagnostics: diagnostics.map(item => ({ ...item })), logsTruncated }; },
     list(key) { return [...members(key).values()].map(file => ({ ...file })); },

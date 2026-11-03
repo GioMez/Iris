@@ -1,4 +1,5 @@
 const { resolveTarget, cloneValue, fail } = require("./contracts");
+const { isDeepStrictEqual } = require("node:util");
 const { materializeInputs, validateOutputs } = require("./workspaces");
 
 async function executePlan({ plan, target, workspace, registry, gate, signal = new AbortController().signal, emit = async () => {}, onArtifacts = async () => {} }) {
@@ -13,7 +14,18 @@ async function executePlan({ plan, target, workspace, registry, gate, signal = n
   let failed = false, diagnosticBytes = 0;
   for (const step of selected.steps) {
     const result = { id: step.id, state: "pending", diagnostics: [] };
+    let stepDiagnosticBytes = 2;
+    diagnosticBytes += stepDiagnosticBytes;
     steps.push(result);
+    async function reportDiagnostic(value) {
+      const item = cloneValue(value, plan.policy, "PIPELINE_DIAGNOSTICS_INVALID");
+      if (!item || typeof item !== "object" || Array.isArray(item)) fail("PIPELINE_DIAGNOSTICS_INVALID", "Invalid pipeline diagnostic");
+      const bytes = Buffer.byteLength(JSON.stringify(item)) + (result.diagnostics.length ? 1 : 0);
+      if (diagnosticBytes + bytes > 1048576) fail("PIPELINE_DIAGNOSTICS_LIMIT", "Pipeline diagnostics exceed the run budget");
+      diagnosticBytes += bytes; stepDiagnosticBytes += bytes;
+      result.diagnostics.push(item);
+      await emit({ stepId: step.id, diagnostic: item });
+    }
     async function transition(next) {
       await emit({ stepId: step.id, state: next, diagnostics: result.diagnostics, ...(result.errorCode ? { errorCode: result.errorCode } : {}) });
       result.state = next; states.set(step.id, next);
@@ -31,16 +43,18 @@ async function executePlan({ plan, target, workspace, registry, gate, signal = n
       await transition("running");
       let produced, error, rejected = false;
       try {
-        const context = await materializeInputs(workspace, step, artifacts, { signal, policy: plan.policy });
+        const context = await materializeInputs(workspace, step, artifacts, { signal, policy: plan.policy, reportDiagnostic });
         signal.throwIfAborted();
         // Registered adapters settle only after contained workers have drained.
         const outcome = await definitions.get(step.id).execute(context);
-        signal.throwIfAborted();
-        const diagnostics = cloneValue(outcome?.diagnostics ?? [], plan.policy);
+        const diagnostics = cloneValue(outcome?.diagnostics ?? result.diagnostics, plan.policy);
         if (!Array.isArray(diagnostics)) fail("PIPELINE_DIAGNOSTICS_INVALID", "Invalid pipeline diagnostics");
-        diagnosticBytes += Buffer.byteLength(JSON.stringify(diagnostics));
-        if (diagnosticBytes > 1048576) fail("PIPELINE_DIAGNOSTICS_LIMIT", "Pipeline diagnostics exceed the run budget");
+        if (result.diagnostics.some((item, index) => !isDeepStrictEqual(item, diagnostics[index]))) fail("PIPELINE_DIAGNOSTICS_CHANGED", "Final diagnostics changed their streamed prefix");
+        const bytes = Buffer.byteLength(JSON.stringify(diagnostics));
+        if (diagnosticBytes - stepDiagnosticBytes + bytes > 1048576) fail("PIPELINE_DIAGNOSTICS_LIMIT", "Pipeline diagnostics exceed the run budget");
+        diagnosticBytes += bytes - stepDiagnosticBytes; stepDiagnosticBytes = bytes;
         result.diagnostics = diagnostics;
+        signal.throwIfAborted();
         if (outcome?.errorCode !== undefined) {
           if (!/^[A-Z][A-Z0-9_]{0,63}$/.test(outcome.errorCode)) fail("PIPELINE_OUTCOME_INVALID", "Invalid pipeline failure code");
           fail(outcome.errorCode, "Pipeline adapter failed");

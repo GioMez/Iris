@@ -60,6 +60,37 @@ test("a failed adapter outcome keeps diagnostics and blocks dependents even with
   assert.deepEqual(result.steps[0].diagnostics, diagnostics);
 });
 
+for (const cancelled of [false, true]) test(`streamed diagnostics survive adapter ${cancelled ? "cancellation" : "failure"}`, async t => {
+  const f = await fixture(t), controller = new AbortController(), events = [];
+  const diagnostic = { severity: "warning", message: "before termination", stepId: "check" };
+  const adapters = registry(async context => {
+    await context.reportDiagnostic(diagnostic);
+    if (cancelled) controller.abort();
+    throw Object.assign(new Error("worker stopped"), { code: "PIPELINE_LUA_TIMEOUT" });
+  });
+  const result = await executePlan({ plan: plan(adapters, [step("check")]), target: "main", workspace: f.workspace,
+    registry: adapters, signal: controller.signal, gate: new ConcurrencyGate({ limit: 1 }), emit: async event => events.push(structuredClone(event)) });
+  assert.equal(result.state, cancelled ? "cancelled" : "failed");
+  assert.deepEqual(result.steps[0].diagnostics, [diagnostic]);
+  assert.deepEqual(events[1], { stepId: "check", diagnostic });
+  assert.deepEqual(events[2].diagnostics, [diagnostic]);
+});
+
+test("final diagnostics must preserve the streamed prefix and count it only once", async t => {
+  for (const replace of [false, true]) {
+    const f = await fixture(t), diagnostic = { severity: "warning", message: "x".repeat(60000) };
+    const adapters = registry(async context => {
+      for (let i = 0; i < 10; i++) await context.reportDiagnostic(diagnostic);
+      return { diagnostics: replace ? [{ severity: "warning", message: "replacement" }] : Array(10).fill(diagnostic) };
+    });
+    const result = await executePlan({ plan: plan(adapters, [step("check")]), target: "main", workspace: f.workspace,
+      registry: adapters, gate: new ConcurrencyGate({ limit: 1 }) });
+    assert.equal(result.state, replace ? "failed" : "succeeded");
+    if (replace) assert.equal(result.steps[0].errorCode, "PIPELINE_DIAGNOSTICS_CHANGED");
+    assert.deepEqual(result.steps[0].diagnostics, Array(10).fill(diagnostic));
+  }
+});
+
 test("snapshot bytes and identity include binary files, empty folders and settings without reading old outputs", async t => {
   const f = await fixture(t);
   await fs.mkdir(path.join(f.source, "output"));

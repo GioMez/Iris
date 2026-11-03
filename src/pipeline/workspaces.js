@@ -146,7 +146,7 @@ async function createRunWorkspace(snapshot, policy, { signal } = {}) {
   }
 }
 
-async function materializeInputs(workspace, value, artifacts, { signal, policy } = {}) {
+async function materializeInputs(workspace, value, artifacts, { signal, policy, reportDiagnostic = async () => {} } = {}) {
   signal?.throwIfAborted();
   const current = state(workspace), step = freeze(cloneValue(value, readPolicy(policy)));
   name(step.id);
@@ -171,7 +171,7 @@ async function materializeInputs(workspace, value, artifacts, { signal, policy }
       inputs[key] = freeze({ ...input, root: inputRoot });
     }
     // AbortSignal retains mutable internal state; freeze only our metadata.
-    entry.context = Object.freeze({ ...freeze({ root, outputDir, workDir, inputs, step, options: step.options || {} }), signal });
+    entry.context = Object.freeze({ ...freeze({ root, outputDir, workDir, inputs, step, options: step.options || {} }), signal, reportDiagnostic });
     contexts.set(entry.context, workspace);
     return entry.context;
   } catch (error) {

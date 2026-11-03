@@ -96,6 +96,7 @@ test("Lua logging stays bounded and diagnostic locations must name declared inpu
   assert.equal(io.result().logsTruncated, true);
   io.diagnostic({ severity: "warning", code: "sample", message: "check source", input: "source", file: "source/main.tex", line: 2, column: 0 });
   assert.deepEqual(io.result().diagnostics, [{ severity: "warning", code: "sample", message: "check source", input: "source", file: "source/main.tex", line: 2, column: 0 }]);
+  assert.deepEqual(events[2], { diagnostic: { severity: "warning", code: "sample", message: "check source", input: "source", file: "source/main.tex", line: 2, column: 0 } });
   assert.throws(() => io.diagnostic({ severity: "error", message: "bad", input: "source", file: "outside" }), { code: "PIPELINE_DIAGNOSTICS_INVALID" });
   assert.throws(() => io.diagnostic({ severity: "error", message: "bad", sourceFileId: "forged" }), { code: "PIPELINE_DIAGNOSTICS_INVALID" });
   assert.throws(() => io.diagnostic({ severity: "error", message: "x".repeat(513) }), { code: "PIPELINE_DIAGNOSTICS_LIMIT" });

@@ -5,6 +5,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { createHash } = require("node:crypto");
 const { execFile, spawn } = require("node:child_process");
+const { watch } = require("node:fs");
 const { promisify } = require("node:util");
 
 const hash = bytes => createHash("sha256").update(bytes).digest("hex");
@@ -41,7 +42,10 @@ test("Lua worker reads a file-framed request and returns byte outputs and bounde
   assert.deepEqual(result.response, { version: 1, value: null, diagnostics: [
     { severity: "warning", message: "check input", input: "source", file: "bytes.bin", line: 1 },
   ], logsTruncated: false });
-  assert.deepEqual(JSON.parse(result.log), { level: "info", message: "copied bytes" });
+  assert.deepEqual(result.log.trim().split("\n").map(line => JSON.parse(line)), [
+    { level: "info", message: "copied bytes" },
+    { diagnostic: { severity: "warning", message: "check input", input: "source", file: "bytes.bin", line: 1 } },
+  ]);
   assert.deepEqual(await fs.readFile(path.join(f.workRoot, "output/generated/include.ily")), f.bytes);
 });
 
@@ -127,4 +131,39 @@ test("Lua worker logging remains complete and bounded while the parent delays re
   assert.equal(response.logsTruncated, true);
   assert.ok(Buffer.byteLength(log) > 60000 && Buffer.byteLength(log) <= 1048576);
   for (const line of log.trim().split("\n")) assert.equal(JSON.parse(line).message.length, 60000);
+});
+
+test("Lua diagnostic events drain after log saturation while project code keeps executing", async t => {
+  const f = await fixture(t, `return {generate=function(ctx)
+    for i=1,100 do ctx.log('info',string.rep('x',60000)) end
+    ctx.diagnostic({severity='warning',message='after log saturation'})
+    ctx.write('include','generated/include.ily','ready')
+    while true do end
+  end}`);
+  const worker = path.resolve(__dirname, "../src/pipeline/lua-worker.js");
+  const result = await new Promise((resolve, reject) => {
+    let ready = false;
+    const watcher = watch(f.workRoot, { recursive: true }, (event, file) => {
+      if (file?.endsWith("include.ily")) { ready = true; child.stdout.resume(); }
+    });
+    const child = spawn(process.execPath, ["-e", `require(${JSON.stringify(worker)}).runLuaWorker(${JSON.stringify({ inputRoot: f.inputRoot, workRoot: f.workRoot })})`], {
+      env: { PATH: process.env.PATH }, stdio: ["ignore", "pipe", "ignore"],
+    });
+    let output = "", diagnostics = [], timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, 5000);
+    child.on("error", error => { clearTimeout(timer); watcher.close(); reject(error); });
+    child.stdout.on("data", bytes => {
+      output += bytes;
+      for (let end; (end = output.indexOf("\n")) !== -1;) {
+        const event = JSON.parse(output.slice(0, end)); output = output.slice(end + 1);
+        if (event.diagnostic) { diagnostics.push(event.diagnostic); child.kill("SIGKILL"); }
+      }
+    });
+    child.stdout.pause();
+    child.on("close", () => { clearTimeout(timer); watcher.close(); resolve({ ready, timedOut, diagnostics }); });
+  });
+  assert.equal(result.ready, true, "worker reached the loop before the parent resumed reading");
+  assert.equal(result.timedOut, false);
+  assert.deepEqual(result.diagnostics, [{ severity: "warning", message: "after log saturation" }]);
+  await assert.rejects(fs.stat(path.join(f.workRoot, "response/result.json")), { code: "ENOENT" });
 });

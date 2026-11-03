@@ -36,6 +36,13 @@ test("memory admission includes retained scratch and the holding container", () 
     totalMemoryBytes: 285212672 }), { code: "PIPELINE_RUNTIME_POLICY_INVALID" });
 });
 
+test("invalid tool protocol allowances fail before engine access", async () => {
+  for (const protocolBytes of [-1, 0.5, NaN, 16777217]) {
+    await assert.rejects(createPodmanRuntime({ root: path.join(os.tmpdir(), "unused-protocol-policy"), coordinatorId: uuidv7(),
+      policy: { image }, tools: [{ id: "protocol", path: "/usr/local/bin/node", timeoutMs: 1000, protocolBytes }] }), { code: "PIPELINE_TOOL_INVALID" });
+  }
+});
+
 const native = { skip: !process.env.IRIS_TEST_PIPELINE_IMAGE, timeout: 45000 };
 async function runtimeFixture(t, overrides = {}, prepareTransport = async () => ({}), createRuntime = createPodmanRuntime) {
   const fixtureRoot = await fs.mkdtemp(path.join(os.tmpdir(), "iris-pipeline-runtime-")), root = path.join(fixtureRoot, "state");
@@ -98,6 +105,25 @@ test("contained query output separates stdout and stderr within one byte limit a
   assert.equal(overflow.timedOut, false);
   assert.equal(overflow.drained, true);
   assert.ok(Buffer.byteLength(overflow.stdout) + Buffer.byteLength(overflow.stderr) <= 32);
+});
+
+test("registered protocol bytes preserve diagnostic transport without enlarging ordinary tool logs", native, async t => {
+  const f = await runtimeFixture(t, { logBytes: 16 }, undefined, options => createPodmanRuntime({ ...options,
+    tools: [...options.tools, { id: "protocol", path: "/usr/local/bin/node", timeoutMs: 3000, protocolBytes: 64 }],
+  }));
+  const ordinary = await f.run("process.stdout.write('x'.repeat(48))");
+  assert.equal(ordinary.log.length, 16);
+  assert.equal(ordinary.truncated, true);
+  const result = await f.runtime.runContained({ workspace: f.workspace, tool: f.runtime.resolveTool("protocol"),
+    args: ["-e", "process.stdout.write('x'.repeat(48))"], outputLimitBytes: 80 });
+  assert.equal(result.log.length, 48);
+  assert.equal(result.truncated, false);
+  const overflow = await f.runtime.runContained({ workspace: f.workspace, tool: f.runtime.resolveTool("protocol"),
+    args: ["-e", "process.stdout.write('x'.repeat(100));setInterval(()=>{},1000)"], outputLimitBytes: 80 });
+  assert.equal(overflow.log.length, 80);
+  assert.equal(overflow.outputLimited, true);
+  assert.equal(overflow.timedOut, false);
+  assert.equal(overflow.drained, true);
 });
 
 test("registered compiler environments survive workers without inheriting host variables", native, async t => {

@@ -63,11 +63,12 @@ function notification(record) {
 }
 
 // Use the same gate, project row lock and uncertain-commit handling as saves.
-// stop() drains contained processes only; it must not wait on another project gate.
+// Release the project gate before draining workers: their pending output events
+// may need that same gate to finish persistence.
 async function transaction(store, projectId, principal, capability, action, actorId = principal?.sub) {
-  return store.mutations.gate(projectId, async () => {
-    const notices = [], stopped = new Set();
-    const result = await store.mutations.transaction({ id: projectId,
+  const notices = [], stopped = new Set();
+  const result = await store.mutations.gate(projectId, async () => {
+    return store.mutations.transaction({ id: projectId,
       beforeLock: async client => {
         if (actorId) {
           const user = await client.query("SELECT status FROM users WHERE id=$1 FOR SHARE", [actorId]);
@@ -77,10 +78,10 @@ async function transaction(store, projectId, principal, capability, action, acto
       },
       authorize: principal ? client => authorize(store, client, projectId, principal, capability) : null,
     }, client => action(client, notices, stopped));
-    for (const id of stopped) await store.stop(id);
-    for (const record of notices) await store.emit(notification(record));
-    return result;
   }, principal ? () => authorize(store, store.pool, projectId, principal, capability) : null);
+  for (const id of stopped) await store.stop(id);
+  for (const record of notices) await store.emit(notification(record));
+  return result;
 }
 async function finish(client, row, state, reason, notices, stopped) {
   const { rows } = await client.query(`UPDATE build_outputs SET status=$2::text,terminal_reason=$3,

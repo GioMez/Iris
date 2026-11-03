@@ -1,13 +1,14 @@
 const fs = require("node:fs");
 const path = require("node:path");
-const { executeLua } = require("./lua-vm");
-const { createLuaIO, readLuaFile } = require("./lua-io");
-const { readWorkspaceLimits } = require("./workspaces");
-const { LUA_DATA_POLICY, readPolicy, cloneValue, logicalPath, name, record, fail } = require("./contracts");
+const { Worker, isMainThread, parentPort, workerData } = require("node:worker_threads");
 
 // Private file protocol. The coordinator stages this tree through the runtime's
 // checked transfer manifest, and the engine mounts it read-only at /input.
-async function runLuaWorker({ inputRoot = "/input", workRoot = "/work" } = {}) {
+async function executeRequest({ inputRoot, workRoot }) {
+  const { executeLua } = require("./lua-vm");
+  const { createLuaIO, readLuaFile } = require("./lua-io");
+  const { readWorkspaceLimits } = require("./workspaces");
+  const { LUA_DATA_POLICY, readPolicy, cloneValue, logicalPath, name, record, fail } = require("./contracts");
   const outputRoot = path.join(workRoot, "output"), responseRoot = path.join(workRoot, "response");
   fs.mkdirSync(outputRoot, { mode: 0o700 }); fs.mkdirSync(responseRoot, { mode: 0o700 });
   let io, response;
@@ -37,9 +38,9 @@ async function runLuaWorker({ inputRoot = "/input", workRoot = "/work" } = {}) {
     if (request.mode === "transform") {
       io = createLuaIO({ inputRoot, outputRoot, inputs: request.inputs, outputs: request.outputs,
         limits: request.limits, eventLimits: request.eventLimits,
-        // The I/O layer bounds total log bytes before enqueueing. Stream writes
-        // let Node drain that bounded buffer after synchronous Lua execution.
-        emit: event => process.stdout.write(JSON.stringify(event) + "\n") });
+        // The I/O layer bounds bytes before posting. The process event loop can
+        // drain these messages even while synchronous Lua keeps this thread busy.
+        emit: event => parentPort.postMessage(JSON.stringify(event) + "\n") });
       host = Object.fromEntries(["read", "list", "write", "log", "diagnostic"].map(key => [key, io[key]]));
     }
     const value = await executeLua({ mode: request.mode, script: request.script, modules, context: request.context,
@@ -55,5 +56,15 @@ async function runLuaWorker({ inputRoot = "/input", workRoot = "/work" } = {}) {
   fs.writeFileSync(path.join(responseRoot, "result.json"), JSON.stringify(response), { flag: "wx", mode: 0o600 });
 }
 
-if (require.main === module) runLuaWorker().catch(() => { process.exitCode = 1; });
+function runLuaWorker({ inputRoot = "/input", workRoot = "/work" } = {}) {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(__filename, { workerData: { irisLuaWorker: true, inputRoot, workRoot } });
+    worker.on("message", frame => process.stdout.write(frame));
+    worker.once("error", reject);
+    worker.once("exit", code => code === 0 ? resolve() : reject(Object.assign(new Error("Lua worker thread failed"), { code: "PIPELINE_LUA_WORKER_FAILED" })));
+  });
+}
+
+if (!isMainThread && workerData?.irisLuaWorker === true) executeRequest(workerData).catch(() => { process.exitCode = 1; });
+else if (require.main === module) runLuaWorker().catch(() => { process.exitCode = 1; });
 module.exports = { runLuaWorker };
