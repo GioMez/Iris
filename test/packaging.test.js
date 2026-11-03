@@ -9,7 +9,7 @@ const { pathToFileURL } = require("node:url");
 
 const release = path.resolve(__dirname, "../scripts/release.cjs");
 const required = ["LICENSE", "THIRD_PARTY_NOTICES.md", "README.md", ".npmrc", ".env.example",
-  ".dockerignore", "Dockerfile", "docker-compose.yml", "db/schema.sql", "db/init/01-create-iris-user.sh",
+  ".dockerignore", "Dockerfile", "docker-compose.yml", "db/schema.sql", "db/migrations/003-pipelines.sql", "db/init/01-create-iris-user.sh",
   "src/server.js", "public/Iris.html", "public/templates/.metadata.json", "scripts/test.cjs", "scripts/smoke.cjs"];
 async function fixture(t) {
   const root = await fs.mkdtemp(path.resolve(__dirname, "../.iris-package-test-"));
@@ -157,6 +157,8 @@ test("release rejects mismatched metadata, incomplete manifests, implicit checko
   await fs.writeFile(path.join(f.source, "package-lock.json"), f.files["package-lock.json"]);
   await fs.writeFile(f.manifest, JSON.stringify(Object.keys(f.files).filter((name) => name !== "db/schema.sql")));
   assert.match(f.run().stderr, /missing.*db\/schema.sql/i);
+  await fs.writeFile(f.manifest, JSON.stringify(Object.keys(f.files).filter((name) => name !== "db/migrations/003-pipelines.sql")));
+  assert.match(f.run().stderr, /missing.*db\/migrations\/003-pipelines.sql/i);
   await fs.writeFile(f.manifest, JSON.stringify(Object.keys(f.files)));
   result = f.run();
   assert.equal(result.status, 0, result.stderr);

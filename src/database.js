@@ -4,7 +4,8 @@ const { Pool } = require("pg");
 
 const SCHEMA_FILE = path.resolve(__dirname, "../db/schema.sql");
 // Bump for incompatible current-schema changes; SQL comments are not versions.
-const CURRENT_SCHEMA_VERSION = 2;
+const CURRENT_SCHEMA_VERSION = 3;
+const PIPELINE_MIGRATION = path.resolve(__dirname, "../db/migrations/003-pipelines.sql");
 const MINIMUM_POSTGRES_MAJOR = 18;
 
 // A minimum, not an exact match: a newer major is allowed until one is proven
@@ -59,7 +60,7 @@ async function initializeSchema(pool) {
       // Do not filter or LIMIT: extra rows must never be hidden by validation.
       const { rows } = await client.query(`SELECT singleton, version FROM ${qualifiedMarker}`);
       if (rows.length !== 1 || rows[0].singleton !== true) throw incompatibleSchema("expected one iris_schema marker row");
-      if (rows[0].version !== CURRENT_SCHEMA_VERSION) throw incompatibleSchema(`expected schema version ${CURRENT_SCHEMA_VERSION}, found ${rows[0].version}`);
+      if (![2, CURRENT_SCHEMA_VERSION].includes(rows[0].version)) throw incompatibleSchema(`expected schema version ${CURRENT_SCHEMA_VERSION}, found ${rows[0].version}`);
       const constraints = await client.query(`
         SELECT
           EXISTS (SELECT FROM pg_constraint c JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attname = 'singleton'
@@ -69,6 +70,10 @@ async function initializeSchema(pool) {
       `, [marker]);
       if (!constraints.rows[0].primary_key || !constraints.rows[0].singleton_check) {
         throw incompatibleSchema("invalid iris_schema singleton constraints");
+      }
+      if (rows[0].version === 2) {
+        await client.query(await fs.readFile(PIPELINE_MIGRATION, "utf8"));
+        await client.query(`UPDATE ${qualifiedMarker} SET version = $1 WHERE singleton`, [CURRENT_SCHEMA_VERSION]);
       }
     } else {
       if (nonempty) throw incompatibleSchema("nonempty application schema has no iris_schema marker");
