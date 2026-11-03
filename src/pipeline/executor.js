@@ -1,7 +1,7 @@
 const { resolveTarget, cloneValue, fail } = require("./contracts");
 const { materializeInputs, validateOutputs } = require("./workspaces");
 
-async function executePlan({ plan, target, workspace, registry, gate, signal = new AbortController().signal, emit = async () => {} }) {
+async function executePlan({ plan, target, workspace, registry, gate, signal = new AbortController().signal, emit = async () => {}, onArtifacts = async () => {} }) {
   const selected = resolveTarget(plan, target), definitions = new Map();
   // Resolve before admission, including branches outside the selected target.
   for (const step of plan.steps) {
@@ -46,6 +46,11 @@ async function executePlan({ plan, target, workspace, registry, gate, signal = n
           fail(outcome.errorCode, "Pipeline adapter failed");
         }
         produced = await validateOutputs(workspace, step, { signal });
+        signal.throwIfAborted();
+        // Host-only association of private maps/provenance stays inside the same
+        // admission and drain boundary, before success or downstream visibility.
+        await onArtifacts(context, produced);
+        signal.throwIfAborted();
       } catch (caught) { error = caught; rejected = true; }
       if (signal.aborted) await transition("cancelled");
       else if (rejected) {

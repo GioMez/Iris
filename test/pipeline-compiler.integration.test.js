@@ -17,7 +17,7 @@ const { createPodmanRuntime } = require("../src/pipeline/runtime");
 const helpers = require("../src/server");
 const native = { skip: !process.env.IRIS_TEST_PIPELINE_IMAGE || process.env.IRIS_TEST_COMPILERS !== "1", timeout: 180000 };
 
-async function fixture(t, files, settings = {}, { onOutput, onCompiled, timeoutMs = 60000, adapters = [] } = {}) {
+async function fixture(t, files, settings = {}, { onOutput, onCompiled, onArtifacts, timeoutMs = 60000, adapters = [] } = {}) {
   const { createCompilerTools, createCompilerAdapters } = require("../src/pipeline/compilers");
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "iris-pipeline-compilers-"));
   const source = path.join(root, "source"), stateRoot = path.join(root, "runtime");
@@ -57,7 +57,7 @@ async function fixture(t, files, settings = {}, { onOutput, onCompiled, timeoutM
   }), ...adapters]);
   return { source, workspace, registry, compiled, async run(steps, targets = { main: { steps: steps.map(s => s.id), publish: steps.map(s => ({ step: s.id, port: "output" })) } }, target = "main", signal) {
     const plan = validatePlan({ apiVersion: 1, pluginId: "compiler-fixture", steps, targets }, { registry });
-    return executePlan({ plan, target, workspace, registry, gate: new ConcurrencyGate({ limit: 1, queueLimit: 4 }), signal });
+    return executePlan({ plan, target, workspace, registry, gate: new ConcurrencyGate({ limit: 1, queueLimit: 4 }), signal, onArtifacts });
   } };
 }
 const step = (id, family, main, options = {}, kind = "file") => ({ id, adapter: { id: `iris.${family}`, version: "1.0.0" },
@@ -163,6 +163,71 @@ test("declared build-file collections retain auxiliary outputs and exclude priva
   assert.deepEqual(names, ["build/files/main.aux", "build/files/main.log", "build/files/main.pdf"]);
   assert.ok((await fs.readdir(f.compiled.get("build").outputDir)).includes("main.synctex.gz"));
 });
+
+test("compiler metadata binds renamed and duplicated PDFs to each validated output member", native, async t => {
+  let compiled, bound;
+  const f = await fixture(t, { "main.ly": '\\version "2.24.1"\n\\book { \\bookOutputName "first" \\score { { c\'1 } } }\n\\book { \\bookOutputName "second" \\score { { d\'1 } } }\n' }, {}, {
+    onCompiled: (context, result) => { compiled = result; },
+    onArtifacts: (context, artifacts) => { bound = artifacts; },
+  });
+  const compile = step("books", "lilypond", "main.ly");
+  compile.outputs.files = { kind: "collection", mediaType: "application/vnd.iris.build-files", path: "all" };
+  const result = await f.run([compile]);
+  assert.equal(result.state, "succeeded", JSON.stringify(result.steps));
+  assert.equal(compiled.stepId, "books");
+  assert.equal(compiled.mappingEnabled, true);
+  assert.ok(bound);
+  assert.deepEqual(compiled.outputs.filter(file => file.compiledPath.endsWith(".pdf")).map(file => [file.outputPort, file.path, file.compiledPath]),
+    [["output", "books/result.pdf", "first.pdf"], ["files", "all/first.pdf", "first.pdf"], ["files", "all/second.pdf", "second.pdf"]]);
+  for (const product of bound) for (const file of product.files) {
+    const origin = compiled.outputs.find(item => item.outputPort === product.outputPort && item.path === file.path);
+    assert.ok(origin);
+    assert.equal(origin.contentHash, file.contentHash);
+    assert.equal(origin.size, file.size);
+    assert.equal(createHash("sha256").update(await fs.readFile(path.join(compiled.outputDir, origin.compiledPath))).digest("hex"), file.contentHash);
+  }
+});
+
+for (const family of ["latex", "lilypond"]) {
+  test(`contained ${family} maps bind final artifact hashes and recorded source revisions`, native, async t => {
+    const { collectCompilerMapping } = require("../src/pipeline/navigation");
+    const main = family === "latex" ? "main.tex" : "main.ly", include = family === "latex" ? "parts/text.tex" : "parts/music.ily";
+    let compiled, navigation, rejected;
+    const projectId = uuidv7(), runId = uuidv7();
+    const f = await fixture(t, family === "latex" ? {
+      [main]: "\\documentclass{article}\n\\begin{document}\\input{parts/text}\\end{document}\n", [include]: "Included source.\r\n",
+    } : { [main]: '\\version "2.24.1"\n\\include "parts/music.ily"\n\\score { \\melody }\n', [include]: "melody = { c'1 d'1 }\r\n" }, {}, {
+      onCompiled: (context, result) => { compiled = result; },
+      onArtifacts: async (context, products) => {
+        navigation = await collectCompilerMapping({ context, compiled, products, projectId, runId });
+        const forged = products.map(product => ({ ...product, files: product.files.map(file => ({ ...file, contentHash: "0".repeat(64) })) }));
+        rejected = await collectCompilerMapping({ context, compiled, products: forged, projectId, runId });
+      },
+    });
+    const result = await f.run([step("compile", family, main)]);
+    assert.equal(result.state, "succeeded", JSON.stringify(result.steps));
+    assert.equal(navigation.manifest.status, "ready", JSON.stringify(navigation.manifest));
+    const artifact = result.artifacts[0];
+    assert.equal(navigation.manifest.artifacts[0].id, artifact.id);
+    assert.equal(navigation.manifest.artifacts[0].contentHash, artifact.contentHash);
+    assert.equal(navigation.manifest.artifacts[0].size, artifact.size);
+    const source = f.workspace.snapshot.files.find(file => file.path === include);
+    const mapped = navigation.manifest.sources.find(file => file.path === include);
+    assert.equal(mapped.sourceFileId, source.id);
+    assert.equal(mapped.sourceRevisionId, source.sourceRevisionId);
+    assert.ok(!mapped.text.includes("\r"));
+    if (family === "latex") {
+      assert.ok(navigation.manifest.artifacts[0].inputs.some(input => input.sourceFileId === source.id));
+      assert.equal(navigation.nativeFiles.length, 1);
+    } else {
+      assert.ok(navigation.manifest.entries.some(entry => entry.sourceFileId === source.id && entry.artifactId === artifact.id));
+      assert.deepEqual(navigation.nativeFiles, []);
+    }
+    assert.equal(rejected.manifest.status, "unavailable");
+    assert.equal(rejected.manifest.reason, "stale-artifact");
+    assert.deepEqual(rejected.nativeFiles, []);
+  });
+}
 
 for (const [format, mediaType] of [["png", "image/png"], ["svg", "image/svg+xml"], ["ps", "application/postscript"], ["eps", "application/postscript"]]) {
   test(`contained LilyPond retains ${format} output selection`, native, async t => {

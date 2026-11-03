@@ -72,6 +72,30 @@ test("Lily map retains physical pages and artifact identity, supports repeats an
   for (const bad of ["garbage", raw.replace("100\t200", "NaN\t200"), raw.replace("P\t1", "P\t0"), raw + "E\tbudget\n"]) assert.throws(() => parseLilyMap(bad, { sources: [source], snapshotRoot: "/tmp/build", artifact }));
 });
 
+test("mapping collection binds native data to supplied artifact identities without publishing files", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "iris-map-collect-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const raw = "IRIS-LILYPOND\t1\nP\t1\t595.276\t841.89\nG\t1\tparts%2F%C3%A9%20air.ly\t1\t3\t5\t100\t200\t10\t8\n";
+  await fs.writeFile(path.join(root, "native.tsv"), raw);
+  const manifest = await mapping.collectSourceMapping({ snapshotRoot: "/input", sources: [source], projectId, buildId,
+    artifacts: [{ ...artifact, fileName: `${artifactId}.pdf` }], backend: "lilypond",
+    readMap: async (name, limit) => {
+      assert.equal(name, `${artifactId}.iris-map.tsv`);
+      const bytes = await fs.readFile(path.join(root, "native.tsv"));
+      assert.ok(bytes.length <= limit);
+      return bytes;
+    },
+  });
+  assert.equal(manifest.status, "ready");
+  assert.equal(manifest.entries[0].artifactId, artifactId);
+  assert.equal(manifest.entries[0].column, 4);
+  assert.deepEqual(await fs.readdir(root), ["native.tsv"]);
+  const failed = await mapping.collectSourceMapping({ snapshotRoot: "/input", sources: [source], projectId, buildId,
+    artifacts: [artifact], backend: "lilypond", readMap: async () => Buffer.from("IRIS-LILYPOND\t1\nE\tbudget\n") });
+  assert.equal(failed.status, "unavailable");
+  assert.equal(failed.reason, "map-limit");
+});
+
 test("SyncTeX parsing rejects external input and malformed geometry and preserves row precision", () => {
   const input = "SyncTeX Version:1\nInput:1:/etc/article.cls\nInput:2:./parts/é air.ly\nContent:\n";
   const inputs = readSyncTeXInputs(Buffer.from(input), { sources: [source], snapshotRoot: "/tmp/build" });

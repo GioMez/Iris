@@ -288,6 +288,63 @@ test("active cancellation waits for adapter drain and never starts or publishes 
   assert.equal(gate.active, 0);
 });
 
+test("host artifact binding receives validated bytes and identities before success", async t => {
+  const f = await fixture(t), gate = new ConcurrencyGate({ limit: 1 }), events = [];
+  const adapters = registry(async context => { await writeOutput(context, "generated/result.txt", "generated"); });
+  const selected = plan(adapters, [step("generate", { outputs: { files: collection } })], [ref("generate")]);
+  let bound;
+  const result = await executePlan({ plan: selected, target: "main", workspace: f.workspace, registry: adapters, gate,
+    emit: async event => events.push(event.state), onArtifacts: async (context, artifacts) => {
+      assert.equal(gate.active, 1);
+      assert.deepEqual(events, ["running"]);
+      assert.equal(context.step.id, "generate");
+      assert.equal(artifacts[0].files[0].contentHash, hash("generated"));
+      assert.equal(await fs.readFile(path.join(artifacts[0].root, artifacts[0].files[0].path), "utf8"), "generated");
+      bound = artifacts;
+    },
+  });
+  assert.equal(result.state, "succeeded");
+  assert.ok(bound);
+  assert.equal(result.artifacts[0], bound[0]);
+});
+
+test("invalid outputs never reach host artifact binding", async t => {
+  const f = await fixture(t);
+  const adapters = registry(async context => { await writeOutput(context, "undeclared.txt", "untrusted"); });
+  const selected = plan(adapters, [step("generate", { outputs: { files: collection } })], [ref("generate")]);
+  let calls = 0;
+  const result = await executePlan({ plan: selected, target: "main", workspace: f.workspace, registry: adapters,
+    gate: new ConcurrencyGate({ limit: 1 }), onArtifacts: async () => { calls++; } });
+  assert.equal(result.state, "failed");
+  assert.equal(calls, 0);
+});
+
+test("cancellation during host artifact binding retains admission until drain and blocks descendants", async t => {
+  const f = await fixture(t), gate = new ConcurrencyGate({ limit: 1 }), controller = new AbortController();
+  let started, drain;
+  const entered = new Promise(resolve => { started = resolve; });
+  const held = new Promise(resolve => { drain = resolve; });
+  t.after(() => drain());
+  const calls = [];
+  const adapters = registry(async context => { calls.push(context.step.id); await writeOutput(context, "generated/result.txt", "bytes"); });
+  const selected = plan(adapters, [step("generate", { outputs: { files: collection } }),
+    step("consume", { inputs: { generated: ref("generate") } })], [ref("generate")]);
+  let settled = false;
+  const running = executePlan({ plan: selected, target: "main", workspace: f.workspace, registry: adapters, gate, signal: controller.signal,
+    onArtifacts: async () => { started(); await held; },
+  }).finally(() => { settled = true; });
+  await Promise.race([entered, running]);
+  assert.equal(settled, false, "execution must await host binding");
+  controller.abort();
+  assert.equal(gate.active, 1);
+  drain();
+  const result = await running;
+  assert.equal(result.state, "cancelled");
+  assert.deepEqual(calls, ["generate"]);
+  assert.deepEqual(result.artifacts, []);
+  assert.equal(gate.active, 0);
+});
+
 test("workspace boundaries reject hardlinks and special files without opening a FIFO", { timeout: 5000 }, async t => {
   const f = await fixture(t);
   await fs.link(path.join(f.source, "main.tex"), path.join(f.source, "hardlink.tex"));

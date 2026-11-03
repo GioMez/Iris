@@ -73,14 +73,12 @@ function artifactRecord(a) {
   return { id: a.id, fileName: a.fileName, contentHash: a.contentHash, size: a.size };
 }
 
-// Only the private staging output is written. Publication and retention use the
-// existing whole-directory lifecycle. Mapping failures never escape to compile.
-async function publishSourceMapping({ outputDir, snapshotRoot, sources, projectId, buildId, artifacts, backend, enabled, format, mappingError, binPath = "" }) {
-  if (!enabled || format !== "pdf") return envelope(!enabled ? "disabled" : "unsupported");
+// Native parsing and budgets are shared by ordinary builds and contained steps.
+// The host reader resolves logical sidecar names; collection performs no writes.
+async function collectSourceMapping({ snapshotRoot, sources, projectId, buildId, artifacts, backend, mappingError, binPath = "", readMap }) {
   let manifest = { version: 1, projectId, buildId, backend, status: "ready", snapshotRoot,
     ...(backend === "latex" ? { texBinPath: binPath ? path.resolve(snapshotRoot, binPath) : "" } : {}),
     sources: sources || [], artifacts: artifacts.map(artifactRecord), entries: [] };
-  const rawMaps = [];
   try {
     if (mappingError) throw mappingError;
     if (artifacts.length > MAX_MATCHES) throw failure("map-limit");
@@ -90,7 +88,7 @@ async function publishSourceMapping({ outputDir, snapshotRoot, sources, projectI
       if (backend === "latex") {
         for (const suffix of [".synctex.gz", ".synctex"]) {
           const name = stem + suffix;
-          const buffer = await readLocalFile(outputDir, name, MAX_MAP_BYTES - nativeBytes);
+          const buffer = await readMap(name, MAX_MAP_BYTES - nativeBytes);
           if (!buffer) continue;
           if (artifact.syncFile) throw failure("malformed-map");
           nativeBytes += buffer.length;
@@ -106,8 +104,7 @@ async function publishSourceMapping({ outputDir, snapshotRoot, sources, projectI
         }
       } else if (backend === "lilypond") {
         const name = `${stem}.iris-map.tsv`;
-        rawMaps.push(name);
-        const buffer = await readLocalFile(outputDir, name, MAX_MAP_BYTES - nativeBytes);
+        const buffer = await readMap(name, MAX_MAP_BYTES - nativeBytes);
         if (!buffer) continue;
         collected = true;
         nativeBytes += buffer.length;
@@ -127,6 +124,18 @@ async function publishSourceMapping({ outputDir, snapshotRoot, sources, projectI
     manifest = { version: 1, projectId, buildId, backend, status: error.reason === "unsupported" ? "unsupported" : "unavailable",
       ...(error.reason === "unsupported" ? {} : { reason: stableReason(error) }) };
   }
+  return manifest;
+}
+
+// Only the private staging output is written. Publication and retention use the
+// existing whole-directory lifecycle. Mapping failures never escape to compile.
+async function publishSourceMapping({ outputDir, enabled, format, ...options }) {
+  if (!enabled || format !== "pdf") return envelope(!enabled ? "disabled" : "unsupported");
+  const { artifacts, backend } = options, rawMaps = [];
+  const manifest = await collectSourceMapping({ ...options, readMap: (name, limit) => {
+    if (backend === "lilypond" && path.basename(name) === name) rawMaps.push(name);
+    return readLocalFile(outputDir, name, limit);
+  } });
   const temporary = path.join(outputDir, `.iris-navigation-${crypto.randomUUID()}.tmp`);
   try {
     // Compiler output is untrusted. Replace its reserved filename atomically;
@@ -278,4 +287,5 @@ async function navigateBuild(context) {
   finally { activeNavigation--; }
 }
 
-module.exports = { ...common, MANIFEST_NAME, captureMappingSources, lilypondMappingArgs, publishSourceMapping, navigateBuild };
+module.exports = { ...common, MANIFEST_NAME, captureMappingSources, lilypondMappingArgs, collectSourceMapping, publishSourceMapping, navigateBuild,
+  readMappingHandle: readHandle };

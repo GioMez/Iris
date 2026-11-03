@@ -120,34 +120,39 @@ function createCompilerAdapters(services) {
           } : { sourceFileId: source.id, sourceRevisionId: source.sourceRevisionId, sourceContentHash: source.contentHash };
           return { ...item, file, stepId: context.step.id, ...location };
         });
-        const metadata = { ...result, family, engine, format, main, tools: tools.map(tool => ({ id: tool.id, path: tool.path, env: tool.env })), outputDir: null };
+        const metadata = { ...result, stepId: context.step.id, family, engine, format, main, mappingEnabled: mapping,
+          tools: tools.map(tool => ({ id: tool.id, path: tool.path, env: tool.env })), outputDir: null, outputs: [] };
         if (result.code !== 0 || result.signal || result.timedOut) {
           await onCompiled?.(context, metadata);
           return { diagnostics: result.diagnostics, errorCode: "PIPELINE_COMPILE_FAILED" };
         }
         const exported = await runtime.exportWorkspace({ workspace: worker, directory: "output", destination: path.join(context.workDir, "compiled"), signal });
         metadata.outputDir = path.join(exported.root, "output");
-        await onCompiled?.(context, metadata);
         const documents = exported.files.filter(file => file.path.startsWith("output/") && file.path.endsWith(`.${format}`) && !isPrivateBuildFile(file.path));
         const expected = `output/${path.posix.basename(main).replace(/\.[^.]+$/, "")}.${format}`;
         documents.sort((a, b) => a.path === expected ? -1 : b.path === expected ? 1 : a.path.localeCompare(b.path, "en", { numeric: true }));
-        if (!documents.length) return { diagnostics: result.diagnostics, errorCode: "PIPELINE_COMPILE_OUTPUT_MISSING" };
+        if (!documents.length) {
+          await onCompiled?.(context, metadata);
+          return { diagnostics: result.diagnostics, errorCode: "PIPELINE_COMPILE_OUTPUT_MISSING" };
+        }
         if (output.kind === "file") documents.splice(1);
         else await fs.mkdir(path.join(context.outputDir, output.path), { recursive: true });
-        async function copy(file, relative) {
+        async function copy(file, relative, outputPort) {
           signal?.throwIfAborted();
           const target = path.join(context.outputDir, relative);
           await fs.mkdir(path.dirname(target), { recursive: true });
           await fs.copyFile(path.join(exported.root, file.path), target, constants.COPYFILE_EXCL);
+          metadata.outputs.push({ outputPort, path: relative, compiledPath: file.path.slice(7), size: file.size, contentHash: file.contentHash });
         }
-        for (const file of documents) await copy(file, output.kind === "file" ? output.path : `${output.path}/${file.path.slice(7)}`);
+        for (const file of documents) await copy(file, output.kind === "file" ? output.path : `${output.path}/${file.path.slice(7)}`, "output");
         const files = context.step.outputs.files;
         if (files) {
           await fs.mkdir(path.join(context.outputDir, files.path), { recursive: true });
           for (const file of exported.files) {
-            if (file.path.startsWith("output/") && !isPrivateBuildFile(file.path)) await copy(file, `${files.path}/${file.path.slice(7)}`);
+            if (file.path.startsWith("output/") && !isPrivateBuildFile(file.path)) await copy(file, `${files.path}/${file.path.slice(7)}`, "files");
           }
         }
+        await onCompiled?.(context, metadata);
         return { diagnostics: result.diagnostics };
       } finally { await runtime.disposeWorkspace(worker); }
     },
