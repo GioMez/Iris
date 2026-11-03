@@ -4,7 +4,8 @@ const path = require("node:path");
 const { createHash } = require("node:crypto");
 const { isDeepStrictEqual } = require("node:util");
 const { uuidv7, isUuid } = require("../ids");
-const { cloneValue, readPolicy, logicalPath, name, canonical, freeze, fail, SNAPSHOT_TYPE } = require("./contracts");
+const { cloneValue, readPolicy, logicalPath, name, canonical, freeze, fail, SNAPSHOT_TYPE, LUA_DATA_POLICY } = require("./contracts");
+const { validateLayout, MEDIA_TYPE: LAYOUT_TYPE } = require("./layout");
 
 const owned = new WeakMap(), products = new WeakMap(), contexts = new WeakMap();
 const DEFAULT_LIMITS = Object.freeze({ maxArtifactBytes: 134217728, maxOutputBytes: 536870912, maxOutputEntries: 20000 });
@@ -153,7 +154,7 @@ async function materializeInputs(workspace, value, artifacts, { signal, policy, 
   name(step.id);
   if (current.steps.has(step.id)) fail("PIPELINE_STEP_REUSED", "Pipeline step workspace already exists");
   const root = path.join(workspace.root, "steps", step.id), outputDir = path.join(root, "output"), workDir = path.join(root, "work");
-  const entry = { step, context: null, products: null };
+  const entry = { step, context: null, products: null, outputIds: new Map() };
   current.steps.set(step.id, entry);
   try {
     await fs.mkdir(outputDir, { recursive: true, mode: 0o700 });
@@ -172,7 +173,7 @@ async function materializeInputs(workspace, value, artifacts, { signal, policy, 
       inputs[key] = freeze({ ...input, root: inputRoot });
     }
     // AbortSignal retains mutable internal state; freeze only our metadata.
-    entry.context = Object.freeze({ ...freeze({ root, outputDir, workDir, inputs, step, options: step.options || {} }), signal, reportDiagnostic });
+    entry.context = Object.freeze({ ...freeze({ root, outputDir, workDir, inputs, step, limits: current.budget, options: step.options || {} }), signal, reportDiagnostic });
     contexts.set(entry.context, workspace);
     return entry.context;
   } catch (error) {
@@ -223,6 +224,20 @@ async function materializeOverlay(context, inputNames, { signal } = {}) {
   }
 }
 
+// Trusted adapters may bind sidecars before final validation assigns products.
+// Reserving an ID grants no authority over bytes, paths or downstream visibility.
+function reserveOutputId(context, outputPort, filePath) {
+  const current = state(contexts.get(context)), entry = current.steps.get(context.step.id);
+  const out = entry.step.outputs[outputPort];
+  relative(filePath);
+  if (!out || entry.products || !(out.kind === "collection" ? filePath.startsWith(`${out.path}/`) : filePath === out.path)) {
+    fail("PIPELINE_OUTPUT_INVALID", "Output identity requires a declared member");
+  }
+  const key = `${outputPort}:${filePath}`;
+  if (!entry.outputIds.has(key)) entry.outputIds.set(key, uuidv7());
+  return entry.outputIds.get(key);
+}
+
 async function validateOutputs(workspace, step, { signal } = {}) {
   signal?.throwIfAborted();
   const current = state(workspace), entry = current.steps.get(step.id);
@@ -270,11 +285,29 @@ async function validateOutputs(workspace, step, { signal } = {}) {
     for (const file of files) manifest.push(await copyFile(source, file.path, path.join(root, file.path), file.size, null, signal));
     const result = declarations.map(([outputPort, out]) => {
       const members = manifest.filter(file => out.kind === "collection" ? file.path.startsWith(`${out.path}/`) : file.path === out.path)
-        .map(file => ({ ...file, id: uuidv7(), producerStep: step.id, outputPort }));
+        .map(file => ({ ...file, id: reserveOutputId(entry.context, outputPort, file.path), producerStep: step.id, outputPort }));
       return freeze({ ...out, root, producerStep: step.id, outputPort,
         ...(out.kind === "collection" ? {} : { id: members[0].id, size: members[0].size, contentHash: members[0].contentHash }),
         files: members, directories: directories.filter(rel => out.kind === "collection" && (rel === out.path || rel.startsWith(`${out.path}/`))) });
     });
+    const layouts = result.filter(product => product.kind === "layout" || product.mediaType === LAYOUT_TYPE);
+    const pdfs = new Map((layouts.length ? [...Object.values(entry.context.inputs), ...result] : [])
+      .filter(product => product.mediaType === "application/pdf")
+      .flatMap(product => product.files.map(({ id, contentHash }) => [id, { id, contentHash, mediaType: "application/pdf" }])));
+    for (const product of layouts) {
+      if (product.mediaType !== LAYOUT_TYPE) fail("PIPELINE_LAYOUT_INVALID", "Unsupported layout media type");
+      for (const file of product.files) {
+        signal?.throwIfAborted();
+        if (file.size > LUA_DATA_POLICY.maxPlanBytes) fail("PIPELINE_LAYOUT_INVALID", "Layout exceeds its metadata limit");
+        const { input } = await openCheckedFile(root, file.path);
+        try {
+          let value;
+          try { value = JSON.parse(await input.readFile("utf8")); }
+          catch { fail("PIPELINE_LAYOUT_INVALID", "Invalid layout JSON"); }
+          validateLayout(value, { artifact: pdfs.get(value?.artifact?.id) });
+        } finally { await input.close(); }
+      }
+    }
     for (const product of result) products.set(product, workspace);
     current.bytes += bytes; current.entries += entries;
     entry.products = Object.freeze(result);
@@ -292,5 +325,5 @@ async function disposeRunWorkspace(workspace) {
   current.disposed = true;
 }
 
-module.exports = { createRunWorkspace, materializeInputs, materializeOverlay, validateOutputs, disposeRunWorkspace,
+module.exports = { createRunWorkspace, materializeInputs, materializeOverlay, reserveOutputId, validateOutputs, disposeRunWorkspace,
   checkedPath, openCheckedFile, copyFile, readWorkspaceLimits: limits };

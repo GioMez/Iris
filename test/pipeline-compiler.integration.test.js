@@ -59,6 +59,36 @@ const step = (id, family, main, options = {}, kind = "file") => ({ id, adapter: 
   outputs: { output: { kind, mediaType: "application/pdf", path: kind === "file" ? `${id}/result.pdf` : `${id}/documents` } },
 });
 
+test("a required layout cannot silently compile without a declared layout output", native, async t => {
+  const f = await fixture(t, { "main.tex": "\\documentclass{article}\\begin{document}Text.\\end{document}" });
+  const compile = step("compile", "latex", "main.tex");
+  compile.requiredCapabilities = ["layout.occupied.complete"];
+  const result = await f.run([compile]);
+  assert.equal(result.state, "failed");
+  assert.equal(result.steps[0].errorCode, "PIPELINE_LAYOUT_CAPABILITY_UNAVAILABLE");
+  assert.equal(f.compiled.size, 0);
+});
+
+for (const family of ["latex", "lilypond"]) test(`installed Lua reads the typed final ${family} layout and exact PDF identity`, nativeLua, async t => {
+  const { createLuaCoordinator, createLuaAdapter, createLuaTools } = require("../src/pipeline/lua");
+  const plugin = await fs.readFile(path.join(__dirname, "fixtures/pipelines/inspect-layout.lua"), "utf8");
+  const main = family === "latex" ? "main.tex" : "main.ly";
+  let host, plan;
+  const f = await fixture(t, { "iris.lua": plugin, [main]: family === "latex"
+    ? "\\documentclass{article}\n\\begin{document}Final layout.\\end{document}\n"
+    : '\\version "2.26.0"\n\\score { \\new Staff { c\'1 } }\n' }, { projectType: family }, {
+    tools: createLuaTools(), adapters: [createLuaAdapter({ execute: context => host.transformLua({ approval: host.identity, plan, context }) })],
+  });
+  host = createLuaCoordinator({ runtime: f.runtime, workspace: f.workspace, runId: uuidv7(), registry: f.registry });
+  const descriptor = await host.inspectLua({ approval: host.identity });
+  plan = await host.planLua({ approval: host.identity, descriptor, parameters: { family } });
+  const result = await executePlan({ plan, target: "main", workspace: f.workspace, registry: f.registry,
+    gate: new ConcurrencyGate({ limit: 1, queueLimit: 1 }) });
+  assert.equal(result.state, "succeeded", JSON.stringify(result.steps));
+  const report = result.artifacts[0];
+  assert.equal(await fs.readFile(path.join(report.root, report.path), "utf8"), "inspected matching final PDF layout");
+});
+
 for (const family of ["latex", "lilypond"]) test(`approved Lua generates a native ${family} include with retained output and diagnostic provenance`, nativeLua, async t => {
   const { createLuaCoordinator, createLuaAdapter } = require("../src/pipeline/lua");
   const plugin = await fs.readFile(path.join(__dirname, "fixtures/pipelines/generate.lua"), "utf8");

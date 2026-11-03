@@ -1,8 +1,10 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { createHash } = require("node:crypto");
-const { logicalPath, name, record, fail, readPolicy, validateLuaDiagnostic } = require("./contracts");
+const { logicalPath, name, record, fail, readPolicy, validateLuaDiagnostic, LUA_DATA_POLICY } = require("./contracts");
 const { readWorkspaceLimits } = require("./workspaces");
+const { isUuid } = require("../ids");
+const { validateLayout, MEDIA_TYPE: LAYOUT_TYPE } = require("./layout");
 
 const hash = bytes => createHash("sha256").update(bytes).digest("hex");
 const pathError = () => fail("PIPELINE_PATH_INVALID", "Invalid Lua workspace path");
@@ -57,7 +59,8 @@ function createLuaIO({ inputRoot, outputRoot, inputs, outputs, limits = {}, even
         || typeof file.contentHash !== "string" || !/^[a-f0-9]{64}$/.test(file.contentHash)) {
         fail("PIPELINE_INPUT_INVALID", "Invalid Lua input member");
       }
-      members.set(relative, { path: relative, size: file.size, contentHash: file.contentHash });
+      if (file.id !== undefined && !isUuid(file.id)) fail("PIPELINE_INPUT_INVALID", "Invalid Lua input identity");
+      members.set(relative, { ...(file.id === undefined ? {} : { id: file.id }), path: relative, size: file.size, contentHash: file.contentHash });
     }
     declaredInputs.set(key, members);
   }
@@ -112,6 +115,21 @@ function createLuaIO({ inputRoot, outputRoot, inputs, outputs, limits = {}, even
     },
     result() { return { diagnostics: diagnostics.map(item => ({ ...item })), logsTruncated }; },
     list(key) { return [...members(key).values()].map(file => ({ ...file })); },
+    read_layout(key) {
+      const files = members(key), input = inputs[key];
+      if (input.mediaType !== LAYOUT_TYPE || !["layout", "collection"].includes(input.kind)
+        || (input.kind === "layout" && files.size !== 1)) fail("PIPELINE_LAYOUT_INVALID", "Expected a typed layout input");
+      // Output validation checked the PDF association before this immutable
+      // input became visible. Its byte hash protects that association in transit.
+      const layouts = [...files.values()].map(file => {
+        const bytes = readLuaFile(inputBase, `inputs/${key}/${file.path}`, file, Math.min(budget.maxArtifactBytes, LUA_DATA_POLICY.maxPlanBytes));
+        let value;
+        try { value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); }
+        catch { fail("PIPELINE_LAYOUT_INVALID", "Invalid layout JSON"); }
+        return validateLayout(value, { artifact: { ...value?.artifact, mediaType: "application/pdf" } });
+      });
+      return input.kind === "layout" ? layouts[0] : layouts;
+    },
     read(key, relative) {
       logicalPath(relative, "PIPELINE_INPUT_INVALID");
       const member = members(key).get(relative);

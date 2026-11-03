@@ -41,7 +41,7 @@ async function executeRequest({ inputRoot, workRoot }) {
         // The I/O layer bounds bytes before posting. The process event loop can
         // drain these messages while this thread reads or validates file bytes.
         emit: event => parentPort.postMessage(JSON.stringify(event) + "\n") });
-      host = Object.fromEntries(["read", "list", "write", "log", "diagnostic"].map(key => [key, io[key]]));
+      host = Object.fromEntries(["read", "list", "read_layout", "write", "log", "diagnostic"].map(key => [key, io[key]]));
     }
     const value = await executeLua({ mode: request.mode, script: request.script, modules, context: request.context,
       entrypoint: request.entrypoint, host, policy, maxIoBytes: budget.maxArtifactBytes, timeoutMs: request.timeoutMs,

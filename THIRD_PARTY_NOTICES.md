@@ -1,5 +1,22 @@
 # Third-party notices
 
+## MuPDF
+
+Iris uses **MuPDF.js 1.28.1** on the server to extract conservative occupied
+regions from final compiler PDFs. The pinned npm package includes the JavaScript
+binding and WebAssembly renderer from Artifex Software, Inc.
+
+MuPDF is licensed under **AGPL-3.0-or-later**. Its complete license accompanies
+the installed package at `node_modules/mupdf/LICENSE` and is available at
+https://www.gnu.org/licenses/agpl-3.0.html. GPLv3 section 13 permits combination
+with AGPLv3; the AGPL network-interaction requirements apply to the combination.
+Operators distributing or offering a modified combined service must provide its
+Corresponding Source as required by those licenses.
+
+Sources: https://github.com/ArtifexSoftware/mupdf.js (binding),
+https://github.com/ArtifexSoftware/mupdf (renderer),
+https://github.com/GioMez/Iris (Iris integration).
+
 ## Tabler Icons
 
 Iris includes a curated subset of Tabler Icons 3.45.0.

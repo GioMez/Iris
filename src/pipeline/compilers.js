@@ -3,8 +3,10 @@ const { readFileSync, constants } = require("node:fs");
 const path = require("node:path");
 const { createHash } = require("node:crypto");
 const { logicalPath, fail, SNAPSHOT_TYPE } = require("./contracts");
-const { materializeOverlay } = require("./workspaces");
+const { materializeOverlay, reserveOutputId } = require("./workspaces");
 const { isPrivateBuildFile } = require("../builds");
+const { MEDIA_TYPE: LAYOUT_TYPE } = require("./layout");
+const { createLayoutTool, layoutImplementationHash, runLayoutCollector } = require("./layout-runner");
 
 const ENGINES = ["pdflatex", "xelatex", "lualatex", "xetex"];
 const TYPES = { pdf: "application/pdf", png: "image/png", svg: "image/svg+xml", ps: "application/postscript", eps: "application/postscript" };
@@ -16,6 +18,7 @@ function createCompilerTools({ texBinPath = "", lilypondBinPath = "", timeoutMs 
   const command = (bin, id) => bin ? path.resolve(bin, id) : id;
   const env = bin => ({ PATH: bin ? `${path.resolve(bin)}${path.delimiter}${process.env.PATH || ""}` : process.env.PATH || "" });
   return [
+    createLayoutTool(timeoutMs),
     { id: "fc-cache", path: "fc-cache", timeoutMs: Math.min(timeoutMs, 10000) },
     ...[...ENGINES, "bibtex", "biber", "makeindex"].map(id => ({ id, path: command(texBinPath, id), timeoutMs, env: env(texBinPath) })),
     { id: "lilypond", path: command(lilypondBinPath, "lilypond"), timeoutMs, env: env(lilypondBinPath) },
@@ -26,10 +29,11 @@ function createCompilerAdapters(services) {
   const { runtime, runId, normalizeCompileProfile, runCompilePipeline, parseCompileArguments, kpathseaSearchPath, onCompiled } = services;
   // Include the owning shared compiler helpers and collector in adapter identity.
   // Executable identity remains a separate run-policy responsibility.
-  const implementationHash = hash(Buffer.concat([readFileSync(__filename), collector,
+  const layoutHash = layoutImplementationHash();
+  const implementationHash = hash(Buffer.concat([readFileSync(__filename), collector, Buffer.from(layoutHash),
     readFileSync(path.join(__dirname, "../server.js")), readFileSync(path.join(__dirname, "../compile-diagnostics.js"))]));
   return ["latex", "lilypond"].map(family => ({
-    id: `iris.${family}`, version: "1.0.0", implementationHash, capabilities: [`compile.${family}`],
+    id: `iris.${family}`, version: "1.0.0", implementationHash, capabilities: [`compile.${family}`, "layout.pages", "layout.occupied", "layout.occupied.complete"],
     optionsSchema: { type: "object", required: ["main"], properties: {
       main: { type: "string", minLength: 1, maxLength: 500 },
       ...(family === "latex" ? {
@@ -49,6 +53,7 @@ function createCompilerAdapters(services) {
     outputs: {
       output: { kinds: ["file", "collection"], mediaTypes: family === "latex" ? [TYPES.pdf] : [...new Set(Object.values(TYPES))], required: true },
       files: { kinds: ["collection"], mediaTypes: ["application/vnd.iris.build-files"] },
+      layout: { kinds: ["layout", "collection"], mediaTypes: [LAYOUT_TYPE] },
     },
     async execute(context) {
       const { options, signal } = context, settings = context.inputs.source.settings || {};
@@ -57,7 +62,12 @@ function createCompilerAdapters(services) {
       const format = family === "latex" ? "pdf" : options.format || settings.lilypondFormat || "pdf";
       const mapping = options.sourceMapping ?? settings.sourceMapping ?? true;
       const output = context.step.outputs.output;
+      const layout = context.step.outputs.layout;
+      const layoutRequirements = context.step.requiredCapabilities.filter(value => value.startsWith("layout."));
       if (output.mediaType !== TYPES[format]) fail("PIPELINE_COMPILE_FORMAT_INVALID", "Compiler output does not match its declared media type");
+      if ((!layout && layoutRequirements.length) || (layout && (format !== "pdf" || (output.kind === "collection" && layout.kind !== "collection")))) {
+        fail("PIPELINE_LAYOUT_CAPABILITY_UNAVAILABLE", "Layout output requires matching PDF cardinality");
+      }
       let profile;
       try {
         profile = normalizeCompileProfile(options.profile || settings.compileProfile, engine, main, family,
@@ -150,6 +160,17 @@ function createCompilerAdapters(services) {
           metadata.outputs.push({ outputPort, path: relative, compiledPath: file.path.slice(7), size: file.size, contentHash: file.contentHash });
         }
         for (const file of documents) await copy(file, output.kind === "file" ? output.path : `${output.path}/${file.path.slice(7)}`, "output");
+        if (layout) {
+          for (const file of documents) {
+            const relative = output.kind === "file" ? output.path : `${output.path}/${file.path.slice(7)}`;
+            const artifact = { id: reserveOutputId(context, "output", relative), contentHash: file.contentHash, mediaType: TYPES.pdf };
+            await runLayoutCollector({ runtime, worker, compilerResult: result, artifact,
+              source: path.join(worker.workRoot, file.path), destination: path.join(context.outputDir,
+                layout.kind === "collection" ? `${layout.path}/${file.path.slice(7)}.json` : layout.path),
+              maxArtifactBytes: context.limits.maxArtifactBytes, implementationHash: layoutHash,
+              requirements: layoutRequirements, signal });
+          }
+        }
         const files = context.step.outputs.files;
         if (files) {
           await fs.mkdir(path.join(context.outputDir, files.path), { recursive: true });

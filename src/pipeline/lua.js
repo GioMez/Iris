@@ -223,7 +223,7 @@ function createLuaCoordinator({ runtime, workspace, runId, registry, policy: ove
       const { script, entrypoint, options = {} } = context.options;
       if (!bundle.modules.some(file => file.path === script)) fail("PIPELINE_APPROVAL_REQUIRED", "Lua transform module is outside its approved bundle");
       const inputs = Object.fromEntries(Object.entries(context.inputs).map(([key, input]) => [key, {
-        kind: input.kind, mediaType: input.mediaType, files: input.files.map(({ path, size, contentHash }) => ({ path, size, contentHash })),
+        kind: input.kind, mediaType: input.mediaType, files: input.files.map(({ id, path, size, contentHash }) => ({ id, path, size, contentHash })),
       }]));
       const members = new Map(Object.entries(context.inputs).map(([key, input]) => [key, new Map(input.files.map(file => [file.path, file]))]));
       function bindDiagnostic({ input, ...item }) {
@@ -250,7 +250,7 @@ function createLuaAdapter({ execute }) {
       script: { type: "string", minLength: 1, maxLength: 500 }, entrypoint: { type: "string", minLength: 1, maxLength: 64 },
       options: { type: "object", additionalProperties: true },
     } },
-    additionalInputs: { kinds: ["file", "collection"], mediaTypes: ["*/*"] },
+    additionalInputs: { kinds: ["file", "collection", "layout"], mediaTypes: ["*/*"] },
     additionalOutputs: { kinds: ["file", "collection"], mediaTypes: ["*/*"] },
   };
 }
