@@ -90,6 +90,19 @@ function commandClient(transport, policy) {
 async function createPodmanRuntime({ root, coordinatorId, transport = {}, policy: values, tools }) {
   const policy = readRuntimePolicy(values), client = commandClient(transport, policy);
   if (!isUuid(coordinatorId) || !path.isAbsolute(root)) throw error("PIPELINE_RUNTIME_POLICY_INVALID");
+  const registered = new Map(), tokens = new WeakSet(), workspaces = new Map();
+  if (!Array.isArray(tools) || tools.length > 128) throw error("PIPELINE_TOOL_INVALID");
+  for (const definition of tools) {
+    name(definition.id);
+    if (registered.has(definition.id) || !/^\/[a-zA-Z0-9_./-]+$/.test(definition.path) || definition.path.split("/").includes("..")
+      || !Number.isSafeInteger(definition.timeoutMs) || definition.timeoutMs < 1 || definition.timeoutMs > policy.runTimeoutMs) throw error("PIPELINE_TOOL_INVALID");
+    const env = definition.env === undefined ? {} : definition.env;
+    if (!env || typeof env !== "object" || Array.isArray(env) || Object.keys(env).length > 64
+      || Object.entries(env).some(([key, value]) => !/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(key) || typeof value !== "string" || value.includes("\0"))
+      || Buffer.byteLength(JSON.stringify(env)) > 65536) throw error("PIPELINE_TOOL_INVALID");
+    const tool = Object.freeze({ id: definition.id, path: definition.path, timeoutMs: definition.timeoutMs, env: Object.freeze({ ...env }) });
+    tokens.add(tool); registered.set(tool.id, tool);
+  }
   const info = JSON.parse(await client.run(["info", "--format", "json"]));
   if (info.host?.os !== "linux" || info.host.cgroupVersion !== "v2" || !info.host.security?.rootless || !info.host.security?.seccompEnabled
     || !["cpu", "memory", "pids"].every(value => info.host.cgroupControllers?.includes(value))) throw error("PIPELINE_CONTAINMENT_UNAVAILABLE");
@@ -101,14 +114,6 @@ async function createPodmanRuntime({ root, coordinatorId, transport = {}, policy
   catch (error) { if (error.code !== "EEXIST") throw error; }
   const { installationId } = JSON.parse(await fs.readFile(identityPath, "utf8"));
   if (!isUuid(installationId)) throw error("PIPELINE_RUNTIME_IDENTITY_INVALID");
-  const registered = new Map(), tokens = new WeakSet(), workspaces = new Map();
-  for (const definition of tools) {
-    name(definition.id);
-    if (registered.has(definition.id) || !/^\/[a-zA-Z0-9_./-]+$/.test(definition.path) || definition.path.split("/").includes("..")
-      || !Number.isSafeInteger(definition.timeoutMs) || definition.timeoutMs < 1 || definition.timeoutMs > policy.runTimeoutMs) throw error("PIPELINE_TOOL_INVALID");
-    const tool = Object.freeze({ id: definition.id, path: definition.path, timeoutMs: definition.timeoutMs });
-    tokens.add(tool); registered.set(tool.id, tool);
-  }
   const gate = new ConcurrencyGate({ limit: Math.min(policy.concurrency, Math.floor(policy.totalMemoryBytes / reservationBytes(policy))), queueLimit: policy.queueLimit });
   let accepting = true;
   function get(workspace) {
@@ -234,12 +239,13 @@ async function createPodmanRuntime({ root, coordinatorId, transport = {}, policy
     }
     worker.removed = true;
   }
-  function containerArgs(state, id, resources, timeoutMs, executable, args, { inputWritable = false } = {}) {
+  function containerArgs(state, id, resources, timeoutMs, executable, args, { inputWritable = false, env = {} } = {}) {
     return ["create", "--name", id, ...labelArgs(state), "--pull=never", "--network=none", "--read-only", "--read-only-tmpfs=false",
       "--ipc=none", "--cap-drop=all", "--security-opt=no-new-privileges", "--log-driver=none", "--user=65534:65534",
       `--memory=${resources.memoryBytes}`, `--memory-swap=${resources.memoryBytes}`, `--pids-limit=${resources.pids}`, `--cpus=${resources.cpus}`,
       "--ulimit=nofile=256:256", `--timeout=${Math.max(1, Math.ceil(timeoutMs / 1000))}`, "--workdir=/work", "--unsetenv-all",
-      "--env=PATH=/usr/local/bin:/usr/bin:/bin", "--env=HOME=/work", "--env=TMPDIR=/tmp", "--env=LANG=C.UTF-8",
+      ...Object.entries({ PATH: "/usr/local/bin:/usr/bin:/bin", HOME: "/work", TMPDIR: "/tmp", LANG: "C.UTF-8", ...env })
+        .map(([key, value]) => `--env=${key}=${value}`),
       `--volume=${state.record.volumes[0]}:/work:rw`, `--volume=${state.record.volumes[1]}:/tmp:rw`,
       ...(state.record.volumes[2] ? [`--volume=${state.record.volumes[2]}:/input:${inputWritable ? "rw" : "ro"}`] : []),
       "--entrypoint", executable, policy.image, ...args];
@@ -359,7 +365,7 @@ async function createPodmanRuntime({ root, coordinatorId, transport = {}, policy
         worker.removed = true; preparationDone(); worker.confirmDrain();
         return { code: null, signal: null, log: "", truncated: false, cancelled: true, timedOut: false, oomKilled: false, drained: true, durationMs: Date.now() - started };
       }
-      const argsCreate = containerArgs(state, worker.name, policy, timeoutMs, tool.path, args);
+      const argsCreate = containerArgs(state, worker.name, policy, timeoutMs, tool.path, args, { env: tool.env });
       worker.created = client.run(argsCreate);
       try { await worker.created; } finally { preparationDone(); }
       if (signal?.aborted || worker.cancelled) {
@@ -422,8 +428,11 @@ async function createPodmanRuntime({ root, coordinatorId, transport = {}, policy
     }
     await stopHolder(state);
   }
-  async function exportWorkspace({ workspace, destination, signal }) {
+  async function exportWorkspace({ workspace, destination, directory, signal }) {
     const state = get(workspace);
+    // A single top-level name avoids traversing an untrusted ancestor. Do not
+    // append '/.' here: Podman must archive, rather than follow, a replaced root.
+    if (directory !== undefined) name(directory, "PIPELINE_PATH_INVALID");
     if (state.cancelled) throw error("PIPELINE_WORKSPACE_CANCELLED");
     if (state.worker || state.transfer || state.setupFailure) throw error("PIPELINE_WORKER_BUSY");
     signal?.throwIfAborted();
@@ -436,7 +445,7 @@ async function createPodmanRuntime({ root, coordinatorId, transport = {}, policy
         || !(await inspectOwned(state, "container", state.holder.name)).State.Running) throw error("PIPELINE_WORKSPACE_LOST");
       const remaining = state.record.deadlineAt - Date.now();
       if (remaining <= 0) throw error("PIPELINE_RUN_DEADLINE");
-      const result = await client.start(["cp", `${state.holder.name}:/work/.`, "-"], {
+      const result = await client.start(["cp", `${state.holder.name}:/work/${directory ?? "."}`, "-"], {
         signal: effective, timeoutMs: remaining,
         consume: async source => manifest = await extractTransferArchive(source, destination,
           { maxArtifactBytes: policy.outputBytes, maxOutputBytes: policy.outputBytes, maxOutputEntries: policy.outputEntries }, { signal: effective }),

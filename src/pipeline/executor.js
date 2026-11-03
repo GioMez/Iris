@@ -41,6 +41,10 @@ async function executePlan({ plan, target, workspace, registry, gate, signal = n
         diagnosticBytes += Buffer.byteLength(JSON.stringify(diagnostics));
         if (diagnosticBytes > 1048576) fail("PIPELINE_DIAGNOSTICS_LIMIT", "Pipeline diagnostics exceed the run budget");
         result.diagnostics = diagnostics;
+        if (outcome?.errorCode !== undefined) {
+          if (!/^[A-Z][A-Z0-9_]{0,63}$/.test(outcome.errorCode)) fail("PIPELINE_OUTCOME_INVALID", "Invalid pipeline failure code");
+          fail(outcome.errorCode, "Pipeline adapter failed");
+        }
         produced = await validateOutputs(workspace, step, { signal });
       } catch (caught) { error = caught; rejected = true; }
       if (signal.aborted) await transition("cancelled");

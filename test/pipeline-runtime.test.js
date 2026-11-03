@@ -74,6 +74,33 @@ test("rootless workers have no backend credentials or writable root", native, as
   await assert.rejects(f.runtime.runContained({ tool: { id: "node", path: "/bin/sh" }, args: [], workspace: f.workspace }), { code: "PIPELINE_TOOL_INVALID" });
 });
 
+test("registered compiler environments survive workers without inheriting host variables", native, async t => {
+  const environment = { TEXMFVAR: "/tmp/texmf-var", TEXINPUTS: "/work//:/work/output//:", XDG_DATA_HOME: "/input" };
+  const f = await runtimeFixture(t, {}, undefined, options => createPodmanRuntime({ ...options,
+    tools: [...options.tools, { id: "compiler", path: "/usr/local/bin/node", timeoutMs: 3000, env: environment }],
+  }));
+  environment.TEXMFVAR = "changed after registration";
+  const result = await f.runtime.runContained({ workspace: f.workspace, tool: f.runtime.resolveTool("compiler"), args: ["-e",
+    `const fs=require('node:fs');fs.mkdirSync(process.env.TEXMFVAR,{recursive:true});fs.writeFileSync(process.env.TEXMFVAR+'/cache','kept');
+     console.log(JSON.stringify({tex:process.env.TEXMFVAR,inputs:process.env.TEXINPUTS,xdg:process.env.XDG_DATA_HOME,home:process.env.HOME}));`],
+  });
+  assert.equal(result.code, 0, result.log);
+  assert.deepEqual(JSON.parse(result.log), { tex: "/tmp/texmf-var", inputs: "/work//:/work/output//:", xdg: "/input", home: "/work" });
+  const next = await f.run("console.log(JSON.stringify({cache:require('node:fs').readFileSync('/tmp/texmf-var/cache','utf8'),tex:process.env.TEXMFVAR||null}))");
+  assert.deepEqual(JSON.parse(next.log), { cache: "kept", tex: null });
+});
+
+test("invalid registered environments fail before engine or filesystem admission", async t => {
+  const root = path.join(os.tmpdir(), `iris-invalid-tools-${uuidv7()}`);
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  for (const env of [{ "BAD=KEY": "value" }, { TEXMFVAR: null }, { TEXMFVAR: "bad\0value" }, [], { TEXMFVAR: "x".repeat(65537) }]) {
+    await assert.rejects(createPodmanRuntime({ root, coordinatorId: uuidv7(), transport: { command: "/no-such-engine" },
+      policy: { image }, tools: [{ id: "compiler", path: "/usr/bin/pdflatex", timeoutMs: 1000, env }],
+    }), { code: "PIPELINE_TOOL_INVALID" });
+    await assert.rejects(fs.stat(root), { code: "ENOENT" });
+  }
+});
+
 test("contained cancellation drains a detached descendant before the runtime reservation returns", native, async t => {
   const f = await runtimeFixture(t), controller = new AbortController();
   const running = f.run(`const {spawn}=require('node:child_process');spawn('/bin/sh',['-c','while :; do sleep 1; done'],{detached:true,stdio:'ignore'});console.log('ready');setInterval(()=>{},1000);`, {
@@ -392,6 +419,27 @@ test("runtime export rejects symlinks without publishing partial host bytes", na
   assert.equal((await f.run("require('node:fs').symlinkSync('/etc/passwd','/work/link')")).code, 0);
   await assert.rejects(f.runtime.exportWorkspace({ workspace: f.workspace, destination }), { code: "PIPELINE_PATH_INVALID" });
   await assert.rejects(fs.stat(destination), { code: "ENOENT" });
+});
+
+test("compiler export selects output without copying source aliases or caches", native, async t => {
+  const f = await runtimeFixture(t), destination = path.join(path.dirname(f.root), "received");
+  assert.equal((await f.run(`const fs=require('node:fs');fs.symlinkSync('/etc','/work/source');
+    fs.mkdirSync('/work/output/parts',{recursive:true});fs.writeFileSync('/work/output/parts/result',Buffer.from([0,255,13,10]));
+    fs.writeFileSync('/work/cache','private scratch');`)).code, 0);
+  const exported = await f.runtime.exportWorkspace({ workspace: f.workspace, directory: "output", destination });
+  assert.deepEqual(exported.files.map(file => file.path), ["output/parts/result"]);
+  assert.deepEqual(await fs.readFile(path.join(destination, "output/parts/result")), Buffer.from([0,255,13,10]));
+});
+
+test("compiler export refuses a replaced output root and paths through ancestors", native, async t => {
+  const f = await runtimeFixture(t), destination = path.join(path.dirname(f.root), "received");
+  assert.equal((await f.run("require('node:fs').symlinkSync('/etc','/work/output')")).code, 0);
+  await assert.rejects(f.runtime.exportWorkspace({ workspace: f.workspace, directory: "output", destination }), { code: "PIPELINE_PATH_INVALID" });
+  assert.equal((await f.run("const fs=require('node:fs');fs.unlinkSync('/work/output');fs.mkdirSync('/work/output')")).code, 0);
+  for (const directory of ["../etc", "/etc", "output/ssl", "", "."]) {
+    await assert.rejects(f.runtime.exportWorkspace({ workspace: f.workspace, directory, destination }), { code: "PIPELINE_PATH_INVALID" });
+    await assert.rejects(fs.stat(destination), { code: "ENOENT" });
+  }
 });
 
 test("runtime export preserves a pre-existing host destination", native, async t => {

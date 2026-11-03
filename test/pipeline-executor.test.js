@@ -48,6 +48,18 @@ async function writeOutput(context, relative, text) {
   await fs.writeFile(file, text);
 }
 
+test("a failed adapter outcome keeps diagnostics and blocks dependents even without declared outputs", async t => {
+  const f = await fixture(t), diagnostics = [{ severity: "error", message: "Missing include", file: "main.tex", line: 2 }];
+  const adapters = registry(async () => ({ errorCode: "PIPELINE_COMPILE_FAILED", diagnostics }));
+  const selected = plan(adapters, [step("compile"), step("later", { after: ["compile"] })]);
+  const result = await executePlan({ plan: selected, target: "main", workspace: f.workspace, registry: adapters,
+    gate: new ConcurrencyGate({ limit: 1, queueLimit: 1 }) });
+  assert.equal(result.state, "failed");
+  assert.deepEqual(result.steps.map(s => s.state), ["failed", "blocked"]);
+  assert.equal(result.steps[0].errorCode, "PIPELINE_COMPILE_FAILED");
+  assert.deepEqual(result.steps[0].diagnostics, diagnostics);
+});
+
 test("snapshot bytes and identity include binary files, empty folders and settings without reading old outputs", async t => {
   const f = await fixture(t);
   await fs.mkdir(path.join(f.source, "output"));

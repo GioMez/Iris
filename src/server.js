@@ -3910,6 +3910,7 @@ function runCompileStep({ step, binPath, cwd, fontDir, texmfVar }) {
     const projectSearchPath = kpathseaSearchPath(cwd, outputDir);
     const startedAt = Date.now();
     let log = "";
+    let logBytes = 0;
     let timedOut = false;
     let truncated = false;
     let done = false;
@@ -3934,9 +3935,15 @@ function runCompileStep({ step, binPath, cwd, fontDir, texmfVar }) {
     });
     const append = (chunk) => {
       const text = chunk.toString("utf8");
-      const remaining = Math.max(0, COMPILE_LOG_LIMIT - log.length);
-      if (text.length > remaining) truncated = true;
-      log += text.slice(0, remaining);
+      const size = Buffer.byteLength(text), remaining = Math.max(0, COMPILE_LOG_LIMIT - logBytes);
+      if (size <= remaining) { log += text; logBytes += size; return; }
+      truncated = true;
+      if (!remaining) return;
+      const bytes = Buffer.from(text);
+      let end = remaining;
+      while (end > 0 && (bytes[end] & 0xc0) === 0x80) end--;
+      log += bytes.subarray(0, end).toString("utf8");
+      logBytes += end;
     };
     append(`$ ${command} ${args.join(" ")}\n`);
     const timer = setTimeout(() => {
@@ -3944,8 +3951,8 @@ function runCompileStep({ step, binPath, cwd, fontDir, texmfVar }) {
       child.kill("SIGTERM");
       setTimeout(() => { if (!done) child.kill("SIGKILL"); }, 1500);
     }, COMPILE_TIMEOUT_MS);
-    child.stdout.on("data", append);
-    child.stderr.on("data", append);
+    child.stdout.setEncoding("utf8").on("data", append);
+    child.stderr.setEncoding("utf8").on("data", append);
     child.on("error", (err) => append(`\nIris: unable to start ${command}: ${err.message}\n`));
     child.on("close", (code, signal) => {
       done = true;
@@ -3959,22 +3966,42 @@ function runCompileStep({ step, binPath, cwd, fontDir, texmfVar }) {
   });
 }
 
-async function runCompilePipeline({ profile, binPath, cwd, fontDir, texmfVar, preLog }) {
+async function runCompilePipeline({ profile, binPath, cwd, fontDir, texmfVar, preLog, runStep = runCompileStep, signal: abortSignal }) {
   const startedAt = Date.now();
-  let log = preLog || "";
+  let log = "", logBytes = 0, truncated = false;
+  const append = text => {
+    const size = Buffer.byteLength(text);
+    if (logBytes + size <= COMPILE_LOG_LIMIT) { log += text; logBytes += size; return; }
+    const bytes = Buffer.from(log + text);
+    truncated = true;
+    const marker = Buffer.from("\nIris: compile trace truncated.\n").subarray(0, COMPILE_LOG_LIMIT);
+    const room = COMPILE_LOG_LIMIT - marker.length;
+    let head = Math.floor(room / 2), tail = bytes.length - (room - head);
+    // Keep the initial command context and most recent pass without splitting
+    // a UTF-8 scalar at either retained boundary.
+    while (head > 0 && (bytes[head] & 0xc0) === 0x80) head--;
+    while (tail < bytes.length && (bytes[tail] & 0xc0) === 0x80) tail++;
+    log = Buffer.concat([bytes.subarray(0, head), marker, bytes.subarray(tail)]).toString("utf8");
+    logBytes = Buffer.byteLength(log);
+  };
+  append(preLog || "");
   let exitCode = 0;
   let signal = null;
   let timedOut = false;
   const steps = [];
   for (let i = 0; i < profile.steps.length; i++) {
+    abortSignal?.throwIfAborted();
     const step = profile.steps[i];
-    log += `\n===== Iris step ${i + 1}/${profile.steps.length}: ${step.tool} =====\n`;
-    const res = await runCompileStep({ step, binPath, cwd, fontDir, texmfVar });
+    append(`\n===== Iris step ${i + 1}/${profile.steps.length}: ${step.tool} =====\n`);
+    const res = await runStep({ step, binPath, cwd, fontDir, texmfVar, signal: abortSignal });
+    abortSignal?.throwIfAborted();
     // Arguments are the complete normalized execution profile, including source
     // and options. Do not infer comparability from only the main file or tool.
     const comparisonKey = LATEX_ENGINES.has(step.tool) ? JSON.stringify([step.tool, step.args]) : null;
-    steps.push({ ...step, comparisonKey, ...res });
-    log += res.log;
+    steps.push({ tool: step.tool, comparisonKey, code: res.code, signal: res.signal, timedOut: res.timedOut, truncated: res.truncated,
+      diagnostics: res.diagnostics ?? parseCompileLog(res.log, { cwd, bounded: false }).diagnostics });
+    append(res.log);
+    truncated ||= res.truncated === true;
     exitCode = res.code;
     signal = res.signal;
     timedOut = res.timedOut;
@@ -3985,6 +4012,7 @@ async function runCompilePipeline({ profile, binPath, cwd, fontDir, texmfVar, pr
     code: exitCode,
     signal,
     timedOut,
+    truncated,
     durationMs: Date.now() - startedAt,
     log,
     ...parsed,
