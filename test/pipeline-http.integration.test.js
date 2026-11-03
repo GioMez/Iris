@@ -481,7 +481,7 @@ test("transform worker cleanup failure preserves the whole run for recovery", na
   assert.equal((await f.pool.query("SELECT count(*) FROM build_artifacts WHERE build_id=$1", [run.id])).rows[0].count, "0");
 });
 
-for (const damage of ["none", "artifact", "receipt"]) test(`publication database failure checks retained ${damage === "none" ? "matching bytes" : `changed ${damage}`} during reconciliation`, nativeLua, async t => {
+for (const damage of ["none", "artifact", "receipt", "restart"]) test(`publication database failure checks retained ${damage === "none" ? "matching bytes" : damage === "restart" ? "bytes after a real server restart" : `changed ${damage}`} during reconciliation`, nativeLua, async t => {
   const f = await fixture(t, generatingScript), descriptor = await inspect(f);
   f.hooks.beforeClientQuery = sql => {
     if (sql.startsWith("UPDATE build_outputs SET status='succeeded'")) throw new Error("Controlled finalization failure");
@@ -507,10 +507,31 @@ for (const damage of ["none", "artifact", "receipt"]) test(`publication database
     await fs.writeFile(receipt, contents.replace(run.id, uuidv7()));
   }
   delete f.hooks.beforeClientQuery;
-  await f.pool.query("UPDATE build_outputs SET coordinator_id=$2 WHERE id=$1", [run.id, uuidv7()]);
-  f.app.startRetentionSweep();
-  await until(() => f.app.runtimeSettled(), "publication reconciliation", 4000);
-  assert.equal((await (await f.request(`${f.base}/runs/${run.id}`)).json()).run.state, damage === "none" ? "interrupted" : "running");
+  if (damage === "restart") {
+    await f.app.startGracefulShutdown("SIGTERM", f.server);
+    assert.deepEqual(f.exits, [1]);
+    const work = await disposableWorkspace("iris-publication-restart-");
+    try {
+      const schema = (await f.pool.query("SELECT current_schema() AS name")).rows[0].name;
+      const database = new URL(connectionString), source = path.resolve(__dirname, ".."), port = await freePort();
+      const app = launch(process.execPath, [path.join(source, "src/server.js")], { cwd: work.cwd, quiet: true, allowFailure: true, timeout: 15000,
+        env: { ...work.env, DATA_DIR: f.dataDir, PUBLIC_DIR: path.join(source, "public"), PORT: String(port), BIND_ADDRESS: "127.0.0.1",
+          IRIS_SECRET: "pipeline-restart-test-only-secret", DB_HOST: database.hostname, DB_PORT: database.port,
+          DB_USER: decodeURIComponent(database.username), DB_PASSWORD: decodeURIComponent(database.password), DB_NAME: database.pathname.slice(1),
+          PGOPTIONS: `-c search_path=${schema}`, RETENTION_ENABLED: "false", LUA_BIN_PATH: path.join(work.root, "missing-lua") } });
+      work.defer(() => app.stop());
+      await until(() => /Iris listening|Unable to start Iris backend/.test(app.output()), "restarted server", 10000);
+      assert.match(app.output(), /Iris listening/);
+      await until(async () => (await f.pool.query("SELECT status FROM build_outputs WHERE id=$1", [run.id])).rows[0].status === "interrupted", "restart reconciliation", 4000);
+      await until(async () => (await (await fetch(`http://127.0.0.1:${port}/api/health`)).json()).pendingWrites === 0, "restarted server drain", 4000);
+      assert.equal((await app.stop()).code, 0);
+    } finally { await work.close(); }
+  } else {
+    await f.pool.query("UPDATE build_outputs SET coordinator_id=$2 WHERE id=$1", [run.id, uuidv7()]);
+    f.app.startRetentionSweep();
+    await until(() => f.app.runtimeSettled(), "publication reconciliation", 4000);
+    assert.equal((await (await f.request(`${f.base}/runs/${run.id}`)).json()).run.state, damage === "none" ? "interrupted" : "running");
+  }
   if (damage !== "artifact") assert.deepEqual(await fs.readFile(generated), before);
   else assert.equal((await fs.stat(generated)).size, before.length);
 });
