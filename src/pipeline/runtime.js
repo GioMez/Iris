@@ -10,6 +10,8 @@ const DEFAULTS = Object.freeze({ memoryBytes: 1073741824, totalMemoryBytes: 2147
   outputBytes: 536870912, outputEntries: 20000, tempBytes: 134217728, tempEntries: 4096,
   logBytes: 1048576, timeoutMs: 120000, runTimeoutMs: 1800000, controlTimeoutMs: 15000, concurrency: 2, queueLimit: 8 });
 const error = code => Object.assign(new Error(code), { code });
+const HOLDER_MEMORY = 8388608;
+const reservationBytes = policy => policy.memoryBytes + policy.outputBytes + policy.tempBytes + HOLDER_MEMORY;
 
 function readRuntimePolicy(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) fail("PIPELINE_RUNTIME_POLICY_INVALID", "Invalid contained runtime policy");
@@ -19,7 +21,8 @@ function readRuntimePolicy(value) {
     if (!Object.hasOwn(result, key) || !Number.isSafeInteger(value) || value < (key === "queueLimit" ? 0 : 1)) fail("PIPELINE_RUNTIME_POLICY_INVALID", "Invalid contained resource limit");
     result[key] = value;
   }
-  if (result.memoryBytes > result.totalMemoryBytes || result.controlTimeoutMs > 2147483647 || result.runTimeoutMs > 2147483647 || result.timeoutMs > result.runTimeoutMs) {
+  if (!Number.isSafeInteger(reservationBytes(result)) || reservationBytes(result) > result.totalMemoryBytes
+    || result.controlTimeoutMs > 2147483647 || result.runTimeoutMs > 2147483647 || result.timeoutMs > result.runTimeoutMs) {
     fail("PIPELINE_RUNTIME_POLICY_INVALID", "Invalid contained resource reservation");
   }
   return Object.freeze({ image, ...result });
@@ -93,26 +96,146 @@ async function createPodmanRuntime({ root, coordinatorId, transport = {}, policy
     const tool = Object.freeze({ id: definition.id, path: definition.path, timeoutMs: definition.timeoutMs });
     tokens.add(tool); registered.set(tool.id, tool);
   }
-  const gate = new ConcurrencyGate({ limit: Math.min(policy.concurrency, Math.floor(policy.totalMemoryBytes / policy.memoryBytes)), queueLimit: policy.queueLimit });
+  const gate = new ConcurrencyGate({ limit: Math.min(policy.concurrency, Math.floor(policy.totalMemoryBytes / reservationBytes(policy))), queueLimit: policy.queueLimit });
   let accepting = true;
   function get(workspace) {
     const state = workspaces.get(workspace);
     if (!state) throw error("PIPELINE_WORKER_WORKSPACE_INVALID");
     return state;
   }
-  const labels = state => ({ "iris.installation": installationId, "iris.coordinator": coordinatorId, "iris.workspace": state.record.id, "iris.run": state.record.runId });
+  const labels = state => ({ "iris.installation": installationId, "iris.coordinator": state.record.coordinatorId, "iris.workspace": state.record.id, "iris.run": state.record.runId });
   const labelArgs = state => Object.entries(labels(state)).flatMap(([key, value]) => ["--label", `${key}=${value}`]);
-  const save = state => fs.writeFile(path.join(root, `${state.record.id}.json`), JSON.stringify(state.record), { mode: 0o600 });
+  async function syncRoot() {
+    const handle = await fs.open(root, "r");
+    try { await handle.sync(); } finally { await handle.close(); }
+  }
+  async function save(state) {
+    const destination = path.join(root, `${state.record.id}.json`), temporary = path.join(root, `.receipt-${state.record.id}-${uuidv7()}.tmp`);
+    const handle = await fs.open(temporary, "wx", 0o600);
+    try {
+      try { await handle.writeFile(JSON.stringify(state.record)); await handle.sync(); }
+      finally { await handle.close(); }
+      await fs.rename(temporary, destination);
+      await syncRoot();
+    } finally {
+      await fs.unlink(temporary).catch(error => { if (error.code !== "ENOENT") throw error; });
+    }
+  }
   async function inspectOwned(state, kind, id) {
     const records = JSON.parse(await client.run([...(kind === "volume" ? ["volume"] : []), "inspect", id]));
     const record = records[0], found = kind === "volume" ? record.Labels : record.Config?.Labels;
     if (!Object.entries(labels(state)).every(([key, value]) => found?.[key] === value)) throw error("PIPELINE_WORKER_OWNERSHIP_INVALID");
     return record;
   }
+  async function exists(kind, id) {
+    const result = await client.start([kind, "exists", id]).done;
+    if (result.code === 0) return true;
+    if (result.code === 1) return false;
+    throw error("PIPELINE_ENGINE_COMMAND_FAILED");
+  }
+  async function reconcile() {
+    const receipts = new Map(), blocked = new Set(), recovered = [];
+    for (const [workspace, state] of workspaces) {
+      if (!state.setupFailure) continue;
+      try { await disposeWorkspace(workspace); recovered.push(state.record.id); }
+      catch { blocked.add(state.record.id); }
+    }
+    for (const file of await fs.readdir(root)) {
+      if (!file.endsWith(".json") || file === "installation.json") continue;
+      const id = file.slice(0, -5);
+      if (!isUuid(id)) continue;
+      try {
+        const location = path.join(root, file), stat = await fs.lstat(location);
+        if (!stat.isFile() || stat.nlink !== 1 || stat.size > 65536) throw error("PIPELINE_WORKER_RECOVERY_REQUIRED");
+        const record = JSON.parse(await fs.readFile(location, "utf8"));
+        if (record.id !== id || record.installationId !== installationId || !isUuid(record.coordinatorId) || !isUuid(record.runId)
+          || !Number.isSafeInteger(record.deadlineAt) || !Array.isArray(record.volumes) || !Array.isArray(record.containers)
+          || record.volumes.length > 16 || record.containers.length > 128
+          || record.volumes.some(value => typeof value !== "string" || !value.startsWith(`iris-${id}-`) || !/^iris-[a-z0-9-]+$/.test(value))
+          || record.containers.some(value => typeof value !== "string" || !value.startsWith("iris-") || !isUuid(value.slice(5)))) throw error("PIPELINE_WORKER_RECOVERY_REQUIRED");
+        name(record.stepId);
+        receipts.set(id, { record });
+      } catch { blocked.add(id); }
+    }
+    // Engine labels also cover a command whose acknowledgement or receipt update
+    // was lost. Retain a fresh receipt before removing such orphaned resources.
+    for (const kind of ["container", "volume"]) {
+      const args = kind === "container" ? ["ps", "--all"] : ["volume", "ls"];
+      const ids = (await client.run([...args, "--filter", `label=iris.installation=${installationId}`, "--format", kind === "container" ? "{{.ID}}" : "{{.Name}}"])).trim().split("\n").filter(Boolean);
+      for (const engineId of ids) {
+        const [entry] = JSON.parse(await client.run([...(kind === "volume" ? ["volume"] : []), "inspect", engineId]));
+        const found = kind === "volume" ? entry.Labels : entry.Config?.Labels;
+        const id = found?.["iris.workspace"], runId = found?.["iris.run"], owner = found?.["iris.coordinator"];
+        if (found?.["iris.installation"] !== installationId || !isUuid(id) || !isUuid(runId) || !isUuid(owner)) {
+          blocked.add(isUuid(id) ? id : "unidentified"); continue;
+        }
+        if (blocked.has(id)) continue;
+        let state = receipts.get(id);
+        if (!state) {
+          state = { record: { id, installationId, coordinatorId: owner, runId, stepId: "recovery", deadlineAt: Date.now(), volumes: [], containers: [] } };
+          receipts.set(id, state);
+        }
+        if (state.record.runId !== runId || state.record.coordinatorId !== owner) { blocked.add(id); continue; }
+        const actual = kind === "volume" ? entry.Name : entry.Name?.replace(/^\//, "");
+        if (typeof actual !== "string" || (kind === "container" ? !actual.startsWith("iris-") || !isUuid(actual.slice(5)) : !actual.startsWith(`iris-${id}-`))) {
+          blocked.add(id); continue;
+        }
+        const collection = kind === "volume" ? state.record.volumes : state.record.containers;
+        if (!collection.includes(actual)) collection.push(actual);
+      }
+    }
+    for (const [id, state] of receipts) {
+      if (blocked.has(id) || [...workspaces.values()].some(active => active.record.id === id)) continue;
+      try {
+        await save(state);
+        for (const container of [...state.record.containers]) {
+          if (await exists("container", container)) {
+            await inspectOwned(state, "container", container);
+            await client.run(["rm", "--force", "--time=0", container]);
+          }
+          state.record.containers = state.record.containers.filter(value => value !== container); await save(state);
+        }
+        for (const volume of [...state.record.volumes]) {
+          if (await exists("volume", volume)) {
+            await inspectOwned(state, "volume", volume);
+            await client.run(["volume", "rm", volume]);
+          }
+          state.record.volumes = state.record.volumes.filter(value => value !== volume); await save(state);
+        }
+        await fs.unlink(path.join(root, `${id}.json`)); recovered.push(id);
+      } catch { blocked.add(id); }
+    }
+    if (blocked.size) throw error("PIPELINE_WORKER_RECOVERY_REQUIRED");
+    for (const file of await fs.readdir(root)) {
+      const match = /^\.receipt-(.{36})-(.{36})\.tmp$/.exec(file);
+      if (!match || !isUuid(match[1]) || !isUuid(match[2]) || [...workspaces.values()].some(active => active.record.id === match[1])) continue;
+      await fs.unlink(path.join(root, file));
+    }
+    await syncRoot();
+    return { recovered };
+  }
   async function removeContainer(state, worker) {
-    await inspectOwned(state, "container", worker.name);
-    await client.run(["rm", "--force", worker.name]);
+    if (await exists("container", worker.name)) {
+      await inspectOwned(state, "container", worker.name);
+      await client.run(["rm", "--force", "--time=0", worker.name]);
+    }
     worker.removed = true;
+  }
+  function containerArgs(state, id, resources, timeoutMs, executable, args) {
+    return ["create", "--name", id, ...labelArgs(state), "--pull=never", "--network=none", "--read-only", "--read-only-tmpfs=false",
+      "--ipc=none", "--cap-drop=all", "--security-opt=no-new-privileges", "--log-driver=none", "--user=65534:65534",
+      `--memory=${resources.memoryBytes}`, `--memory-swap=${resources.memoryBytes}`, `--pids-limit=${resources.pids}`, `--cpus=${resources.cpus}`,
+      "--ulimit=nofile=256:256", `--timeout=${Math.max(1, Math.ceil(timeoutMs / 1000))}`, "--workdir=/work", "--unsetenv-all",
+      "--env=PATH=/usr/local/bin:/usr/bin:/bin", "--env=HOME=/work", "--env=TMPDIR=/tmp", "--env=LANG=C.UTF-8",
+      `--volume=${state.record.volumes[0]}:/work:rw`, `--volume=${state.record.volumes[1]}:/tmp:rw`,
+      "--entrypoint", executable, policy.image, ...args];
+  }
+  async function stopHolder(state) {
+    if (!state.holder) return;
+    const holder = state.holder;
+    await removeContainer(state, holder);
+    state.record.containers = state.record.containers.filter(id => id !== holder.name);
+    await save(state); state.holder = null;
   }
   async function stopWorker(state, worker) {
     return worker.stopping ||= (async () => {
@@ -132,23 +255,49 @@ async function createPodmanRuntime({ root, coordinatorId, transport = {}, policy
     if (!accepting || signal?.aborted) { release(); signal?.throwIfAborted(); throw error("PIPELINE_RUNTIME_STOPPING"); }
     if (deadlineAt <= Date.now()) { release(); throw error("PIPELINE_RUN_DEADLINE"); }
     const id = uuidv7(), workspace = Object.freeze({ id, runId, stepId });
-    const state = { record: { id, installationId, coordinatorId, runId, stepId, deadlineAt, volumes: [], containers: [] }, release, worker: null, cancelled: false, disposing: null };
+    let setupDone;
+    const setup = new Promise(resolve => { setupDone = resolve; });
+    const state = { record: { id, installationId, coordinatorId, runId, stepId, deadlineAt, volumes: [], containers: [] }, release, setup, worker: null, cancelled: false, disposing: null };
     workspaces.set(workspace, state);
+    function checkSetup() {
+      if (!accepting || state.cancelled) throw error("PIPELINE_RUNTIME_STOPPING");
+      signal?.throwIfAborted();
+      if (deadlineAt <= Date.now()) throw error("PIPELINE_RUN_DEADLINE");
+    }
     try {
       await save(state);
       for (const [suffix, bytes, entries] of [["work", policy.outputBytes, policy.outputEntries], ["tmp", policy.tempBytes, policy.tempEntries]]) {
-        signal?.throwIfAborted();
+        checkSetup();
         const volume = `iris-${id}-${suffix}`;
         state.record.volumes.push(volume); await save(state);
+        checkSetup();
         await client.run(["volume", "create", ...labelArgs(state), "--opt=type=tmpfs", "--opt=device=tmpfs",
           `--opt=o=size=${bytes},nr_inodes=${entries},mode=1777,nosuid,nodev,noexec`, volume]);
       }
+      checkSetup();
+      const remaining = deadlineAt - Date.now();
+      if (remaining <= 0) throw error("PIPELINE_RUN_DEADLINE");
+      state.holder = { name: `iris-${uuidv7()}` };
+      state.record.containers.push(state.holder.name); await save(state);
+      checkSetup();
+      await client.run(containerArgs(state, state.holder.name, { memoryBytes: HOLDER_MEMORY, pids: 1, cpus: 0.01 }, remaining,
+        "/bin/sleep", [String(Math.ceil(remaining / 1000))]));
+      checkSetup();
+      await client.run(["start", state.holder.name]);
+      const holder = await inspectOwned(state, "container", state.holder.name);
+      if (!holder.State.Running) throw error("PIPELINE_WORKSPACE_LOST");
+      checkSetup();
       return workspace;
     } catch (failure) {
-      // Keep the reservation and durable identities if engine setup is uncertain.
       state.setupFailure = true;
+      setupDone();
+      try { await disposeWorkspace(workspace); }
+      catch (cleanupFailure) {
+        // Unconfirmed cleanup retains both the reservation and recovery receipt.
+        throw Object.assign(error("PIPELINE_WORKER_RECOVERY_REQUIRED"), { cause: new AggregateError([failure, cleanupFailure]) });
+      }
       throw failure;
-    }
+    } finally { setupDone(); }
   }
   async function runContained({ tool, args, workspace, signal, onOutput }) {
     const state = get(workspace);
@@ -172,18 +321,14 @@ async function createPodmanRuntime({ root, coordinatorId, transport = {}, policy
       stopWorker(state, worker).catch(error => { stoppingError = error; });
     };
     try {
+      if (!state.holder || !await exists("container", state.holder.name)
+        || !(await inspectOwned(state, "container", state.holder.name)).State.Running) throw error("PIPELINE_WORKSPACE_LOST");
       await save(state);
       if (signal?.aborted || worker.cancelled) {
         worker.removed = true; preparationDone(); worker.confirmDrain();
         return { code: null, signal: null, log: "", truncated: false, cancelled: true, timedOut: false, oomKilled: false, drained: true, durationMs: Date.now() - started };
       }
-      const argsCreate = ["create", "--name", worker.name, ...labelArgs(state), "--pull=never", "--network=none", "--read-only", "--read-only-tmpfs=false",
-        "--ipc=none", "--cap-drop=all", "--security-opt=no-new-privileges", "--log-driver=none", "--user=65534:65534",
-        `--memory=${policy.memoryBytes}`, `--memory-swap=${policy.memoryBytes}`, `--pids-limit=${policy.pids}`, `--cpus=${policy.cpus}`,
-        "--ulimit=nofile=256:256", `--timeout=${Math.max(1, Math.ceil(timeoutMs / 1000))}`, "--workdir=/work", "--unsetenv-all",
-        "--env=PATH=/usr/local/bin:/usr/bin:/bin", "--env=HOME=/work", "--env=TMPDIR=/tmp", "--env=LANG=C.UTF-8",
-        `--volume=${state.record.volumes[0]}:/work:rw`, `--volume=${state.record.volumes[1]}:/tmp:rw`,
-        "--entrypoint", tool.path, policy.image, ...args];
+      const argsCreate = containerArgs(state, worker.name, policy, timeoutMs, tool.path, args);
       worker.created = client.run(argsCreate);
       try { await worker.created; } finally { preparationDone(); }
       if (signal?.aborted || worker.cancelled) {
@@ -224,7 +369,9 @@ async function createPodmanRuntime({ root, coordinatorId, transport = {}, policy
       try {
         if (worker.removed) {
           state.record.containers = state.record.containers.filter(id => id !== worker.name);
-          await save(state); state.worker = null;
+          await save(state);
+          if (state.cancelled || signal?.aborted || timedOut) await stopHolder(state);
+          state.worker = null;
         }
       } finally { complete(); }
     }
@@ -232,12 +379,14 @@ async function createPodmanRuntime({ root, coordinatorId, transport = {}, policy
   async function stop(workspace) {
     const state = get(workspace);
     state.cancelled = true;
+    await state.setup;
     const worker = state.worker;
     if (worker) {
       worker.cancelled = true;
       await stopWorker(state, worker);
       await worker.completed;
     }
+    await stopHolder(state);
   }
   async function disposeWorkspace(workspace) {
     const state = workspaces.get(workspace);
@@ -245,11 +394,14 @@ async function createPodmanRuntime({ root, coordinatorId, transport = {}, policy
     return state.disposing ||= (async () => {
       await stop(workspace);
       for (const volume of [...state.record.volumes]) {
-        await inspectOwned(state, "volume", volume);
-        await client.run(["volume", "rm", volume]);
+        if (await exists("volume", volume)) {
+          await inspectOwned(state, "volume", volume);
+          await client.run(["volume", "rm", volume]);
+        }
         state.record.volumes = state.record.volumes.filter(id => id !== volume); await save(state);
       }
       await fs.unlink(path.join(root, `${state.record.id}.json`));
+      await syncRoot();
       workspaces.delete(workspace); state.release();
     })().finally(() => { state.disposing = null; });
   }
@@ -257,7 +409,8 @@ async function createPodmanRuntime({ root, coordinatorId, transport = {}, policy
     accepting = false; gate.drain("PIPELINE_RUNTIME_STOPPING");
     for (const workspace of workspaces.keys()) await disposeWorkspace(workspace);
   }
-  return Object.freeze({ createWorkspace, runContained, stop, disposeWorkspace, close,
+  await reconcile();
+  return Object.freeze({ createWorkspace, runContained, stop, disposeWorkspace, close, reconcile,
     resolveTool(id) { const tool = registered.get(id); if (!tool) throw error("PIPELINE_TOOL_INVALID"); return tool; } });
 }
 
