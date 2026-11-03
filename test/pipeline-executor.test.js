@@ -88,6 +88,64 @@ test("snapshot copying preserves source files above the history text limit", asy
   assert.equal(file.contentHash, hash(bytes));
 });
 
+test("snapshot identity distinguishes source revisions and preserves mapping eligibility through overlays", async t => {
+  const f = await fixture(t), revision = uuidv7();
+  const files = f.snapshot.files.map(file => ({ ...file, sourceRevisionId: file.path === "main.tex" ? revision : null,
+    binary: file.path === "image.bin", kind: file.path === "main.tex" ? "tex" : "file" }));
+  const snapshot = await createRunWorkspace({ ...f.snapshot, files }, f.policy);
+  const main = snapshot.snapshot.files.find(file => file.path === "main.tex");
+  assert.equal(main.sourceRevisionId, revision);
+  const again = await createRunWorkspace({ ...f.snapshot, files: [...files].reverse() }, f.policy);
+  assert.equal(again.snapshotHash, snapshot.snapshotHash);
+  const revised = await createRunWorkspace({ ...f.snapshot, files: files.map(file => ({ ...file, sourceRevisionId: uuidv7() })) }, f.policy);
+  assert.notEqual(revised.snapshotHash, snapshot.snapshotHash);
+  const binary = await createRunWorkspace({ ...f.snapshot, files: files.map(file => ({ ...file, binary: true })) }, f.policy);
+  assert.notEqual(binary.snapshotHash, snapshot.snapshotHash);
+  const context = await materializeInputs(snapshot, step("read", { inputs: { source: { snapshot: true } } }), new Map());
+  const overlay = await materializeOverlay(context, ["source"]);
+  assert.deepEqual(overlay.files, snapshot.snapshot.files);
+  assert.equal(overlay.files.find(file => file.path === "image.bin").binary, true);
+  assert.equal(main.kind, "tex");
+  assert.equal(main.contentHash, hash("main\r\n"));
+});
+
+test("malformed or duplicate source identities fail before snapshot admission", async t => {
+  const f = await fixture(t);
+  for (const changed of [{ id: "not-a-file-id" }, { sourceRevisionId: "not-a-revision" }, { binary: "false" }, { kind: {} }]) {
+    await assert.rejects(createRunWorkspace({ ...f.snapshot, files: [{ ...f.snapshot.files[0], ...changed }] }, f.policy), { code: "PIPELINE_SNAPSHOT_INVALID" });
+  }
+  await assert.rejects(createRunWorkspace({ ...f.snapshot, files: f.snapshot.files.map(file => ({ ...file, id: f.snapshot.files[0].id })) }, f.policy), { code: "PIPELINE_SNAPSHOT_INVALID" });
+  assert.deepEqual(await fs.readdir(f.policy.root), [path.basename(f.workspace.root)]);
+});
+
+test("physical artifact identities survive downstream copies while new producer outputs get fresh identities", async t => {
+  const f = await fixture(t), produced = [];
+  for (const id of ["first", "second"]) {
+    const spec = step(id, { outputs: { files: collection, single: { kind: "file", mediaType: "text/plain", path: "single.txt" } } });
+    const context = await materializeInputs(f.workspace, spec, new Map());
+    for (const relative of ["generated/a.txt", "generated/nested/b.txt", "single.txt"]) await writeOutput(context, relative, "same bytes");
+    const artifacts = await validateOutputs(f.workspace, spec);
+    assert.strictEqual(await validateOutputs(f.workspace, spec), artifacts);
+    const members = artifacts.flatMap(artifact => artifact.files);
+    for (const member of members) {
+      assert.match(member.id, /^[a-f0-9]{8}-[a-f0-9]{4}-7[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/);
+      assert.equal(member.producerStep, id);
+      assert.equal(member.outputPort, member.path === "single.txt" ? "single" : "files");
+    }
+    assert.equal(artifacts[1].id, artifacts[1].files[0].id);
+    assert.equal(artifacts[1].contentHash, hash("same bytes"));
+    assert.equal(artifacts[1].size, 10);
+    produced.push(...members);
+    for (const consumer of ["left", "right"]) {
+      const inputs = await materializeInputs(f.workspace, step(`${id}-${consumer}`, { inputs: { generated: ref(id), single: ref(id, "single") } }),
+        new Map([[`${id}:files`, artifacts[0]], [`${id}:single`, artifacts[1]]]));
+      const overlay = await materializeOverlay(inputs, ["generated", "single"]);
+      assert.deepEqual(overlay.files, members);
+    }
+  }
+  assert.equal(new Set(produced.map(file => file.id)).size, 6);
+});
+
 test("snapshot refuses symlink files and ancestors rather than importing outside bytes", async t => {
   const f = await fixture(t);
   await fs.writeFile(path.join(f.root, "private"), "not an input");

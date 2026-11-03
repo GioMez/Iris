@@ -3,6 +3,7 @@ const { constants } = require("node:fs");
 const path = require("node:path");
 const { createHash } = require("node:crypto");
 const { isDeepStrictEqual } = require("node:util");
+const { uuidv7, isUuid } = require("../ids");
 const { cloneValue, readPolicy, logicalPath, name, canonical, freeze, fail, SNAPSHOT_TYPE } = require("./contracts");
 
 const owned = new WeakMap(), products = new WeakMap(), contexts = new WeakMap();
@@ -93,11 +94,20 @@ async function createRunWorkspace(snapshot, policy, { signal } = {}) {
   signal?.throwIfAborted();
   const budget = limits(policy);
   const settings = freeze(cloneValue(snapshot.settings, readPolicy()));
-  const files = snapshot.files.map(file => ({ id: file.id, path: relative(file.path) })).sort((a, b) => compare(a.path, b.path));
+  const ids = new Set();
+  const files = snapshot.files.map(file => {
+    const sourceRevisionId = file.sourceRevisionId ?? null, binary = file.binary ?? false, kind = file.kind ?? null;
+    if (!isUuid(file.id) || ids.has(file.id) || (sourceRevisionId !== null && !isUuid(sourceRevisionId))
+      || typeof binary !== "boolean" || (kind !== null && (typeof kind !== "string" || !kind || kind.length > 64))) {
+      fail("PIPELINE_SNAPSHOT_INVALID", "Invalid pipeline snapshot source identity");
+    }
+    ids.add(file.id);
+    return { id: file.id, path: relative(file.path), sourceRevisionId, binary, kind };
+  }).sort((a, b) => compare(a.path, b.path));
   const directories = [...new Set(snapshot.directories.map(relative))].sort(compare);
   const paths = new Set();
   for (const file of files) {
-    if (typeof file.id !== "string" || !file.id || paths.has(file.path)) pathError();
+    if (paths.has(file.path)) pathError();
     paths.add(file.path);
   }
   for (const rel of [...paths, ...directories]) {
@@ -118,12 +128,12 @@ async function createRunWorkspace(snapshot, policy, { signal } = {}) {
       await checkedPath(source, rel, true);
       await fs.mkdir(path.join(snapshotRoot, rel), { recursive: true, mode: 0o700 });
     }
-    const manifest = [], digest = createHash("sha256").update("iris-snapshot-v1\0").update(canonical(settings)).update("\0");
+    const manifest = [], digest = createHash("sha256").update("iris-snapshot-v2\0").update(canonical(settings)).update("\0");
     for (const rel of directories) digest.update(JSON.stringify(["directory", rel])).update("\0");
     for (const file of files) {
       const copied = await copyFile(source, file.path, path.join(snapshotRoot, file.path), Infinity, null, signal);
-      manifest.push({ id: file.id, ...copied });
-      digest.update(JSON.stringify(["file", file.id, file.path, copied.size, copied.contentHash])).update("\0");
+      manifest.push({ ...file, ...copied });
+      digest.update(JSON.stringify(["file", file.id, file.path, file.sourceRevisionId, file.binary, file.kind, copied.size, copied.contentHash])).update("\0");
     }
     const workspace = freeze({ root, snapshotHash: digest.digest("hex"),
       snapshot: { root: snapshotRoot, kind: "collection", mediaType: SNAPSHOT_TYPE, files: manifest, directories, settings } });
@@ -257,9 +267,13 @@ async function validateOutputs(workspace, step, { signal } = {}) {
     const manifest = [];
     for (const rel of directories) await fs.mkdir(path.join(root, rel), { recursive: true, mode: 0o700 });
     for (const file of files) manifest.push(await copyFile(source, file.path, path.join(root, file.path), file.size, null, signal));
-    const result = declarations.map(([outputPort, out]) => freeze({ ...out, root, producerStep: step.id, outputPort,
-      files: manifest.filter(file => out.kind === "collection" ? file.path.startsWith(`${out.path}/`) : file.path === out.path),
-      directories: directories.filter(rel => out.kind === "collection" && (rel === out.path || rel.startsWith(`${out.path}/`))) }));
+    const result = declarations.map(([outputPort, out]) => {
+      const members = manifest.filter(file => out.kind === "collection" ? file.path.startsWith(`${out.path}/`) : file.path === out.path)
+        .map(file => ({ ...file, id: uuidv7(), producerStep: step.id, outputPort }));
+      return freeze({ ...out, root, producerStep: step.id, outputPort,
+        ...(out.kind === "collection" ? {} : { id: members[0].id, size: members[0].size, contentHash: members[0].contentHash }),
+        files: members, directories: directories.filter(rel => out.kind === "collection" && (rel === out.path || rel.startsWith(`${out.path}/`))) });
+    });
     for (const product of result) products.set(product, workspace);
     current.bytes += bytes; current.entries += entries;
     entry.products = Object.freeze(result);

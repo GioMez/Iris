@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
 const os = require("node:os");
+const { createHash } = require("node:crypto");
 const { execFile } = require("node:child_process");
 const { promisify } = require("node:util");
 const { PDFDocument } = require("pdf-lib");
@@ -16,7 +17,7 @@ const { createPodmanRuntime } = require("../src/pipeline/runtime");
 const helpers = require("../src/server");
 const native = { skip: !process.env.IRIS_TEST_PIPELINE_IMAGE || process.env.IRIS_TEST_COMPILERS !== "1", timeout: 180000 };
 
-async function fixture(t, files, settings = {}, { onOutput, timeoutMs = 60000, adapters = [] } = {}) {
+async function fixture(t, files, settings = {}, { onOutput, onCompiled, timeoutMs = 60000, adapters = [] } = {}) {
   const { createCompilerTools, createCompilerAdapters } = require("../src/pipeline/compilers");
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "iris-pipeline-compilers-"));
   const source = path.join(root, "source"), stateRoot = path.join(root, "runtime");
@@ -47,11 +48,12 @@ async function fixture(t, files, settings = {}, { onOutput, timeoutMs = 60000, a
     await fs.writeFile(path.join(source, file), body);
   }
   workspace = await createRunWorkspace({ root: source, settings: { projectType: "latex", sourceMapping: true, ...settings },
-    files: Object.keys(files).map(file => ({ id: uuidv7(), path: file })), directories: [],
+    files: Object.keys(files).map(file => ({ id: uuidv7(), path: file, sourceRevisionId: typeof files[file] === "string" ? uuidv7() : null,
+      binary: typeof files[file] !== "string" })), directories: [],
   }, { root: path.join(root, "runs") });
   const compiled = new Map();
   const registry = createRegistry([...createCompilerAdapters({ ...helpers, runtime, runId: uuidv7(), onOutput,
-    onCompiled: async (context, result) => compiled.set(context.step.id, result),
+    onCompiled: async (context, result) => { compiled.set(context.step.id, result); await onCompiled?.(context, result); },
   }), ...adapters]);
   return { source, workspace, registry, compiled, async run(steps, targets = { main: { steps: steps.map(s => s.id), publish: steps.map(s => ({ step: s.id, port: "output" })) } }, target = "main", signal) {
     const plan = validatePlan({ apiVersion: 1, pluginId: "compiler-fixture", steps, targets }, { registry });
@@ -104,8 +106,52 @@ test("failed contained compilation retains source diagnostics and blocks its dep
   assert.equal(result.state, "failed");
   assert.deepEqual(result.steps.map(s => s.state), ["failed", "blocked"]);
   assert.ok(result.steps[0].diagnostics.some(d => d.severity === "error" && d.file === "parts/broken.tex" && d.line === 1));
+  const diagnostic = result.steps[0].diagnostics.find(d => d.file === "parts/broken.tex");
+  const source = f.workspace.snapshot.files.find(file => file.path === "parts/broken.tex");
+  assert.equal(diagnostic.stepId, "broken");
+  assert.equal(diagnostic.sourceFileId, source.id);
+  assert.match(diagnostic.sourceRevisionId, /^[a-f0-9-]{36}$/);
+  assert.equal(diagnostic.sourceRevisionId, source.sourceRevisionId);
+  assert.equal(diagnostic.sourceContentHash, createHash("sha256").update("\\UndefinedIrisCommand\n").digest("hex"));
+  assert.equal(diagnostic.generatedSource, undefined);
   assert.deepEqual(result.artifacts, []);
 });
+
+for (const family of ["latex", "lilypond"]) {
+  test(`contained ${family} diagnostics identify the generating artifact without inventing a project file`, native, async t => {
+    const generatedPath = family === "latex" ? "generated/broken.tex" : "generated/broken.ily";
+    const bytes = "\\UndefinedIrisCommand\n";
+    const generator = { id: "fixture-generator", version: "1.0.0", implementationHash: "a".repeat(64), capabilities: [],
+      inputs: {}, optionsSchema: { type: "object" }, outputs: { includes: { kinds: ["collection"], mediaTypes: ["text/plain"], required: true } },
+      async execute(context) {
+        await fs.mkdir(path.join(context.outputDir, "generated"));
+        await fs.writeFile(path.join(context.outputDir, generatedPath), bytes);
+      },
+    };
+    let generated;
+    const main = family === "latex" ? "main.tex" : "main.ly";
+    const f = await fixture(t, { [main]: family === "latex"
+      ? "\\documentclass{article}\n\\begin{document}\\input{generated/broken}\\end{document}\n"
+      : '\\version "2.24.1"\n\\include "generated/broken.ily"\n\\score { { c\'1 } }\n' }, {},
+    { adapters: [generator], onCompiled: context => { generated = context.inputs.generated.files[0]; } });
+    const generate = { id: "generate", adapter: { id: "fixture-generator", version: "1.0.0" },
+      outputs: { includes: { kind: "collection", mediaType: "text/plain", path: "generated" } } };
+    const compile = step("compile", family, main);
+    compile.inputs.generated = { step: "generate", port: "includes" };
+    const result = await f.run([generate, compile], { main: { steps: ["compile"], publish: [{ step: "compile", port: "output" }] } });
+    assert.equal(result.state, "failed", JSON.stringify(result.steps));
+    const diagnostic = result.steps.find(s => s.id === "compile").diagnostics.find(d => d.severity === "error" && d.file === generatedPath);
+    assert.ok(diagnostic, JSON.stringify(result.steps));
+    assert.equal(diagnostic.stepId, "compile");
+    assert.equal(diagnostic.line, 1);
+    assert.equal(diagnostic.sourceFileId, undefined);
+    assert.equal(diagnostic.sourceRevisionId, undefined);
+    assert.deepEqual(diagnostic.generatedSource, { artifactId: generated.id, producerStep: "generate", outputPort: "includes",
+      path: generatedPath, contentHash: createHash("sha256").update(bytes).digest("hex") });
+    assert.match(diagnostic.generatedSource.artifactId, /^[a-f0-9-]{36}$/);
+    assert.equal(f.workspace.snapshot.files.length, 1);
+  });
+}
 
 test("declared build-file collections retain auxiliary outputs and exclude private navigation data", native, async t => {
   const f = await fixture(t, { "main.tex": "\\documentclass{article}\n\\begin{document}Public output fixture.\\end{document}\n" });

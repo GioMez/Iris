@@ -114,7 +114,11 @@ function createCompilerAdapters(services) {
         result.diagnostics = result.diagnostics.map(item => {
           const file = item.file?.startsWith("/input/") ? item.file.slice(7) : item.file;
           const source = sources.get(file);
-          return { ...item, file, ...(source?.id ? { sourceFileId: source.id } : {}) };
+          const location = !source ? {} : source.producerStep ? {
+            generatedSource: { artifactId: source.id, producerStep: source.producerStep, outputPort: source.outputPort,
+              path: source.path, contentHash: source.contentHash },
+          } : { sourceFileId: source.id, sourceRevisionId: source.sourceRevisionId, sourceContentHash: source.contentHash };
+          return { ...item, file, stepId: context.step.id, ...location };
         });
         const metadata = { ...result, family, engine, format, main, tools: tools.map(tool => ({ id: tool.id, path: tool.path, env: tool.env })), outputDir: null };
         if (result.code !== 0 || result.signal || result.timedOut) {
