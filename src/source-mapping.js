@@ -205,19 +205,19 @@ function validateManifest(m, { projectId, buildId, artifacts }) {
   });
 }
 
-async function readStored(context, name, limit = MAX_MAP_BYTES) {
-  const file = await resolveBuildFile(context.projectStorageDir, context.buildId, context.storagePath, name);
+async function readStored(storage, name, limit = MAX_MAP_BYTES) {
+  const file = await storage.read(name);
   if (!file) return null;
   try { return await readHandle(file.handle, limit); } finally { await file.handle.close(); }
 }
 
-async function verifyArtifacts(context, manifest, deadline) {
+async function verifyArtifacts(context, manifest, deadline, storage) {
   let remaining = MAX_PDF_BYTES, mapBytes = 0;
   for (const a of manifest.artifacts) {
     if (context.signal?.aborted) throw failure("cancelled");
     if (Date.now() >= deadline) throw failure("timeout");
     if (!Number.isSafeInteger(a.size) || a.size < 0 || a.size > remaining) throw failure("map-limit");
-    const file = await resolveBuildFile(context.projectStorageDir, context.buildId, context.storagePath, a.fileName);
+    const file = await storage.read(a.fileName);
     if (!file) throw failure("stale-artifact");
     try {
       if (file.size !== a.size) throw failure("stale-artifact");
@@ -236,36 +236,39 @@ async function verifyArtifacts(context, manifest, deadline) {
     } finally { await file.handle.close(); }
     remaining -= a.size;
     if (a.syncFile) {
-      const sync = await readStored(context, a.syncFile, MAX_MAP_BYTES - mapBytes);
+      const sync = await readStored(storage, a.syncFile, MAX_MAP_BYTES - mapBytes);
       if (!sync || sync.length !== a.syncSize || hash(sync) !== a.syncHash) throw failure("malformed-map");
       mapBytes += sync.length;
       // The CLI must not select an unchecked alternative of the same job.
       const alternate = a.syncFile.endsWith(".gz") ? a.syncFile.slice(0, -3) : a.syncFile + ".gz";
-      const directory = await resolveBuildDirectory(context.projectStorageDir, context.buildId, context.storagePath);
-      if (!directory || await fs.lstat(path.join(directory, alternate)).catch(() => null)) throw failure("malformed-map");
+      if (await storage.exists(alternate)) throw failure("malformed-map");
     }
   }
   return mapBytes;
 }
 
-async function navigateBuild(context) {
+// Providers supply opened file handles, a bounded manifest and native query
+// paths. Admission and final integrity checks are shared across provider types.
+async function navigateSourceMapping(context, storage) {
   if (!context.enabled) return envelope("disabled");
   if (context.signal?.aborted) return envelope("unavailable", "cancelled");
   if (activeNavigation >= 2) return envelope("unavailable", "busy");
   activeNavigation++;
   const deadline = Date.now() + 5000;
   try {
-    const bytes = await readStored(context, MANIFEST_NAME);
+    storage ??= context.storage;
+    const bytes = await storage.readManifest();
     if (!bytes) return envelope("missing");
+    if (!Buffer.isBuffer(bytes) || bytes.length > MAX_MAP_BYTES) throw failure("map-limit");
     let manifest;
     try { manifest = JSON.parse(bytes.toString("utf8")); } catch { throw failure("malformed-map"); }
     validateManifest(manifest, context);
     if (manifest.status !== "ready") return envelope(manifest.status, manifest.status === "unavailable" ? stableReason(manifest) : undefined);
-    if (bytes.length + await verifyArtifacts(context, manifest, deadline) > MAX_MAP_BYTES) throw failure("map-limit");
+    if (bytes.length + await verifyArtifacts(context, manifest, deadline, storage) > MAX_MAP_BYTES) throw failure("map-limit");
     let matches = [];
     if (manifest.backend === "lilypond") matches = queryLilyMap(manifest.entries, context.query);
     else {
-      const directory = await resolveBuildDirectory(context.projectStorageDir, context.buildId, context.storagePath);
+      const directory = await storage.directory();
       if (!directory) return envelope("missing");
       const artifacts = [...manifest.artifacts].sort((a, b) => Number(b.id === context.query.artifactId) - Number(a.id === context.query.artifactId));
       for (const artifact of artifacts) {
@@ -280,12 +283,29 @@ async function navigateBuild(context) {
       }
     }
     if (context.signal?.aborted) throw failure("cancelled");
-    if (manifest.backend === "latex" && matches.length) await verifyArtifacts(context, manifest, deadline);
+    if (manifest.backend === "latex" && matches.length) await verifyArtifacts(context, manifest, deadline, storage);
     if (context.query.direction === "forward") matches.sort((a, b) => common.compareNavigationMatches(a, b, context.query));
     return matches.length ? { status: "ready", matches: matches.slice(0, MAX_MATCHES) } : envelope("no-match");
   } catch (error) { return error.reason === "unsupported" ? envelope("unsupported") : envelope("unavailable", stableReason(error)); }
-  finally { activeNavigation--; }
+  finally {
+    try { await storage?.close?.(); }
+    finally { activeNavigation--; }
+  }
 }
 
-module.exports = { ...common, MANIFEST_NAME, captureMappingSources, lilypondMappingArgs, collectSourceMapping, publishSourceMapping, navigateBuild,
+async function navigateBuild(context) {
+  const directory = () => resolveBuildDirectory(context.projectStorageDir, context.buildId, context.storagePath);
+  const storage = {
+    read: name => resolveBuildFile(context.projectStorageDir, context.buildId, context.storagePath, name),
+    directory,
+    async exists(name) {
+      const root = await directory();
+      return !root || !!await fs.lstat(path.join(root, name)).catch(() => null);
+    },
+    readManifest: () => readStored(storage, MANIFEST_NAME),
+  };
+  return navigateSourceMapping(context, storage);
+}
+
+module.exports = { ...common, MANIFEST_NAME, captureMappingSources, lilypondMappingArgs, collectSourceMapping, publishSourceMapping, navigateBuild, navigateSourceMapping,
   readMappingHandle: readHandle };

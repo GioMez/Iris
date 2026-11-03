@@ -37,30 +37,32 @@ function commandClient(transport, policy) {
   const env = Object.fromEntries(["PATH", "TMPDIR", "XDG_RUNTIME_DIR"].filter(key => process.env[key]).map(key => [key, process.env[key]]));
   env.HOME = transport.home || process.env.HOME;
   env.LANG = "C.UTF-8";
-  function start(args, { timeoutMs = policy.controlTimeoutMs, maxBytes = 1048576, onOutput, control = true, input, consume, signal } = {}) {
+  function start(args, { timeoutMs = policy.controlTimeoutMs, maxBytes = 1048576, onOutput, onOutputLimit, captureStreams = false, control = true, input, consume, signal } = {}) {
     signal?.throwIfAborted();
     const child = spawn(transport.command || "podman", [...prefix, ...args], { env, shell: false, stdio: [input ? "pipe" : "ignore", "pipe", "pipe"] });
     let bytes = 0, truncated = false, failure = null, callbacks = Promise.resolve();
     let transferred, io = Promise.resolve();
-    const chunks = [];
+    const chunks = [], output = { stdout: [], stderr: [] };
     const done = new Promise((resolve, reject) => {
       const stop = reason => { failure ||= reason; child.kill("SIGKILL"); };
       const abort = () => stop(signal.reason);
       const timer = setTimeout(() => stop(error("PIPELINE_CONTROL_TIMEOUT")), timeoutMs);
       signal?.addEventListener("abort", abort, { once: true });
-      const capture = chunk => {
+      const capture = channel => chunk => {
         const remaining = Math.max(0, maxBytes - bytes), retained = chunk.subarray(0, remaining);
         if (retained.length) {
           chunks.push(retained); bytes += retained.length;
+          if (captureStreams) output[channel].push(retained);
           if (onOutput) callbacks = callbacks.then(() => onOutput(retained)).catch(() => { failure ||= error("PIPELINE_OUTPUT_CALLBACK_FAILED"); });
         }
         if (chunk.length > remaining) {
+          if (!truncated) onOutputLimit?.();
           truncated = true;
           if (control) { failure = error("PIPELINE_CONTROL_OUTPUT_LIMIT"); child.kill("SIGKILL"); }
         }
       };
-      if (!consume) child.stdout.on("data", capture);
-      child.stderr.on("data", capture);
+      if (!consume) child.stdout.on("data", capture("stdout"));
+      child.stderr.on("data", capture("stderr"));
       child.once("error", () => { failure = error("PIPELINE_RUNTIME_UNAVAILABLE"); });
       child.once("close", async (code, exitSignal) => {
         clearTimeout(timer);
@@ -69,7 +71,8 @@ function commandClient(transport, policy) {
         const text = Buffer.from(Buffer.concat(chunks).toString("utf8"));
         const log = new StringDecoder("utf8").write(text.subarray(0, maxBytes));
         if (failure) reject(failure);
-        else resolve({ code, signal: exitSignal, log, truncated: truncated || text.length > maxBytes, ...(consume ? { value: transferred } : {}) });
+        else resolve({ code, signal: exitSignal, log, truncated: truncated || text.length > maxBytes, ...(consume ? { value: transferred } : {}),
+          ...(captureStreams ? { stdout: Buffer.concat(output.stdout).toString("utf8"), stderr: Buffer.concat(output.stderr).toString("utf8") } : {}) });
       });
       const streams = [];
       if (input) streams.push(pipeline(input, child.stdin, { signal }).catch(stop));
@@ -267,10 +270,12 @@ async function createPodmanRuntime({ root, coordinatorId, transport = {}, policy
       worker.confirmDrain();
     })().finally(() => { worker.stopping = null; });
   }
-  async function createWorkspace({ runId, stepId, input, signal, deadlineAt = Date.now() + policy.runTimeoutMs }) {
+  async function createWorkspace({ runId, stepId, input, signal, queue = true, deadlineAt = Date.now() + policy.runTimeoutMs }) {
     if (!accepting) throw error("PIPELINE_RUNTIME_STOPPING");
     if (!isUuid(runId) || !Number.isSafeInteger(deadlineAt) || deadlineAt <= Date.now() || deadlineAt > Date.now() + policy.runTimeoutMs) throw error("PIPELINE_WORKER_IDENTITY_INVALID");
     name(stepId);
+    signal?.throwIfAborted();
+    if (!queue && gate.active >= gate.limit) throw error("PIPELINE_WORKER_BUSY");
     const release = await gate.acquire({ signal });
     if (!accepting || signal?.aborted) { release(); signal?.throwIfAborted(); throw error("PIPELINE_RUNTIME_STOPPING"); }
     if (deadlineAt <= Date.now()) { release(); throw error("PIPELINE_RUN_DEADLINE"); }
@@ -336,11 +341,12 @@ async function createPodmanRuntime({ root, coordinatorId, transport = {}, policy
       throw failure;
     } finally { setupDone(); }
   }
-  async function runContained({ tool, args, workspace, signal, onOutput }) {
+  async function runContained({ tool, args, workspace, signal, onOutput, captureStreams = false, outputLimitBytes }) {
     const state = get(workspace);
     if (state.cancelled) throw error("PIPELINE_WORKSPACE_CANCELLED");
     if (!tokens.has(tool) || !Array.isArray(args) || args.length > 256 || args.some(value => typeof value !== "string" || value.includes("\0"))
-      || Buffer.byteLength(JSON.stringify(args)) > 65536) throw error("PIPELINE_TOOL_INVALID");
+      || Buffer.byteLength(JSON.stringify(args)) > 65536
+      || (outputLimitBytes !== undefined && (!Number.isSafeInteger(outputLimitBytes) || outputLimitBytes < 1))) throw error("PIPELINE_TOOL_INVALID");
     if (state.worker || state.transfer || state.setupFailure) throw error("PIPELINE_WORKER_BUSY");
     signal?.throwIfAborted();
     const remaining = state.record.deadlineAt - Date.now();
@@ -352,7 +358,7 @@ async function createPodmanRuntime({ root, coordinatorId, transport = {}, policy
     const worker = { name: `iris-${uuidv7()}`, removed: false, stopping: null, execution: null, created: null,
       cancelled: false, confirmDrain, drained, completed, prepared };
     state.worker = worker; state.record.containers.push(worker.name);
-    let timer, timedOut = false, stoppingError = null;
+    let timer, timedOut = false, outputLimited = false, stoppingError = null;
     const stop = () => {
       if (signal?.aborted) state.cancelled = true;
       stopWorker(state, worker).catch(error => { stoppingError = error; });
@@ -372,7 +378,9 @@ async function createPodmanRuntime({ root, coordinatorId, transport = {}, policy
         await stopWorker(state, worker);
         return { code: null, signal: null, log: "", truncated: false, cancelled: true, timedOut: false, oomKilled: false, drained: true, durationMs: Date.now() - started };
       }
-      worker.execution = client.start(["start", "--attach", worker.name], { timeoutMs: timeoutMs + 2 * policy.controlTimeoutMs, maxBytes: policy.logBytes, onOutput, control: false });
+      worker.execution = client.start(["start", "--attach", worker.name], { timeoutMs: timeoutMs + 2 * policy.controlTimeoutMs,
+        maxBytes: Math.min(policy.logBytes, outputLimitBytes ?? policy.logBytes), onOutput, captureStreams, control: false,
+        onOutputLimit: outputLimitBytes === undefined ? undefined : () => { outputLimited = true; stop(); } });
       signal?.addEventListener("abort", stop, { once: true });
       timer = setTimeout(() => { timedOut = true; stop(); }, timeoutMs);
       const result = await worker.execution.done;
@@ -388,7 +396,7 @@ async function createPodmanRuntime({ root, coordinatorId, transport = {}, policy
       }
       worker.confirmDrain();
       if (stoppingError) throw stoppingError;
-      return { ...result, cancelled: worker.cancelled || signal?.aborted === true, timedOut, drained: true, durationMs: Date.now() - started };
+      return { ...result, cancelled: worker.cancelled || signal?.aborted === true, timedOut, outputLimited, drained: true, durationMs: Date.now() - started };
     } catch (failure) {
       if (!worker.created) { worker.removed = true; preparationDone(); worker.confirmDrain(); }
       else {

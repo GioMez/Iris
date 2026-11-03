@@ -39,7 +39,9 @@ function createTransferArchive(manifest, { signal } = {}) {
     }
     for (const file of files) {
       signal?.throwIfAborted();
-      const { input, before } = await openCheckedFile(manifest.root, file.path);
+      // Only host transfer manifests can select a different checked source.
+      // Archive names stay logical; private source paths never enter the tar.
+      const { input, before } = await openCheckedFile(file.source?.root ?? manifest.root, file.source?.path ?? file.path);
       try {
         if (before.size !== file.size) fail("PIPELINE_INPUT_CHANGED", "Pipeline input no longer matches its manifest");
         const digest = createHash("sha256");

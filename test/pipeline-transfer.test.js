@@ -59,6 +59,27 @@ test("transfer packing rejects changed source bytes rather than delivering a fal
   await assert.rejects(fs.stat(path.join(root, "received")), rejected("ENOENT"));
 });
 
+test("host transfer aliases stream checked files from separate roots without exporting their source paths", async t => {
+  const root = await fixture(t), pdfRoot = path.join(root, "pdf"), mapRoot = path.join(root, "map");
+  await fs.mkdir(pdfRoot); await fs.mkdir(mapRoot);
+  await fs.writeFile(path.join(pdfRoot, "original.pdf"), "PDF");
+  await fs.writeFile(path.join(mapRoot, "original.synctex"), "MAP");
+  const files = [[pdfRoot, "original.pdf", "alias.pdf", "PDF"], [mapRoot, "original.synctex", "alias.synctex", "MAP"]]
+    .map(([root, original, path, bytes]) => ({ path, source: { root, path: original }, size: 3,
+      contentHash: createHash("sha256").update(bytes).digest("hex") }));
+  const input = { directories: [], files };
+  const destination = path.join(root, "received");
+  const manifest = await extractTransferArchive(createTransferArchive(input), destination);
+  assert.deepEqual(manifest.files.map(file => file.path), ["alias.pdf", "alias.synctex"]);
+  assert.equal(await fs.readFile(path.join(destination, "alias.pdf"), "utf8"), "PDF");
+  assert.equal(await fs.readFile(path.join(destination, "alias.synctex"), "utf8"), "MAP");
+  await fs.writeFile(path.join(mapRoot, "original.synctex"), "BAD");
+  await assert.rejects(extractTransferArchive(createTransferArchive(input), path.join(root, "changed")), rejected("PIPELINE_INPUT_CHANGED"));
+  await fs.unlink(path.join(mapRoot, "original.synctex"));
+  await fs.symlink(path.join(pdfRoot, "original.pdf"), path.join(mapRoot, "original.synctex"));
+  await assert.rejects(extractTransferArchive(createTransferArchive(input), path.join(root, "linked")), rejected("PIPELINE_PATH_INVALID"));
+});
+
 test("transfer packing rejects source symlinks and linked inodes", async t => {
   const root = await fixture(t), source = path.join(root, "source"); await fs.mkdir(source);
   await fs.writeFile(path.join(root, "outside"), "secret");

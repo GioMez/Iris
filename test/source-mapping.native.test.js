@@ -6,6 +6,7 @@ const os = require("node:os");
 const { randomUUID, createHash } = require("node:crypto");
 const { execFile } = require("node:child_process");
 const { promisify } = require("node:util");
+const { redPixels } = require("./helpers/pdf-raster.cjs");
 const exec = promisify(execFile);
 const enabled = process.env.IRIS_TEST_COMPILERS === "1";
 const mapping = enabled ? require("../src/source-mapping") : null;
@@ -75,37 +76,6 @@ test("native SyncTeX forward and inverse use retained output, Unicode/spaced inc
   t.diagnostic(JSON.stringify({ texRaster: { width: pages[0].width, height: pages[0].height, textPixels: textInk.length } }));
   t.diagnostic(JSON.stringify({ artifacts: f.artifacts, forward: match, inverse: inverse.matches[0] }));
 });
-
-// Parse Ghostscript's raw PPM raster, without inspecting PDF annotations.
-async function redPixels(pdf, directory, stem, color = "red") {
-  const pattern = path.join(directory, `${stem}-%d.ppm`);
-  await run("gs", ["-q", "-dSAFER", "-dBATCH", "-dNOPAUSE", "-sDEVICE=ppmraw", "-r72", `-sOutputFile=${pattern}`, pdf], directory);
-  const pages = [];
-  for (let page = 1; ; page++) {
-    const bytes = await fs.readFile(path.join(directory, `${stem}-${page}.ppm`)).catch((e) => { if (e.code === "ENOENT") return null; throw e; });
-    if (!bytes) break;
-    let offset = 0;
-    const token = () => {
-      while (bytes[offset] <= 32 || bytes[offset] === 35) {
-        if (bytes[offset] === 35) while (bytes[offset] !== 10) offset++;
-        else offset++;
-      }
-      const start = offset;
-      while (bytes[offset] > 32) offset++;
-      return bytes.subarray(start, offset).toString();
-    };
-    assert.equal(token(), "P6");
-    const width = Number(token()), height = Number(token());
-    assert.equal(token(), "255"); offset++;
-    const red = [];
-    for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
-      const i = offset + 3 * (y * width + x);
-      if (color === "black" ? bytes[i] < 100 && bytes[i + 1] < 100 && bytes[i + 2] < 100 : bytes[i] > 150 && bytes[i + 1] < 100 && bytes[i + 2] < 100) red.push([x, y]);
-    }
-    pages.push({ page, width, height, red });
-  }
-  return pages;
-}
 
 for (const transformed of [false, true]) test(`native LilyPond final-page geometry matches rasterized chords/rests/repeats across books (${transformed ? "scaled/rotated/translated" : "standard PS"})`, options, async (t) => {
   const transform = transformed ? `#(let* ((m (resolve-module '(lily framework-ps))) (original (module-ref m 'output-stencils)))

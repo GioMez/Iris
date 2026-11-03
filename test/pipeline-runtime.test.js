@@ -74,6 +74,32 @@ test("rootless workers have no backend credentials or writable root", native, as
   await assert.rejects(f.runtime.runContained({ tool: { id: "node", path: "/bin/sh" }, args: [], workspace: f.workspace }), { code: "PIPELINE_TOOL_INVALID" });
 });
 
+test("navigation workspace admission refuses a busy runtime without joining its compiler queue", native, async t => {
+  const f = await runtimeFixture(t), controller = new AbortController();
+  const before = await fs.readdir(f.root);
+  const attempted = f.runtime.createWorkspace({ runId: uuidv7(), stepId: "query", queue: false, signal: controller.signal }).catch(error => error);
+  await new Promise(resolve => setImmediate(resolve));
+  controller.abort();
+  assert.equal((await attempted).code, "PIPELINE_WORKER_BUSY");
+  assert.deepEqual(await fs.readdir(f.root), before);
+  await f.runtime.disposeWorkspace(f.workspace);
+  const query = await f.runtime.createWorkspace({ runId: uuidv7(), stepId: "query", queue: false });
+  await f.runtime.disposeWorkspace(query);
+});
+
+test("contained query output separates stdout and stderr within one byte limit and drains an overflowing worker", native, async t => {
+  const f = await runtimeFixture(t);
+  const separated = await f.run("process.stdout.write('result');process.stderr.write('warning');", { captureStreams: true, outputLimitBytes: 32 });
+  assert.equal(separated.stdout, "result");
+  assert.equal(separated.stderr, "warning");
+  const overflow = await f.run("process.stdout.write('a'.repeat(20));process.stderr.write('b'.repeat(20));setInterval(()=>{},1000);",
+    { captureStreams: true, outputLimitBytes: 32 });
+  assert.equal(overflow.outputLimited, true);
+  assert.equal(overflow.timedOut, false);
+  assert.equal(overflow.drained, true);
+  assert.ok(Buffer.byteLength(overflow.stdout) + Buffer.byteLength(overflow.stderr) <= 32);
+});
+
 test("registered compiler environments survive workers without inheriting host variables", native, async t => {
   const environment = { TEXMFVAR: "/tmp/texmf-var", TEXINPUTS: "/work//:/work/output//:", XDG_DATA_HOME: "/input" };
   const f = await runtimeFixture(t, {}, undefined, options => createPodmanRuntime({ ...options,

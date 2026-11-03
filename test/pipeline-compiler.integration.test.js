@@ -7,6 +7,7 @@ const { createHash } = require("node:crypto");
 const { execFile } = require("node:child_process");
 const { promisify } = require("node:util");
 const { PDFDocument } = require("pdf-lib");
+const { redPixels } = require("./helpers/pdf-raster.cjs");
 const { uuidv7 } = require("../src/ids");
 const { ConcurrencyGate } = require("../src/throttle");
 const { createRegistry } = require("../src/pipeline/registry");
@@ -17,7 +18,7 @@ const { createPodmanRuntime } = require("../src/pipeline/runtime");
 const helpers = require("../src/server");
 const native = { skip: !process.env.IRIS_TEST_PIPELINE_IMAGE || process.env.IRIS_TEST_COMPILERS !== "1", timeout: 180000 };
 
-async function fixture(t, files, settings = {}, { onOutput, onCompiled, onArtifacts, timeoutMs = 60000, adapters = [] } = {}) {
+async function fixture(t, files, settings = {}, { onOutput, onCompiled, onArtifacts, timeoutMs = 60000, adapters = [], tools = [] } = {}) {
   const { createCompilerTools, createCompilerAdapters } = require("../src/pipeline/compilers");
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "iris-pipeline-compilers-"));
   const source = path.join(root, "source"), stateRoot = path.join(root, "runtime");
@@ -40,7 +41,7 @@ async function fixture(t, files, settings = {}, { onOutput, onCompiled, onArtifa
   });
   runtime = await createPodmanRuntime({ root: stateRoot, coordinatorId: uuidv7(), transport,
     policy: { image: process.env.IRIS_TEST_PIPELINE_IMAGE, memoryBytes: 805306368, totalMemoryBytes: 1342177280,
-      outputBytes: 134217728, tempBytes: 268435456, timeoutMs, runTimeoutMs: 300000 }, tools: createCompilerTools({ timeoutMs }),
+      outputBytes: 134217728, tempBytes: 268435456, timeoutMs, runTimeoutMs: 300000 }, tools: [...createCompilerTools({ timeoutMs }), ...tools],
   });
   if (typeof files === "function") files = await files(runtime, root);
   for (const [file, body] of Object.entries(files)) {
@@ -55,7 +56,7 @@ async function fixture(t, files, settings = {}, { onOutput, onCompiled, onArtifa
   const registry = createRegistry([...createCompilerAdapters({ ...helpers, runtime, runId: uuidv7(), onOutput,
     onCompiled: async (context, result) => { compiled.set(context.step.id, result); await onCompiled?.(context, result); },
   }), ...adapters]);
-  return { source, workspace, registry, compiled, async run(steps, targets = { main: { steps: steps.map(s => s.id), publish: steps.map(s => ({ step: s.id, port: "output" })) } }, target = "main", signal) {
+  return { source, workspace, registry, compiled, runtime, async run(steps, targets = { main: { steps: steps.map(s => s.id), publish: steps.map(s => ({ step: s.id, port: "output" })) } }, target = "main", signal) {
     const plan = validatePlan({ apiVersion: 1, pluginId: "compiler-fixture", steps, targets }, { registry });
     return executePlan({ plan, target, workspace, registry, gate: new ConcurrencyGate({ limit: 1, queueLimit: 4 }), signal, onArtifacts });
   } };
@@ -64,6 +65,103 @@ const step = (id, family, main, options = {}, kind = "file") => ({ id, adapter: 
   inputs: { source: { snapshot: true } }, options: { main, ...options },
   outputs: { output: { kind, mediaType: "application/pdf", path: kind === "file" ? `${id}/result.pdf` : `${id}/documents` } },
 });
+
+test("contained SyncTeX navigates retained renamed PDFs after source removal and rejects changed sidecars", native, async t => {
+  const { collectCompilerMapping, navigateCompilerMapping, createNavigationTools } = require("../src/pipeline/navigation");
+  const projectId = uuidv7(), runId = uuidv7(), include = "parts/é text.tex";
+  let navigation, context;
+  const f = await fixture(t, { "main.tex": '\\documentclass{article}\n\\begin{document}\n\\input{parts/é text}\n\\newpage\\input{parts/é text}\n\\end{document}\n',
+    [include]: "Included Unicode path.\r\n" }, {}, { tools: createNavigationTools(),
+    onArtifacts: async (value, products) => {
+      context = value;
+      navigation = await collectCompilerMapping({ context, compiled: f.compiled.get(value.step.id), products, projectId, runId });
+    },
+  });
+  const result = await f.run([step("compile", "latex", "main.tex")]);
+  assert.equal(result.state, "succeeded", JSON.stringify(result.steps));
+  assert.equal(navigation.manifest.status, "ready");
+  const source = navigation.manifest.sources.find(file => file.path === include);
+  await fs.rm(f.source, { recursive: true });
+  await fs.rm(context.inputs.source.root, { recursive: true });
+  const options = { navigation, products: result.artifacts, runtime: f.runtime, projectId, runId, enabled: true };
+  const forward = await navigateCompilerMapping({ ...options,
+    query: { direction: "forward", sourceFileId: source.sourceFileId, line: 1, column: 0, page: 2 } });
+  assert.equal(forward.status, "ready", JSON.stringify(forward));
+  const match = forward.matches[0];
+  assert.equal(match.artifactId, result.artifacts[0].id);
+  assert.equal(match.page, 2);
+  assert.equal(match.sourceRevisionId, source.sourceRevisionId);
+  const inverse = await navigateCompilerMapping({ ...options,
+    query: { direction: "inverse", artifactId: match.artifactId, page: 2, x: match.x + 3, y: match.y + match.height / 2 } });
+  assert.equal(inverse.status, "ready", JSON.stringify(inverse));
+  assert.equal(inverse.matches[0].sourceFileId, source.sourceFileId);
+  assert.equal(inverse.matches[0].line, 1);
+  const raster = path.join(f.workspace.root, "raster");
+  await fs.mkdir(raster);
+  const pages = await redPixels(path.join(result.artifacts[0].root, result.artifacts[0].path), raster, "tex", "black");
+  const textInk = pages[1].red.filter(([, y]) => y < 300);
+  assert.ok(textInk.length > 100);
+  assert.equal(textInk.filter(([x, y]) => x < match.x - 1 || x > match.x + match.width + 1 || y < match.y - 1 || y > match.y + match.height + 1).length, 0);
+  t.diagnostic(JSON.stringify({ compiler: "contained TeX Live 2022", page: 2, textPixels: textInk.length, rectangle: match }));
+  const sidecar = navigation.nativeFiles[0];
+  await fs.chmod(path.join(sidecar.root, sidecar.path), 0o600);
+  await fs.appendFile(path.join(sidecar.root, sidecar.path), "changed");
+  assert.equal((await navigateCompilerMapping({ ...options,
+    query: { direction: "forward", sourceFileId: source.sourceFileId, line: 1, column: 0 } })).reason, "malformed-map");
+});
+
+for (const mode of ["standard", "transformed", "landscape"]) {
+  test(`contained LilyPond navigation matches rendered music across books and physical pages (${mode})`, native, async t => {
+    const { collectCompilerMapping, navigateCompilerMapping } = require("../src/pipeline/navigation");
+    const projectId = uuidv7(), runId = uuidv7(), include = "parts/é air.ly";
+    const transform = mode === "transformed" ? `#(let* ((m (resolve-module '(lily framework-ps))) (original (module-ref m 'output-stencils)))
+      (module-set! m 'output-stencils (lambda (name stencils header paper formats)
+        (original name (map (lambda (s) (ly:stencil-translate (ly:stencil-rotate (ly:stencil-scale s 0.8 0.9) 8 0 0) '(15 . -20))) stencils) header paper formats))))\n` : "";
+    let navigation;
+    const f = await fixture(t, {
+      "main.ly": `\\version "2.24.1"\n${transform}\\include "${include}"\n\\paper { first-page-number = 7 print-page-number = ##t ${mode === "landscape" ? '#(set-paper-size "a4" \'landscape)' : ""} }\n\\book { \\bookOutputSuffix "one" \\score { \\theme } \\pageBreak \\score { \\theme } }\n\\book { \\bookOutputSuffix "two" \\score { \\theme } }\n`,
+      [include]: `theme = { \\override NoteHead.color = #red \\override Rest.color = #red c'4^"é😀" <e' g'>4 r4 d'4 }\r\n`,
+    }, {}, { onArtifacts: async (context, products) => {
+      navigation = await collectCompilerMapping({ context, compiled: f.compiled.get(context.step.id), products, projectId, runId });
+    } });
+    const result = await f.run([step("music", "lilypond", "main.ly", {}, "collection")]);
+    assert.equal(result.state, "succeeded", JSON.stringify(result.steps));
+    assert.equal(navigation.manifest.status, "ready", JSON.stringify(navigation.manifest));
+    const source = navigation.manifest.sources.find(file => file.path === include), column = source.text.indexOf("d'4");
+    const entries = navigation.manifest.entries.filter(entry => entry.sourceFileId === source.sourceFileId);
+    assert.ok(entries.some(entry => entry.column === column));
+    const product = result.artifacts[0];
+    assert.equal(product.files.length, 2);
+    const raster = path.join(f.workspace.root, "raster");
+    await fs.mkdir(raster);
+    let physicalPages = 0;
+    for (const file of product.files) {
+      const pdf = path.join(product.root, file.path), document = await PDFDocument.load(await fs.readFile(pdf));
+      const pages = await redPixels(pdf, raster, file.id);
+      for (const page of pages) {
+        physicalPages++;
+        const pdfPage = document.getPage(page.page - 1), { width, height } = pdfPage.getMediaBox(), rotation = pdfPage.getRotation().angle;
+        const pixels = page.red.map(([x, y]) => rotation === 90 ? [y, height - x] : rotation === 270 ? [width - y, x] : [x, y]);
+        const rectangles = entries.filter(entry => entry.artifactId === file.id && entry.page === page.page);
+        assert.ok(pixels.length > 20);
+        const uncovered = pixels.filter(([x, y]) => !rectangles.some(m => x >= m.x - 2 && x <= m.x + m.width + 2 && y >= m.y - 2 && y <= m.y + m.height + 2));
+        assert.equal(uncovered.length, 0, JSON.stringify({ mode, uncovered: uncovered.slice(0, 10), rectangles }));
+        t.diagnostic(JSON.stringify({ compiler: "contained LilyPond 2.24.1", mode, path: file.path, page: page.page, width, height, rotation, pixels: pixels.length }));
+      }
+    }
+    assert.equal(physicalPages, 3);
+    const options = { navigation, products: result.artifacts, runtime: f.runtime, projectId, runId, enabled: true };
+    const forward = await navigateCompilerMapping({ ...options, query: { direction: "forward", sourceFileId: source.sourceFileId, line: 1, column, page: 2 } });
+    assert.equal(forward.status, "ready");
+    const match = forward.matches[0];
+    assert.equal(match.page, 2);
+    const inverse = await navigateCompilerMapping({ ...options, query: { direction: "inverse", artifactId: match.artifactId,
+      page: match.page, x: match.x + match.width / 2, y: match.y + match.height / 2 } });
+    assert.equal(inverse.status, "ready");
+    assert.equal(inverse.matches[0].sourceFileId, source.sourceFileId);
+    assert.equal(inverse.matches[0].sourceRevisionId, source.sourceRevisionId);
+  });
+}
 
 test("one graph compiles LaTeX and LilyPond from read-only sources and publishes only its selected target", native, async t => {
   const files = {
