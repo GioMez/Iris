@@ -2,9 +2,10 @@ const fs = require("node:fs/promises");
 const { readFileSync } = require("node:fs");
 const path = require("node:path");
 const { createHash } = require("node:crypto");
+const { StringDecoder } = require("node:string_decoder");
 const { isUuid } = require("../ids");
 const { LUA_DATA_POLICY, readPolicy, cloneValue, canonical, freeze, fail, record, logicalPath,
-  validateDescriptor, validateParameters, validatePlan } = require("./contracts");
+  validateDescriptor, validateParameters, validatePlan, validateLuaDiagnostic } = require("./contracts");
 const { openCheckedFile, readWorkspaceLimits } = require("./workspaces");
 
 const hash = bytes => createHash("sha256").update(bytes).digest("hex");
@@ -33,17 +34,24 @@ function luaBundle(snapshot, script = "iris.lua") {
   return freeze({ script, modules, bundleHash: digest({ version: 1, script, modules }) });
 }
 
-function parseLuaResponse(bytes, policy = readPolicy()) {
+function parseLuaResponse(bytes, policy = readPolicy(), { mode = "plan", inputs = {} } = {}) {
   const code = "PIPELINE_LUA_RESPONSE_INVALID";
-  if (!Buffer.isBuffer(bytes) || bytes.length > policy.maxPlanBytes + 1024) fail(code, "Lua response exceeds its byte limit");
+  const diagnosticBudget = mode === "transform" ? 1048576 : 0;
+  if (!Buffer.isBuffer(bytes) || bytes.length > policy.maxPlanBytes + diagnosticBudget + 1024) fail(code, "Lua response exceeds its byte limit");
   let parsed;
   try { parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); }
   catch { fail(code, "Invalid Lua response JSON"); }
-  const response = cloneValue(parsed, { ...policy, maxPlanBytes: policy.maxPlanBytes + 1024,
-    maxValues: policy.maxValues + 16, maxDepth: policy.maxDepth + 1 }, code);
+  const response = cloneValue(parsed, { ...policy, maxPlanBytes: policy.maxPlanBytes + diagnosticBudget + 1024,
+    maxValues: policy.maxValues + 12016, maxDepth: policy.maxDepth + 1 }, code);
   record(response, ["version", "value", "errorCode", "diagnostics", "logsTruncated"], code, "Lua response");
-  if (response.version !== 1 || !Array.isArray(response.diagnostics) || response.diagnostics.length
-    || response.logsTruncated !== false || Object.hasOwn(response, "value") === Object.hasOwn(response, "errorCode")) fail(code, "Invalid planner response");
+  if (response.version !== 1 || !Array.isArray(response.diagnostics) || response.diagnostics.length > 1000
+    || typeof response.logsTruncated !== "boolean" || Object.hasOwn(response, "value") === Object.hasOwn(response, "errorCode")) fail(code, "Invalid Lua response");
+  if (mode !== "transform" && (response.diagnostics.length || response.logsTruncated)) fail(code, "Invalid planner response");
+  if (mode === "transform") {
+    if (Buffer.byteLength(JSON.stringify(response.diagnostics)) > diagnosticBudget) fail("PIPELINE_DIAGNOSTICS_LIMIT", "Lua diagnostics exceed their byte limit");
+    const members = new Map(Object.entries(inputs).map(([key, input]) => [key, new Set(input.files.map(file => file.path))]));
+    response.diagnostics = response.diagnostics.map(item => validateLuaDiagnostic(item, { policy, hasMember: (input, file) => members.get(input)?.has(file) }));
+  }
   if (Object.hasOwn(response, "errorCode")) {
     if (typeof response.errorCode !== "string" || !/^PIPELINE_[A-Z0-9_]{1,55}$/.test(response.errorCode)) fail(code, "Invalid Lua failure code");
   } else cloneValue(response.value, policy, code);
@@ -59,6 +67,7 @@ function createLuaCoordinator({ runtime, workspace, runId, registry, policy: ove
   const policy = readPolicy(overrides), budget = readWorkspaceLimits(limits), bundle = luaBundle(workspace.snapshot);
   if (!isUuid(runId) || !Number.isSafeInteger(memoryBytes) || memoryBytes < 1) fail("PIPELINE_LUA_REQUEST_INVALID", "Invalid Lua coordinator configuration");
   const registryManifest = registry.manifest();
+  const plans = new WeakSet();
   const capabilities = [...new Set(registryManifest.flatMap(entry => entry.capabilities))].sort(compare);
   const identity = freeze({ bundleHash: bundle.bundleHash,
     policyHash: digest({ version: 1, runtime: runtime.manifest(), policy, limits: budget, memoryBytes, workerPath, implementationHash }),
@@ -83,7 +92,7 @@ function createLuaCoordinator({ runtime, workspace, runId, registry, policy: ove
     if (canonical(normalized) !== canonical(copy)) fail("PIPELINE_DESCRIPTOR_CHANGED", "Cached plugin descriptor identity changed");
     return metadata(normalized);
   }
-  async function invoke(mode, extra, signal) {
+  async function invoke(mode, extra, signal, { context, emit = async () => {} } = {}) {
     signal?.throwIfAborted();
     const request = cloneValue({ version: 1, mode, script: bundle.script, modules: bundle.modules,
       policy, limits: budget, memoryBytes, ...extra }, LUA_DATA_POLICY, "PIPELINE_LUA_REQUEST_INVALID");
@@ -97,17 +106,44 @@ function createLuaCoordinator({ runtime, workspace, runId, registry, policy: ove
         for (let i = 1; i < parts.length; i++) directories.add(parts.slice(0, i).join("/"));
         return { ...file, path: relative, source: { root: workspace.snapshot.root, path: file.path } };
       });
+      if (context) for (const [key, input] of Object.entries(context.inputs)) {
+        directories.add(`inputs/${key}`);
+        for (const dir of input.directories) directories.add(`inputs/${key}/${dir}`);
+        for (const file of input.files) {
+          const relative = `inputs/${key}/${file.path}`, parts = relative.split("/");
+          for (let i = 1; i < parts.length; i++) directories.add(parts.slice(0, i).join("/"));
+          files.push({ path: relative, size: file.size, contentHash: file.contentHash, source: { root: input.root, path: file.path } });
+        }
+      }
       for (const relative of directories) await fs.mkdir(path.join(root, relative), { recursive: true, mode: 0o700 });
       await fs.writeFile(path.join(root, "request.json"), bytes, { flag: "wx", mode: 0o400 });
       files.push({ path: "request.json", size: bytes.length, contentHash: hash(bytes) });
-      worker = await runtime.createWorkspace({ runId, stepId: mode, input: { root, files, directories: [...directories] }, signal,
+      worker = await runtime.createWorkspace({ runId, stepId: context?.step.id || mode, input: { root, files, directories: [...directories] }, signal,
         ...(deadlineAt === undefined ? {} : { deadlineAt }) });
-      const result = await runtime.runContained({ workspace: worker, tool: runtime.resolveTool("lua-worker"), args: [workerPath], signal });
+      const decoder = new StringDecoder("utf8");
+      let pending = "", logBytes = 0, logCount = 0;
+      const result = await runtime.runContained({ workspace: worker, tool: runtime.resolveTool("lua-worker"), args: [workerPath], signal,
+        onOutput: context ? async (chunk, channel) => {
+          if (channel !== "stdout") return;
+          logBytes += chunk.length;
+          if (logBytes > 1048576) fail("PIPELINE_LOG_INVALID", "Lua logs exceed their byte limit");
+          pending += decoder.write(chunk);
+          for (let end; (end = pending.indexOf("\n")) !== -1;) {
+            const line = pending.slice(0, end); pending = pending.slice(end + 1);
+            let event;
+            try { event = JSON.parse(line); } catch { fail("PIPELINE_LOG_INVALID", "Invalid Lua log JSON"); }
+            event = cloneValue(event, policy, "PIPELINE_LOG_INVALID");
+            record(event, ["level", "message"], "PIPELINE_LOG_INVALID", "Lua log");
+            if (++logCount > 1000 || !["debug", "info", "warning", "error"].includes(event.level) || typeof event.message !== "string") fail("PIPELINE_LOG_INVALID", "Invalid Lua log");
+            await emit({ stepId: context.step.id, ...event });
+          }
+        } : undefined });
       signal?.throwIfAborted();
       if (result.drained !== true) fail("PIPELINE_WORKER_RECOVERY_REQUIRED", "Lua worker drain is unconfirmed");
       if (result.timedOut) fail("PIPELINE_LUA_TIMEOUT", "Lua worker timed out");
       if (result.oomKilled) fail("PIPELINE_LUA_MEMORY_LIMIT", "Lua worker memory limit exceeded");
       if (result.cancelled || result.code !== 0 || result.signal) fail("PIPELINE_LUA_WORKER_FAILED", "Lua worker failed");
+      if (context && !result.truncated && (pending + decoder.end()).length) fail("PIPELINE_LOG_INVALID", "Incomplete Lua log record");
       const exported = await runtime.exportWorkspace({ workspace: worker, directory: "response", destination: path.join(root, "reply"), signal });
       if (exported.files.length !== 1 || exported.files[0].path !== "response/result.json"
         || exported.directories.some(dir => dir !== "response")) fail("PIPELINE_LUA_RESPONSE_INVALID", "Unexpected Lua response files");
@@ -115,13 +151,21 @@ function createLuaCoordinator({ runtime, workspace, runId, registry, policy: ove
       const { input, before } = await openCheckedFile(exported.root, file.path);
       let reply;
       try {
-        if (before.size > policy.maxPlanBytes + 1024) fail("PIPELINE_LUA_RESPONSE_INVALID", "Lua response exceeds its byte limit");
+        if (before.size > policy.maxPlanBytes + (context ? 1048576 : 0) + 1024) fail("PIPELINE_LUA_RESPONSE_INVALID", "Lua response exceeds its byte limit");
         reply = await input.readFile();
       } finally { await input.close(); }
       if (reply.length !== file.size || hash(reply) !== file.contentHash) fail("PIPELINE_INPUT_CHANGED", "Lua response identity changed");
-      const response = parseLuaResponse(reply, policy);
-      if (response.errorCode) fail(response.errorCode, "Lua worker rejected the request");
-      return response.value;
+      const response = parseLuaResponse(reply, policy, { mode, inputs: context?.inputs });
+      response.logsTruncated ||= result.truncated;
+      if (context) {
+        if (!response.errorCode) {
+          const output = await runtime.exportWorkspace({ workspace: worker, directory: "output", destination: path.join(root, "products"), signal });
+          // The executor created an empty output directory. Rename the checked
+          // export into it; validateOutputs seals and hashes the artifacts next.
+          await fs.rename(path.join(output.root, "output"), context.outputDir);
+        }
+      } else if (response.errorCode) fail(response.errorCode, "Lua worker rejected the request");
+      return response;
     } catch (error) {
       recoveryRequired = error.code === "PIPELINE_WORKER_RECOVERY_REQUIRED";
       throw error;
@@ -134,20 +178,55 @@ function createLuaCoordinator({ runtime, workspace, runId, registry, policy: ove
   return Object.freeze({ identity,
     async inspectLua({ approval, signal } = {}) {
       approved(approval);
-      return bind(await invoke("inspect", { context: {} }, signal));
+      return bind((await invoke("inspect", { context: {} }, signal)).value);
     },
     async planLua({ approval, descriptor: value, parameters = {}, signal }) {
       approved(approval);
       const expected = cached(value), normalized = validateParameters(expected.parameterSchema, parameters, { policy });
       const { files, directories, settings } = workspace.snapshot;
-      const source = await invoke("plan", { expectedDescriptor: expected, context: { parameters: normalized, capabilities,
-        snapshot: { files, directories, settings, snapshotHash: workspace.snapshotHash } } }, signal);
+      const source = (await invoke("plan", { expectedDescriptor: expected, context: { parameters: normalized, capabilities,
+        snapshot: { files, directories, settings, snapshotHash: workspace.snapshotHash } } }, signal)).value;
       record(source, null, "PIPELINE_PLAN_INVALID", "pipeline plan");
       if (canonical(descriptor(metadata(source))) !== canonical(expected)) fail("PIPELINE_DESCRIPTOR_CHANGED", "Planner changed plugin metadata");
       if (source.parameters !== undefined && canonical(source.parameters) !== canonical(normalized)) fail("PIPELINE_PARAMETERS_CHANGED", "Planner changed normalized parameters");
-      return validatePlan({ ...source, parameters: normalized }, { registry, policy });
+      const plan = validatePlan({ ...source, parameters: normalized }, { registry, policy });
+      plans.add(plan); return plan;
+    },
+    async transformLua({ approval, plan, context, emit }) {
+      approved(approval);
+      if (!plans.has(plan) || !plan.steps.some(step => step.id === context.step.id && canonical(step) === canonical(context.step))) {
+        fail("PIPELINE_PLAN_INVALID", "Lua transform requires its approved validated plan");
+      }
+      const { script, entrypoint, options = {} } = context.options;
+      if (!bundle.modules.some(file => file.path === script)) fail("PIPELINE_APPROVAL_REQUIRED", "Lua transform module is outside its approved bundle");
+      const inputs = Object.fromEntries(Object.entries(context.inputs).map(([key, input]) => [key, {
+        kind: input.kind, mediaType: input.mediaType, files: input.files.map(({ path, size, contentHash }) => ({ path, size, contentHash })),
+      }]));
+      const response = await invoke("transform", { script, entrypoint, inputs, outputs: context.step.outputs,
+        context: { options: { parameters: plan.parameters, step: options } } }, context.signal, { context, emit });
+      const members = new Map(Object.entries(context.inputs).map(([key, input]) => [key, new Map(input.files.map(file => [file.path, file]))]));
+      const diagnostics = response.diagnostics.map(({ input, ...item }) => {
+        const source = input === undefined ? null : members.get(input).get(item.file);
+        const location = !source ? {} : source.producerStep ? {
+          generatedSource: { artifactId: source.id, producerStep: source.producerStep, outputPort: source.outputPort,
+            path: source.path, contentHash: source.contentHash },
+        } : { sourceFileId: source.id, sourceRevisionId: source.sourceRevisionId, sourceContentHash: source.contentHash };
+        return { ...item, stepId: context.step.id, ...location };
+      });
+      return { diagnostics, logsTruncated: response.logsTruncated, ...(response.errorCode ? { errorCode: response.errorCode } : {}) };
     },
   });
 }
 
-module.exports = { luaBundle, parseLuaResponse, createLuaCoordinator };
+function createLuaAdapter({ execute }) {
+  return { id: "iris.lua", version: "1.0.0", implementationHash, capabilities: ["transform.lua"], execute,
+    optionsSchema: { type: "object", required: ["script", "entrypoint"], properties: {
+      script: { type: "string", minLength: 1, maxLength: 500 }, entrypoint: { type: "string", minLength: 1, maxLength: 64 },
+      options: { type: "object", additionalProperties: true },
+    } },
+    additionalInputs: { kinds: ["file", "collection"], mediaTypes: ["*/*"] },
+    additionalOutputs: { kinds: ["file", "collection"], mediaTypes: ["*/*"] },
+  };
+}
+
+module.exports = { luaBundle, parseLuaResponse, createLuaCoordinator, createLuaAdapter };

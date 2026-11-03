@@ -163,6 +163,20 @@ function validateDescriptor(value, { policy: overrides } = {}) {
     requiredCapabilities: names(source.requiredCapabilities, policy.maxValues, code).sort() });
 }
 
+function validateLuaDiagnostic(value, { policy = readPolicy(), hasMember = () => false } = {}) {
+  const code = "PIPELINE_DIAGNOSTICS_INVALID", item = cloneValue(value, policy, code);
+  record(item, ["severity", "code", "message", "input", "file", "line", "column"], code, "Lua diagnostic");
+  if (!["warning", "error"].includes(item.severity) || typeof item.message !== "string" || !item.message) fail(code, "Invalid Lua diagnostic");
+  if (item.code !== undefined) name(item.code, code);
+  if (item.input !== undefined || item.file !== undefined) {
+    if (!hasMember(item.input, logicalPath(item.file, code))) fail(code, "Undeclared Lua diagnostic source");
+  }
+  for (const [key, minimum] of [["line", 1], ["column", 0]]) {
+    if (item[key] !== undefined && (!Number.isSafeInteger(item[key]) || item[key] < minimum || item.file === undefined)) fail(code, "Invalid Lua diagnostic location");
+  }
+  return item;
+}
+
 function portContract(value, code = "PIPELINE_REGISTRY_INVALID") {
   record(value, ["kinds", "mediaTypes", "required"], code, "adapter port");
   if (!Array.isArray(value.kinds) || !value.kinds.length || value.kinds.some(kind => !KINDS.has(kind)) ||
@@ -301,5 +315,5 @@ function resolveTarget(plan, targetName) {
   return freeze({ steps: plan.order.filter(id => required.has(id)).map(id => byId.get(id)), publish: target.publish, primaryPreview: target.primaryPreview });
 }
 
-module.exports = { DEFAULT_POLICY, LUA_DATA_POLICY, SNAPSHOT_TYPE, validatePlan, resolveTarget, validateParameters, validateDescriptor,
+module.exports = { DEFAULT_POLICY, LUA_DATA_POLICY, SNAPSHOT_TYPE, validatePlan, resolveTarget, validateParameters, validateDescriptor, validateLuaDiagnostic,
   readPolicy, cloneValue, createSchemaValidator, portContract, name, names, logicalPath, canonical, record, freeze, fail };

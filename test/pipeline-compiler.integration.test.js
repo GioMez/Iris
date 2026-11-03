@@ -66,6 +66,88 @@ const step = (id, family, main, options = {}, kind = "file") => ({ id, adapter: 
   outputs: { output: { kind, mediaType: "application/pdf", path: kind === "file" ? `${id}/result.pdf` : `${id}/documents` } },
 });
 
+for (const family of ["latex", "lilypond"]) test(`approved Lua generates a native ${family} include with retained output and diagnostic provenance`, native, async t => {
+  const { createLuaCoordinator, createLuaAdapter } = require("../src/pipeline/lua");
+  const plugin = await fs.readFile(path.join(__dirname, "fixtures/pipelines/generate.lua"), "utf8");
+  const main = family === "latex" ? "main.tex" : "main.ly";
+  const source = family === "latex" ? "\\documentclass{article}\n\\begin{document}\n\\input{generated/include.tex}\n\\end{document}\n"
+    : '\\version "2.24.1"\n\\include "generated/include.ily"\n\\score { \\new Staff { \\generatedMusic } }\n';
+  for (const broken of [false, true]) {
+    let host, plan;
+    const f = await fixture(t, { "iris.lua": plugin, [main]: source }, { projectType: family }, {
+      tools: [{ id: "lua-worker", path: "/usr/local/bin/node", timeoutMs: 5000 }],
+      adapters: [createLuaAdapter({ execute: context => host.transformLua({ approval: host.identity, plan, context }) })],
+    });
+    host = createLuaCoordinator({ runtime: f.runtime, workspace: f.workspace, runId: uuidv7(), registry: f.registry });
+    const descriptor = await host.inspectLua({ approval: host.identity });
+    plan = await host.planLua({ approval: host.identity, descriptor, parameters: { family, count: 3, broken } });
+    const result = await executePlan({ plan, target: "main", workspace: f.workspace, registry: f.registry,
+      gate: new ConcurrencyGate({ limit: 1, queueLimit: 1 }) });
+    assert.equal(await fs.readFile(path.join(f.source, main), "utf8"), source);
+    await assert.rejects(fs.stat(path.join(f.source, "generated")), { code: "ENOENT" });
+    assert.equal(f.compiled.size, 1);
+    assert.equal(f.compiled.get("compile").family, family);
+    if (!broken) {
+      assert.equal(result.state, "succeeded", JSON.stringify(result.steps));
+      assert.equal(result.artifacts.length, 2);
+      const include = result.artifacts[0];
+      assert.equal(await fs.readFile(path.join(include.root, include.path), "utf8"), family === "latex"
+        ? "Generated Iris text. Generated Iris text. Generated Iris text. \n" : "generatedMusic = { c'4 c'4 c'4 }\n");
+      assert.equal((await PDFDocument.load(await fs.readFile(path.join(result.artifacts[1].root, result.artifacts[1].path)))).getPageCount(), 1);
+    } else {
+      assert.equal(result.state, "failed");
+      assert.deepEqual(result.artifacts, []);
+      const diagnostic = result.steps[1].diagnostics.find(item => item.generatedSource?.producerStep === "generate");
+      assert.ok(diagnostic, JSON.stringify(result.steps));
+      assert.equal(diagnostic.sourceFileId, undefined);
+      assert.equal(diagnostic.generatedSource.outputPort, "include");
+    }
+  }
+});
+
+test("changing a Lua-generated include changes only its declared dependent LilyPond score", native, async t => {
+  const { createLuaCoordinator, createLuaAdapter } = require("../src/pipeline/lua");
+  const base = await fs.readFile(path.join(__dirname, "fixtures/pipelines/generate.lua"), "utf8");
+  const plugin = `local plugin=(function() ${base} end)()
+    local original=plugin.plan
+    plugin.plan=function(ctx)
+      local graph=original(ctx)
+      table.insert(graph.steps,{id='control',adapter={id='iris.lilypond',version='1.0.0'},
+        inputs={source={snapshot=true}},options={main='control.ly',sourceMapping=false},
+        outputs={output={kind='file',mediaType='application/pdf',path='control.pdf'}}})
+      table.insert(graph.targets.main.steps,'control')
+      table.insert(graph.targets.main.publish,{step='control',port='output'})
+      return graph
+    end
+    return plugin`;
+  const samples = [];
+  for (const count of [1, 4]) {
+    let host, plan;
+    const f = await fixture(t, { "iris.lua": plugin,
+      "main.ly": '\\version "2.24.1"\n\\include "generated/include.ily"\n\\score { \\new Staff { \\generatedMusic } }\n',
+      "control.ly": '\\version "2.24.1"\n\\score { \\new Staff { d\'1 } }\n',
+    }, { projectType: "lilypond" }, {
+      tools: [{ id: "lua-worker", path: "/usr/local/bin/node", timeoutMs: 5000 }],
+      adapters: [createLuaAdapter({ execute: context => host.transformLua({ approval: host.identity, plan, context }) })],
+    });
+    host = createLuaCoordinator({ runtime: f.runtime, workspace: f.workspace, runId: uuidv7(), registry: f.registry });
+    const descriptor = await host.inspectLua({ approval: host.identity });
+    plan = await host.planLua({ approval: host.identity, descriptor, parameters: { family: "lilypond", count } });
+    const result = await executePlan({ plan, target: "main", workspace: f.workspace, registry: f.registry,
+      gate: new ConcurrencyGate({ limit: 1, queueLimit: 1 }) });
+    assert.equal(result.state, "succeeded", JSON.stringify(result.steps));
+    const rendered = {};
+    for (const stepId of ["compile", "control"]) {
+      const output = result.artifacts.find(item => item.producerStep === stepId);
+      rendered[stepId] = await redPixels(path.join(output.root, output.path), f.workspace.root, stepId, "black");
+      assert.ok(rendered[stepId][0].red.length > 0);
+    }
+    samples.push(rendered);
+  }
+  assert.notDeepEqual(samples[0].compile, samples[1].compile);
+  assert.deepEqual(samples[0].control, samples[1].control);
+});
+
 test("contained SyncTeX navigates retained renamed PDFs after source removal and rejects changed sidecars", native, async t => {
   const { collectCompilerMapping, navigateCompilerMapping, createNavigationTools } = require("../src/pipeline/navigation");
   const projectId = uuidv7(), runId = uuidv7(), include = "parts/é text.tex";

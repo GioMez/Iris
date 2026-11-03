@@ -41,7 +41,7 @@ function included(name) {
   const parts = name.split("/");
   if (parts.some((part) => part.startsWith(".") || /^(node_modules|data|storage|coverage|tmp|temp|dist|build|artifacts)$/i.test(part)) && name !== "public/templates/.metadata.json") return false;
   if (name.endsWith(".grammar")) return /^(public\/languages|test\/fixtures\/languages)\//.test(name);
-  if (name.endsWith(".lua")) return name === "src/pipeline/lua-bootstrap.lua";
+  if (name.endsWith(".lua")) return name === "src/pipeline/lua-bootstrap.lua" || name.startsWith("test/fixtures/pipelines/");
   return /\.(?:js|cjs|mjs|json|html|css|sql|sh|md|svg|png|jpg|jpeg|webp|tex|ly|ily|woff2?)$/.test(name);
 }
 async function candidateFiles(root, manifest) {

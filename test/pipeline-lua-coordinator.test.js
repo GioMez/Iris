@@ -10,6 +10,8 @@ const { uuidv7 } = require("../src/ids");
 const { createRegistry } = require("../src/pipeline/registry");
 const { createRunWorkspace, disposeRunWorkspace } = require("../src/pipeline/workspaces");
 const { createPodmanRuntime, readRuntimePolicy } = require("../src/pipeline/runtime");
+const { executePlan } = require("../src/pipeline/executor");
+const { ConcurrencyGate } = require("../src/throttle");
 
 const hash = bytes => createHash("sha256").update(bytes).digest("hex");
 const image = process.env.IRIS_TEST_PIPELINE_IMAGE;
@@ -26,31 +28,32 @@ return {apiVersion=1,pluginId='generate',parameterSchema={type='object',properti
 const definitions = [{ id: "check", version: "1.0.0", implementationHash: "a".repeat(64), capabilities: ["check"],
   optionsSchema: { type: "object", properties: { count: { type: "integer" } } }, execute: async () => ({}) }];
 
-async function fixture(t, { native = false, sources = { "iris.lua": script, "settings.lua": "return {count=3}" } } = {}) {
+async function fixture(t, { native = false, sources = { "iris.lua": script, "settings.lua": "return {count=3}" }, adapters = [] } = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "iris-lua-host-"));
   const source = path.join(root, "source"); await fs.mkdir(source);
   const files = [];
   for (const [relative, bytes] of Object.entries(sources)) {
     await fs.mkdir(path.dirname(path.join(source, relative)), { recursive: true });
     await fs.writeFile(path.join(source, relative), bytes);
-    files.push({ id: uuidv7(), path: relative });
+    files.push({ id: uuidv7(), path: relative, binary: Buffer.isBuffer(bytes) });
   }
   const workspace = await createRunWorkspace({ root: source, files, directories: [], settings: {} }, { root: path.join(root, "runs") });
   let runtime, starts = 0;
+  const admissions = [];
   t.after(async () => { await runtime?.close(); await disposeRunWorkspace(workspace); await fs.rm(root, { recursive: true }); });
   const policy = readRuntimePolicy({ image: image || `sha256:${"a".repeat(64)}`, memoryBytes: 268435456, totalMemoryBytes: 335544320,
     outputBytes: 16777216, tempBytes: 8388608, outputEntries: 1024, tempEntries: 64 });
   const tools = [{ id: "lua-worker", path: "/usr/local/bin/node", timeoutMs: 5000 }];
   if (native) runtime = await createPodmanRuntime({ root: path.join(root, "runtime"), coordinatorId: uuidv7(),
     transport: { connection: process.env.IRIS_TEST_PODMAN_CONNECTION, home: process.env.IRIS_TEST_PODMAN_HOME }, policy, tools });
-  const boundary = native ? { ...runtime, createWorkspace: options => { starts++; return runtime.createWorkspace(options); } } : {
+  const boundary = native ? { ...runtime, createWorkspace: options => { starts++; admissions.push(options.stepId); return runtime.createWorkspace(options); } } : {
     manifest: () => ({ policy, tools }), createWorkspace() { starts++; throw new Error("Unexpected worker admission"); },
   };
   const { createLuaCoordinator } = require("../src/pipeline/lua");
-  const registry = createRegistry(definitions);
+  const registry = createRegistry([...definitions, ...adapters]);
   const createHost = options => createLuaCoordinator({ runtime: boundary, workspace, runId: uuidv7(), registry, ...options });
   const host = createHost();
-  return { host, createHost, workspace, root, source, registry, boundary, starts: () => starts };
+  return { host, createHost, workspace, root, source, registry, boundary, admissions, starts: () => starts };
 }
 
 test("Lua bundle identity covers executable paths and bytes but ignores source-only edits", () => {
@@ -163,7 +166,113 @@ test("Lua coordinator refuses malformed or oversized worker result frames", () =
   assert.deepEqual(parseLuaResponse(Buffer.from(JSON.stringify(valid))), valid);
 });
 
+test("Lua transform responses cannot forge diagnostic source identities or locations", () => {
+  const { parseLuaResponse } = require("../src/pipeline/lua");
+  const options = { mode: "transform", inputs: { source: { files: [{ path: "main.tex" }] } } };
+  const diagnostic = { severity: "warning", message: "checked", input: "source", file: "main.tex", line: 1 };
+  const frame = item => Buffer.from(JSON.stringify({ version: 1, value: null, diagnostics: [item], logsTruncated: false }));
+  assert.deepEqual(parseLuaResponse(frame(diagnostic), undefined, options).diagnostics, [diagnostic]);
+  for (const item of [{ ...diagnostic, sourceFileId: uuidv7() }, { ...diagnostic, file: "../outside" },
+    { ...diagnostic, input: "unknown" }, { ...diagnostic, line: 0 }, { ...diagnostic, generatedSource: {} }]) {
+    assert.throws(() => parseLuaResponse(frame(item), undefined, options), { code: "PIPELINE_DIAGNOSTICS_INVALID" });
+  }
+});
+
 test("descriptor validation rejects an explicit null schema rather than inventing parameter metadata", () => {
   const { validateDescriptor } = require("../src/pipeline/contracts");
   assert.throws(() => validateDescriptor({ apiVersion: 1, pluginId: "null", parameterSchema: null }), { code: "PIPELINE_SCHEMA_INVALID" });
+});
+
+test("contained Lua transforms preserve binary products and bind source/generated diagnostics", contained, async t => {
+  const { createLuaAdapter } = require("../src/pipeline/lua");
+  let f, plan;
+  const events = [], bytes = Buffer.from([0, 255, 128, 10]);
+  const plugin = `local schema={type='object',properties={suffix={type='string',default='!'}}}
+    return {apiVersion=1,pluginId='binary',parameterSchema=schema,
+      plan=function(ctx) return {apiVersion=1,pluginId='binary',parameterSchema=schema,steps={
+        {id='generate',adapter={id='iris.lua',version='1.0.0'},inputs={source={snapshot=true}},
+          options={script='iris.lua',entrypoint='generate',options={suffix='?'}},
+          outputs={out={kind='file',mediaType='application/octet-stream',path='generated/bytes.bin'}}},
+        {id='check',adapter={id='iris.lua',version='1.0.0'},inputs={generated={step='generate',port='out'}},
+          options={script='iris.lua',entrypoint='check'},
+          outputs={out={kind='file',mediaType='application/octet-stream',path='checked/bytes.bin'}}}},
+        targets={default={steps={'check'},publish={{step='check',port='out'}}}}} end,
+      generate=function(ctx)
+        ctx.write('out','generated/bytes.bin',ctx.read('source','bytes.bin')..ctx.options.parameters.suffix..ctx.options.step.suffix)
+        ctx.diagnostic({severity='warning',message='original',input='source',file='bytes.bin',line=1})
+      end,
+      check=function(ctx)
+        ctx.write('out','checked/bytes.bin',ctx.read('generated','generated/bytes.bin'))
+        ctx.diagnostic({severity='warning',message='generated',input='generated',file='generated/bytes.bin',line=1})
+        ctx.log('info','checked output')
+      end}`;
+  f = await fixture(t, { native: true, sources: { "iris.lua": plugin, "bytes.bin": bytes }, adapters: [
+    createLuaAdapter({ execute: context => f.host.transformLua({ approval: f.host.identity, plan, context, emit: event => events.push(event) }) }),
+  ] });
+  const descriptor = await f.host.inspectLua({ approval: f.host.identity });
+  plan = await f.host.planLua({ approval: f.host.identity, descriptor });
+  const products = [];
+  const result = await executePlan({ plan, target: "default", workspace: f.workspace, registry: f.registry,
+    gate: new ConcurrencyGate({ limit: 1, queueLimit: 1 }), onArtifacts: async (context, artifacts) => products.push(...artifacts) });
+  assert.equal(result.state, "succeeded", JSON.stringify(result.steps));
+  assert.deepEqual(await fs.readFile(path.join(result.artifacts[0].root, result.artifacts[0].path)), Buffer.concat([bytes, Buffer.from("!?")]));
+  const source = f.workspace.snapshot.files.find(file => file.path === "bytes.bin");
+  assert.equal(result.steps[0].diagnostics[0].sourceFileId, source.id);
+  assert.equal(result.steps[0].diagnostics[0].sourceContentHash, hash(bytes));
+  assert.deepEqual(result.steps[1].diagnostics[0].generatedSource, {
+    artifactId: products[0].id, producerStep: "generate", outputPort: "out", path: "generated/bytes.bin", contentHash: hash(Buffer.concat([bytes, Buffer.from("!?")])),
+  });
+  assert.equal(result.steps[1].diagnostics[0].sourceFileId, undefined);
+  assert.equal(result.steps[1].diagnostics[0].input, undefined);
+  assert.deepEqual(events, [{ stepId: "check", level: "info", message: "checked output" }]);
+  assert.deepEqual(f.admissions, ["inspect", "plan", "generate", "check"]);
+});
+
+test("contained Lua transformation failure retains checked diagnostics and publishes no bytes", contained, async t => {
+  const { createLuaAdapter } = require("../src/pipeline/lua");
+  let f, plan;
+  const plugin = `return {apiVersion=1,pluginId='failure',plan=function() return {
+    apiVersion=1,pluginId='failure',steps={{id='fail',adapter={id='iris.lua',version='1.0.0'},
+      options={script='iris.lua',entrypoint='fail'},outputs={out={kind='file',mediaType='text/plain',path='out.txt'}}}},
+    targets={default={steps={'fail'},publish={{step='fail',port='out'}}}}} end,
+    fail=function(ctx) ctx.write('out','out.txt','partial')
+      ctx.diagnostic({severity='error',message='retained failure'}) error('stop') end}`;
+  f = await fixture(t, { native: true, sources: { "iris.lua": plugin }, adapters: [
+    createLuaAdapter({ execute: context => f.host.transformLua({ approval: f.host.identity, plan, context }) }),
+  ] });
+  const descriptor = await f.host.inspectLua({ approval: f.host.identity });
+  plan = await f.host.planLua({ approval: f.host.identity, descriptor });
+  const result = await executePlan({ plan, target: "default", workspace: f.workspace, registry: f.registry,
+    gate: new ConcurrencyGate({ limit: 1, queueLimit: 1 }) });
+  assert.equal(result.state, "failed");
+  assert.equal(result.steps[0].errorCode, "PIPELINE_LUA_EXECUTION_FAILED");
+  assert.deepEqual(result.steps[0].diagnostics, [{ severity: "error", message: "retained failure", stepId: "fail" }]);
+  assert.deepEqual(result.artifacts, []);
+  assert.deepEqual(await fs.readdir(path.join(f.workspace.root, "steps/fail/output")), []);
+});
+
+test("cancelling a running Lua transform drains its worker and prevents partial product export", contained, async t => {
+  const { createLuaAdapter } = require("../src/pipeline/lua");
+  let f, plan;
+  const controller = new AbortController(), events = [];
+  const plugin = `return {apiVersion=1,pluginId='cancel',plan=function() return {
+    apiVersion=1,pluginId='cancel',steps={{id='wait',adapter={id='iris.lua',version='1.0.0'},
+      options={script='iris.lua',entrypoint='wait'},outputs={out={kind='file',mediaType='text/plain',path='out.txt'}}}},
+    targets={default={steps={'wait'},publish={{step='wait',port='out'}}}}} end,
+    wait=function(ctx) ctx.write('out','out.txt','partial') ctx.log('info','ready') while true do end end}`;
+  f = await fixture(t, { native: true, sources: { "iris.lua": plugin }, adapters: [
+    createLuaAdapter({ execute: context => f.host.transformLua({ approval: f.host.identity, plan, context,
+      emit: event => { events.push(event); controller.abort(); } }) }),
+  ] });
+  const descriptor = await f.host.inspectLua({ approval: f.host.identity });
+  plan = await f.host.planLua({ approval: f.host.identity, descriptor });
+  const result = await executePlan({ plan, target: "default", workspace: f.workspace, registry: f.registry,
+    signal: controller.signal, gate: new ConcurrencyGate({ limit: 1, queueLimit: 1 }) });
+  assert.equal(result.state, "cancelled", JSON.stringify(result.steps));
+  assert.equal(result.steps[0].state, "cancelled");
+  assert.deepEqual(events, [{ stepId: "wait", level: "info", message: "ready" }]);
+  assert.deepEqual(result.artifacts, []);
+  assert.deepEqual(await fs.readdir(path.join(f.workspace.root, "steps/wait/output")), []);
+  assert.deepEqual(await fs.readdir(path.join(f.root, "runtime")), ["installation.json"]);
+  assert.deepEqual((await fs.readdir(f.workspace.root)).sort(), ["snapshot", "steps"]);
 });

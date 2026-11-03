@@ -1,7 +1,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { createHash } = require("node:crypto");
-const { logicalPath, name, record, fail, cloneValue, readPolicy } = require("./contracts");
+const { logicalPath, name, record, fail, readPolicy, validateLuaDiagnostic } = require("./contracts");
 const { readWorkspaceLimits } = require("./workspaces");
 
 const hash = bytes => createHash("sha256").update(bytes).digest("hex");
@@ -104,16 +104,7 @@ function createLuaIO({ inputRoot, outputRoot, inputs, outputs, limits = {}, even
       logBytes += size; logCount++; emit(event);
     },
     diagnostic(value) {
-      const code = "PIPELINE_DIAGNOSTICS_INVALID", item = cloneValue(value, valuePolicy, code);
-      record(item, ["severity", "code", "message", "input", "file", "line", "column"], code, "Lua diagnostic");
-      if (!["warning", "error"].includes(item.severity) || typeof item.message !== "string" || !item.message) fail(code, "Invalid Lua diagnostic");
-      if (item.code !== undefined) name(item.code, code);
-      if (item.input !== undefined || item.file !== undefined) {
-        if (!declaredInputs.get(item.input)?.has(logicalPath(item.file, code))) fail(code, "Undeclared Lua diagnostic source");
-      }
-      for (const [key, minimum] of [["line", 1], ["column", 0]]) {
-        if (item[key] !== undefined && (!Number.isSafeInteger(item[key]) || item[key] < minimum || item.file === undefined)) fail(code, "Invalid Lua diagnostic location");
-      }
+      const item = validateLuaDiagnostic(value, { policy: valuePolicy, hasMember: (input, file) => declaredInputs.get(input)?.has(file) });
       const size = Buffer.byteLength(JSON.stringify(item)) + (diagnostics.length ? 1 : 0);
       if (diagnosticBytes + size > events.maxDiagnosticBytes || diagnostics.length >= events.maxEvents) fail("PIPELINE_DIAGNOSTICS_LIMIT", "Lua diagnostics exceed their limit");
       diagnosticBytes += size; diagnostics.push(item);

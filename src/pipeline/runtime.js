@@ -53,7 +53,7 @@ function commandClient(transport, policy) {
         if (retained.length) {
           chunks.push(retained); bytes += retained.length;
           if (captureStreams) output[channel].push(retained);
-          if (onOutput) callbacks = callbacks.then(() => onOutput(retained)).catch(() => { failure ||= error("PIPELINE_OUTPUT_CALLBACK_FAILED"); });
+          if (onOutput) callbacks = callbacks.then(() => onOutput(retained, channel)).catch(() => { failure ||= error("PIPELINE_OUTPUT_CALLBACK_FAILED"); });
         }
         if (chunk.length > remaining) {
           if (!truncated) onOutputLimit?.();

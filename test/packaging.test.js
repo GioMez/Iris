@@ -150,7 +150,7 @@ test("grammar packaging is restricted to intended language source and fixture tr
 test("an extracted source archive runs the Lua VM with its trusted bootstrap", async t => {
   const f = await fixture(t), repo = path.resolve(__dirname, "..");
   for (const name of ["src/pipeline/lua-vm.js", "src/pipeline/lua-bootstrap.lua", "src/pipeline/contracts.js",
-    "package.json", "package-lock.json"]) {
+    "test/fixtures/pipelines/generate.lua", "package.json", "package-lock.json"]) {
     await fs.mkdir(path.dirname(path.join(f.source, name)), { recursive: true });
     f.files[name] = await fs.readFile(path.join(repo, name));
     await fs.writeFile(path.join(f.source, name), f.files[name]);
@@ -170,6 +170,15 @@ test("an extracted source archive runs the Lua VM with its trusted bootstrap", a
   });
   assert.equal(executed.status, 0, executed.stderr);
   assert.deepEqual(JSON.parse(executed.stdout), { answer: 42 });
+  const generated = spawnSync(process.execPath, ["-e", `const fs=require('node:fs');
+    require('./src/pipeline/lua-vm').executeLua({mode:'transform',script:'iris.lua',entrypoint:'generate',
+      modules:{'iris.lua':fs.readFileSync('test/fixtures/pipelines/generate.lua')},
+      context:{options:{parameters:{family:'lilypond',count:2,broken:false},step:{}}},
+      host:{write:(port,path,bytes)=>console.log(JSON.stringify({port,path,bytes:bytes.toString('utf8')}))}})`], {
+    cwd: path.join(extracted, `iris-${version}`), encoding: "utf8", timeout: 10000,
+  });
+  assert.equal(generated.status, 0, generated.stderr);
+  assert.deepEqual(JSON.parse(generated.stdout), { port: "include", path: "generated/include.ily", bytes: "generatedMusic = { c'4 c'4 }\n" });
   const { included } = require(release);
   for (const name of ["src/private.lua", "public/plugin.lua", "docs/superpowers/plugin.lua"]) assert.equal(included(name), false);
 });
