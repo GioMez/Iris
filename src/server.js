@@ -18,6 +18,12 @@ const { normalizeProjectPath, collectProjectFiles, reconcileProjectFiles, remapI
 const { createProjectMutations } = require("./project-mutations");
 const { createProjectDeletions } = require("./project-deletions");
 const pipelineRuns = require("./pipeline/runs");
+const PipelineContracts = require("./pipeline/contracts");
+const { createRegistry } = require("./pipeline/registry");
+const { createNativeRuntime } = require("./pipeline/runtime");
+const { createLuaTools, createLuaAdapter, createLuaCoordinator } = require("./pipeline/lua");
+const { createCompilerTools, createCompilerAdapters } = require("./pipeline/compilers");
+const { createRunWorkspace, disposeRunWorkspace, openCheckedFile } = require("./pipeline/workspaces");
 const { hashContent, isVersionableText, contentChanged } = require("./versions");
 const { CollabRooms, CollabError, peerColor, normalizePresence } = require("./collab");
 const { isSystemRole, isUserStatus, isAccountStatus, leavesNoActiveAdmin, normalizeSearch, userDeletionBlock } = require("./admin");
@@ -209,6 +215,8 @@ let inFlight = 0;
 let inFlightMutations = 0;
 const activeBuilds = new Set();
 const activePipelineRuns = new Map();
+const activePipelineInspections = new Set();
+let pipelineExecution;
 const pipelineCoordinatorId = uuidv7();
 const pipelineRunStore = {
   get pool() { return db; },
@@ -816,6 +824,7 @@ async function initDb() {
     connectTimeout: DB_CONNECT_TIMEOUT,
   });
   await fs.mkdir(DATA_DIR, { recursive: true });
+  await getPipelineExecution();
   await initializeProjectTemplates(TEMPLATE_DIR, path.join(PUBLIC_DIR, "templates"));
   await seedUsers();
 }
@@ -2926,6 +2935,7 @@ function collabCloseSession(session, code = 1000, reason = "") {
 async function collabRecheckProject(projectId) {
   collabAccessGeneration++;
   await pipelineRuns.recheckRunPermissions(pipelineRunStore, { projectId });
+  await stopPipelineInspections({ projectId, recheck: true });
   const sessions = Array.from(collabSessions).filter((session) =>
     session.projectId === projectId
     || Array.from(session.rooms.values()).some((entry) => entry.projectId === projectId));
@@ -4509,6 +4519,155 @@ async function deleteBuildOutput(req, res, user, projectId, buildId) {
   json(res, 200, { ok: true });
 }
 
+async function getPipelineExecution() {
+  return pipelineExecution ||= (async () => {
+    const runtime = await createNativeRuntime({ root: path.join(DATA_DIR, ".pipeline-runtime"), coordinatorId: pipelineCoordinatorId,
+      policy: { concurrency: COMPILE_CONCURRENCY, queueLimit: COMPILE_QUEUE },
+      tools: [...createLuaTools({ luaBinPath: process.env.LUA_BIN_PATH || "" }),
+        ...createCompilerTools({ texBinPath: TEX_BIN_PATH, lilypondBinPath: LILYPOND_BIN_PATH, timeoutMs: COMPILE_TIMEOUT_MS })] });
+    const registry = createRegistry([createLuaAdapter({ execute() { throw requestError("PIPELINE_RUN_UNAVAILABLE", 503); } }),
+      ...createCompilerAdapters({ runtime, normalizeCompileProfile, runCompilePipeline, parseCompileArguments, kpathseaSearchPath })]);
+    return { runtime, registry };
+  })();
+}
+
+function pipelineFailure(error) {
+  if (error.errorCode) return error;
+  if (!/^PIPELINE_[A-Z0-9_]+$/.test(error.code || "")) return error;
+  const status = /UNAVAILABLE|RECOVERY_REQUIRED|STOPPING|BUSY/.test(error.code) ? 503
+    : /APPROVAL_REQUIRED|CHANGED/.test(error.code) ? 409 : 400;
+  return requestError(error.code, status);
+}
+
+function pipelineCoordinator(execution, workspace) {
+  const coordinator = createLuaCoordinator({ ...execution, workspace, runId: uuidv7() });
+  pipelineRunStore.policyHash = coordinator.identity.policyHash;
+  pipelineRunStore.registryHash = coordinator.identity.registryHash;
+  return coordinator;
+}
+
+// Read only registered executable source. Hash bytes incrementally; the options
+// reader must neither hydrate binary assets nor execute project Lua.
+async function pipelineCandidate(id, user, capability = "read") {
+  return authorizedProjectGate(id, user, capability, async project => {
+    const { rows } = await db.query("SELECT id,path FROM project_files WHERE project_id=$1 AND deleted_at IS NULL AND path ~* '\\.lua$' ORDER BY path", [id]);
+    if (!rows.some(file => file.path === "iris.lua")) return null;
+    const files = [];
+    for (const file of rows) {
+      const room = collabRooms.get(file.id);
+      if (room && room.projectId === id) {
+        const bytes = Buffer.from(room.text(), "utf8");
+        files.push({ path: file.path, size: bytes.length, contentHash: hashContent(bytes) });
+      } else {
+        const { input: handle, before } = await openCheckedFile(project.storageDir, file.path);
+        try {
+          const hash = crypto.createHash("sha256");
+          let size = 0;
+          for await (const bytes of handle.createReadStream({ autoClose: false })) { size += bytes.length; hash.update(bytes); }
+          const after = await handle.stat();
+          if (before.size !== size || after.size !== size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) {
+            throw requestError("PIPELINE_BUNDLE_CHANGED", 409);
+          }
+          files.push({ path: file.path, size, contentHash: hash.digest("hex") });
+        } finally { await handle.close(); }
+      }
+    }
+    return pipelineCoordinator(await getPipelineExecution(), { snapshot: { files } }).identity;
+  });
+}
+
+async function getProjectPipeline(req, res, user, id) {
+  try {
+    const pipeline = await pipelineRuns.getPipeline(pipelineRunStore, id, user);
+    const candidate = await pipelineCandidate(id, user);
+    return json(res, 200, { pipeline: { ...pipeline, candidate } });
+  } catch (error) { throw pipelineFailure(error); }
+}
+
+async function stopPipelineInspections({ projectId, userId, approvalId, recheck = false } = {}) {
+  const stopped = [];
+  for (const operation of activePipelineInspections) {
+    if ((projectId && operation.projectId !== projectId) || (userId && operation.user.sub !== userId)
+      || (approvalId && operation.approvalId !== approvalId)) continue;
+    if (recheck) {
+      try { await authorizeProject(operation.projectId, operation.user, "compile"); continue; }
+      catch (error) { if (![403, 404].includes(error.status)) throw error; }
+    }
+    operation.controller.abort(requestError("PIPELINE_APPROVAL_REQUIRED", 409));
+    stopped.push(operation.done);
+  }
+  const failures = (await Promise.all(stopped)).filter(Boolean);
+  if (failures.length) throw failures[0];
+}
+
+async function approveProjectPipeline(req, res, user, id) {
+  await authorizeProject(id, user, "approvePipeline");
+  const body = await readBody(req);
+  try {
+    PipelineContracts.record(body, ["identity"], "PIPELINE_REQUEST_INVALID", "approval request");
+    PipelineContracts.record(body.identity, ["bundleHash", "policyHash", "registryHash"], "PIPELINE_REQUEST_INVALID", "approval identity");
+    const candidate = await pipelineCandidate(id, user, "approvePipeline");
+    if (!candidate || PipelineContracts.canonical(candidate) !== PipelineContracts.canonical(body.identity)) throw requestError("PIPELINE_BUNDLE_CHANGED", 409);
+    const approval = await pipelineRuns.approveBundle(pipelineRunStore, id, user, candidate);
+    return json(res, 201, { approval });
+  } catch (error) { throw pipelineFailure(error); }
+}
+
+async function inspectProjectPipeline(req, res, user, id) {
+  await authorizeProject(id, user, "compile");
+  const body = await readBody(req);
+  let release, workspace, operation, complete, failure, descriptor, approval;
+  try {
+    PipelineContracts.record(body, [], "PIPELINE_REQUEST_INVALID", "inspection request");
+    if ([...activePipelineInspections].some(operation => operation.failure)) throw requestError("PIPELINE_WORKER_RECOVERY_REQUIRED", 503);
+    const state = await pipelineRuns.getPipeline(pipelineRunStore, id, user);
+    const candidate = await pipelineCandidate(id, user, "compile");
+    approval = state.approval;
+    if (!state.enabled || !approval || approval.revokedAt || !candidate
+      || ["bundleHash", "policyHash", "registryHash"].some(key => candidate[key] !== approval[key])) throw requestError("PIPELINE_APPROVAL_REQUIRED", 409);
+    if (shuttingDown) throw requestError("PIPELINE_RUNTIME_STOPPING", 503);
+    enforceRateLimit(compileLimiter, `compile:${user.sub}:${id}`, "COMPILE_RATE_LIMITED");
+    const controller = new AbortController(), signal = controller.signal;
+    operation = { projectId: id, approvalId: approval.id, user, controller, done: new Promise(resolve => { complete = resolve; }) };
+    activePipelineInspections.add(operation);
+    try { release = await compileGate.acquire({ signal }); }
+    catch (error) { if (error instanceof GateRejectedError) throw requestError("COMPILE_SERVER_BUSY", 503); throw error; }
+    signal.throwIfAborted();
+    const current = await pipelineRuns.getPipeline(pipelineRunStore, id, user);
+    if (!current.enabled || current.approval?.id !== approval.id || current.approval.revokedAt) throw requestError("PIPELINE_APPROVAL_REQUIRED", 409);
+    const execution = await getPipelineExecution();
+    workspace = await authorizedProjectGate(id, user, "compile", async project => {
+      signal.throwIfAborted();
+      const data = await projectMutations.transaction({ id, storageDir: project.storageDir }, async (client, protect) => {
+        const row = await authorizeProject(id, user, "compile", client);
+        const data = await readProjectFile(row.storageDir, { strictRead: true });
+        await saveProjectTree(id, row, {}, data, client, protect, { user });
+        return data;
+      });
+      collabReconcileProject(id, data);
+      const files = collectProjectFiles(data.project.nodes).filter(file => /\.lua$/i.test(file.path))
+        .map(file => ({ id: file.node.id, path: file.path, kind: file.kind }));
+      return createRunWorkspace({ root: project.storageDir, files, directories: [], settings: {} }, { root: path.join(DATA_DIR, ".pipeline-staging") }, { signal });
+    });
+    const coordinator = pipelineCoordinator(execution, workspace);
+    descriptor = await coordinator.inspectLua({ approval, signal });
+  } catch (error) { failure = pipelineFailure(error); }
+  finally {
+    try {
+      if (workspace && failure?.errorCode !== "PIPELINE_WORKER_RECOVERY_REQUIRED") await disposeRunWorkspace(workspace);
+    } catch { failure = requestError("PIPELINE_WORKER_RECOVERY_REQUIRED", 503); }
+    finally {
+      release?.();
+      if (operation && failure?.errorCode === "PIPELINE_WORKER_RECOVERY_REQUIRED") operation.failure = failure;
+      else activePipelineInspections.delete(operation);
+      complete?.(operation?.failure);
+    }
+  }
+  if (failure) throw failure;
+  await pipelineRuns.cacheDescriptor(pipelineRunStore, id, approval.id, user, descriptor);
+  return json(res, 200, { descriptor });
+}
+
 async function compileProject(req, res, user, id) {
   const body = await readBody(req);
   await authorizeProject(id, user, "compile");
@@ -5048,6 +5207,8 @@ const PROJECT_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})$`);
 const PROJECT_TEMPLATE_FILE_ROUTE = /^\/api\/project-templates\/(latex|lilypond)\/([^/]+)$/;
 const PROJECT_COMPILE_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/compile$`);
 const PROJECT_PIPELINE_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/pipeline$`);
+const PROJECT_PIPELINE_APPROVE_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/pipeline/approval$`);
+const PROJECT_PIPELINE_INSPECT_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/pipeline/inspect$`);
 const PROJECT_PIPELINE_APPROVAL_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/pipeline/approval/(${UUID_PATTERN})$`);
 const PROJECT_RUN_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/runs/(${UUID_PATTERN})$`);
 const PROJECT_RUN_CANCEL_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/runs/(${UUID_PATTERN})/cancel$`);
@@ -5286,6 +5447,7 @@ async function adminUpdateUser(req, res, actor, targetId) {
   if (wantsStatus && nextStatus === "disabled") {
     collabRevokeUser(targetId);
     await pipelineRuns.recheckRunPermissions(pipelineRunStore, { userId: targetId });
+    await stopPipelineInspections({ userId: targetId, recheck: true });
   }
   if (nextUsername && nextUsername !== before.username) {
     await audit({ ...sessionActor(req, actor), action: "user.username_changed", targetType: "user", targetId, metadata: { from: before.username, to: nextUsername } });
@@ -5991,12 +6153,16 @@ async function handleApi(req, res, url) {
   if (compileMatch && req.method === "POST") return compileProject(req, res, user, compileMatch[1]);
 
   const pipelineMatch = url.pathname.match(PROJECT_PIPELINE_ROUTE);
-  if (pipelineMatch && req.method === "GET") {
-    return json(res, 200, { pipeline: await pipelineRuns.getPipeline(pipelineRunStore, pipelineMatch[1], user) });
-  }
+  if (pipelineMatch && req.method === "GET") return getProjectPipeline(req, res, user, pipelineMatch[1]);
+  const approvePipelineMatch = url.pathname.match(PROJECT_PIPELINE_APPROVE_ROUTE);
+  if (approvePipelineMatch && req.method === "POST") return approveProjectPipeline(req, res, user, approvePipelineMatch[1]);
+  const inspectPipelineMatch = url.pathname.match(PROJECT_PIPELINE_INSPECT_ROUTE);
+  if (inspectPipelineMatch && req.method === "POST") return inspectProjectPipeline(req, res, user, inspectPipelineMatch[1]);
   const approvalMatch = url.pathname.match(PROJECT_PIPELINE_APPROVAL_ROUTE);
   if (approvalMatch && req.method === "DELETE") {
-    return json(res, 200, await pipelineRuns.revokeApproval(pipelineRunStore, approvalMatch[1], approvalMatch[2], user));
+    const result = await pipelineRuns.revokeApproval(pipelineRunStore, approvalMatch[1], approvalMatch[2], user);
+    await stopPipelineInspections({ projectId: approvalMatch[1], approvalId: approvalMatch[2] });
+    return json(res, 200, result);
   }
   const runMatch = url.pathname.match(PROJECT_RUN_ROUTE);
   if (runMatch && req.method === "GET") {
@@ -6115,7 +6281,8 @@ function healthPayload() {
   return {
     status: healthStatus({ shuttingDown, maintenance: active }),
     maintenance: active,
-    pendingWrites: inFlightMutations + backgroundPending.size + collabPendingWrites() + (collabDrainPromise ? 1 : 0),
+    pendingWrites: inFlightMutations + backgroundPending.size + collabPendingWrites() + (collabDrainPromise ? 1 : 0)
+      + [...activePipelineInspections].filter(operation => operation.failure).length,
   };
 }
 
@@ -6206,13 +6373,17 @@ function startGracefulShutdown(signal, server) {
     timer = setTimeout(() => reject(new Error("Shutdown deadline exceeded")), SHUTDOWN_TIMEOUT_MS);
   });
   const drain = async () => {
+    await stopPipelineInspections();
     await collabShutdown();
     while (inFlight > 0 || backgroundPending.size || collabPendingWrites() || activeChildren.size) {
       if (shutdownForced) return;
       await new Promise((resolve) => setTimeout(resolve, 25));
       await drainCollabWrites();
     }
-    if (!shutdownForced) await db.end();
+    if (!shutdownForced) {
+      if (pipelineExecution) await (await pipelineExecution).runtime.close();
+      await db.end();
+    }
   };
   shutdownPromise = Promise.race([drain(), timeout]).then(() => {
     console.log("Shutdown complete");

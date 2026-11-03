@@ -190,8 +190,12 @@ function createLuaCoordinator({ runtime, workspace, runId, registry, policy: ove
       throw error;
     } finally {
       // Keep staging evidence if worker cleanup cannot be confirmed.
-      if (worker) await runtime.disposeWorkspace(worker);
-      if (!recoveryRequired) await fs.rm(root, { recursive: true, force: true });
+      try {
+        if (worker) await runtime.disposeWorkspace(worker);
+        if (!recoveryRequired) await fs.rm(root, { recursive: true, force: true });
+      } catch {
+        fail("PIPELINE_WORKER_RECOVERY_REQUIRED", "Lua worker cleanup is unconfirmed");
+      }
     }
   }
   return Object.freeze({ identity,

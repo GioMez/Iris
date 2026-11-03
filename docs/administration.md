@@ -427,19 +427,28 @@ it. A ready receipt with a live project row requires inspection.
 ### Lua runtime recovery
 
 The Lua runtime keeps version-2 JSON receipts beside its private workspace
-directories. Each receipt identifies the installation, coordinator, run, step
-and deadline. On initialization, the runtime removes valid prior `preparing`
-or `idle` workspaces. A `running` receipt, malformed receipt or failed cleanup
-requires operator recovery and reports `PIPELINE_WORKER_RECOVERY_REQUIRED`.
-Production pipeline lifecycle wiring remains under development on this branch;
-the runtime's caller selects the workspace root.
+directories in `DATA_DIR/.pipeline-runtime`. Each receipt identifies the
+installation, coordinator, run, step and deadline. Before serving requests, Iris
+removes valid prior `preparing` or `idle` workspaces. A `running` receipt,
+malformed receipt or failed cleanup prevents startup and reports
+`PIPELINE_WORKER_RECOVERY_REQUIRED`. Missing optional Lua/compiler executables
+do not prevent this recovery check or ordinary startup.
+
+Descriptor inspection keeps its source snapshot and transfer files in
+`DATA_DIR/.pipeline-staging`. Failed disposal retains evidence, returns
+`PIPELINE_WORKER_RECOVERY_REQUIRED` and prevents further inspections. The running
+server keeps health `pendingWrites` above zero and refuses a successful shutdown
+after that failure. An inspection has no build-history record. Asynchronous
+pipeline run lifecycle integration remains under development.
 
 Stop the owning Iris process before investigating. Preserve the receipt and
 workspace, inspect the matching run and establish whether any of its native
 processes remain. A persisted PID can refer to a different process after a
 restart; the runtime never signals it during recovery. After confirming that
 the execution has ended and preserving needed evidence, remove only that
-workspace and its matching receipt, then restart. Keep `installation.json`.
+workspace and its matching receipt. Inspect retained staging snapshots under
+the same stopped-process conditions before removing them, then restart.
+Keep `installation.json`.
 Do not clear uncertain receipts merely to make startup succeed.
 
 ## Compiler trust and instance boundaries

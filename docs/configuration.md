@@ -100,9 +100,10 @@ version fails with `PIPELINE_LUA_VERSION_UNSUPPORTED`. Ordinary editor startup
 does not require Lua. Compose forwards `LUA_BIN_PATH`; its value must name a
 directory inside the application container.
 
-The runtime currently has these internal defaults. They are not environment
-variables or project options. Production pipeline HTTP and author controls
-remain under development on this branch.
+The runtime has these defaults. `COMPILE_CONCURRENCY` and `COMPILE_QUEUE` also
+control native workspace admission; the other limits are internal. The server
+provides exact-source approval and explicit descriptor inspection. Asynchronous
+pipeline execution and browser author controls remain under development.
 
 | Limit | Default |
 | --- | --- |
@@ -114,6 +115,11 @@ remain under development on this branch.
 | Retained generated outputs | 512 MiB and 20,000 entries |
 | Ordinary tool log | 1 MiB |
 | Returned plan | 1 MiB, 128 steps, 64 targets, 2,048 dependency edges |
+
+Descriptor inspections share the compilation rate limit, concurrency and waiting
+queue. The server rechecks approval and compile permission after queueing, saves
+authoritative source and inspects an immutable Lua snapshot. Reading metadata or
+approving its source identity does not execute Lua or save project files.
 
 Checked I/O and exported-output limits do not cap total interpreter/compiler
 memory, process count or scratch-disk use. See the
