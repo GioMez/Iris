@@ -490,6 +490,7 @@ async function createPodmanRuntime({ root, coordinatorId, transport = {}, policy
   }
   await reconcile();
   return Object.freeze({ createWorkspace, runContained, exportWorkspace, stop, disposeWorkspace, close, reconcile,
+    manifest() { return Object.freeze({ policy, tools: Object.freeze([...registered.values()].sort((a, b) => a.id.localeCompare(b.id, "en"))) }); },
     resolveTool(id) { const tool = registered.get(id); if (!tool) throw error("PIPELINE_TOOL_INVALID"); return tool; } });
 }
 

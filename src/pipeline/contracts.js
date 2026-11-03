@@ -153,6 +153,16 @@ function validateParameters(schema, values, { policy } = {}) {
   return createSchemaValidator(schema, readPolicy(policy)).validate(values);
 }
 
+function validateDescriptor(value, { policy: overrides } = {}) {
+  const policy = readPolicy(overrides), code = "PIPELINE_DESCRIPTOR_INVALID";
+  const source = cloneValue(value, policy, code);
+  record(source, ["apiVersion", "pluginId", "parameterSchema", "requiredCapabilities"], code, "plugin descriptor");
+  if (source.apiVersion !== 1) fail(code, "Unsupported plugin API version");
+  return freeze({ apiVersion: 1, pluginId: name(source.pluginId, code),
+    parameterSchema: createSchemaValidator(source.parameterSchema === undefined ? { type: "object" } : source.parameterSchema, policy).schema,
+    requiredCapabilities: names(source.requiredCapabilities, policy.maxValues, code).sort() });
+}
+
 function portContract(value, code = "PIPELINE_REGISTRY_INVALID") {
   record(value, ["kinds", "mediaTypes", "required"], code, "adapter port");
   if (!Array.isArray(value.kinds) || !value.kinds.length || value.kinds.some(kind => !KINDS.has(kind)) ||
@@ -291,5 +301,5 @@ function resolveTarget(plan, targetName) {
   return freeze({ steps: plan.order.filter(id => required.has(id)).map(id => byId.get(id)), publish: target.publish, primaryPreview: target.primaryPreview });
 }
 
-module.exports = { DEFAULT_POLICY, LUA_DATA_POLICY, SNAPSHOT_TYPE, validatePlan, resolveTarget, validateParameters,
+module.exports = { DEFAULT_POLICY, LUA_DATA_POLICY, SNAPSHOT_TYPE, validatePlan, resolveTarget, validateParameters, validateDescriptor,
   readPolicy, cloneValue, createSchemaValidator, portContract, name, names, logicalPath, canonical, record, freeze, fail };

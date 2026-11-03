@@ -17,7 +17,7 @@ async function runLuaWorker({ inputRoot = "/input", workRoot = "/work" } = {}) {
     try { parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); }
     catch { fail("PIPELINE_LUA_REQUEST_INVALID", "Invalid Lua worker request"); }
     const code = "PIPELINE_LUA_REQUEST_INVALID", request = cloneValue(parsed, LUA_DATA_POLICY, code);
-    record(request, ["version", "mode", "script", "entrypoint", "modules", "context", "inputs", "outputs", "policy", "limits", "eventLimits", "memoryBytes"], code, "Lua worker request");
+    record(request, ["version", "mode", "script", "entrypoint", "modules", "context", "inputs", "outputs", "policy", "limits", "eventLimits", "memoryBytes", "expectedDescriptor"], code, "Lua worker request");
     if (request.version !== 1 || !["inspect", "plan", "transform"].includes(request.mode)) fail(code, "Unsupported Lua worker request");
     logicalPath(request.script, code);
     if (!Array.isArray(request.modules) || !request.modules.length || request.modules.length > 20000) fail(code, "Invalid Lua module manifest");
@@ -43,7 +43,8 @@ async function runLuaWorker({ inputRoot = "/input", workRoot = "/work" } = {}) {
       host = Object.fromEntries(["read", "list", "write", "log", "diagnostic"].map(key => [key, io[key]]));
     }
     const value = await executeLua({ mode: request.mode, script: request.script, modules, context: request.context,
-      entrypoint: request.entrypoint, host, policy, memoryBytes: request.memoryBytes, maxIoBytes: budget.maxArtifactBytes });
+      entrypoint: request.entrypoint, host, policy, memoryBytes: request.memoryBytes, maxIoBytes: budget.maxArtifactBytes,
+      expectedDescriptor: request.expectedDescriptor });
     response = { version: 1, value };
   } catch (error) {
     // Filesystem and VM exceptions may contain private paths. Only stable codes

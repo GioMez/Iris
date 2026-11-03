@@ -78,6 +78,29 @@ test("Lua worker rejects changed module bytes and malformed requests before proj
   assert.equal((await malformed.run()).response.errorCode, "PIPELINE_LUA_REQUEST_INVALID");
 });
 
+test("Lua worker rejects changed descriptor metadata before invoking the planner", async t => {
+  const f = await fixture(t, `return {apiVersion=1,pluginId='sample',
+    parameterSchema={type='object',properties={count={type='integer',default=2}}},
+    plan=function() error('planner ran with stale parameter validation') end}`, {
+    mode: "plan", entrypoint: undefined, inputs: undefined, outputs: undefined,
+    expectedDescriptor: { apiVersion: 1, pluginId: "sample", parameterSchema: {
+      type: "object", properties: { count: { type: "integer", default: 1 } }, additionalProperties: false,
+    }, requiredCapabilities: [] },
+  });
+  assert.equal((await f.run()).response.errorCode, "PIPELINE_DESCRIPTOR_CHANGED");
+});
+
+test("Lua worker accepts normalized descriptor defaults before planning", async t => {
+  const f = await fixture(t, `return {apiVersion=1,pluginId='sample',parameterSchema={type='object'},
+    plan=function(ctx) return ctx.parameters end}`, {
+    mode: "plan", entrypoint: undefined, inputs: undefined, outputs: undefined, context: { parameters: {} },
+    expectedDescriptor: { apiVersion: 1, pluginId: "sample", parameterSchema: { type: "object", properties: {}, additionalProperties: false }, requiredCapabilities: [] },
+  });
+  const result = (await f.run()).response;
+  assert.equal(result.errorCode, undefined);
+  assert.deepEqual(result.value, {});
+});
+
 test("Lua worker logging remains complete and bounded while the parent delays reading", async t => {
   const f = await fixture(t, "return {generate=function(ctx) for i=1,100 do ctx.log('info',string.rep('x',60000)) end end}", { outputs: {} });
   const source = `require(${JSON.stringify(path.resolve(__dirname, "../src/pipeline/lua-worker.js"))}).runLuaWorker(${JSON.stringify({ inputRoot: f.inputRoot, workRoot: f.workRoot })})

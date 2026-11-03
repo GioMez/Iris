@@ -1,7 +1,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { LuaFactory, LUA_REGISTRYINDEX } = require("wasmoon");
-const { readPolicy, cloneValue, logicalPath, fail, LUA_DATA_POLICY } = require("./contracts");
+const { readPolicy, cloneValue, logicalPath, fail, LUA_DATA_POLICY, validateDescriptor, canonical } = require("./contracts");
 
 const bootstrap = fs.readFileSync(path.join(__dirname, "lua-bootstrap.lua"), "utf8");
 const invalid = () => fail("PIPELINE_LUA_VALUE_INVALID", "Lua value cannot cross the pipeline boundary");
@@ -11,13 +11,15 @@ const arity = Object.freeze({ read: 2, list: 1, write: 3, read_layout: 1, log: 2
 // This module runs inside the contained Node worker, never in the coordinator.
 // Wasmoon's default string bridge is UTF-8/NUL-terminated; project bytes and
 // boundary values use the raw C API instead. No JS objects/proxies enter Lua.
-async function executeLua({ mode, script, modules, context = {}, entrypoint, host = {}, policy: overrides,
+async function executeLua({ mode, script, modules, context = {}, entrypoint, host = {}, policy: overrides, expectedDescriptor,
   memoryBytes = 268435456, maxIoBytes = 134217728 }) {
   const policy = readPolicy(overrides);
   if (!["inspect", "plan", "transform"].includes(mode) || !Number.isSafeInteger(memoryBytes) || memoryBytes < 1
     || !Number.isSafeInteger(maxIoBytes) || maxIoBytes < 1) fail("PIPELINE_LUA_REQUEST_INVALID", "Invalid Lua worker request");
   logicalPath(script, "PIPELINE_LUA_REQUEST_INVALID");
   const safeContext = cloneValue(context, LUA_DATA_POLICY, "PIPELINE_LUA_VALUE_INVALID");
+  if (expectedDescriptor !== undefined && mode !== "plan") fail("PIPELINE_LUA_REQUEST_INVALID", "Unexpected planner descriptor");
+  const expected = expectedDescriptor === undefined ? null : canonical(validateDescriptor(expectedDescriptor, { policy }));
   for (const name of Object.keys(modules)) logicalPath(name, "PIPELINE_LUA_REQUEST_INVALID");
   if (mode === "transform") for (const [name, fn] of Object.entries(host)) {
     if (!Object.hasOwn(arity, name) || typeof fn !== "function") fail("PIPELINE_LUA_REQUEST_INVALID", "Invalid Lua host interface");
@@ -198,7 +200,18 @@ async function executeLua({ mode, script, modules, context = {}, entrypoint, hos
         pushBytes(Buffer.from(name)); pushCallback(name, fn); w.lua_rawset(L, io);
       }
       push(entrypoint || "");
-      w.lua_callk(L, 6, 1, 0, null);
+      if (expected === null) w.lua_pushnil(L);
+      else pushFunction(() => {
+        try {
+          if (canonical(validateDescriptor(read(1), { policy })) !== expected) fail("PIPELINE_DESCRIPTOR_CHANGED", "Plugin descriptor changed");
+        } catch (error) {
+          if (error === Infinity) throw error;
+          callbackFailure ||= error;
+          w.lua_pushboolean(L, 0); return 1;
+        }
+        w.lua_pushboolean(L, 1); return 1;
+      });
+      w.lua_callk(L, 7, 1, 0, null);
       return 1;
     });
     const status = w.lua_pcallk(L, 0, 1, 0, 0, null);

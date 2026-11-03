@@ -13,7 +13,7 @@ local function copy(source)
   return result
 end
 
-local function run(mode, script, loadSource, context, host, entrypoint)
+local function run(mode, script, loadSource, context, host, entrypoint, checkDescriptor)
   local env = {
     assert=assert, error=error, ipairs=ipairs, pairs=pairs, next=next, pcall=pcall,
     xpcall=xpcall, select=select, tonumber=tonumber, tostring=tostring, type=type,
@@ -57,10 +57,12 @@ local function run(mode, script, loadSource, context, host, entrypoint)
   end
   local plugin = module(script)
   assert(type(plugin) == "table" and getmetatable(plugin) == nil, "invalid module exports")
-  if mode == "inspect" then
+  if mode == "inspect" or (mode == "plan" and checkDescriptor ~= nil) then
     assert(type(rawget(plugin, "plan")) == "function", "missing planner")
-    return {apiVersion=rawget(plugin,"apiVersion"), pluginId=rawget(plugin,"pluginId"),
+    local descriptor = {apiVersion=rawget(plugin,"apiVersion"), pluginId=rawget(plugin,"pluginId"),
       parameterSchema=rawget(plugin,"parameterSchema"), requiredCapabilities=rawget(plugin,"requiredCapabilities")}
+    if mode == "inspect" then return descriptor end
+    assert(checkDescriptor(descriptor), "plugin descriptor changed")
   end
   if mode == "transform" then
     for name, callback in pairs(host) do
