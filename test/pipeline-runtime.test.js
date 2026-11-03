@@ -9,6 +9,9 @@ const { once } = require("node:events");
 const { setTimeout: delay } = require("node:timers/promises");
 const { createRequire } = require("node:module");
 const { compileFunction } = require("node:vm");
+const { createHash } = require("node:crypto");
+const { Transform } = require("node:stream");
+const { pipeline } = require("node:stream/promises");
 const { uuidv7 } = require("../src/ids");
 const { readRuntimePolicy, createPodmanRuntime } = require("../src/pipeline/runtime");
 
@@ -248,9 +251,9 @@ test("disposal waits for the worker's last receipt write before deleting recover
   assert.deepEqual(await fs.readdir(f.root), ["installation.json"]);
 });
 
-async function abandonedFixture(t, workspaceOnly = false) {
+async function abandonedFixture(t, workspaceOnly = false, input) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "iris-pipeline-restart-"));
-  const options = { root, coordinatorId: uuidv7(), runId: uuidv7(), workspaceOnly,
+  const options = { root, coordinatorId: uuidv7(), runId: uuidv7(), workspaceOnly, input,
     transport: { command: "podman", connection: process.env.IRIS_TEST_PODMAN_CONNECTION || null, home: process.env.IRIS_TEST_PODMAN_HOME },
     policy: { image: process.env.IRIS_TEST_PIPELINE_IMAGE, memoryBytes: 268435456, totalMemoryBytes: 293601280,
       outputBytes: 8388608, outputEntries: 64, tempBytes: 8388608, tempEntries: 64 },
@@ -292,6 +295,22 @@ test("runtime startup drains the dead coordinator's workers and scratch before n
   const workspace = await resumed.createWorkspace({ runId: uuidv7(), stepId: "new" });
   const result = await resumed.runContained({ workspace, tool: resumed.resolveTool("node"), args: ["-e", "console.log('recovered')"] });
   assert.equal(result.code, 0);
+});
+
+test("restart removes disk-backed input copies left by a dead coordinator", native, async t => {
+  const source = await fs.mkdtemp(path.join(os.tmpdir(), "iris-pipeline-input-recovery-"));
+  t.after(() => fs.rm(source, { recursive: true, force: true }));
+  await fs.writeFile(path.join(source, "file"), "snapshot");
+  const { root, control, restart } = await abandonedFixture(t, true, { root: source, directories: [], files: [
+    { path: "file", size: 8, contentHash: createHash("sha256").update("snapshot").digest("hex") },
+  ] });
+  const { installationId } = JSON.parse(await fs.readFile(path.join(root, "installation.json"), "utf8"));
+  const list = ["volume", "ls", "--filter", `label=iris.installation=${installationId}`, "--format", "{{.Name}}"];
+  assert.equal((await control(list)).stdout.trim().split("\n").filter(Boolean).length, 3);
+  await restart();
+  assert.equal((await control(list)).stdout.trim(), "");
+  assert.deepEqual(await fs.readdir(root), ["installation.json"]);
+  assert.equal(await fs.readFile(path.join(source, "file"), "utf8"), "snapshot");
 });
 
 test("recovery discovers orphan workers by installation labels when their receipt is lost", native, async t => {
@@ -351,6 +370,162 @@ test("runtime scratch survives successive compiler invocations in one workspace"
   assert.equal((await f.run("require('node:fs').writeFileSync('/work/saved',Buffer.from([0,255,13,10,128]))")).code, 0);
   const read = await f.run("console.log(require('node:fs').readFileSync('/work/saved').toString('hex'))");
   assert.equal(read.code, 0); assert.equal(read.log.trim(), "00ff0d0a80");
+});
+
+test("runtime exports complete binary outputs beyond the control log limit", native, async t => {
+  const f = await runtimeFixture(t), destination = path.join(path.dirname(f.root), "received");
+  assert.equal((await f.run(`const fs=require('node:fs');fs.mkdirSync('/work/parts/empty',{recursive:true});
+    fs.writeFileSync('/work/parts/é.bin',Buffer.from([0,255,13,10,128]));
+    fs.writeFileSync('/work/large.bin',Buffer.alloc(4194304,97));`)).code, 0);
+  const result = await f.runtime.exportWorkspace({ workspace: f.workspace, destination });
+  assert.deepEqual(result.directories, ["parts", "parts/empty"]);
+  assert.deepEqual(await fs.readFile(path.join(destination, "parts/é.bin")), Buffer.from([0,255,13,10,128]));
+  const bytes = await fs.readFile(path.join(destination, "large.bin"));
+  assert.equal(bytes.length, 4194304);
+  assert.equal(createHash("sha256").update(bytes).digest("hex"), createHash("sha256").update(Buffer.alloc(4194304,97)).digest("hex"));
+  assert.equal(result.files.find(file => file.path === "large.bin").contentHash, createHash("sha256").update(bytes).digest("hex"));
+  assert.equal((await f.run("console.log(require('node:fs').statSync('/work/large.bin').size)")).log.trim(), "4194304");
+});
+
+test("runtime export rejects symlinks without publishing partial host bytes", native, async t => {
+  const f = await runtimeFixture(t), destination = path.join(path.dirname(f.root), "received");
+  assert.equal((await f.run("require('node:fs').symlinkSync('/etc/passwd','/work/link')")).code, 0);
+  await assert.rejects(f.runtime.exportWorkspace({ workspace: f.workspace, destination }), { code: "PIPELINE_PATH_INVALID" });
+  await assert.rejects(fs.stat(destination), { code: "ENOENT" });
+});
+
+test("runtime export preserves a pre-existing host destination", native, async t => {
+  const f = await runtimeFixture(t), destination = path.join(path.dirname(f.root), "received");
+  await fs.mkdir(destination); await fs.writeFile(path.join(destination, "keep"), "owned");
+  assert.equal((await f.run("require('node:fs').writeFileSync('/work/keep','replacement')")).code, 0);
+  await assert.rejects(f.runtime.exportWorkspace({ workspace: f.workspace, destination }), { code: "EEXIST" });
+  assert.equal(await fs.readFile(path.join(destination, "keep"), "utf8"), "owned");
+  assert.equal((await f.run("console.log('still usable')")).code, 0);
+});
+
+test("runtime export refuses hardlinked worker outputs", native, async t => {
+  const f = await runtimeFixture(t), destination = path.join(path.dirname(f.root), "received");
+  assert.equal((await f.run("const fs=require('node:fs');fs.writeFileSync('/work/a','linked');fs.linkSync('/work/a','/work/b')")).code, 0);
+  await assert.rejects(f.runtime.exportWorkspace({ workspace: f.workspace, destination }), { code: "PIPELINE_PATH_INVALID" });
+  await assert.rejects(fs.stat(destination), { code: "ENOENT" });
+});
+
+test("a failed engine acknowledgement discards an otherwise complete exported tree", native, async t => {
+  const f = await runtimeFixture(t, {}, async root => {
+    const command = path.join(root, "podman-proxy.cjs");
+    await fs.writeFile(command, `#!/usr/bin/env node
+const {spawn}=require('node:child_process');
+const args=process.argv.slice(2),child=spawn('podman',args,{stdio:'inherit'});
+child.once('error',()=>process.exit(125));
+child.once('exit',(code)=>process.exit(args.includes('cp')&&code===0?125:code??125));
+`, { mode: 0o700 });
+    return { command };
+  });
+  const destination = path.join(path.dirname(f.root), "received");
+  assert.equal((await f.run("require('node:fs').writeFileSync('/work/file','complete')")).code, 0);
+  await assert.rejects(f.runtime.exportWorkspace({ workspace: f.workspace, destination }), { code: "PIPELINE_ENGINE_COMMAND_FAILED" });
+  await assert.rejects(fs.stat(destination), { code: "ENOENT" });
+});
+
+test("runtime export refuses an active tool instead of racing its writes", native, async t => {
+  const f = await runtimeFixture(t), destination = path.join(path.dirname(f.root), "received");
+  let ready;
+  const entered = new Promise(resolve => { ready = resolve; });
+  const running = f.run("console.log('ready');setInterval(()=>{},1000)", { onOutput: () => ready() });
+  await entered;
+  try {
+    await assert.rejects(f.runtime.exportWorkspace({ workspace: f.workspace, destination }), { code: "PIPELINE_WORKER_BUSY" });
+    await assert.rejects(fs.stat(destination), { code: "ENOENT" });
+  } finally { await f.runtime.stop(f.workspace); await running; }
+});
+
+test("stopping a live export drains its client and removes partial output before disposal", native, async t => {
+  const f = await runtimeFixture(t, { outputBytes: 134217728, totalMemoryBytes: 419430400 });
+  const destination = path.join(path.dirname(f.root), "received");
+  assert.equal((await f.run(`const fs=require('node:fs'),fd=fs.openSync('/work/large','w'),block=Buffer.alloc(1048576,1);
+    for(let i=0;i<120;i++)fs.writeSync(fd,block);fs.closeSync(fd);`)).code, 0);
+  let settled = false;
+  const exporting = f.runtime.exportWorkspace({ workspace: f.workspace, destination })
+    .then(value => ({ value }), error => ({ error })).finally(() => { settled = true; });
+  const deadline = Date.now() + 10000;
+  for (;;) {
+    const info = await fs.stat(path.join(destination, "large")).catch(error => { if (error.code !== "ENOENT") throw error; });
+    if (info?.size > 0) break;
+    assert.equal(settled, false, "the export must reach a partial write before cancellation");
+    assert.ok(Date.now() < deadline, "export must begin within the control deadline");
+    await delay(5);
+  }
+  await assert.rejects(f.run("console.log('cannot race export')"), { code: "PIPELINE_WORKER_BUSY" });
+  await f.runtime.stop(f.workspace);
+  const result = await exporting;
+  assert.equal(result.error?.name, "AbortError");
+  assert.equal(settled, true);
+  await assert.rejects(fs.stat(destination), { code: "ENOENT" });
+  await f.runtime.disposeWorkspace(f.workspace);
+  assert.deepEqual(await fs.readdir(f.root), ["installation.json"]);
+});
+
+test("runtime inputs stay read-only beyond writable-scratch and public-artifact limits", native, async t => {
+  const f = await runtimeFixture(t), root = path.join(path.dirname(f.root), "source"), body = Buffer.alloc(134217729, 97);
+  await fs.mkdir(path.join(root, "parts/empty"), { recursive: true });
+  await fs.writeFile(path.join(root, "large.tex"), body);
+  await fs.writeFile(path.join(root, "parts/é.bin"), Buffer.from([0, 255, 13, 10, 128]));
+  await f.runtime.disposeWorkspace(f.workspace);
+  const workspace = await f.runtime.createWorkspace({ runId: uuidv7(), stepId: "input", input: {
+    root, directories: ["parts", "parts/empty"], files: [
+      { path: "large.tex", size: body.length, contentHash: createHash("sha256").update(body).digest("hex") },
+      { path: "parts/é.bin", size: 5, contentHash: createHash("sha256").update(Buffer.from([0, 255, 13, 10, 128])).digest("hex") },
+    ],
+  } });
+  const result = await f.runtime.runContained({ tool: f.runtime.resolveTool("node"), workspace, args: ["-e", `const fs=require('node:fs');
+    const denied=[];for(const write of [()=>fs.writeFileSync('/input/new','bad'),()=>fs.chmodSync('/input/large.tex',0o600),()=>fs.unlinkSync('/input/large.tex')]){
+      try{write();denied.push(false)}catch(e){denied.push(e.code==='EROFS')}
+    }
+    console.log(JSON.stringify({size:fs.statSync('/input/large.tex').size,hex:fs.readFileSync('/input/parts/é.bin').toString('hex'),
+      empty:fs.readdirSync('/input/parts/empty'),denied}));fs.writeFileSync('/work/result','independent');`] });
+  assert.equal(result.code, 0, result.log);
+  assert.deepEqual(JSON.parse(result.log), { size: 134217729, hex: "00ff0d0a80", empty: [], denied: [true, true, true] });
+  const exported = await f.runtime.exportWorkspace({ workspace, destination: path.join(path.dirname(f.root), "received") });
+  assert.deepEqual(exported.files.map(file => file.path), ["result"]);
+  assert.deepEqual(await fs.readFile(path.join(root, "large.tex")), body);
+});
+
+test("failed input integrity compensates the remote workspace before rejecting setup", native, async t => {
+  const f = await runtimeFixture(t), root = path.join(path.dirname(f.root), "source");
+  await fs.mkdir(root); await fs.writeFile(path.join(root, "file"), "changed");
+  await f.runtime.disposeWorkspace(f.workspace);
+  await assert.rejects(f.runtime.createWorkspace({ runId: uuidv7(), stepId: "input", input: {
+    root, directories: [], files: [{ path: "file", size: 7, contentHash: "0".repeat(64) }],
+  } }), { code: "PIPELINE_INPUT_CHANGED" });
+  assert.deepEqual(await fs.readdir(f.root), ["installation.json"]);
+});
+
+test("shutdown cancels backpressured input setup and drains its stream before returning", native, async t => {
+  let enter, release, heldStream;
+  const started = new Promise(resolve => { enter = resolve; }), held = new Promise(resolve => { release = resolve; });
+  t.after(() => release());
+  const sourcePath = require.resolve("../src/pipeline/runtime"), localRequire = createRequire(sourcePath), module = { exports: {} };
+  const injected = name => name === "./transfers" ? { ...localRequire(name), createTransferArchive(...args) {
+    const source = localRequire(name).createTransferArchive(...args);
+    heldStream = new Transform({ transform(chunk, encoding, callback) {
+      enter(); held.then(() => callback(null, chunk));
+    } });
+    pipeline(source, heldStream).catch(() => {});
+    return heldStream;
+  } } : localRequire(name);
+  compileFunction(await fs.readFile(sourcePath, "utf8"), ["require", "module"], { filename: sourcePath })(injected, module);
+  const f = await runtimeFixture(t, {}, undefined, module.exports.createPodmanRuntime);
+  await f.runtime.disposeWorkspace(f.workspace);
+  const root = path.join(path.dirname(f.root), "source"), bytes = Buffer.alloc(1048576);
+  await fs.mkdir(root); await fs.writeFile(path.join(root, "file"), bytes);
+  const creating = f.runtime.createWorkspace({ runId: uuidv7(), stepId: "pending", input: {
+    root, directories: [], files: [{ path: "file", size: bytes.length, contentHash: createHash("sha256").update(bytes).digest("hex") }],
+  } }).then(value => ({ value }), error => ({ error }));
+  await started;
+  await f.runtime.close();
+  assert.equal((await creating).error?.name, "AbortError");
+  assert.equal(heldStream.closed, true);
+  assert.deepEqual(await fs.readdir(f.root), ["installation.json"]);
 });
 
 test("the scratch holder has a separate bounded lifetime and rejects reuse after loss", native, async t => {

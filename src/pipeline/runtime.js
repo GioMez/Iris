@@ -2,9 +2,11 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { StringDecoder } = require("node:string_decoder");
+const { pipeline } = require("node:stream/promises");
 const { uuidv7, isUuid } = require("../ids");
 const { ConcurrencyGate } = require("../throttle");
 const { fail, name } = require("./contracts");
+const { createTransferArchive, extractTransferArchive } = require("./transfers");
 
 const DEFAULTS = Object.freeze({ memoryBytes: 1073741824, totalMemoryBytes: 2147483648, cpus: 2, pids: 64,
   outputBytes: 536870912, outputEntries: 20000, tempBytes: 134217728, tempEntries: 4096,
@@ -35,12 +37,17 @@ function commandClient(transport, policy) {
   const env = Object.fromEntries(["PATH", "TMPDIR", "XDG_RUNTIME_DIR"].filter(key => process.env[key]).map(key => [key, process.env[key]]));
   env.HOME = transport.home || process.env.HOME;
   env.LANG = "C.UTF-8";
-  function start(args, { timeoutMs = policy.controlTimeoutMs, maxBytes = 1048576, onOutput, control = true } = {}) {
-    const child = spawn(transport.command || "podman", [...prefix, ...args], { env, shell: false, stdio: ["ignore", "pipe", "pipe"] });
+  function start(args, { timeoutMs = policy.controlTimeoutMs, maxBytes = 1048576, onOutput, control = true, input, consume, signal } = {}) {
+    signal?.throwIfAborted();
+    const child = spawn(transport.command || "podman", [...prefix, ...args], { env, shell: false, stdio: [input ? "pipe" : "ignore", "pipe", "pipe"] });
     let bytes = 0, truncated = false, failure = null, callbacks = Promise.resolve();
+    let transferred, io = Promise.resolve();
     const chunks = [];
     const done = new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { failure = error("PIPELINE_CONTROL_TIMEOUT"); child.kill("SIGKILL"); }, timeoutMs);
+      const stop = reason => { failure ||= reason; child.kill("SIGKILL"); };
+      const abort = () => stop(signal.reason);
+      const timer = setTimeout(() => stop(error("PIPELINE_CONTROL_TIMEOUT")), timeoutMs);
+      signal?.addEventListener("abort", abort, { once: true });
       const capture = chunk => {
         const remaining = Math.max(0, maxBytes - bytes), retained = chunk.subarray(0, remaining);
         if (retained.length) {
@@ -52,16 +59,22 @@ function commandClient(transport, policy) {
           if (control) { failure = error("PIPELINE_CONTROL_OUTPUT_LIMIT"); child.kill("SIGKILL"); }
         }
       };
-      child.stdout.on("data", capture); child.stderr.on("data", capture);
+      if (!consume) child.stdout.on("data", capture);
+      child.stderr.on("data", capture);
       child.once("error", () => { failure = error("PIPELINE_RUNTIME_UNAVAILABLE"); });
-      child.once("close", async (code, signal) => {
+      child.once("close", async (code, exitSignal) => {
         clearTimeout(timer);
-        await callbacks;
+        await io; await callbacks;
+        signal?.removeEventListener("abort", abort);
         const text = Buffer.from(Buffer.concat(chunks).toString("utf8"));
         const log = new StringDecoder("utf8").write(text.subarray(0, maxBytes));
         if (failure) reject(failure);
-        else resolve({ code, signal, log, truncated: truncated || text.length > maxBytes });
+        else resolve({ code, signal: exitSignal, log, truncated: truncated || text.length > maxBytes, ...(consume ? { value: transferred } : {}) });
       });
+      const streams = [];
+      if (input) streams.push(pipeline(input, child.stdin, { signal }).catch(stop));
+      if (consume) streams.push(Promise.resolve().then(() => consume(child.stdout)).then(value => { transferred = value; }).catch(stop));
+      io = Promise.all(streams);
     });
     done.catch(() => {});
     return { done };
@@ -221,13 +234,14 @@ async function createPodmanRuntime({ root, coordinatorId, transport = {}, policy
     }
     worker.removed = true;
   }
-  function containerArgs(state, id, resources, timeoutMs, executable, args) {
+  function containerArgs(state, id, resources, timeoutMs, executable, args, { inputWritable = false } = {}) {
     return ["create", "--name", id, ...labelArgs(state), "--pull=never", "--network=none", "--read-only", "--read-only-tmpfs=false",
       "--ipc=none", "--cap-drop=all", "--security-opt=no-new-privileges", "--log-driver=none", "--user=65534:65534",
       `--memory=${resources.memoryBytes}`, `--memory-swap=${resources.memoryBytes}`, `--pids-limit=${resources.pids}`, `--cpus=${resources.cpus}`,
       "--ulimit=nofile=256:256", `--timeout=${Math.max(1, Math.ceil(timeoutMs / 1000))}`, "--workdir=/work", "--unsetenv-all",
       "--env=PATH=/usr/local/bin:/usr/bin:/bin", "--env=HOME=/work", "--env=TMPDIR=/tmp", "--env=LANG=C.UTF-8",
       `--volume=${state.record.volumes[0]}:/work:rw`, `--volume=${state.record.volumes[1]}:/tmp:rw`,
+      ...(state.record.volumes[2] ? [`--volume=${state.record.volumes[2]}:/input:${inputWritable ? "rw" : "ro"}`] : []),
       "--entrypoint", executable, policy.image, ...args];
   }
   async function stopHolder(state) {
@@ -247,7 +261,7 @@ async function createPodmanRuntime({ root, coordinatorId, transport = {}, policy
       worker.confirmDrain();
     })().finally(() => { worker.stopping = null; });
   }
-  async function createWorkspace({ runId, stepId, signal, deadlineAt = Date.now() + policy.runTimeoutMs }) {
+  async function createWorkspace({ runId, stepId, input, signal, deadlineAt = Date.now() + policy.runTimeoutMs }) {
     if (!accepting) throw error("PIPELINE_RUNTIME_STOPPING");
     if (!isUuid(runId) || !Number.isSafeInteger(deadlineAt) || deadlineAt <= Date.now() || deadlineAt > Date.now() + policy.runTimeoutMs) throw error("PIPELINE_WORKER_IDENTITY_INVALID");
     name(stepId);
@@ -255,13 +269,15 @@ async function createPodmanRuntime({ root, coordinatorId, transport = {}, policy
     if (!accepting || signal?.aborted) { release(); signal?.throwIfAborted(); throw error("PIPELINE_RUNTIME_STOPPING"); }
     if (deadlineAt <= Date.now()) { release(); throw error("PIPELINE_RUN_DEADLINE"); }
     const id = uuidv7(), workspace = Object.freeze({ id, runId, stepId });
+    const setupController = new AbortController(), effective = signal ? AbortSignal.any([signal, setupController.signal]) : setupController.signal;
     let setupDone;
     const setup = new Promise(resolve => { setupDone = resolve; });
-    const state = { record: { id, installationId, coordinatorId, runId, stepId, deadlineAt, volumes: [], containers: [] }, release, setup, worker: null, cancelled: false, disposing: null };
+    const state = { record: { id, installationId, coordinatorId, runId, stepId, deadlineAt, volumes: [], containers: [] }, release, setup,
+      setupController, worker: null, cancelled: false, disposing: null };
     workspaces.set(workspace, state);
     function checkSetup() {
       if (!accepting || state.cancelled) throw error("PIPELINE_RUNTIME_STOPPING");
-      signal?.throwIfAborted();
+      effective.throwIfAborted();
       if (deadlineAt <= Date.now()) throw error("PIPELINE_RUN_DEADLINE");
     }
     try {
@@ -274,6 +290,14 @@ async function createPodmanRuntime({ root, coordinatorId, transport = {}, policy
         await client.run(["volume", "create", ...labelArgs(state), "--opt=type=tmpfs", "--opt=device=tmpfs",
           `--opt=o=size=${bytes},nr_inodes=${entries},mode=1777,nosuid,nodev,noexec`, volume]);
       }
+      if (input) {
+        // Only setup writes this disk-backed volume. Tools mount it read-only;
+        // source size does not consume or inherit the writable tmpfs allowance.
+        checkSetup();
+        const volume = `iris-${id}-input`;
+        state.record.volumes.push(volume); await save(state); checkSetup();
+        await client.run(["volume", "create", ...labelArgs(state), volume]);
+      }
       checkSetup();
       const remaining = deadlineAt - Date.now();
       if (remaining <= 0) throw error("PIPELINE_RUN_DEADLINE");
@@ -281,12 +305,19 @@ async function createPodmanRuntime({ root, coordinatorId, transport = {}, policy
       state.record.containers.push(state.holder.name); await save(state);
       checkSetup();
       await client.run(containerArgs(state, state.holder.name, { memoryBytes: HOLDER_MEMORY, pids: 1, cpus: 0.01 }, remaining,
-        "/bin/sleep", [String(Math.ceil(remaining / 1000))]));
+        "/bin/sleep", [String(Math.ceil(remaining / 1000))], { inputWritable: true }));
       checkSetup();
       await client.run(["start", state.holder.name]);
       const holder = await inspectOwned(state, "container", state.holder.name);
       if (!holder.State.Running) throw error("PIPELINE_WORKSPACE_LOST");
       checkSetup();
+      if (input) {
+        const result = await client.start(["cp", "-", `${state.holder.name}:/input`], {
+          input: createTransferArchive(input, { signal: effective }), signal: effective, timeoutMs: deadlineAt - Date.now(),
+        }).done;
+        if (result.code !== 0) throw error("PIPELINE_ENGINE_COMMAND_FAILED");
+        checkSetup();
+      }
       return workspace;
     } catch (failure) {
       state.setupFailure = true;
@@ -304,7 +335,7 @@ async function createPodmanRuntime({ root, coordinatorId, transport = {}, policy
     if (state.cancelled) throw error("PIPELINE_WORKSPACE_CANCELLED");
     if (!tokens.has(tool) || !Array.isArray(args) || args.length > 256 || args.some(value => typeof value !== "string" || value.includes("\0"))
       || Buffer.byteLength(JSON.stringify(args)) > 65536) throw error("PIPELINE_TOOL_INVALID");
-    if (state.worker || state.setupFailure) throw error("PIPELINE_WORKER_BUSY");
+    if (state.worker || state.transfer || state.setupFailure) throw error("PIPELINE_WORKER_BUSY");
     signal?.throwIfAborted();
     const remaining = state.record.deadlineAt - Date.now();
     if (remaining <= 0) throw error("PIPELINE_RUN_DEADLINE");
@@ -379,7 +410,10 @@ async function createPodmanRuntime({ root, coordinatorId, transport = {}, policy
   async function stop(workspace) {
     const state = get(workspace);
     state.cancelled = true;
+    state.setupController.abort();
+    state.transfer?.controller.abort();
     await state.setup;
+    await state.transfer?.completed;
     const worker = state.worker;
     if (worker) {
       worker.cancelled = true;
@@ -387,6 +421,34 @@ async function createPodmanRuntime({ root, coordinatorId, transport = {}, policy
       await worker.completed;
     }
     await stopHolder(state);
+  }
+  async function exportWorkspace({ workspace, destination, signal }) {
+    const state = get(workspace);
+    if (state.cancelled) throw error("PIPELINE_WORKSPACE_CANCELLED");
+    if (state.worker || state.transfer || state.setupFailure) throw error("PIPELINE_WORKER_BUSY");
+    signal?.throwIfAborted();
+    const controller = new AbortController(), effective = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
+    let complete, manifest;
+    const transfer = { controller, completed: new Promise(resolve => { complete = resolve; }) };
+    state.transfer = transfer;
+    try {
+      if (!state.holder || !await exists("container", state.holder.name)
+        || !(await inspectOwned(state, "container", state.holder.name)).State.Running) throw error("PIPELINE_WORKSPACE_LOST");
+      const remaining = state.record.deadlineAt - Date.now();
+      if (remaining <= 0) throw error("PIPELINE_RUN_DEADLINE");
+      const result = await client.start(["cp", `${state.holder.name}:/work/.`, "-"], {
+        signal: effective, timeoutMs: remaining,
+        consume: async source => manifest = await extractTransferArchive(source, destination,
+          { maxArtifactBytes: policy.outputBytes, maxOutputBytes: policy.outputBytes, maxOutputEntries: policy.outputEntries }, { signal: effective }),
+      }).done;
+      if (result.code !== 0) throw error("PIPELINE_ENGINE_COMMAND_FAILED");
+      effective.throwIfAborted();
+      if (Date.now() >= state.record.deadlineAt) throw error("PIPELINE_RUN_DEADLINE");
+      return manifest;
+    } catch (failure) {
+      if (manifest) await fs.rm(destination, { recursive: true, force: true });
+      throw failure;
+    } finally { state.transfer = null; complete(); }
   }
   async function disposeWorkspace(workspace) {
     const state = workspaces.get(workspace);
@@ -410,7 +472,7 @@ async function createPodmanRuntime({ root, coordinatorId, transport = {}, policy
     for (const workspace of workspaces.keys()) await disposeWorkspace(workspace);
   }
   await reconcile();
-  return Object.freeze({ createWorkspace, runContained, stop, disposeWorkspace, close, reconcile,
+  return Object.freeze({ createWorkspace, runContained, exportWorkspace, stop, disposeWorkspace, close, reconcile,
     resolveTool(id) { const tool = registered.get(id); if (!tool) throw error("PIPELINE_TOOL_INVALID"); return tool; } });
 }
 
