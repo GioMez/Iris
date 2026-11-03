@@ -344,6 +344,42 @@ Sources: https://github.com/mafintosh/tar-stream,
 https://github.com/mafintosh/fast-fifo, https://github.com/mafintosh/streamx,
 https://github.com/mafintosh/teex and https://github.com/holepunchto.
 
+## Wasmoon and Lua
+
+Iris pins **Wasmoon 1.16.0** for the contained pipeline worker. Its distribution
+includes the Lua WebAssembly runtime. Iris uses its raw C API for binary strings;
+the browser receives neither Wasmoon nor project Lua. The transitive
+`@types/emscripten` **1.39.10** package supplies TypeScript declarations.
+
+- Wasmoon: Copyright (c) 2023 Gabriel Francisco.
+- Lua: Copyright (C) 1994-2022 Lua.org, PUC-Rio.
+- Emscripten declarations: Copyright (c) Microsoft Corporation.
+
+These components use the MIT License:
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Sources: [Wasmoon 1.16.0 source revision](https://github.com/ceifa/wasmoon/tree/87c783a8d0bf65afeda933fa47d8dc996be53bb3),
+its [Lua submodule (5.4.5)](https://github.com/lua/lua/blob/be908a7d4d8130264ad67c5789169769f824c5d1/lua.h),
+and [DefinitelyTyped's Emscripten declarations](https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/emscripten).
+The installed Wasmoon and declarations packages retain their license files.
+
 ## Offline interface fonts (HP08)
 
 Iris bundles unmodified IBM Plex Sans (Google Fonts webfont v23), IBM Plex Mono

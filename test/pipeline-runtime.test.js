@@ -197,6 +197,16 @@ test("worker output bytes and inode limits reject excess writes inside the conta
   assert.ok(observed.count > 0 && observed.count < 1000);
 });
 
+test("scratch files remain readable but cannot execute as native commands", native, async t => {
+  const f = await runtimeFixture(t);
+  const result = await f.run(`const fs=require('node:fs'),{spawnSync}=require('node:child_process');
+    const results=['/tmp','/work'].map(root=>{const file=root+'/probe.sh';fs.writeFileSync(file,'#!/bin/sh\\nexit 0\\n',{mode:0o700});
+      const execution=spawnSync(file,[],{encoding:'utf8'});return {readable:fs.readFileSync(file,'utf8').startsWith('#!'),error:execution.error?.code||null};});
+    console.log(JSON.stringify(results));`);
+  assert.equal(result.code, 0, result.log);
+  assert.deepEqual(JSON.parse(result.log), [{ readable: true, error: "EACCES" }, { readable: true, error: "EACCES" }]);
+});
+
 test("memory exhaustion reports the kernel OOM result after cgroup drain", native, async t => {
   const f = await runtimeFixture(t);
   const result = await f.run("const held=[];for(;;)held.push(Buffer.alloc(16777216,1));");

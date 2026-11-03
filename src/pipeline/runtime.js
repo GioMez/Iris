@@ -249,8 +249,8 @@ async function createPodmanRuntime({ root, coordinatorId, transport = {}, policy
       "--ulimit=nofile=256:256", `--timeout=${Math.max(1, Math.ceil(timeoutMs / 1000))}`, "--workdir=/work", "--unsetenv-all",
       ...Object.entries({ PATH: "/usr/local/bin:/usr/bin:/bin", HOME: "/work", TMPDIR: "/tmp", LANG: "C.UTF-8", ...env })
         .map(([key, value]) => `--env=${key}=${value}`),
-      `--volume=${state.record.volumes[0]}:/work:rw`, `--volume=${state.record.volumes[1]}:/tmp:rw`,
-      ...(state.record.volumes[2] ? [`--volume=${state.record.volumes[2]}:/input:${inputWritable ? "rw" : "ro"}`] : []),
+      `--volume=${state.record.volumes[0]}:/work:rw,nocopy,nosuid,nodev,noexec`, `--volume=${state.record.volumes[1]}:/tmp:rw,nocopy,nosuid,nodev,noexec`,
+      ...(state.record.volumes[2] ? [`--volume=${state.record.volumes[2]}:/input:${inputWritable ? "rw" : "ro"},nocopy`] : []),
       "--entrypoint", executable, policy.image, ...args];
   }
   async function stopHolder(state) {
@@ -299,7 +299,7 @@ async function createPodmanRuntime({ root, coordinatorId, transport = {}, policy
         state.record.volumes.push(volume); await save(state);
         checkSetup();
         await client.run(["volume", "create", ...labelArgs(state), "--opt=type=tmpfs", "--opt=device=tmpfs",
-          `--opt=o=size=${bytes},nr_inodes=${entries},mode=1777,nosuid,nodev,noexec`, volume]);
+          `--opt=o=size=${bytes},nr_inodes=${entries},uid=65534,gid=65534,mode=1777,nosuid,nodev,noexec`, volume]);
       }
       if (input) {
         // Only setup writes this disk-backed volume. Tools mount it read-only;

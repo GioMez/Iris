@@ -147,6 +147,33 @@ test("grammar packaging is restricted to intended language source and fixture tr
   for (const name of ["public/unrelated.grammar", "src/private.grammar", "test/unrelated.grammar", "public/languages/.private/x.grammar", "public/languages/tmp/x.grammar", "docs/superpowers/x.grammar"]) assert.equal(included(name), false, name);
 });
 
+test("an extracted source archive runs the Lua VM with its trusted bootstrap", async t => {
+  const f = await fixture(t), repo = path.resolve(__dirname, "..");
+  for (const name of ["src/pipeline/lua-vm.js", "src/pipeline/lua-bootstrap.lua", "src/pipeline/contracts.js",
+    "package.json", "package-lock.json"]) {
+    await fs.mkdir(path.dirname(path.join(f.source, name)), { recursive: true });
+    f.files[name] = await fs.readFile(path.join(repo, name));
+    await fs.writeFile(path.join(f.source, name), f.files[name]);
+  }
+  await fs.writeFile(f.manifest, JSON.stringify(Object.keys(f.files)));
+  const built = f.run();
+  assert.equal(built.status, 0, built.stderr);
+  const version = JSON.parse(f.files["package.json"]).version, extracted = path.join(f.root, "extracted");
+  await fs.mkdir(extracted);
+  const tar = spawnSync("tar", ["-xzf", path.join(f.output, `iris-${version}.tar.gz`), "-C", extracted], { encoding: "utf8" });
+  assert.equal(tar.status, 0, tar.stderr);
+  // Like the grammar archive check, this verifies runtime input inclusion with
+  // locked ancestor dependencies; Task 9 owns fresh production-only installs.
+  const executed = spawnSync(process.execPath, ["-e", `require('./src/pipeline/lua-vm').executeLua({mode:'plan',script:'iris.lua',
+    modules:{'iris.lua':'return {plan=function() return {answer=42} end}'}}).then(v=>console.log(JSON.stringify(v)))`], {
+    cwd: path.join(extracted, `iris-${version}`), encoding: "utf8", timeout: 10000,
+  });
+  assert.equal(executed.status, 0, executed.stderr);
+  assert.deepEqual(JSON.parse(executed.stdout), { answer: 42 });
+  const { included } = require(release);
+  for (const name of ["src/private.lua", "public/plugin.lua", "docs/superpowers/plugin.lua"]) assert.equal(included(name), false);
+});
+
 test("release rejects mismatched metadata, incomplete manifests, implicit checkout and existing output", async (t) => {
   const f = await fixture(t);
   let result = spawnSync(process.execPath, [release, "--output", f.output], { encoding: "utf8" });
