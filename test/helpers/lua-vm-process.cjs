@@ -9,7 +9,7 @@ process.on("message", async request => {
         return Buffer.from(request.bytes || "", "base64");
       },
       write: (port, file, bytes) => { writes.push({ port, file, bytes: bytes.toString("base64") }); },
-      list: () => [{ path: "bytes.bin", size: Buffer.from(request.bytes || "", "base64").length, metadata: { list: [], nullable: null } }],
+      list: () => request.listFiles || [{ path: "bytes.bin", size: Buffer.from(request.bytes || "", "base64").length, metadata: { list: [], nullable: null } }],
       diagnostic: value => { logs.push(value); },
       log: (level, message) => { logs.push({ level, message }); },
     } });

@@ -81,6 +81,22 @@ test("Lua callback frames preserve nested arrays and null in both directions", a
   assert.deepEqual(result.logs, [{ message: "nested", data: values }]);
 });
 
+test("snapshot and listing capacity is independent of the smaller graph-result budget", async () => {
+  const files = Array.from({ length: 20000 }, (_, i) => ({ path: `files/${i}.tex`, size: 0, contentHash: "a".repeat(64) }));
+  const planned = await run({ context: { snapshot: { files } }, modules: {
+    "iris.lua": "return {plan=function(ctx) return #ctx.snapshot.files end}",
+  } });
+  assert.equal(planned.error, undefined, JSON.stringify(planned.error));
+  assert.equal(planned.result, 20000);
+  const listed = await run({ mode: "transform", entrypoint: "list", listFiles: files, modules: {
+    "iris.lua": "return {list=function(ctx) return #ctx.list('input') end}",
+  } });
+  assert.equal(listed.error, undefined, JSON.stringify(listed.error));
+  assert.equal(listed.result, 20000);
+  const oversized = await run({ context: { snapshot: { files } } });
+  assert.equal(oversized.error?.code, "PIPELINE_LUA_VALUE_INVALID");
+});
+
 test("Lua boundary rejects executable, cyclic, sparse, metatable and lossy JSON values", async () => {
   const expressions = ["function() end", "setmetatable({}, {})", "(function() local t={} t.self=t return t end)()",
     "{[1]='a',[3]='c'}", "{[1]='a',key='b'}", "{[{}]=1}", "{__proto__={}}", "0/0", "math.huge",

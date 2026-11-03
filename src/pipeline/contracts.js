@@ -7,6 +7,9 @@ const DEFAULT_POLICY = Object.freeze({
   maxPlanBytes: 1024 * 1024, maxValues: 50000, maxDepth: 32, maxStringBytes: 65536,
   maxSchemaBytes: 65536, maxSchemaValues: 2048, maxSchemaDepth: 16,
 });
+// Snapshot manifests and collection listings may exceed a graph's serialization
+// allowance. Keep their transfer budget separate from returned planner data.
+const LUA_DATA_POLICY = Object.freeze({ ...DEFAULT_POLICY, maxPlanBytes: 16777216, maxValues: 500000 });
 const NAME = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/;
 const MIME = /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/;
 const KINDS = new Set(["file", "collection", "layout"]);
@@ -288,5 +291,5 @@ function resolveTarget(plan, targetName) {
   return freeze({ steps: plan.order.filter(id => required.has(id)).map(id => byId.get(id)), publish: target.publish, primaryPreview: target.primaryPreview });
 }
 
-module.exports = { DEFAULT_POLICY, SNAPSHOT_TYPE, validatePlan, resolveTarget, validateParameters,
+module.exports = { DEFAULT_POLICY, LUA_DATA_POLICY, SNAPSHOT_TYPE, validatePlan, resolveTarget, validateParameters,
   readPolicy, cloneValue, createSchemaValidator, portContract, name, names, logicalPath, canonical, record, freeze, fail };

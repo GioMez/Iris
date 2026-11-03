@@ -1,0 +1,107 @@
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const fs = require("node:fs/promises");
+const os = require("node:os");
+const path = require("node:path");
+const { createHash } = require("node:crypto");
+const { execFile, spawn } = require("node:child_process");
+const { promisify } = require("node:util");
+
+const hash = bytes => createHash("sha256").update(bytes).digest("hex");
+async function fixture(t, script, extra = {}) {
+  const root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), "iris-lua-request-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const inputRoot = path.join(root, "input"), workRoot = path.join(root, "work"), bytes = Buffer.from([0, 255, 128, 10]);
+  await fs.mkdir(path.join(inputRoot, "modules"), { recursive: true });
+  await fs.mkdir(path.join(inputRoot, "inputs/source"), { recursive: true });
+  await fs.mkdir(workRoot);
+  await fs.writeFile(path.join(inputRoot, "modules/iris.lua"), script);
+  await fs.writeFile(path.join(inputRoot, "inputs/source/bytes.bin"), bytes);
+  const request = { version: 1, mode: "transform", script: "iris.lua", entrypoint: "generate", context: { options: {} },
+    modules: [{ path: "iris.lua", size: Buffer.byteLength(script), contentHash: hash(script) }],
+    inputs: { source: { kind: "collection", mediaType: "application/octet-stream", files: [{ path: "bytes.bin", size: bytes.length, contentHash: hash(bytes) }] } },
+    outputs: { include: { kind: "file", path: "generated/include.ily", mediaType: "text/plain" } }, ...extra };
+  await fs.writeFile(path.join(inputRoot, "request.json"), JSON.stringify(request));
+  return { root, inputRoot, workRoot, request, bytes, run: async () => {
+    const worker = path.resolve(__dirname, "../src/pipeline/lua-worker.js");
+    const result = await promisify(execFile)(process.execPath, ["-e",
+      `require(${JSON.stringify(worker)}).runLuaWorker(${JSON.stringify({ inputRoot, workRoot })}).catch(e=>{console.error(e.code||'worker failed');process.exitCode=1})`],
+    { env: { PATH: process.env.PATH }, timeout: 10000, maxBuffer: 2097152 });
+    return { response: JSON.parse(await fs.readFile(path.join(workRoot, "response/result.json"), "utf8")), log: result.stdout };
+  } };
+}
+
+test("Lua worker reads a file-framed request and returns byte outputs and bounded diagnostics", async t => {
+  const f = await fixture(t, `return {generate=function(ctx)
+    ctx.write('include','generated/include.ily',ctx.read('source','bytes.bin'))
+    ctx.log('info','copied bytes')
+    ctx.diagnostic({severity='warning',message='check input',input='source',file='bytes.bin',line=1})
+  end}`);
+  const result = await f.run();
+  assert.deepEqual(result.response, { version: 1, value: null, diagnostics: [
+    { severity: "warning", message: "check input", input: "source", file: "bytes.bin", line: 1 },
+  ], logsTruncated: false });
+  assert.deepEqual(JSON.parse(result.log), { level: "info", message: "copied bytes" });
+  assert.deepEqual(await fs.readFile(path.join(f.workRoot, "output/generated/include.ily")), f.bytes);
+});
+
+test("Lua worker does not expose I/O during inspection or planning", async t => {
+  for (const mode of ["inspect", "plan"]) {
+    const f = await fixture(t, `return {apiVersion=1,pluginId='sample',parameterSchema={type='object'},
+      plan=function(ctx) assert(ctx.read==nil and ctx.write==nil and ctx.log==nil); return {answer=42} end}`, {
+      mode, entrypoint: undefined, inputs: undefined, outputs: undefined,
+    });
+    const result = await f.run();
+    assert.equal(result.response.errorCode, undefined);
+    assert.deepEqual(result.response.value, mode === "plan" ? { answer: 42 } : {
+      apiVersion: 1, pluginId: "sample", parameterSchema: { type: "object" },
+    });
+  }
+});
+
+test("Lua worker reports host failures caught by the script and preserves prior diagnostics", async t => {
+  const f = await fixture(t, `return {generate=function(ctx)
+    ctx.diagnostic({severity='warning',message='before failure'})
+    pcall(ctx.read,'source','../outside')
+  end}`);
+  const result = await f.run();
+  assert.deepEqual(result.response, { version: 1, errorCode: "PIPELINE_INPUT_INVALID",
+    diagnostics: [{ severity: "warning", message: "before failure" }], logsTruncated: false });
+  assert.ok(!JSON.stringify(result.response).includes(f.root));
+});
+
+test("Lua worker rejects changed module bytes and malformed requests before project execution", async t => {
+  const changed = await fixture(t, "return {generate=function() end}");
+  await fs.writeFile(path.join(changed.inputRoot, "modules/iris.lua"), "return {generate=function() while true do end end}");
+  assert.equal((await changed.run()).response.errorCode, "PIPELINE_INPUT_CHANGED");
+  const malformed = await fixture(t, "while true do end", { version: 2 });
+  assert.equal((await malformed.run()).response.errorCode, "PIPELINE_LUA_REQUEST_INVALID");
+});
+
+test("Lua worker logging remains complete and bounded while the parent delays reading", async t => {
+  const f = await fixture(t, "return {generate=function(ctx) for i=1,100 do ctx.log('info',string.rep('x',60000)) end end}", { outputs: {} });
+  const source = `require(${JSON.stringify(path.resolve(__dirname, "../src/pipeline/lua-worker.js"))}).runLuaWorker(${JSON.stringify({ inputRoot: f.inputRoot, workRoot: f.workRoot })})
+    .then(()=>process.send('finished',()=>process.disconnect()),()=>{process.exitCode=1;process.disconnect()})`;
+  const log = await new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ["-e", source], { env: { PATH: process.env.PATH }, stdio: ["ignore", "pipe", "pipe", "ipc"] });
+    let output = "", stderr = "", code, signal, ended = false;
+    const timer = setTimeout(() => child.kill("SIGKILL"), 10000);
+    function finish() {
+      if (code === undefined || !ended) return;
+      clearTimeout(timer);
+      code === 0 ? resolve(output) : reject(new Error(`Worker exited ${code}/${signal}: ${stderr}`));
+    }
+    child.stderr.on("data", chunk => { if (stderr.length < 4096) stderr += chunk; });
+    child.on("message", () => {
+      child.stdout.on("data", chunk => { output += chunk; });
+    });
+    child.on("error", reject);
+    child.stdout.on("end", () => { ended = true; finish(); });
+    child.on("exit", (exitCode, exitSignal) => { code = exitCode; signal = exitSignal; child.stdout.resume(); finish(); });
+  });
+  const response = JSON.parse(await fs.readFile(path.join(f.workRoot, "response/result.json"), "utf8"));
+  assert.equal(response.errorCode, undefined, JSON.stringify(response));
+  assert.equal(response.logsTruncated, true);
+  assert.ok(Buffer.byteLength(log) > 60000 && Buffer.byteLength(log) <= 1048576);
+  for (const line of log.trim().split("\n")) assert.equal(JSON.parse(line).message.length, 60000);
+});

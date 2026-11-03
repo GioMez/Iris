@@ -1,7 +1,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { LuaFactory, LUA_REGISTRYINDEX } = require("wasmoon");
-const { readPolicy, cloneValue, logicalPath, fail } = require("./contracts");
+const { readPolicy, cloneValue, logicalPath, fail, LUA_DATA_POLICY } = require("./contracts");
 
 const bootstrap = fs.readFileSync(path.join(__dirname, "lua-bootstrap.lua"), "utf8");
 const invalid = () => fail("PIPELINE_LUA_VALUE_INVALID", "Lua value cannot cross the pipeline boundary");
@@ -17,11 +17,8 @@ async function executeLua({ mode, script, modules, context = {}, entrypoint, hos
   if (!["inspect", "plan", "transform"].includes(mode) || !Number.isSafeInteger(memoryBytes) || memoryBytes < 1
     || !Number.isSafeInteger(maxIoBytes) || maxIoBytes < 1) fail("PIPELINE_LUA_REQUEST_INVALID", "Invalid Lua worker request");
   logicalPath(script, "PIPELINE_LUA_REQUEST_INVALID");
-  const safeContext = cloneValue(context, policy, "PIPELINE_LUA_VALUE_INVALID");
-  for (const [name, source] of Object.entries(modules)) {
-    logicalPath(name, "PIPELINE_LUA_REQUEST_INVALID");
-    if (typeof source !== "string" && !Buffer.isBuffer(source)) fail("PIPELINE_LUA_REQUEST_INVALID", "Invalid Lua module source");
-  }
+  const safeContext = cloneValue(context, LUA_DATA_POLICY, "PIPELINE_LUA_VALUE_INVALID");
+  for (const name of Object.keys(modules)) logicalPath(name, "PIPELINE_LUA_REQUEST_INVALID");
   if (mode === "transform") for (const [name, fn] of Object.entries(host)) {
     if (!Object.hasOwn(arity, name) || typeof fn !== "function") fail("PIPELINE_LUA_REQUEST_INVALID", "Invalid Lua host interface");
   }
@@ -154,7 +151,7 @@ async function executeLua({ mode, script, modules, context = {}, entrypoint, hos
         if (value?.then) fail("PIPELINE_LUA_IO_INVALID", "Worker I/O must complete synchronously");
         if (Buffer.isBuffer(value)) {
           if (value.length > maxIoBytes) invalid();
-        } else value = value === undefined ? null : cloneValue(value, policy, "PIPELINE_LUA_VALUE_INVALID");
+        } else value = value === undefined ? null : cloneValue(value, LUA_DATA_POLICY, "PIPELINE_LUA_VALUE_INVALID");
       } catch (error) {
         // Wasmoon's pinned Emscripten build represents Lua longjmp as Infinity.
         // Let the protected Lua caller handle it rather than treating it as I/O.
@@ -187,8 +184,11 @@ async function executeLua({ mode, script, modules, context = {}, entrypoint, hos
       push(mode); push(script);
       pushFunction(() => {
         const name = text(1);
-        if (Object.hasOwn(modules, name)) pushBytes(Buffer.from(modules[name]));
-        else w.lua_pushnil(L);
+        if (Object.hasOwn(modules, name)) {
+          const source = modules[name];
+          if (typeof source !== "string" && !Buffer.isBuffer(source)) fail("PIPELINE_LUA_REQUEST_INVALID", "Invalid Lua module source");
+          pushBytes(Buffer.isBuffer(source) ? source : Buffer.from(source));
+        } else w.lua_pushnil(L);
         return 1;
       });
       push(safeContext);

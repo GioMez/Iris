@@ -3,13 +3,14 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
+const { createHash } = require("node:crypto");
 const { execFile } = require("node:child_process");
 const { promisify } = require("node:util");
 const { uuidv7 } = require("../src/ids");
 const { createPodmanRuntime } = require("../src/pipeline/runtime");
 
 const contained = { skip: !process.env.IRIS_TEST_PIPELINE_IMAGE, timeout: 45000 };
-async function fixture(t, timeoutMs = 5000) {
+async function fixture(t, timeoutMs = 5000, input) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "iris-lua-worker-")), state = path.join(root, "state");
   const runtime = await createPodmanRuntime({ root: state, coordinatorId: uuidv7(),
     transport: { connection: process.env.IRIS_TEST_PODMAN_CONNECTION, home: process.env.IRIS_TEST_PODMAN_HOME },
@@ -28,7 +29,7 @@ async function fixture(t, timeoutMs = 5000) {
     }
     await fs.rm(root, { recursive: true });
   });
-  const workspace = await runtime.createWorkspace({ runId: uuidv7(), stepId: "lua" });
+  const workspace = await runtime.createWorkspace({ runId: uuidv7(), stepId: "lua", input });
   return { runtime, workspace, run: (request, options = {}) => runtime.runContained({ workspace, tool: runtime.resolveTool("lua-vm-probe"),
     args: ["-e", `require('/opt/iris/src/pipeline/lua-vm').executeLua(${JSON.stringify(request)})
       .then(value=>console.log(JSON.stringify({value})),error=>{console.log(JSON.stringify({error:error.code}));process.exitCode=1})`],
@@ -46,6 +47,40 @@ test("the image-local Lua VM loads approved modules without host globals", conta
   assert.equal(result.code, 0, result.log);
   assert.equal(result.drained, true);
   assert.deepEqual(JSON.parse(result.stdout), { value: { answer: 42, empty: [] } });
+});
+
+test("the contained Lua file protocol transfers binary outputs and logical diagnostics", contained, async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "iris-lua-transfer-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const hash = bytes => createHash("sha256").update(bytes).digest("hex"), bytes = Buffer.alloc(1048576);
+  for (let i = 0; i < bytes.length; i++) bytes[i] = i % 256;
+  const script = `return {generate=function(ctx)
+    ctx.write('output','generated/bytes.bin',ctx.read('source','bytes.bin'))
+    ctx.log('info','binary output')
+    ctx.diagnostic({severity='warning',message='input note',input='source',file='bytes.bin',line=1})
+  end}`;
+  const request = { version: 1, mode: "transform", script: "iris.lua", entrypoint: "generate", context: { options: {} },
+    modules: [{ path: "iris.lua", size: Buffer.byteLength(script), contentHash: hash(script) }],
+    inputs: { source: { kind: "collection", mediaType: "application/octet-stream", files: [{ path: "bytes.bin", size: bytes.length, contentHash: hash(bytes) }] } },
+    outputs: { output: { kind: "file", path: "generated/bytes.bin", mediaType: "application/octet-stream" } } };
+  const files = [], directories = ["modules", "inputs", "inputs/source"];
+  for (const directory of directories) await fs.mkdir(path.join(root, directory), { recursive: true });
+  for (const [relative, value] of [["request.json", JSON.stringify(request)], ["modules/iris.lua", script], ["inputs/source/bytes.bin", bytes]]) {
+    await fs.writeFile(path.join(root, relative), value);
+    files.push({ path: relative, size: Buffer.byteLength(value), contentHash: hash(value) });
+  }
+  const f = await fixture(t, 5000, { root, files, directories });
+  const result = await f.runtime.runContained({ workspace: f.workspace, tool: f.runtime.resolveTool("lua-vm-probe"),
+    args: ["/opt/iris/src/pipeline/lua-worker.js"] });
+  assert.equal(result.code, 0, result.log);
+  assert.equal(result.drained, true);
+  assert.deepEqual(JSON.parse(result.log), { level: "info", message: "binary output" });
+  const response = await f.runtime.exportWorkspace({ workspace: f.workspace, directory: "response", destination: path.join(root, "reply") });
+  assert.deepEqual(JSON.parse(await fs.readFile(path.join(response.root, "response/result.json"), "utf8")), {
+    version: 1, value: null, diagnostics: [{ severity: "warning", message: "input note", input: "source", file: "bytes.bin", line: 1 }], logsTruncated: false,
+  });
+  const output = await f.runtime.exportWorkspace({ workspace: f.workspace, directory: "output", destination: path.join(root, "exported") });
+  assert.deepEqual(await fs.readFile(path.join(output.root, "output/generated/bytes.bin")), bytes);
 });
 
 test("contained workspaces exclude image-owned scratch files", contained, async t => {
