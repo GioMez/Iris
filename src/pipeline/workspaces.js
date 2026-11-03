@@ -42,15 +42,22 @@ async function checkedPath(root, rel, directory = false) {
   return { file: current, info };
 }
 
-// Hash and copy in one bounded-buffer pass, including binary and large sources.
-async function copyFile(root, rel, destination, maxBytes = Infinity, expected = null, signal = null) {
-  signal?.throwIfAborted();
+async function openCheckedFile(root, rel) {
   const { file, info } = await checkedPath(root, rel);
   const input = await fs.open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-  let output;
   try {
     const before = await input.stat();
     if (!before.isFile() || before.nlink !== 1 || before.dev !== info.dev || before.ino !== info.ino) pathError();
+    return { input, before };
+  } catch (error) { await input.close(); throw error; }
+}
+
+// Hash and copy in one bounded-buffer pass, including binary and large sources.
+async function copyFile(root, rel, destination, maxBytes = Infinity, expected = null, signal = null) {
+  signal?.throwIfAborted();
+  const { input, before } = await openCheckedFile(root, rel);
+  let output;
+  try {
     if (before.size > maxBytes) fail("PIPELINE_OUTPUT_LIMIT", "Pipeline output exceeds its byte limit");
     await fs.mkdir(path.dirname(destination), { recursive: true, mode: 0o700 });
     output = await fs.open(destination, "wx", 0o600);
@@ -270,4 +277,5 @@ async function disposeRunWorkspace(workspace) {
   current.disposed = true;
 }
 
-module.exports = { createRunWorkspace, materializeInputs, materializeOverlay, validateOutputs, disposeRunWorkspace };
+module.exports = { createRunWorkspace, materializeInputs, materializeOverlay, validateOutputs, disposeRunWorkspace,
+  checkedPath, openCheckedFile, readWorkspaceLimits: limits };

@@ -286,6 +286,64 @@ https://github.com/epoberezkin/json-schema-traverse,
 https://github.com/floatdrop/require-from-string and
 https://github.com/fastify/fast-uri.
 
+## Pipeline archive streams
+
+Iris uses `tar-stream` **3.2.2** on the backend for bounded pipeline transfer
+streams. The package and its dependencies remain unmodified npm distributions;
+Iris does not serve them to the browser. Their installed distributions retain
+their full license texts and notices.
+
+MIT-licensed packages use the permission and warranty text in the Tabler Icons
+section above, with these copyright holders:
+
+| Package | Version | Copyright |
+| --- | --- | --- |
+| tar-stream | 3.2.2 | Copyright (c) 2014 Mathias Buus |
+| fast-fifo | 1.3.2 | Copyright (c) 2019 Mathias Buus |
+| streamx | 2.28.1 | Copyright (c) 2019 Mathias Buus |
+| teex | 1.0.1 | Copyright (c) 2020 Mathias Buus |
+
+The dependency closure also includes these Apache-2.0 packages:
+`b4a` 1.9.0, `bare-events` 2.9.2, `bare-fs` 4.8.4, `bare-path` 3.1.2,
+`bare-stream` 2.13.4, `bare-url` 2.5.5, `events-universal` 1.0.1 and
+`text-decoder` 1.2.7. Their distributions include the full Apache License 2.0;
+see https://www.apache.org/licenses/LICENSE-2.0. Apache-2.0 and MIT are compatible
+with Iris's GPL-3.0-or-later license. Node uses the platform's native filesystem;
+the Bare packages provide upstream cross-runtime support.
+
+The `bare-path` NOTICE also states:
+
+> Copyright 2023 Holepunch Inc
+>
+> Licensed under the Apache License, Version 2.0 (the "License");
+> you may not use this file except in compliance with the License.
+> You may obtain a copy of the License at
+>
+> http://www.apache.org/licenses/LICENSE-2.0
+>
+> Unless required by applicable law or agreed to in writing, software
+> distributed under the License is distributed on an "AS IS" BASIS,
+> WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+> See the License for the specific language governing permissions and
+> limitations under the License.
+>
+> Copyright Joyent, Inc. and other Node contributors.
+>
+> Permission is hereby granted, free of charge, to any person obtaining a
+> copy of this software and associated documentation files (the
+> "Software"), to deal in the Software without restriction, including
+> without limitation the rights to use, copy, modify, merge, publish,
+> distribute, sublicense, and/or sell copies of the Software, and to permit
+> persons to whom the Software is furnished to do so, subject to the
+> following conditions:
+>
+> The above copyright notice and this permission notice shall be included
+> in all copies or substantial portions of the Software.
+
+Sources: https://github.com/mafintosh/tar-stream,
+https://github.com/mafintosh/fast-fifo, https://github.com/mafintosh/streamx,
+https://github.com/mafintosh/teex and https://github.com/holepunchto.
+
 ## Offline interface fonts (HP08)
 
 Iris bundles unmodified IBM Plex Sans (Google Fonts webfont v23), IBM Plex Mono
