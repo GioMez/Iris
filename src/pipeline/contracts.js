@@ -289,4 +289,4 @@ function resolveTarget(plan, targetName) {
 }
 
 module.exports = { DEFAULT_POLICY, SNAPSHOT_TYPE, validatePlan, resolveTarget, validateParameters,
-  readPolicy, cloneValue, createSchemaValidator, portContract, name, names, logicalPath, record, freeze, fail };
+  readPolicy, cloneValue, createSchemaValidator, portContract, name, names, logicalPath, canonical, record, freeze, fail };

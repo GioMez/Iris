@@ -140,3 +140,43 @@ test("draining tells everyone still waiting instead of leaving them hanging", as
   }
   held();
 });
+
+test("aborted admission never consumes a free concurrency slot", async () => {
+  const gate = new ConcurrencyGate({ limit: 1 });
+  await assert.rejects(gate.acquire({ signal: AbortSignal.abort() }), { name: "AbortError" });
+  assert.equal(gate.active, 0);
+});
+
+test("queued cancellation frees queue capacity without releasing another caller's active slot", async () => {
+  const gate = new ConcurrencyGate({ limit: 1, queueLimit: 2 });
+  const held = await gate.acquire(), controller = new AbortController();
+  const cancelled = gate.acquire({ signal: controller.signal }).then(() => null, error => error);
+  const next = gate.acquire();
+  try {
+    controller.abort();
+    assert.equal(gate.queued, 1);
+    assert.equal(gate.active, 1);
+    assert.equal((await cancelled).name, "AbortError");
+    held();
+    const release = await next;
+    assert.equal(gate.active, 1);
+    release();
+    assert.equal(gate.active, 0);
+  } finally {
+    gate.drain(); held();
+    await next.catch(() => {});
+  }
+});
+
+test("aborting after a slot is granted cannot release work before its owner drains", async () => {
+  const gate = new ConcurrencyGate({ limit: 1, queueLimit: 1 });
+  const controller = new AbortController();
+  const release = await gate.acquire({ signal: controller.signal });
+  controller.abort();
+  assert.equal(gate.active, 1);
+  const next = gate.acquire();
+  assert.equal(gate.queued, 1);
+  release();
+  (await next)();
+  assert.equal(gate.active, 0);
+});

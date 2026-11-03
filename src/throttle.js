@@ -152,14 +152,27 @@ class ConcurrencyGate {
   // Resolves to the release function once a slot is free. Release is idempotent,
   // so a caller that releases in both a success path and a `finally` cannot
   // hand back a slot it no longer holds and let the gate over-admit.
-  acquire() {
+  acquire({ signal } = {}) {
+    if (signal?.aborted) return Promise.reject(signal.reason);
     if (this.active < this.limit) {
       this.active += 1;
       return Promise.resolve(this.#release());
     }
     if (this.waiting.length >= this.queueLimit) return Promise.reject(new GateRejectedError());
     return new Promise((resolve, reject) => {
-      this.waiting.push({ resolve, reject });
+      const clear = () => signal?.removeEventListener("abort", abort);
+      const abort = () => {
+        const index = this.waiting.indexOf(entry);
+        if (index < 0) return;
+        this.waiting.splice(index, 1);
+        entry.reject(signal.reason);
+      };
+      const entry = {
+        resolve: release => { clear(); resolve(release); },
+        reject: error => { clear(); reject(error); },
+      };
+      this.waiting.push(entry);
+      signal?.addEventListener("abort", abort, { once: true });
     });
   }
 
