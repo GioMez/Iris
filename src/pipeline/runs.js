@@ -460,4 +460,4 @@ async function recheckRunPermissions(store, { projectId = null, userId = null } 
   }
 }
 
-module.exports = { approveBundle, revokeApproval, createRun, getRun, getPipeline, cacheDescriptor, cancelRun, transitionRun, transitionStep, recordProgress, publishRun, reconcileRuns, recheckRunPermissions };
+module.exports = { approveBundle, revokeApproval, createRun, getRun, getPipeline, cacheDescriptor, cancelRun, transitionRun, transitionStep, recordProgress, publishRun, reconcileRuns, recheckRunPermissions, validatePublication: publication };

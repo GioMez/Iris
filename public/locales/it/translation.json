@@ -933,6 +933,7 @@
     "PIPELINE_CAPABILITY_UNAVAILABLE": "Il plugin richiede una funzionalità non disponibile sul server.",
     "PIPELINE_LUA_VERSION_UNSUPPORTED": "La versione dell'interprete Lua non è supportata. Installa Lua 5.4 o 5.5.",
     "PIPELINE_LUA_TIMEOUT": "L'operazione Lua ha superato il limite di tempo.",
+    "PIPELINE_RUN_DEADLINE": "L'esecuzione della pipeline ha superato il limite di tempo.",
     "PIPELINE_LUA_EXECUTION_FAILED": "L'operazione Lua non è riuscita. Controlla il sorgente del plugin.",
     "PIPELINE_LUA_WORKER_FAILED": "Il processo Lua non ha potuto completare l'operazione.",
     "PIPELINE_LUA_RESPONSE_INVALID": "Il plugin ha restituito dati non validi o ha superato il limite della risposta.",

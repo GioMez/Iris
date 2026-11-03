@@ -3,7 +3,7 @@ const path = require("node:path");
 const { isDeepStrictEqual } = require("node:util");
 const { isUuid } = require("../ids");
 const mapping = require("../source-mapping");
-const { openCheckedFile } = require("./workspaces");
+const { checkedPath, openCheckedFile } = require("./workspaces");
 const { logicalPath, fail } = require("./contracts");
 
 // Compiler paths are private. Each native sidecar receives an artifact-ID alias
@@ -155,7 +155,7 @@ function createNavigationTools({ texBinPath = "" } = {}) {
 // This provider consumes host-owned collection descriptors. Native tools see
 // artifact-ID aliases for checked PDFs/maps only, without the compiled sources.
 async function navigateCompilerMapping({ navigation, products, runtime, projectId, runId, query, enabled, signal }) {
-  let worker, timer, effective;
+  let worker, timer, effective, recoveryFailure;
   const aliases = new Map(), artifacts = [], budget = new AbortController();
   const deadlineAt = Date.now() + 5000;
   function add(name, source, size, contentHash) {
@@ -213,10 +213,13 @@ async function navigateCompilerMapping({ navigation, products, runtime, projectI
     },
     async close() {
       clearTimeout(timer);
-      if (worker) await runtime.disposeWorkspace(worker);
+      try { if (worker) await runtime.disposeWorkspace(worker); }
+      catch { fail("PIPELINE_WORKER_RECOVERY_REQUIRED", "Navigation worker cleanup is unconfirmed"); }
+      if (recoveryFailure) throw recoveryFailure;
     },
   };
   function rejectQuery(error) {
+    if (error.code === "PIPELINE_WORKER_RECOVERY_REQUIRED") { recoveryFailure = error; throw error; }
     if (signal?.aborted) throw mapping.failure("cancelled");
     if (budget.signal.aborted) throw budget.signal.reason;
     const reason = { PIPELINE_WORKER_BUSY: "busy", PIPELINE_RUN_DEADLINE: "timeout",
@@ -241,4 +244,22 @@ async function navigateCompilerMapping({ navigation, products, runtime, projectI
   return mapping.navigateSourceMapping({ projectId, buildId: runId, artifacts, query, enabled, signal, runQuery }, storage);
 }
 
-module.exports = { collectCompilerMapping, createRunMappingCollector, assembleRunMapping, createNavigationTools, navigateCompilerMapping };
+async function navigatePublishedPipeline({ projectStorageDir, storagePath, projectId, buildId, artifacts, runtime, query, signal }) {
+  let input;
+  try {
+    signal?.throwIfAborted();
+    if (storagePath !== `output/${buildId}`) throw mapping.failure("stale-artifact");
+    const root = (await checkedPath(projectStorageDir, storagePath, true)).file;
+    ({ input } = await openCheckedFile(root, mapping.MANIFEST_NAME));
+    const manifest = JSON.parse((await mapping.readMappingHandle(input, mapping.MAX_MAP_BYTES)).toString("utf8"));
+    const nativeFiles = (Array.isArray(manifest.artifacts) ? manifest.artifacts : []).filter(artifact => artifact.syncFile)
+      .map(artifact => ({ name: artifact.syncFile, path: artifact.syncFile, root, size: artifact.syncSize, contentHash: artifact.syncHash }));
+    const products = artifacts.map(artifact => ({ root, mediaType: "application/pdf", files: [{ ...artifact, path: artifact.fileName }] }));
+    return await navigateCompilerMapping({ navigation: { manifest, nativeFiles }, products, runtime, projectId, runId: buildId, query, signal, enabled: true });
+  } catch (error) {
+    if (error.code === "PIPELINE_WORKER_RECOVERY_REQUIRED") throw error;
+    return mapping.envelope(error.code === "ENOENT" ? "missing" : "unavailable", error.code === "ENOENT" ? undefined : signal?.aborted ? "cancelled" : "malformed-map");
+  } finally { await input?.close(); }
+}
+
+module.exports = { collectCompilerMapping, createRunMappingCollector, assembleRunMapping, createNavigationTools, navigateCompilerMapping, navigatePublishedPipeline };

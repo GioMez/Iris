@@ -434,12 +434,23 @@ malformed receipt or failed cleanup prevents startup and reports
 `PIPELINE_WORKER_RECOVERY_REQUIRED`. Missing optional Lua/compiler executables
 do not prevent this recovery check or ordinary startup.
 
-Descriptor inspection keeps its source snapshot and transfer files in
-`DATA_DIR/.pipeline-staging`. Failed disposal retains evidence, returns
-`PIPELINE_WORKER_RECOVERY_REQUIRED` and prevents further inspections. The running
+Descriptor inspections and pipeline runs keep source snapshots and transfer files
+in `DATA_DIR/.pipeline-staging`. Failed disposal retains evidence, reports
+`PIPELINE_WORKER_RECOVERY_REQUIRED` and prevents further inspections or runs.
+The same recovery rule covers native pipeline-navigation queries. The running
 server keeps health `pendingWrites` above zero and refuses a successful shutdown
-after that failure. An inspection has no build-history record. Asynchronous
-pipeline run lifecycle integration remains under development.
+after a cleanup failure. An inspection has no build-history record; asynchronous runs
+retain their states, steps and diagnostics in build history. Revocation, loss of
+compile permission, project deletion and shutdown stop affected active work.
+
+Pipeline publication writes a private `.iris-pipeline-publication.jsonl` receipt
+before renaming the complete output directory. If database finalization fails
+after rename, Iris retains both output and staging evidence. Restart reconciliation
+compares the receipt with the recorded publication hash and checks each artifact's
+bytes. Matching or absent publications permit an interrupted run record; uncertain
+or mismatching publications remain unresolved. Recovery does not delete renamed
+output to make the database transition succeed. Build-file downloads and ZIPs
+exclude the private receipt and source-navigation sidecars.
 
 Stop the owning Iris process before investigating. Preserve the receipt and
 workspace, inspect the matching run and establish whether any of its native

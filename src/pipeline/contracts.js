@@ -14,6 +14,7 @@ const NAME = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/;
 const MIME = /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/;
 const KINDS = new Set(["file", "collection", "layout"]);
 const PREVIEWS = new Set(["application/pdf", "image/png", "image/jpeg", "image/gif", "image/webp"]);
+const isPreviewMediaType = value => PREVIEWS.has(value);
 const RESERVED = new Set(["__proto__", "constructor", "prototype"]);
 const SNAPSHOT_TYPE = "application/vnd.iris.source-tree";
 const validatedPlans = new WeakSet();
@@ -309,7 +310,7 @@ function validatePlan(value, { registry, policy: overrides } = {}) {
     const primaryPreview = target.primaryPreview == null ? null : reference(target.primaryPreview);
     if (primaryPreview) {
       const output = produced(primaryPreview);
-      if (!seen.has(`${primaryPreview.step}/${primaryPreview.port}`) || output.kind !== "file" || !PREVIEWS.has(output.mediaType)) fail(code, "Invalid primary preview artifact");
+      if (!seen.has(`${primaryPreview.step}/${primaryPreview.port}`) || output.kind !== "file" || !isPreviewMediaType(output.mediaType)) fail(code, "Invalid primary preview artifact");
     }
     targets[key] = { steps: terminal, publish, primaryPreview };
   }
@@ -335,5 +336,5 @@ function resolveTarget(plan, targetName) {
   return freeze({ steps: plan.order.filter(id => required.has(id)).map(id => byId.get(id)), publish: target.publish, primaryPreview: target.primaryPreview });
 }
 
-module.exports = { DEFAULT_POLICY, LUA_DATA_POLICY, SNAPSHOT_TYPE, validatePlan, resolveTarget, validateParameters, validateDescriptor, bindDescriptor, validateBoundDescriptor, validateLuaDiagnostic,
+module.exports = { DEFAULT_POLICY, LUA_DATA_POLICY, SNAPSHOT_TYPE, isPreviewMediaType, validatePlan, resolveTarget, validateParameters, validateDescriptor, bindDescriptor, validateBoundDescriptor, validateLuaDiagnostic,
   readPolicy, cloneValue, createSchemaValidator, portContract, name, names, logicalPath, canonical, record, freeze, fail };

@@ -159,7 +159,10 @@ function createCompilerAdapters(services) {
         }
         await onCompiled?.(context, metadata);
         return { diagnostics: result.diagnostics };
-      } finally { await runtime.disposeWorkspace(worker); }
+      } finally {
+        try { await runtime.disposeWorkspace(worker); }
+        catch { fail("PIPELINE_WORKER_RECOVERY_REQUIRED", "Compiler worker cleanup is unconfirmed"); }
+      }
     },
   }));
 }

@@ -102,8 +102,8 @@ directory inside the application container.
 
 The runtime has these defaults. `COMPILE_CONCURRENCY` and `COMPILE_QUEUE` also
 control native workspace admission; the other limits are internal. The server
-provides exact-source approval and explicit descriptor inspection. Asynchronous
-pipeline execution and browser author controls remain under development.
+provides exact-source approval, explicit descriptor inspection and asynchronous
+target execution. Browser author controls remain under development.
 
 | Limit | Default |
 | --- | --- |
@@ -116,10 +116,12 @@ pipeline execution and browser author controls remain under development.
 | Ordinary tool log | 1 MiB |
 | Returned plan | 1 MiB, 128 steps, 64 targets, 2,048 dependency edges |
 
-Descriptor inspections share the compilation rate limit, concurrency and waiting
-queue. The server rechecks approval and compile permission after queueing, saves
-authoritative source and inspects an immutable Lua snapshot. Reading metadata or
-approving its source identity does not execute Lua or save project files.
+Descriptor inspections and pipeline runs share the compilation rate limit,
+concurrency and waiting queue. A run holds its slot through execution and
+cleanup. The server validates parameters against the requested cached descriptor,
+rechecks approval and compile permission, then saves authoritative source and
+copies an immutable snapshot. Reading metadata or approving its source identity
+does not execute Lua or save project files.
 
 Checked I/O and exported-output limits do not cap total interpreter/compiler
 memory, process count or scratch-disk use. See the

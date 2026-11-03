@@ -65,7 +65,12 @@ async function executePlan({ plan, target, workspace, registry, gate, signal = n
         // admission and drain boundary, before success or downstream visibility.
         await onArtifacts(context, produced);
         signal.throwIfAborted();
-      } catch (caught) { error = caught; rejected = true; }
+      } catch (caught) {
+        // Unconfirmed native drain must reach the run owner before it removes
+        // snapshots or reports a terminal result with no recovery obligation.
+        if (caught?.code === "PIPELINE_WORKER_RECOVERY_REQUIRED") throw caught;
+        error = caught; rejected = true;
+      }
       if (signal.aborted) await transition("cancelled");
       else if (rejected) {
         failed = true;

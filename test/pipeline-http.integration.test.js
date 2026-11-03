@@ -13,6 +13,51 @@ const options = { skip: !connectionString, timeout: 20000 };
 const nativeLua = { ...options, skip: options.skip || process.env.IRIS_TEST_LUA !== "1" };
 const script = `return {apiVersion=1,pluginId='http',parameterSchema={type='object',properties={
   count={type='integer',default=2,minimum=1}}},plan=function() error('planning was not requested') end}`;
+const generatingScript = `local schema={type='object',properties={count={type='integer',default=2,minimum=1},loop={type='boolean',default=false}}}
+return {apiVersion=1,pluginId='http-generator',parameterSchema=schema,
+plan=function(ctx) return {apiVersion=1,pluginId='http-generator',parameterSchema=schema,steps={
+  {id='generate',adapter={id='iris.lua',version='1.0.0'},options={script='iris.lua',entrypoint='generate'},
+    inputs={source={snapshot=true}},outputs={text={kind='file',mediaType='text/plain',path='generated/result.txt'}}}},
+  targets={main={steps={'generate'},publish={{step='generate',port='text'}}}}} end,
+generate=function(ctx)
+  ctx.log('info','generation started')
+  if ctx.options.parameters.loop then while true do end end
+  ctx.diagnostic({severity='warning',message='input note',input='source',file='main.ly',line=1})
+  ctx.write('text','generated/result.txt',string.rep(ctx.read('source','main.ly'),ctx.options.parameters.count)..string.char(0,255))
+end}`;
+
+async function inspect(f) {
+  assert.equal((await f.approve((await f.metadata()).candidate)).status, 201);
+  const response = await f.request(`${f.base}/pipeline/inspect`, { method: "POST", body: {} });
+  assert.equal(response.status, 200, await response.clone().text());
+  return (await response.json()).descriptor;
+}
+
+async function terminalRun(f, id) {
+  let run;
+  await until(async () => {
+    const response = await f.request(`${f.base}/runs/${id}`);
+    assert.equal(response.status, 200); run = (await response.json()).run;
+    return !["queued", "planning", "running"].includes(run.state);
+  }, "pipeline completion", 10000);
+  return run;
+}
+
+async function runningTransform(f, id) {
+  let run;
+  try {
+    await until(async () => {
+      const response = await f.request(`${f.base}/runs/${id}`);
+      assert.equal(response.status, 200);
+      run = (await response.json()).run;
+      assert.ok(["queued", "planning", "running"].includes(run.state), JSON.stringify(run));
+      return run.log.includes("generation started");
+    }, "running transform", 4000);
+  } catch (error) {
+    error.message += `; last run: ${JSON.stringify(run)}`;
+    throw error;
+  }
+}
 
 async function fixture(t, source = script, env = {}) {
   const f = await serverFixture(t, { RETENTION_ENABLED: "false", LUA_BIN_PATH: process.env.LUA_BIN_PATH || "", ...env });
@@ -219,4 +264,291 @@ for (const phase of ["idle", "running"]) test(`startup reconciles ${phase} nativ
     assert.deepEqual(JSON.parse(await fs.readFile(path.join(root, `${id}.json`), "utf8")), receipt);
     assert.equal(await fs.readFile(path.join(root, id, "evidence"), "utf8"), "retain uncertain execution");
   }
+});
+
+test("asynchronous Lua runs persist progress and publish byte-exact generated downloads", nativeLua, async t => {
+  const f = await fixture(t, generatingScript), descriptor = await inspect(f);
+  const response = await f.request(`${f.base}/runs`, { method: "POST", body: { target: "main", parameters: {}, descriptorHash: descriptor.descriptorHash } }, "editor");
+  assert.equal(response.status, 202, await response.clone().text());
+  const accepted = (await response.json()).run;
+  assert.equal(accepted.state, "queued");
+  assert.deepEqual(accepted.parameters, { count: 2, loop: false });
+  const run = await terminalRun(f, accepted.id);
+  assert.equal(run.state, "succeeded", JSON.stringify(run));
+  assert.ok(run.sequence > accepted.sequence);
+  assert.match(run.log, /generation started/);
+  assert.equal(run.steps[0].state, "succeeded");
+  assert.equal(run.steps[0].diagnostics[0].message, "input note");
+  const sourceId = f.project.data.project.nodes.find(file => file.path === "main.ly").id;
+  assert.equal(run.steps[0].diagnostics[0].sourceFileId, sourceId);
+  assert.match(run.steps[0].diagnostics[0].sourceRevisionId, /^[a-f0-9-]{36}$/);
+  const buildResponse = await f.request(`${f.base}/builds/${run.id}`, {}, "viewer");
+  assert.equal(buildResponse.status, 200);
+  const build = await buildResponse.json();
+  assert.equal(build.artifacts.length, 1);
+  assert.equal(build.files.length, 1, "private publication receipts must not enter downloads");
+  const artifact = build.artifacts[0], download = await f.request(artifact.url, {}, "viewer");
+  assert.equal(download.status, 200);
+  assert.deepEqual(Buffer.from(await download.arrayBuffer()), Buffer.concat([Buffer.from("music = { c'1 }\r\n".repeat(2)), Buffer.from([0, 255])]));
+  assert.equal(await fs.readFile(path.join(f.dir, "main.ly"), "utf8"), "music = { c'1 }\r\n");
+  assert.equal((await f.request(artifact.url, {}, "outsider")).status, 404);
+  await until(() => f.app.healthPayload().pendingWrites === 0, "run cleanup", 4000);
+  assert.deepEqual(await fs.readdir(path.join(f.dataDir, ".pipeline-staging")), []);
+});
+
+test("run admission rejects invalid parameters and stale descriptors before saving or planning", nativeLua, async t => {
+  const f = await fixture(t, generatingScript), descriptor = await inspect(f);
+  const revision = (await f.pool.query("SELECT revision FROM projects WHERE id=$1", [f.id])).rows[0].revision;
+  for (const [parameters, descriptorHash, status] of [[{ count: 0 }, descriptor.descriptorHash, 400], [null, descriptor.descriptorHash, 400], [{}, "0".repeat(64), 409]]) {
+    const response = await f.request(`${f.base}/runs`, { method: "POST", body: { target: "main", parameters, descriptorHash } });
+    assert.equal(response.status, status, await response.clone().text());
+  }
+  assert.equal((await f.pool.query("SELECT count(*) FROM build_outputs")).rows[0].count, "0");
+  assert.equal((await f.pool.query("SELECT revision FROM projects WHERE id=$1", [f.id])).rows[0].revision, revision);
+});
+
+for (const mimeType of ["text/html", "image/svg+xml"]) test(`generated ${mimeType} downloads cannot execute in the application origin`, nativeLua, async t => {
+  const source = generatingScript.replace("mediaType='text/plain'", `mediaType='${mimeType}'`);
+  const f = await fixture(t, source), descriptor = await inspect(f);
+  const response = await f.request(`${f.base}/runs`, { method: "POST", body: { target: "main", parameters: {}, descriptorHash: descriptor.descriptorHash } });
+  assert.equal(response.status, 202);
+  const run = await terminalRun(f, (await response.json()).run.id);
+  assert.equal(run.state, "succeeded");
+  const build = await (await f.request(`${f.base}/builds/${run.id}`)).json();
+  const download = await f.request(build.artifacts[0].url, {}, "viewer");
+  assert.equal(download.status, 200);
+  assert.equal(download.headers.get("content-type"), mimeType);
+  assert.match(download.headers.get("content-disposition"), /^attachment;/);
+  assert.equal(download.headers.get("x-content-type-options"), "nosniff");
+  assert.match(download.headers.get("content-security-policy"), /(?:^|;)\s*sandbox(?:;|$)/);
+  assert.deepEqual(Buffer.from(await download.arrayBuffer()), Buffer.concat([Buffer.from("music = { c'1 }\r\n".repeat(2)), Buffer.from([0, 255])]));
+});
+
+test("run admission retains snapshots when rejection cleanup fails", nativeLua, async t => {
+  const f = await fixture(t, generatingScript), descriptor = await inspect(f);
+  const root = path.join(await fs.realpath(f.dataDir), ".pipeline-staging"), remove = fs.rm;
+  t.mock.method(fs, "rm", async (file, ...args) => {
+    if (path.dirname(file) === root) throw Object.assign(new Error("Controlled admission cleanup failure"), { code: "EACCES" });
+    return remove(file, ...args);
+  });
+  f.hooks.beforeClientQuery = sql => {
+    if (sql.startsWith("INSERT INTO build_outputs")) throw new Error("Controlled admission failure");
+  };
+  const response = await f.request(`${f.base}/runs`, { method: "POST", body: { target: "main", parameters: {}, descriptorHash: descriptor.descriptorHash } });
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).errorCode, "PIPELINE_WORKER_RECOVERY_REQUIRED");
+  assert.ok(f.app.healthPayload().pendingWrites > 0);
+  assert.equal((await fs.readdir(root)).length, 1);
+  assert.equal((await f.pool.query("SELECT count(*) FROM build_outputs")).rows[0].count, "0");
+});
+
+test("accepted Lua runs use authoritative live source even after later edits", nativeLua, async t => {
+  const f = await fixture(t, generatingScript), descriptor = await inspect(f);
+  const file = f.project.data.project.nodes.find(file => file.path === "main.ly");
+  const room = f.app.collabRooms.open({ projectId: f.id, fileId: file.id, path: file.path, content: "live source\r\n" });
+  room.storageDir = f.dir;
+  const entered = deferred(), release = deferred();
+  f.hooks.beforeClientQuery = async (sql, values) => {
+    if (sql.startsWith("UPDATE build_outputs SET status=$2") && values[1] === "planning") {
+      entered.resolve(); await release.promise;
+    }
+  };
+  const response = await f.request(`${f.base}/runs`, { method: "POST", body: { target: "main", parameters: {}, descriptorHash: descriptor.descriptorHash } });
+  assert.equal(response.status, 202);
+  const { run } = await response.json();
+  await entered.promise;
+  await fs.writeFile(path.join(f.dir, "main.ly"), "later source\n");
+  release.resolve();
+  assert.equal((await terminalRun(f, run.id)).state, "succeeded");
+  const build = await (await f.request(`${f.base}/builds/${run.id}`)).json();
+  const bytes = await (await f.request(build.artifacts[0].url)).arrayBuffer();
+  assert.deepEqual(Buffer.from(bytes), Buffer.concat([Buffer.from("live source\r\n".repeat(2)), Buffer.from([0, 255])]));
+});
+
+test("a validation-only target succeeds without a publication directory or artifacts", nativeLua, async t => {
+  const source = `return {apiVersion=1,pluginId='validate',plan=function() return {apiVersion=1,pluginId='validate',steps={
+    {id='check',adapter={id='iris.lua',version='1.0.0'},options={script='iris.lua',entrypoint='check'}}},
+    targets={main={steps={'check'},publish=iris.array{}}}} end,check=function(ctx) ctx.log('info','checked') end}`;
+  const f = await fixture(t, source), descriptor = await inspect(f);
+  const response = await f.request(`${f.base}/runs`, { method: "POST", body: { target: "main", parameters: {}, descriptorHash: descriptor.descriptorHash } });
+  assert.equal(response.status, 202);
+  const run = await terminalRun(f, (await response.json()).run.id);
+  assert.equal(run.state, "succeeded", JSON.stringify(run));
+  assert.equal(run.artifactCount, 0); assert.equal(run.storagePath, null);
+  const build = await (await f.request(`${f.base}/builds/${run.id}`)).json();
+  assert.deepEqual(build.artifacts, []); assert.equal(build.archiveUrl, null);
+});
+
+test("cancelling an asynchronous Lua run drains its process and publishes no partial output", nativeLua, async t => {
+  const f = await fixture(t, generatingScript), descriptor = await inspect(f);
+  const response = await f.request(`${f.base}/runs`, { method: "POST", body: { target: "main", parameters: { loop: true }, descriptorHash: descriptor.descriptorHash } }, "editor");
+  assert.equal(response.status, 202);
+  const { run } = await response.json();
+  await runningTransform(f, run.id);
+  assert.equal((await f.request(`${f.base}/runs/${run.id}/cancel`, { method: "POST" }, "viewer")).status, 403);
+  assert.equal((await f.request(`${f.base}/runs/${run.id}/cancel`, { method: "POST" }, "editor")).status, 200);
+  assert.equal((await terminalRun(f, run.id)).state, "cancelled");
+  assert.equal((await f.pool.query("SELECT count(*) FROM build_artifacts WHERE build_id=$1", [run.id])).rows[0].count, "0");
+  assert.deepEqual(await fs.readdir(path.join(f.dataDir, ".pipeline-runtime")), ["installation.json"]);
+  assert.deepEqual(await fs.readdir(path.join(f.dataDir, ".pipeline-staging")), []);
+});
+
+for (const change of ["approval", "permission", "shutdown", "deletion"]) test(`${change} loss drains an accepted asynchronous run`, nativeLua, async t => {
+  const f = await fixture(t, generatingScript), descriptor = await inspect(f);
+  const response = await f.request(`${f.base}/runs`, { method: "POST", body: { target: "main", parameters: { loop: true }, descriptorHash: descriptor.descriptorHash } }, "editor");
+  assert.equal(response.status, 202);
+  const { run } = await response.json();
+  await runningTransform(f, run.id);
+  if (change === "shutdown") {
+    await f.app.startGracefulShutdown("SIGTERM", f.server);
+    assert.deepEqual(f.exits, [0]);
+  } else {
+    const revoked = change === "approval"
+      ? await f.request(`${f.base}/pipeline/approval/${run.approvalId}`, { method: "DELETE" })
+      : change === "deletion" ? await f.request(f.base, { method: "DELETE" })
+        : await f.request(`${f.base}/members/${f.users.editor.id}`, { method: "DELETE" });
+    assert.equal(revoked.status, 200);
+    if (change === "deletion") assert.equal((await f.request(`${f.base}/runs/${run.id}`)).status, 404);
+    else assert.equal((await terminalRun(f, run.id)).state, "cancelled");
+  }
+  assert.deepEqual(await fs.readdir(path.join(f.dataDir, ".pipeline-runtime")), ["installation.json"]);
+  assert.deepEqual(await fs.readdir(path.join(f.dataDir, ".pipeline-staging")), []);
+});
+
+test("failed asynchronous run cleanup retains source evidence and blocks a successful drain", nativeLua, async t => {
+  const f = await fixture(t, generatingScript), descriptor = await inspect(f);
+  const root = path.join(await fs.realpath(f.dataDir), ".pipeline-staging"), remove = fs.rm;
+  t.mock.method(fs, "rm", async (file, ...args) => {
+    if (path.dirname(file) === root) throw Object.assign(new Error("Controlled cleanup refusal"), { code: "EACCES" });
+    return remove(file, ...args);
+  });
+  const response = await f.request(`${f.base}/runs`, { method: "POST", body: { target: "main", parameters: {}, descriptorHash: descriptor.descriptorHash } });
+  assert.equal(response.status, 202);
+  const { run } = await response.json();
+  assert.equal((await terminalRun(f, run.id)).state, "succeeded");
+  await until(() => f.app.runtimeSettled(), "failed cleanup completion", 4000);
+  assert.ok(f.app.healthPayload().pendingWrites > 0);
+  await f.app.startGracefulShutdown("SIGTERM", f.server);
+  assert.deepEqual(f.exits, [1]);
+  assert.equal((await fs.readdir(root)).length, 1);
+});
+
+test("transform worker cleanup failure preserves the whole run for recovery", nativeLua, async t => {
+  const f = await fixture(t, generatingScript), descriptor = await inspect(f);
+  const root = path.join(await fs.realpath(f.dataDir), ".pipeline-runtime"), remove = fs.rm;
+  t.mock.method(fs, "rm", async (file, ...args) => {
+    if (path.dirname(file) === root) {
+      const receipt = JSON.parse(await fs.readFile(`${file}.json`, "utf8"));
+      if (receipt.stepId === "generate") throw Object.assign(new Error("Controlled worker cleanup failure"), { code: "EACCES" });
+    }
+    return remove(file, ...args);
+  });
+  const response = await f.request(`${f.base}/runs`, { method: "POST", body: { target: "main", parameters: {}, descriptorHash: descriptor.descriptorHash } });
+  assert.equal(response.status, 202);
+  const { run } = await response.json();
+  await until(() => f.app.runtimeSettled(), "worker cleanup failure", 4000);
+  assert.equal((await (await f.request(`${f.base}/runs/${run.id}`)).json()).run.state, "running");
+  assert.ok(f.app.healthPayload().pendingWrites > 0);
+  assert.equal((await fs.readdir(path.join(f.dataDir, ".pipeline-staging"))).length, 1);
+  assert.equal((await f.pool.query("SELECT count(*) FROM build_artifacts WHERE build_id=$1", [run.id])).rows[0].count, "0");
+});
+
+for (const damage of ["none", "artifact", "receipt"]) test(`publication database failure checks retained ${damage === "none" ? "matching bytes" : `changed ${damage}`} during reconciliation`, nativeLua, async t => {
+  const f = await fixture(t, generatingScript), descriptor = await inspect(f);
+  f.hooks.beforeClientQuery = sql => {
+    if (sql.startsWith("UPDATE build_outputs SET status='succeeded'")) throw new Error("Controlled finalization failure");
+  };
+  const response = await f.request(`${f.base}/runs`, { method: "POST", body: { target: "main", parameters: {}, descriptorHash: descriptor.descriptorHash } });
+  assert.equal(response.status, 202);
+  const { run } = await response.json();
+  await until(() => f.app.runtimeSettled(), "publication failure", 4000);
+  const retained = (await f.pool.query("SELECT status,publication_state,publication_path FROM build_outputs WHERE id=$1", [run.id])).rows[0];
+  assert.equal(retained.status, "running");
+  assert.equal(retained.publication_state, "prepared");
+  const generated = path.join(f.dir, retained.publication_path, "generate/text/generated/result.txt");
+  const before = await fs.readFile(generated);
+  assert.ok(f.app.healthPayload().pendingWrites > 0);
+  if (damage === "artifact") {
+    await fs.chmod(generated, 0o600);
+    const changed = Buffer.from(before); changed[0] ^= 1;
+    await fs.writeFile(generated, changed);
+  } else if (damage === "receipt") {
+    const receipt = path.join(f.dir, retained.publication_path, ".iris-pipeline-publication.jsonl");
+    const contents = await fs.readFile(receipt, "utf8");
+    await fs.chmod(receipt, 0o600);
+    await fs.writeFile(receipt, contents.replace(run.id, uuidv7()));
+  }
+  delete f.hooks.beforeClientQuery;
+  await f.pool.query("UPDATE build_outputs SET coordinator_id=$2 WHERE id=$1", [run.id, uuidv7()]);
+  f.app.startRetentionSweep();
+  await until(() => f.app.runtimeSettled(), "publication reconciliation", 4000);
+  assert.equal((await (await f.request(`${f.base}/runs/${run.id}`)).json()).run.state, damage === "none" ? "interrupted" : "running");
+  if (damage !== "artifact") assert.deepEqual(await fs.readFile(generated), before);
+  else assert.equal((await fs.stat(generated)).size, before.length);
+});
+
+for (const [family, cleanupFailure] of [["latex", false], ["lilypond", false], ["latex", "compiler"], ["lilypond", "compiler"], ["latex", "navigation"]]) test(`HTTP ${family} pipeline ${cleanupFailure ? `retains ${cleanupFailure} cleanup evidence` : "compiles generated source and retains artifact-bound navigation"}`, {
+  ...nativeLua, timeout: 45000, skip: nativeLua.skip || process.env.IRIS_TEST_COMPILERS !== "1",
+}, async t => {
+  const source = (await fs.readFile(path.join(__dirname, "fixtures/pipelines/generate.lua"), "utf8")).replace("sourceMapping=false", "sourceMapping=true");
+  const f = await fixture(t, source), data = f.project.data;
+  const main = family === "latex" ? "main.tex" : "main.ly";
+  data.project.nodes = data.project.nodes.filter(node => node.path !== main);
+  data.project.nodes.push({ id: "native-main", type: "file", name: main, path: main,
+    content: family === "latex" ? "\\documentclass{article}\n\\begin{document}\n\\input{generated/include.tex}\\newpage\nOriginal source.\n\\end{document}\n"
+      : '\\version "2.26.0"\n\\include "generated/include.ily"\n\\score {\n  \\new Staff { \\generatedMusic c\'1 }\n}\n' });
+  data.projectType = family; data.sourceMapping = true;
+  const saved = await f.request(f.base, { method: "PUT", body: { baseRevision: data.revision, data } });
+  assert.equal(saved.status, 200, await saved.clone().text());
+  const descriptor = await inspect(f);
+  if (cleanupFailure) {
+    const root = path.join(await fs.realpath(f.dataDir), ".pipeline-runtime"), remove = fs.rm;
+    t.mock.method(fs, "rm", async (file, ...args) => {
+      if (path.dirname(file) === root && JSON.parse(await fs.readFile(`${file}.json`, "utf8")).stepId === (cleanupFailure === "compiler" ? "compile" : "navigation")) {
+        throw Object.assign(new Error("Controlled native cleanup failure"), { code: "EACCES" });
+      }
+      return remove(file, ...args);
+    });
+  }
+  const response = await f.request(`${f.base}/runs`, { method: "POST", body: { target: "main", parameters: { family }, descriptorHash: descriptor.descriptorHash } });
+  assert.equal(response.status, 202);
+  const accepted = (await response.json()).run;
+  if (cleanupFailure === "compiler") {
+    await until(() => f.app.runtimeSettled(), "compiler cleanup failure", 10000);
+    assert.equal((await (await f.request(`${f.base}/runs/${accepted.id}`)).json()).run.state, "running");
+    assert.ok(f.app.healthPayload().pendingWrites > 0);
+    assert.equal((await fs.readdir(path.join(f.dataDir, ".pipeline-staging"))).length, 1);
+    return;
+  }
+  const run = await terminalRun(f, accepted.id);
+  assert.equal(run.state, "succeeded", JSON.stringify(run));
+  const build = await (await f.request(`${f.base}/builds/${run.id}`)).json();
+  const pdf = build.artifacts.find(artifact => artifact.mimeType === "application/pdf");
+  assert.ok(pdf);
+  const download = await f.request(pdf.url);
+  assert.match(download.headers.get("content-disposition"), /^inline;/);
+  assert.match(Buffer.from(await download.arrayBuffer()).subarray(0, 8).toString(), /^%PDF-/);
+  const sourceId = (await f.pool.query("SELECT id FROM project_files WHERE project_id=$1 AND path=$2 AND deleted_at IS NULL", [f.id, main])).rows[0].id;
+  const navigation = await f.request(`${f.base}/builds/${run.id}/navigation`, { method: "POST", body: { direction: "forward", sourceFileId: sourceId, line: 4, column: 2 } });
+  if (cleanupFailure === "navigation") {
+    assert.equal(navigation.status, 503, await navigation.clone().text());
+    assert.equal((await navigation.json()).errorCode, "PIPELINE_WORKER_RECOVERY_REQUIRED");
+    assert.ok(f.app.healthPayload().pendingWrites > 0);
+    const retry = await f.request(`${f.base}/runs`, { method: "POST", body: { target: "main", parameters: { family }, descriptorHash: descriptor.descriptorHash } });
+    assert.equal(retry.status, 503);
+    assert.equal((await retry.json()).errorCode, "PIPELINE_WORKER_RECOVERY_REQUIRED");
+    await f.app.startGracefulShutdown("SIGTERM", f.server);
+    assert.deepEqual(f.exits, [1]);
+    return;
+  }
+  assert.equal(navigation.status, 200);
+  const result = await navigation.json();
+  assert.equal(result.status, "ready", JSON.stringify(result));
+  assert.ok(result.matches.some(match => match.artifactId === pdf.id && match.sourceFileId === sourceId));
+  const match = result.matches.find(match => match.artifactId === pdf.id && match.sourceFileId === sourceId);
+  const inverse = await f.request(`${f.base}/builds/${run.id}/navigation`, { method: "POST", body: { direction: "inverse", artifactId: pdf.id,
+    page: match.page, x: match.x + match.width / 2, y: match.y + match.height / 2 } });
+  const back = await inverse.json();
+  assert.equal(back.status, "ready", JSON.stringify(back));
+  assert.ok(back.matches.some(item => item.artifactId === pdf.id && item.sourceFileId === sourceId));
 });

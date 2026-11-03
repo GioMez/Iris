@@ -23,7 +23,10 @@ const { createRegistry } = require("./pipeline/registry");
 const { createNativeRuntime } = require("./pipeline/runtime");
 const { createLuaTools, createLuaAdapter, createLuaCoordinator } = require("./pipeline/lua");
 const { createCompilerTools, createCompilerAdapters } = require("./pipeline/compilers");
-const { createRunWorkspace, disposeRunWorkspace, openCheckedFile } = require("./pipeline/workspaces");
+const { createRunWorkspace, disposeRunWorkspace, openCheckedFile, copyFile: copyPipelineFile } = require("./pipeline/workspaces");
+const { executePlan } = require("./pipeline/executor");
+const { writePublicationReceipt, inspectPublication } = require("./pipeline/publication");
+const { createRunMappingCollector, createNavigationTools, navigatePublishedPipeline } = require("./pipeline/navigation");
 const { hashContent, isVersionableText, contentChanged } = require("./versions");
 const { CollabRooms, CollabError, peerColor, normalizePresence } = require("./collab");
 const { isSystemRole, isUserStatus, isAccountStatus, leavesNoActiveAdmin, normalizeSearch, userDeletionBlock } = require("./admin");
@@ -217,6 +220,7 @@ const activeBuilds = new Set();
 const activePipelineRuns = new Map();
 const activePipelineInspections = new Set();
 let pipelineExecution;
+let pipelineNavigationFailure;
 const pipelineCoordinatorId = uuidv7();
 const pipelineRunStore = {
   get pool() { return db; },
@@ -224,6 +228,11 @@ const pipelineRunStore = {
   mutations: projectMutations, requestError,
   emit: collabNotifyRun,
   stop: async id => { await activePipelineRuns.get(id)?.stop(); },
+  inspectPublication: async row => {
+    const { rows } = await db.query("SELECT storage_path FROM projects WHERE id=$1", [row.project_id]);
+    if (!rows.length) return { state: "unavailable" };
+    return inspectPublication(resolveProjectStorageDir(DATA_DIR, rows[0].storage_path), row, pipelineRunStore);
+  },
 };
 const backgroundPending = new Set();
 const activeChildren = new Set();
@@ -3367,6 +3376,10 @@ async function deleteProject(req, res, user, id, admin = false) {
       onCommitted: (row, current) => {
         committed = { row, current };
         collabReconcileProject(id);
+        for (const operation of [...activePipelineInspections, ...activePipelineRuns.values()]) if (operation.projectId === id) {
+          operation.projectDeleted = true;
+          operation.controller.abort(requestError("PROJECT_NOT_FOUND", 404));
+        }
       },
     });
   } finally {
@@ -3374,10 +3387,17 @@ async function deleteProject(req, res, user, id, admin = false) {
     // the project queue and delay retired-room persistence or cleanup retries.
     if (committed) {
       const { row, current } = committed;
-      await audit({
-        ...sessionActor(req, current), action: "project.deleted", targetType: "project", targetId: id,
-        metadata: { name: row.name, ...(admin ? { via: "admin" } : {}) },
-      });
+      try {
+        await audit({
+          ...sessionActor(req, current), action: "project.deleted", targetType: "project", targetId: id,
+          metadata: { name: row.name, ...(admin ? { via: "admin" } : {}) },
+        });
+      } finally {
+        const drained = await Promise.allSettled([stopPipelineInspections({ projectId: id }),
+          ...[...activePipelineRuns.values()].filter(operation => operation.projectId === id).map(operation => operation.stop())]);
+        const failure = drained.find(result => result.status === "rejected");
+        if (failure) throw failure.reason;
+      }
     }
   }
   json(res, 200, result);
@@ -4288,7 +4308,7 @@ async function downloadBuildArtifact(req, res, user, projectId, buildId, artifac
   if (req.aborted || res.destroyed) return;
   const { rows } = await db.query(
     `SELECT a.name, a.storage_path, a.mime_type, a.size,
-            b.storage_path AS build_storage_path
+            b.storage_path AS build_storage_path, b.kind AS build_kind
      FROM build_artifacts a JOIN build_outputs b ON b.id = a.build_id
      WHERE a.id = $1 AND a.build_id = $2 AND b.project_id = $3 AND b.status = 'succeeded'`,
     [artifactId, buildId, projectId]
@@ -4302,12 +4322,15 @@ async function downloadBuildArtifact(req, res, user, projectId, buildId, artifac
   if (!file) throw requestError("BUILD_ARTIFACT_NOT_FOUND", 404);
   await streamBuildDownload(req, res, file, () => {
     const fallbackName = artifact.name.replace(/[^A-Za-z0-9._-]/g, "_") || "download";
-    const disposition = url.searchParams.get("download") === "1" ? "attachment" : "inline";
+    const pipeline = artifact.build_kind === "pipeline";
+    const inline = !pipeline || PipelineContracts.isPreviewMediaType(artifact.mime_type);
+    const disposition = url.searchParams.get("download") === "1" || !inline ? "attachment" : "inline";
     return {
       "content-type": artifact.mime_type,
       "content-length": file.size,
       "content-disposition": `${disposition}; filename="${fallbackName}"; filename*=UTF-8''${encodeDispositionValue(artifact.name)}`,
       "cache-control": "private, no-store",
+      ...(pipeline ? { "x-content-type-options": "nosniff", "content-security-policy": "sandbox; default-src 'none'" } : {}),
     };
   });
 }
@@ -4335,7 +4358,7 @@ async function navigateBuildOutput(req, res, user, projectId, buildId) {
     checkCancelled();
     const inspect = async (project) => {
       checkCancelled();
-      const { rows } = await db.query("SELECT id, status, format, storage_path FROM build_outputs WHERE id = $1 AND project_id = $2", [buildId, projectId]);
+      const { rows } = await db.query("SELECT id, kind, status, format, storage_path FROM build_outputs WHERE id = $1 AND project_id = $2", [buildId, projectId]);
       checkCancelled();
       if (!rows.length) throw requestError("BUILD_NOT_FOUND", 404);
       const build = rows[0];
@@ -4350,8 +4373,15 @@ async function navigateBuildOutput(req, res, user, projectId, buildId) {
       const data = await readProjectManifest(project.storageDir);
       checkCancelled();
       if (!data.sourceMapping) return { state: "disabled" };
-      if (build.format !== "pdf") return { state: "unsupported" };
+      if (build.kind !== "pipeline" && build.format !== "pdf") return { state: "unsupported" };
       if (build.status !== "succeeded") return { state: "missing" };
+      if (build.kind === "pipeline") {
+        const pdfs = artifacts.filter(artifact => artifact.mime_type === "application/pdf");
+        if (!pdfs.length || (query.artifactId && !pdfs.some(artifact => artifact.id === query.artifactId))) return { state: "unsupported" };
+        if (pdfs.some(artifact => !artifact.storage_path.startsWith(`${build.storage_path}/`))) return { state: "unavailable" };
+        return { pipeline: true, projectStorageDir: project.storageDir, projectId, buildId, storagePath: build.storage_path,
+          artifacts: pdfs.map(artifact => ({ id: artifact.id, fileName: artifact.storage_path.slice(build.storage_path.length + 1), size: Number(artifact.size), contentHash: artifact.content_hash })) };
+      }
       if (artifacts.some((a) => a.storage_path !== `${build.storage_path}/${a.name}` || a.mime_type !== "application/pdf")) return { state: "unavailable" };
       return { projectStorageDir: project.storageDir, projectId, buildId, storagePath: build.storage_path,
         artifacts: artifacts.map((a) => ({ id: a.id, fileName: a.name, size: Number(a.size), contentHash: a.content_hash })) };
@@ -4359,8 +4389,11 @@ async function navigateBuildOutput(req, res, user, projectId, buildId) {
     const initial = await authorizedProjectGate(projectId, user, "read", inspect);
     checkCancelled();
     if (initial.state) return json(res, 200, SourceMapping.envelope(initial.state));
-    const result = await SourceMapping.navigateBuild({ ...initial, enabled: true, query, signal: controller.signal,
-      binPath: TEX_PATH_LOCKED ? TEX_BIN_PATH : undefined, spawnChild: trackedSpawn });
+    if (initial.pipeline && pipelineNavigationFailure) throw pipelineNavigationFailure;
+    const result = initial.pipeline
+      ? await navigatePublishedPipeline({ ...initial, query, signal: controller.signal, runtime: (await getPipelineExecution()).runtime })
+      : await SourceMapping.navigateBuild({ ...initial, enabled: true, query, signal: controller.signal,
+        binPath: TEX_PATH_LOCKED ? TEX_BIN_PATH : undefined, spawnChild: trackedSpawn });
     checkCancelled();
     const actor = await requireUser(req);
     checkCancelled();
@@ -4390,6 +4423,10 @@ async function navigateBuildOutput(req, res, user, projectId, buildId) {
       json(res, 200, result);
     });
   } catch (error) {
+    if (error.code === "PIPELINE_WORKER_RECOVERY_REQUIRED") {
+      pipelineNavigationFailure = pipelineFailure(error);
+      if (!controller.signal.aborted) throw pipelineNavigationFailure;
+    }
     if (!controller.signal.aborted) throw error;
   } finally {
     req.removeListener("aborted", cancel);
@@ -4524,6 +4561,7 @@ async function getPipelineExecution() {
     const runtime = await createNativeRuntime({ root: path.join(DATA_DIR, ".pipeline-runtime"), coordinatorId: pipelineCoordinatorId,
       policy: { concurrency: COMPILE_CONCURRENCY, queueLimit: COMPILE_QUEUE },
       tools: [...createLuaTools({ luaBinPath: process.env.LUA_BIN_PATH || "" }),
+        ...createNavigationTools({ texBinPath: TEX_BIN_PATH }),
         ...createCompilerTools({ texBinPath: TEX_BIN_PATH, lilypondBinPath: LILYPOND_BIN_PATH, timeoutMs: COMPILE_TIMEOUT_MS })] });
     const registry = createRegistry([createLuaAdapter({ execute() { throw requestError("PIPELINE_RUN_UNAVAILABLE", 503); } }),
       ...createCompilerAdapters({ runtime, normalizeCompileProfile, runCompilePipeline, parseCompileArguments, kpathseaSearchPath })]);
@@ -4619,7 +4657,7 @@ async function inspectProjectPipeline(req, res, user, id) {
   let release, workspace, operation, complete, failure, descriptor, approval;
   try {
     PipelineContracts.record(body, [], "PIPELINE_REQUEST_INVALID", "inspection request");
-    if ([...activePipelineInspections].some(operation => operation.failure)) throw requestError("PIPELINE_WORKER_RECOVERY_REQUIRED", 503);
+    if (pipelineNavigationFailure || [...activePipelineInspections, ...activePipelineRuns.values()].some(operation => operation.failure)) throw requestError("PIPELINE_WORKER_RECOVERY_REQUIRED", 503);
     const state = await pipelineRuns.getPipeline(pipelineRunStore, id, user);
     const candidate = await pipelineCandidate(id, user, "compile");
     approval = state.approval;
@@ -4666,6 +4704,166 @@ async function inspectProjectPipeline(req, res, user, id) {
   if (failure) throw failure;
   await pipelineRuns.cacheDescriptor(pipelineRunStore, id, approval.id, user, descriptor);
   return json(res, 200, { descriptor });
+}
+
+async function executeProjectPipeline(operation, execution, workspace, approval, descriptor, accepted, project) {
+  const { controller, id } = operation, signal = controller.signal;
+  // Internal transitions may cancel the run. Their output callbacks cannot wait
+  // for their own completion; external cancel/revoke callers use the draining store.
+  const store = { ...pipelineRunStore, stop: async () => controller.abort(),
+    publish: async (_row, manifest) => {
+      const output = path.join(workspace.root, "publish");
+      await writePublicationReceipt(output, id, manifest);
+      await publishCompileOutput(output, project.storageDir, id);
+      operation.published = true;
+    } };
+  let state = "queued", coordinator, plan;
+  const compiled = new Map(), mapping = createRunMappingCollector({ projectId: accepted.projectId, runId: id });
+  const emit = async event => {
+    const row = event.state
+      ? await pipelineRuns.transitionStep(store, id, event.stepId, stepStates.get(event.stepId) || "pending", event.state, { diagnostics: event.diagnostics })
+      : await pipelineRuns.recordProgress(store, id, event);
+    if (event.state) stepStates.set(event.stepId, event.state);
+    if (row.state !== "running") controller.abort();
+  };
+  const stepStates = new Map();
+  const registry = createRegistry([createLuaAdapter({ execute: context => coordinator.transformLua({ approval, plan, context, emit }) }),
+    ...createCompilerAdapters({ runtime: execution.runtime, runId: id, deadlineAt: operation.deadlineAt,
+      normalizeCompileProfile, runCompilePipeline, parseCompileArguments, kpathseaSearchPath,
+      onCompiled: (context, result) => compiled.set(context.step.id, result),
+      onOutput: (context, chunk) => emit({ stepId: context.step.id, level: "info", message: chunk.toString("utf8") }) })]);
+  coordinator = createLuaCoordinator({ runtime: execution.runtime, registry, workspace, runId: id, deadlineAt: operation.deadlineAt });
+  const timer = setTimeout(() => controller.abort(requestError("PIPELINE_RUN_DEADLINE", 408)), Math.max(0, operation.deadlineAt - Date.now()));
+  try {
+    const planning = await pipelineRuns.transitionRun(store, id, state, "planning");
+    state = planning.state;
+    if (state !== "planning") return;
+    plan = await coordinator.planLua({ approval, descriptor, parameters: accepted.parameters, signal });
+    const running = await pipelineRuns.transitionRun(store, id, state, "running", { plan });
+    state = running.state;
+    if (state !== "running") return;
+    const result = await executePlan({ plan, target: accepted.target, workspace, registry, signal,
+      gate: new ConcurrencyGate({ limit: 1 }), emit,
+      onArtifacts: async (context, products) => {
+        if (compiled.has(context.step.id)) await mapping.collect({ context, products, compiled: compiled.get(context.step.id) });
+      } });
+    if (result.state !== "succeeded") {
+      await pipelineRuns.transitionRun(store, id, state, result.state, { reason: result.state === "cancelled" ? "execution-cancelled" : "execution-failed" });
+      return;
+    }
+    const artifacts = [], output = path.join(workspace.root, "publish");
+    if (result.artifacts.some(product => product.files.length)) await fs.mkdir(output);
+    for (const product of result.artifacts) for (const file of product.files) {
+      const relative = `${product.producerStep}/${product.outputPort}/${file.path}`;
+      await copyPipelineFile(product.root, file.path, path.join(output, relative), file.size, file, signal);
+      artifacts.push({ id: file.id, name: path.posix.basename(file.path), storagePath: `output/${id}/${relative}`,
+        logicalPath: file.path, producerStep: product.producerStep, outputPort: product.outputPort,
+        mimeType: product.kind === "collection" ? MIME[path.extname(file.path).toLowerCase()] || "application/octet-stream" : product.mediaType,
+        size: file.size, contentHash: file.contentHash });
+    }
+    if (artifacts.some(artifact => artifact.mimeType === "application/pdf")) {
+      const navigation = mapping.assemble(result.artifacts);
+      await fs.writeFile(path.join(output, SourceMapping.MANIFEST_NAME), JSON.stringify(navigation.manifest), { flag: "wx", mode: 0o400 });
+      for (const file of navigation.nativeFiles) await copyPipelineFile(file.root, file.path, path.join(output, file.name), file.size, file, signal);
+    }
+    await pipelineRuns.publishRun(store, id, artifacts);
+  } catch (error) {
+    const code = error.errorCode || error.code;
+    if (operation.projectDeleted && ["PROJECT_NOT_FOUND", "PIPELINE_RUN_NOT_FOUND"].includes(code)) return;
+    if (operation.published || ["PROJECT_RECOVERY_REQUIRED", "PIPELINE_WORKER_RECOVERY_REQUIRED"].includes(code)) {
+      operation.failure = operation.published ? requestError("PIPELINE_WORKER_RECOVERY_REQUIRED", 503) : pipelineFailure(error);
+      throw operation.failure;
+    }
+    await pipelineRuns.transitionRun(store, id, state, signal.aborted ? "cancelled" : "failed", {
+      reason: /^[A-Z][A-Z0-9_]{0,63}$/.test(code || "") ? code.toLowerCase().replaceAll("_", "-") : "execution-failed",
+    });
+  } finally { clearTimeout(timer); }
+}
+
+async function createProjectPipelineRun(req, res, user, projectId) {
+  await authorizeProject(projectId, user, "compile");
+  const body = await readBody(req);
+  let release, workspace, operation, complete, failure, accepted = false;
+  try {
+    PipelineContracts.record(body, ["target", "parameters", "descriptorHash"], "PIPELINE_REQUEST_INVALID", "run request");
+    PipelineContracts.name(body.target);
+    const pipeline = await pipelineRuns.getPipeline(pipelineRunStore, projectId, user);
+    const candidate = await pipelineCandidate(projectId, user, "compile"), approval = pipeline.approval;
+    if (!pipeline.enabled || !approval || approval.revokedAt || !candidate
+      || ["bundleHash", "policyHash", "registryHash"].some(key => candidate[key] !== approval[key])) throw requestError("PIPELINE_APPROVAL_REQUIRED", 409);
+    const descriptor = pipeline.descriptor;
+    if (!descriptor || descriptor.descriptorHash !== body.descriptorHash) throw requestError("PIPELINE_DESCRIPTOR_CHANGED", 409);
+    const parameters = PipelineContracts.validateParameters(descriptor.parameterSchema, Object.hasOwn(body, "parameters") ? body.parameters : {});
+    if (shuttingDown) throw requestError("PIPELINE_RUNTIME_STOPPING", 503);
+    if (pipelineNavigationFailure || [...activePipelineInspections, ...activePipelineRuns.values()].some(operation => operation.failure)) throw requestError("PIPELINE_WORKER_RECOVERY_REQUIRED", 503);
+    enforceRateLimit(compileLimiter, `compile:${user.sub}:${projectId}`, "COMPILE_RATE_LIMITED");
+    const controller = new AbortController(), signal = controller.signal, id = uuidv7();
+    operation = { id, projectId, user, controller, done: new Promise(resolve => { complete = resolve; }),
+      async stop() { controller.abort(); const failure = await operation.done; if (failure) throw failure; } };
+    activePipelineRuns.set(id, operation);
+    try { release = await compileGate.acquire({ signal }); }
+    catch (error) { if (error instanceof GateRejectedError) throw requestError("COMPILE_SERVER_BUSY", 503); throw error; }
+    signal.throwIfAborted();
+    const execution = await getPipelineExecution();
+    operation.deadlineAt = Date.now() + execution.runtime.manifest().policy.runTimeoutMs;
+    const { project, data } = await authorizedProjectGate(projectId, user, "compile", async project => {
+      const { data, files } = await projectMutations.transaction({ id: projectId, storageDir: project.storageDir }, async (client, protect) => {
+        signal.throwIfAborted();
+        const row = await authorizeProject(projectId, user, "compile", client);
+        const data = await readProjectFile(row.storageDir, { strictRead: true });
+        await saveProjectTree(projectId, row, {}, data, client, protect, { user });
+        const files = collectProjectFiles(data.project.nodes).map(file => ({ id: file.node.id, path: file.path, kind: file.kind, binary: fileIsBinaryNode(file.node) }));
+        const checkpoint = await captureProjectCheckpoint({ projectId, storageDir: row.storageDir, user, reason: "compile", files, strictRead: true }, client);
+        return { data, files: files.map(file => ({ ...file, sourceRevisionId: checkpoint.versions.get(file.id) || null })) };
+      });
+      collabReconcileProject(projectId, data);
+      const directories = [];
+      const walk = (nodes, parent = "") => {
+        for (const node of nodes) if (node.type === "folder" && !node.generated) {
+          const relative = path.posix.join(parent, node.name);
+          directories.push(relative); walk(node.children || [], relative);
+        }
+      };
+      walk(data.project.nodes);
+      const settings = Object.fromEntries(["projectType", "engine", "compileProfile", "lilypondArgs", "lilypondFormat", "sourceMapping", "mainPath"]
+        .filter(key => data[key] !== undefined).map(key => [key, data[key]]));
+      workspace = await createRunWorkspace({ root: project.storageDir, files, directories, settings }, { root: path.join(DATA_DIR, ".pipeline-staging") }, { signal });
+      return { project, data };
+    });
+    const identity = pipelineCoordinator(execution, workspace).identity;
+    if (["bundleHash", "policyHash", "registryHash"].some(key => identity[key] !== approval[key])) throw requestError("PIPELINE_APPROVAL_REQUIRED", 409);
+    signal.throwIfAborted();
+    const run = await pipelineRuns.createRun(pipelineRunStore, { id, projectId, principal: user, coordinatorId: pipelineCoordinatorId,
+      approvalId: approval.id, ...identity, saveRevision: data.revision, snapshotHash: workspace.snapshotHash,
+      target: body.target, parameters, deadlineAt: operation.deadlineAt });
+    accepted = true;
+    // Already accepted work remains accounted for when maintenance starts.
+    const pending = executeProjectPipeline(operation, execution, workspace, approval, descriptor, run, project)
+      .catch(error => { operation.failure = pipelineFailure(error); console.error("Pipeline execution requires recovery", operation.failure); })
+      .finally(async () => {
+        try { if (!operation.failure) await disposeRunWorkspace(workspace); }
+        catch { operation.failure = requestError("PIPELINE_WORKER_RECOVERY_REQUIRED", 503); }
+        finally {
+          release(); backgroundPending.delete(pending);
+          if (!operation.failure) activePipelineRuns.delete(id);
+          complete(operation.failure);
+        }
+      });
+    backgroundPending.add(pending);
+    return json(res, 202, { run, revision: data.revision });
+  } catch (error) { failure = pipelineFailure(error); throw failure; }
+  finally {
+    if (!accepted) {
+      try { if (workspace && failure?.errorCode !== "PIPELINE_WORKER_RECOVERY_REQUIRED") await disposeRunWorkspace(workspace); }
+      catch { failure = requestError("PIPELINE_WORKER_RECOVERY_REQUIRED", 503); throw failure; }
+      finally {
+        release?.();
+        if (operation && failure?.errorCode === "PIPELINE_WORKER_RECOVERY_REQUIRED") operation.failure = failure;
+        else if (operation) activePipelineRuns.delete(operation.id);
+        complete?.(operation?.failure);
+      }
+    }
+  }
 }
 
 async function compileProject(req, res, user, id) {
@@ -5211,6 +5409,7 @@ const PROJECT_PIPELINE_APPROVE_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTER
 const PROJECT_PIPELINE_INSPECT_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/pipeline/inspect$`);
 const PROJECT_PIPELINE_APPROVAL_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/pipeline/approval/(${UUID_PATTERN})$`);
 const PROJECT_RUN_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/runs/(${UUID_PATTERN})$`);
+const PROJECT_RUN_CREATE_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/runs$`);
 const PROJECT_RUN_CANCEL_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/runs/(${UUID_PATTERN})/cancel$`);
 const PROJECT_BUILDS_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/builds$`);
 const PROJECT_BUILD_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/builds/(${UUID_PATTERN})$`);
@@ -6165,6 +6364,8 @@ async function handleApi(req, res, url) {
     return json(res, 200, result);
   }
   const runMatch = url.pathname.match(PROJECT_RUN_ROUTE);
+  const createRunMatch = url.pathname.match(PROJECT_RUN_CREATE_ROUTE);
+  if (createRunMatch && req.method === "POST") return createProjectPipelineRun(req, res, user, createRunMatch[1]);
   if (runMatch && req.method === "GET") {
     return json(res, 200, { run: await pipelineRuns.getRun(pipelineRunStore, runMatch[2], user, runMatch[1]) });
   }
@@ -6282,7 +6483,7 @@ function healthPayload() {
     status: healthStatus({ shuttingDown, maintenance: active }),
     maintenance: active,
     pendingWrites: inFlightMutations + backgroundPending.size + collabPendingWrites() + (collabDrainPromise ? 1 : 0)
-      + [...activePipelineInspections].filter(operation => operation.failure).length,
+      + [...activePipelineInspections, ...activePipelineRuns.values()].filter(operation => operation.failure).length + Number(Boolean(pipelineNavigationFailure)),
   };
 }
 
@@ -6373,13 +6574,16 @@ function startGracefulShutdown(signal, server) {
     timer = setTimeout(() => reject(new Error("Shutdown deadline exceeded")), SHUTDOWN_TIMEOUT_MS);
   });
   const drain = async () => {
-    await stopPipelineInspections();
+    const results = await Promise.allSettled([stopPipelineInspections(), ...[...activePipelineRuns.values()].map(operation => operation.stop())]);
+    const failure = results.find(result => result.status === "rejected");
+    if (failure) throw failure.reason;
     await collabShutdown();
     while (inFlight > 0 || backgroundPending.size || collabPendingWrites() || activeChildren.size) {
       if (shutdownForced) return;
       await new Promise((resolve) => setTimeout(resolve, 25));
       await drainCollabWrites();
     }
+    if (pipelineNavigationFailure) throw pipelineNavigationFailure;
     if (!shutdownForced) {
       if (pipelineExecution) await (await pipelineExecution).runtime.close();
       await db.end();
