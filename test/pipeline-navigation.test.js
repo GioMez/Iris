@@ -4,8 +4,10 @@ const fs = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
 const { uuidv7 } = require("../src/ids");
+const { hash, MAX_MAP_BYTES } = require("../src/source-mapping-common");
+const { gzipSync } = require("node:zlib");
 const { createRunWorkspace, materializeInputs, validateOutputs } = require("../src/pipeline/workspaces");
-const { collectCompilerMapping, navigateCompilerMapping, createNavigationTools } = require("../src/pipeline/navigation");
+const { collectCompilerMapping, navigateCompilerMapping, createNavigationTools, assembleRunMapping, createRunMappingCollector } = require("../src/pipeline/navigation");
 const { createTransferArchive, extractTransferArchive } = require("../src/pipeline/transfers");
 
 async function fixture(t, family = "latex") {
@@ -56,6 +58,16 @@ test("compiler maps preserve disabled, unsupported and missing states", async t 
   assert.equal((await f.collect()).manifest.status, "disabled");
   f.options.compiled.mappingEnabled = true; f.options.compiled.format = "svg";
   assert.equal((await f.collect()).manifest.status, "unsupported");
+});
+
+test("pipeline collection accounts for native records that have no project source match", async t => {
+  const f = await fixture(t, "lilypond");
+  const raw = "IRIS-LILYPOND\t1\nP\t1\t595\t842\nG\t1\texternal.ly\t1\t0\t1\t10\t20\t3\t4\n";
+  await fs.writeFile(path.join(f.outputDir, "main.iris-map.tsv"), raw);
+  const navigation = await f.collect();
+  assert.equal(navigation.manifest.status, "ready");
+  assert.equal(navigation.manifest.entries.length, 0);
+  assert.deepEqual(navigation.usage, { nativeRecords: 4, nativeBytes: Buffer.byteLength(raw) });
 });
 
 test("compiler mapping rejects linked sidecars and conflicting native alternatives", async t => {
@@ -156,4 +168,128 @@ test("cancelled and disabled contained navigation avoids inputs; cancellation af
   f.runtime.runContained = async () => { assert.fail("cancelled staging must not start the query"); };
   assert.equal((await f.query({ signal: controller.signal })).reason, "cancelled");
   assert.deepEqual(f.counts(), { creates: 1, closes: 1 });
+});
+
+async function mixedFixture(t) {
+  const tex = await fixture(t), lily = await fixture(t, "lilypond");
+  const input = lily.options.context.inputs.source;
+  lily.options.context = { ...lily.options.context, inputs: { ...lily.options.context.inputs,
+    source: { ...input, files: input.files.map(file => ({ ...file, id: tex.sourceId, sourceRevisionId: tex.revision })) } } };
+  await fs.writeFile(path.join(tex.outputDir, "main.synctex"), "SyncTeX Version:1\nInput:1:/work/main.tex\nContent:\n");
+  await fs.writeFile(path.join(lily.outputDir, "main.iris-map.tsv"), "IRIS-LILYPOND\t1\nP\t1\t595\t842\nG\t1\tmain.tex\t1\t0\t1\t10\t20\t3\t4\n");
+  const projectId = tex.options.projectId, runId = tex.options.runId;
+  lily.options.projectId = projectId; lily.options.runId = runId;
+  const collections = [{ navigation: await tex.collect(), products: tex.options.products },
+    { navigation: await lily.collect(), products: lily.options.products }];
+  const options = { projectId, runId, collections, products: [...tex.options.products, ...lily.options.products] };
+  return { tex, lily, options, assemble: overrides => assembleRunMapping({ ...options, ...overrides }) };
+}
+
+test("mixed run maps share source text, bind both families and retain only published artifacts", async t => {
+  const f = await mixedFixture(t), combined = f.assemble();
+  assert.equal(combined.manifest.version, 2);
+  assert.equal(combined.manifest.status, "ready");
+  assert.equal(combined.manifest.sources.length, 1);
+  assert.deepEqual(combined.manifest.artifacts.map(a => [a.id, a.backend, a.status]),
+    [[f.tex.options.products[0].id, "latex", "ready"], [f.lily.options.products[0].id, "lilypond", "ready"]]);
+  assert.equal(combined.nativeFiles.length, 1);
+  assert.equal(combined.manifest.entries[0].artifactId, f.lily.options.products[0].id);
+  const selected = f.assemble({ products: f.lily.options.products });
+  assert.equal(selected.manifest.artifacts.length, 1);
+  assert.deepEqual(selected.nativeFiles, []);
+  const inverse = await navigateCompilerMapping({ ...f.options, navigation: selected, enabled: true,
+    query: { direction: "inverse", artifactId: f.lily.options.products[0].id, page: 1, x: 11, y: 21 } });
+  assert.equal(inverse.status, "ready", JSON.stringify(inverse));
+  assert.equal(inverse.matches[0].sourceFileId, f.tex.sourceId);
+});
+
+test("run maps reject conflicting source revisions and aggregate native records without invalidating the PDFs", async t => {
+  const f = await mixedFixture(t);
+  f.options.collections[1].navigation.manifest.sources[0].sourceRevisionId = uuidv7();
+  assert.equal(f.assemble().manifest.reason, "malformed-map");
+  f.options.collections[1].navigation.manifest.sources[0].sourceRevisionId = f.tex.revision;
+  for (const item of f.options.collections) item.navigation.usage = { nativeRecords: 110000, nativeBytes: 1000 };
+  const limited = f.assemble();
+  assert.equal(limited.manifest.status, "unavailable");
+  assert.equal(limited.manifest.reason, "map-limit");
+  assert.deepEqual(limited.nativeFiles, []);
+  assert.equal(await fs.readFile(path.join(f.tex.options.products[0].root, "result.pdf"), "utf8"), "controlled PDF identity fixture");
+});
+
+test("run mapping preserves shared-source capacity and bounds source/native bytes and PDF metadata in aggregate", async t => {
+  const f = await mixedFixture(t), text = "s".repeat(8 * 1024 * 1024) + "\n";
+  for (const { navigation } of f.options.collections) {
+    Object.assign(navigation.manifest.sources[0], { text, sourceHash: hash(text) });
+    for (const entry of navigation.manifest.entries) entry.sourceHash = hash(text);
+  }
+  const shared = f.assemble();
+  assert.equal(shared.manifest.status, "ready");
+  assert.equal(shared.manifest.sources.length, 1);
+  assert.ok(Buffer.byteLength(JSON.stringify(shared.manifest)) < MAX_MAP_BYTES);
+  f.options.collections[1].navigation.manifest.sources.push({ ...shared.manifest.sources[0], sourceFileId: uuidv7(), path: "other.tex" });
+  assert.equal(f.assemble().manifest.reason, "map-limit");
+  f.options.collections[1].navigation.manifest.sources.pop();
+  for (const item of f.options.collections) item.navigation.usage.nativeBytes = 8388609;
+  assert.equal(f.assemble().manifest.reason, "map-limit");
+  for (const item of f.options.collections) item.navigation.usage.nativeBytes = 1000;
+  const product = f.options.products[0];
+  const extra = size => ({ ...product, files: [{ ...product.files[0], id: uuidv7(), size }] });
+  assert.equal(f.assemble({ products: Array.from({ length: 33 }, () => extra(1)) }).manifest.reason, "map-limit");
+  assert.equal(f.assemble({ products: [extra(67108865), extra(67108865)] }).manifest.reason, "map-limit");
+});
+
+test("an unassociated PDF has its own unsupported state while published compiler maps remain usable", async t => {
+  const f = await mixedFixture(t), original = f.options.products[0], id = uuidv7();
+  const processed = { ...original, id, files: [{ ...original.files[0], id }] };
+  const products = [...f.options.products, processed], navigation = f.assemble({ products });
+  assert.equal(navigation.manifest.artifacts.at(-1).status, "unsupported");
+  assert.equal(navigation.manifest.artifacts.at(-1).syncFile, undefined);
+  const options = { ...f.options, products, navigation, enabled: true };
+  assert.equal((await navigateCompilerMapping({ ...options, query: { direction: "inverse", artifactId: id, page: 1, x: 11, y: 21 } })).status, "unsupported");
+  assert.equal((await navigateCompilerMapping({ ...options,
+    query: { direction: "inverse", artifactId: f.lily.options.products[0].id, page: 1, x: 11, y: 21 } })).status, "ready");
+});
+
+test("run collection reuses immutable source capture and stops map I/O after aggregate exhaustion", async t => {
+  const f = await mixedFixture(t), { projectId, runId } = f.options;
+  const collector = createRunMappingCollector({ projectId, runId });
+  const first = f.tex.options, second = f.lily.options;
+  second.compiled.family = "latex";
+  second.context = { ...second.context, inputs: { ...second.context.inputs,
+    source: { ...second.context.inputs.source, files: first.context.inputs.source.files } } };
+  const raw = "SyncTeX Version:1\nInput:1:/work/main.tex\nContent:\n" + "x\n".repeat(110000);
+  await fs.writeFile(path.join(f.tex.outputDir, "main.synctex"), raw);
+  await fs.writeFile(path.join(f.lily.outputDir, "main.synctex"), raw);
+  assert.equal((await collector.collect(first)).manifest.status, "ready");
+  await fs.rm(second.context.inputs.source.root, { recursive: true });
+  // Source bytes already belong to the same immutable file manifest. Only the
+  // second native map must be read to detect the run-wide record overflow.
+  assert.equal((await collector.collect(second)).manifest.status, "ready");
+  assert.equal(collector.assemble(f.options.products).manifest.reason, "map-limit");
+  const stopped = await collector.collect({ ...second, context: { step: second.context.step,
+    get inputs() { throw new Error("must not recapture sources after exhaustion"); } } });
+  assert.equal(stopped.manifest.reason, "map-limit");
+  assert.deepEqual(stopped.nativeFiles, []);
+});
+
+test("unpublished compressed maps still consume the run-wide expansion budget", async t => {
+  const f = await mixedFixture(t);
+  f.lily.options.compiled.family = "latex";
+  await fs.unlink(path.join(f.tex.outputDir, "main.synctex"));
+  const bytes = gzipSync("SyncTeX Version:1\nInput:1:/work/main.tex\nContent:\n" + "x".repeat(9 * 1024 * 1024));
+  for (const compiler of [f.tex, f.lily]) await fs.writeFile(path.join(compiler.outputDir, "main.synctex.gz"), bytes);
+  f.options.collections = [{ navigation: await f.tex.collect(), products: f.tex.options.products },
+    { navigation: await f.lily.collect(), products: f.lily.options.products }];
+  for (const { navigation } of f.options.collections) assert.equal(navigation.manifest.status, "ready");
+  const combined = f.assemble({ products: f.lily.options.products });
+  assert.equal(combined.manifest.reason, "map-limit");
+  assert.deepEqual(combined.nativeFiles, []);
+});
+
+test("a compiler map that already exceeds its own limit exhausts further run collection", async t => {
+  const f = await fixture(t), collector = createRunMappingCollector(f.options);
+  await fs.writeFile(path.join(f.outputDir, "main.synctex"), "SyncTeX Version:1\nContent:\n" + "x\n".repeat(200000));
+  assert.equal((await collector.collect(f.options)).manifest.reason, "map-limit");
+  assert.equal(collector.assemble(f.options.products).manifest.status, "unavailable");
+  assert.equal(collector.assemble(f.options.products).manifest.reason, "map-limit");
 });

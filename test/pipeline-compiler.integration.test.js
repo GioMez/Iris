@@ -188,6 +188,58 @@ test("one graph compiles LaTeX and LilyPond from read-only sources and publishes
   for (const [file, body] of Object.entries(files)) assert.equal(await fs.readFile(path.join(f.source, file), "utf8"), body);
 });
 
+test("a mixed run navigates both compiler families through one shared-source manifest", native, async t => {
+  const { createRunMappingCollector, navigateCompilerMapping, createNavigationTools } = require("../src/pipeline/navigation");
+  const projectId = uuidv7(), runId = uuidv7(), collector = createRunMappingCollector({ projectId, runId });
+  const f = await fixture(t, {
+    "main.tex": "\\documentclass{article}\n\\begin{document}\\input{parts/text}\\end{document}\n",
+    "parts/text.tex": "Mixed run text.\n",
+    "main.ly": '\\version "2.24.1"\n\\include "parts/music.ily"\n\\score { \\melody }\n',
+    "parts/music.ily": "melody = { c'1 d'1 }\n",
+  }, {}, { tools: createNavigationTools(), onArtifacts: async (context, products) => {
+    await collector.collect({ context, compiled: f.compiled.get(context.step.id), products });
+  } });
+  const result = await f.run([step("text", "latex", "main.tex"), step("music", "lilypond", "main.ly")]);
+  assert.equal(result.state, "succeeded", JSON.stringify(result.steps));
+  const navigation = collector.assemble(result.artifacts);
+  assert.equal(navigation.manifest.status, "ready", JSON.stringify(navigation.manifest));
+  assert.equal(navigation.manifest.sources.length, 4);
+  assert.deepEqual(navigation.manifest.artifacts.map(a => a.backend), ["latex", "lilypond"]);
+  const options = { navigation, products: result.artifacts, projectId, runId, enabled: true, runtime: f.runtime };
+  for (const [index, name, column] of [[0, "parts/text.tex", 0], [1, "parts/music.ily", 11]]) {
+    const source = navigation.manifest.sources.find(s => s.path === name);
+    const forward = await navigateCompilerMapping({ ...options, query: { direction: "forward", sourceFileId: source.sourceFileId, line: 1, column } });
+    assert.equal(forward.status, "ready", JSON.stringify(forward));
+    const m = forward.matches[0];
+    assert.equal(m.artifactId, result.artifacts[index].id);
+    const inverse = await navigateCompilerMapping({ ...options, query: { direction: "inverse", artifactId: m.artifactId,
+      page: m.page, x: m.x + Math.min(3, m.width / 2), y: m.y + m.height / 2 } });
+    assert.equal(inverse.status, "ready", JSON.stringify(inverse));
+    assert.equal(inverse.matches[0].sourceFileId, source.sourceFileId);
+  }
+});
+
+test("two compiler steps with the same native PDF name retain distinct query identities", native, async t => {
+  const { createRunMappingCollector, navigateCompilerMapping, createNavigationTools } = require("../src/pipeline/navigation");
+  const projectId = uuidv7(), runId = uuidv7(), collector = createRunMappingCollector({ projectId, runId });
+  const f = await fixture(t, { "main.tex": "\\documentclass{article}\n\\begin{document}\nTwo independently identified outputs.\n\\end{document}\n" }, {}, {
+    tools: createNavigationTools(), onArtifacts: (context, products) => collector.collect({ context, products, compiled: f.compiled.get(context.step.id) }),
+  });
+  const result = await f.run([step("first", "latex", "main.tex"), step("second", "latex", "main.tex")]);
+  assert.equal(result.state, "succeeded", JSON.stringify(result.steps));
+  const navigation = collector.assemble(result.artifacts);
+  assert.equal(navigation.manifest.sources.length, 1);
+  assert.equal(navigation.nativeFiles.length, 2);
+  assert.equal(new Set(navigation.nativeFiles.map(file => file.path)).size, 1);
+  assert.equal(new Set(navigation.nativeFiles.map(file => file.name)).size, 2);
+  const query = { direction: "forward", sourceFileId: navigation.manifest.sources[0].sourceFileId, line: 3, column: 0,
+    artifactId: result.artifacts[1].id, page: 1 };
+  const forward = await navigateCompilerMapping({ navigation, products: result.artifacts, projectId, runId, enabled: true, runtime: f.runtime, query });
+  assert.equal(forward.status, "ready", JSON.stringify(forward));
+  assert.equal(forward.matches[0].artifactId, result.artifacts[1].id);
+  assert.deepEqual(new Set(forward.matches.map(match => match.artifactId)), new Set(result.artifacts.map(artifact => artifact.id)));
+});
+
 test("compiler collections preserve independently named LilyPond books and private navigation sidecars", native, async t => {
   const f = await fixture(t, { "main.ly": '\\version "2.24.1"\n\\book { \\bookOutputName "first" \\score { { c\'1 } } }\n\\book { \\bookOutputName "second" \\score { { d\'1 } } }\n' });
   const result = await f.run([step("books", "lilypond", "main.ly", {}, "collection")]);

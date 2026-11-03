@@ -1,5 +1,6 @@
 const fs = require("node:fs/promises");
 const path = require("node:path");
+const { isDeepStrictEqual } = require("node:util");
 const { isUuid } = require("../ids");
 const mapping = require("../source-mapping");
 const { openCheckedFile } = require("./workspaces");
@@ -7,16 +8,16 @@ const { logicalPath, fail } = require("./contracts");
 
 // Compiler paths are private. Each native sidecar receives an artifact-ID alias
 // so equal native filenames from different steps/ports cannot select another PDF.
-async function collectCompilerMapping({ context, compiled, products, projectId, runId }) {
+async function collectCompilerMapping({ context, compiled, products, projectId, runId, sourceCache }) {
   if (!isUuid(projectId) || !isUuid(runId) || compiled.stepId !== context.step.id || !["latex", "lilypond"].includes(compiled.family)) {
     fail("PIPELINE_MAPPING_INVALID", "Invalid compiler mapping context");
   }
-  const base = { version: 1, projectId, buildId: runId, backend: compiled.family };
+  const base = { version: 1, projectId, buildId: runId, backend: compiled.family }, usage = { nativeRecords: 0, nativeBytes: 0 };
   if (!compiled.mappingEnabled || compiled.format !== "pdf") {
-    return { manifest: { ...base, status: !compiled.mappingEnabled ? "disabled" : "unsupported" }, nativeFiles: [] };
+    return { manifest: { ...base, status: !compiled.mappingEnabled ? "disabled" : "unsupported" }, nativeFiles: [], mappedArtifacts: [], usage };
   }
   const byOutput = new Map(compiled.outputs.map(file => [`${file.outputPort}:${file.path}`, file]));
-  const artifacts = [], aliases = new Map(), nativeFiles = new Map();
+  const artifacts = [], aliases = new Map(), nativeFiles = new Map(), mappedArtifacts = new Set();
   let sources, mappingError;
   try {
     for (const product of products) for (const file of product.files) {
@@ -29,7 +30,12 @@ async function collectCompilerMapping({ context, compiled, products, projectId, 
       for (const suffix of [".synctex", ".synctex.gz", ".iris-map.tsv"]) aliases.set(`${file.id}${suffix}`, origin.compiledPath.slice(0, -4) + suffix);
     }
     const input = context.inputs.source;
-    sources = await mapping.captureMappingSources(input.root, input.files, new Map(input.files.map(file => [file.id, file.sourceRevisionId])));
+    let captured = sourceCache?.get(input.files);
+    if (!captured) {
+      captured = mapping.captureMappingSources(input.root, input.files, new Map(input.files.map(file => [file.id, file.sourceRevisionId])));
+      sourceCache?.set(input.files, captured);
+    }
+    sources = await captured;
   } catch (error) { mappingError = error; }
   context.signal?.throwIfAborted();
   const manifest = await mapping.collectSourceMapping({ ...base, artifacts, sources, mappingError,
@@ -42,6 +48,12 @@ async function collectCompilerMapping({ context, compiled, products, projectId, 
       try {
         ({ input: handle } = await openCheckedFile(compiled.outputDir, relative));
         const bytes = await mapping.readMappingHandle(handle, limit);
+        usage.nativeBytes += bytes.length;
+        mappedArtifacts.add(name.slice(0, 36));
+        if (compiled.family === "lilypond") {
+          usage.nativeRecords++;
+          for (let offset = bytes.indexOf(10); offset !== -1; offset = bytes.indexOf(10, offset + 1)) usage.nativeRecords++;
+        }
         if (compiled.family === "latex") nativeFiles.set(name, { name, root: compiled.outputDir,
           path: relative, size: bytes.length, contentHash: mapping.hash(bytes) });
         return bytes;
@@ -50,7 +62,89 @@ async function collectCompilerMapping({ context, compiled, products, projectId, 
     },
   });
   context.signal?.throwIfAborted();
-  return { manifest, nativeFiles: manifest.status === "ready" ? [...nativeFiles.values()] : [] };
+  if (compiled.family === "latex") usage.nativeRecords = manifest.artifacts?.reduce((sum, artifact) => sum + (artifact.entryCount || 0), 0) || 0;
+  return { manifest, nativeFiles: manifest.status === "ready" ? [...nativeFiles.values()] : [], mappedArtifacts: [...mappedArtifacts], usage };
+}
+
+const pdfMembers = products => products.flatMap(product => product.files.filter(file => product.mediaType === "application/pdf" || /\.pdf$/i.test(file.path)));
+
+// Collection descriptors remain host-only. The versioned manifest shares source
+// text and records each published PDF's own backend and mapping availability.
+function assembleRunMapping({ projectId, runId, collections, products }) {
+  const base = { version: 2, projectId, buildId: runId };
+  try {
+    if (!isUuid(projectId) || !isUuid(runId)) throw mapping.failure("malformed-map");
+    const sources = new Map(), paths = new Map(), origins = new Map(), nativeFiles = new Map();
+    let nativeRecords = 0, nativeReadBytes = 0, decodedReadBytes = 0;
+    for (const { navigation, products: produced } of collections) {
+      const { manifest, usage } = navigation;
+      if (manifest.projectId !== projectId || manifest.buildId !== runId || manifest.version !== 1) throw mapping.failure("malformed-map");
+      if (manifest.status === "unavailable" && manifest.reason === "map-limit") throw mapping.failure("map-limit");
+      if (!Number.isSafeInteger(usage.nativeRecords) || usage.nativeRecords < 0 || !Number.isSafeInteger(usage.nativeBytes) || usage.nativeBytes < 0) throw mapping.failure("malformed-map");
+      nativeRecords += usage.nativeRecords; nativeReadBytes += usage.nativeBytes;
+      decodedReadBytes += (manifest.artifacts || []).reduce((sum, artifact) => sum + (artifact.decodedBytes || 0), 0);
+      for (const source of manifest.sources || []) {
+        const previous = sources.get(source.sourceFileId);
+        if ((previous && !isDeepStrictEqual(previous, source)) || (paths.has(source.path) && paths.get(source.path) !== source.sourceFileId)) throw mapping.failure("malformed-map");
+        sources.set(source.sourceFileId, source); paths.set(source.path, source.sourceFileId);
+      }
+      if (sources.size + nativeRecords > mapping.MAX_ENTRIES || nativeReadBytes > mapping.MAX_MAP_BYTES
+        || decodedReadBytes > mapping.MAX_MAP_BYTES) throw mapping.failure("map-limit");
+      for (const file of pdfMembers(produced)) {
+        if (origins.has(file.id)) throw mapping.failure("malformed-map");
+        origins.set(file.id, { navigation, file });
+      }
+    }
+    const artifacts = [], entries = [], ids = new Set();
+    let pdfBytes = 0, retainedBytes = 0, decodedBytes = 0;
+    for (const file of pdfMembers(products)) {
+      if (ids.has(file.id)) throw mapping.failure("malformed-map");
+      ids.add(file.id); pdfBytes += file.size;
+      if (ids.size > mapping.MAX_MATCHES || pdfBytes > 128 * 1024 * 1024) throw mapping.failure("map-limit");
+      const origin = origins.get(file.id), m = origin?.navigation.manifest;
+      if (origin && (origin.file.size !== file.size || origin.file.contentHash !== file.contentHash)) throw mapping.failure("stale-artifact");
+      const original = m?.artifacts?.find(artifact => artifact.id === file.id);
+      let status = m?.status === "disabled" ? "missing" : m?.status || "unsupported";
+      if (status === "ready" && !origin.navigation.mappedArtifacts.includes(file.id)) status = m.backend === "latex" ? "missing" : "unsupported";
+      if (status === "ready" && (!original || original.size !== file.size || original.contentHash !== file.contentHash)) throw mapping.failure("stale-artifact");
+      const artifact = { ...(status === "ready" ? original : {}), id: file.id, fileName: `${file.id}.pdf`, size: file.size, contentHash: file.contentHash,
+        backend: m?.backend || null, status, ...(status === "ready" ? { snapshotRoot: m.snapshotRoot } : {}),
+        ...(status === "unavailable" ? { reason: m.reason } : {}) };
+      artifacts.push(artifact);
+      if (status !== "ready") continue;
+      for (const entry of m.entries) if (entry.artifactId === file.id) entries.push(entry);
+      if (artifact.syncFile) {
+        const native = origin.navigation.nativeFiles.find(item => item.name === artifact.syncFile);
+        if (!native || native.contentHash !== artifact.syncHash || native.size !== artifact.syncSize) throw mapping.failure("malformed-map");
+        nativeFiles.set(native.name, native); retainedBytes += native.size; decodedBytes += artifact.decodedBytes;
+      }
+    }
+    const manifest = { ...base, status: artifacts.length ? "ready" : "unsupported", sources: [...sources.values()], artifacts, entries,
+      recordCount: sources.size + nativeRecords, nativeReadBytes, decodedReadBytes };
+    if (Buffer.byteLength(JSON.stringify(manifest)) + Math.max(retainedBytes, decodedBytes) > mapping.MAX_MAP_BYTES) throw mapping.failure("map-limit");
+    return { manifest, nativeFiles: [...nativeFiles.values()] };
+  } catch (error) {
+    return { manifest: { ...base, status: "unavailable", reason: ["map-limit", "stale-artifact"].includes(error.reason) ? error.reason : "malformed-map" }, nativeFiles: [] };
+  }
+}
+
+function createRunMappingCollector({ projectId, runId }) {
+  let collections = [], sourceCache = new WeakMap(), exhausted;
+  return {
+    async collect(options) {
+      options.context.signal?.throwIfAborted();
+      if (exhausted) return exhausted;
+      const navigation = await collectCompilerMapping({ ...options, projectId, runId, sourceCache });
+      if (exhausted) return exhausted;
+      collections.push({ navigation, products: options.products });
+      const combined = assembleRunMapping({ projectId, runId, collections, products: collections.flatMap(item => item.products) });
+      if (combined.manifest.status === "unavailable") {
+        exhausted = combined; collections = []; sourceCache = new WeakMap();
+      }
+      return navigation;
+    },
+    assemble(products) { return exhausted || assembleRunMapping({ projectId, runId, collections, products }); },
+  };
 }
 
 function createNavigationTools({ texBinPath = "/usr/bin" } = {}) {
@@ -139,4 +233,4 @@ async function navigateCompilerMapping({ navigation, products, runtime, projectI
   return mapping.navigateSourceMapping({ projectId, buildId: runId, artifacts, query, enabled, signal, runQuery }, storage);
 }
 
-module.exports = { collectCompilerMapping, createNavigationTools, navigateCompilerMapping };
+module.exports = { collectCompilerMapping, createRunMappingCollector, assembleRunMapping, createNavigationTools, navigateCompilerMapping };

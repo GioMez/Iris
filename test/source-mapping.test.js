@@ -302,7 +302,7 @@ test("unknown map/native format versions report unsupported and invalid native s
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const directory = path.join(root, "output", buildId);
   await fs.mkdir(directory, { recursive: true });
-  await fs.writeFile(path.join(directory, mapping.MANIFEST_NAME), JSON.stringify({ version: 2, projectId, buildId, status: "ready" }));
+  await fs.writeFile(path.join(directory, mapping.MANIFEST_NAME), JSON.stringify({ version: 3, projectId, buildId, status: "ready" }));
   const result = await mapping.navigateBuild({ projectStorageDir: root, projectId, buildId, storagePath: `output/${buildId}`, enabled: true, artifacts: [artifact] });
   assert.equal(result.status, "unsupported");
   assert.throws(() => readSyncTeXInputs(Buffer.from("SyncTeX Version:2\nContent:\n"), { sources: [source], snapshotRoot: "/tmp/build" }), { reason: "unsupported" });
