@@ -6,7 +6,7 @@ const { StringDecoder } = require("node:string_decoder");
 const { isDeepStrictEqual } = require("node:util");
 const { isUuid } = require("../ids");
 const { LUA_DATA_POLICY, readPolicy, cloneValue, canonical, freeze, fail, record, logicalPath,
-  validateDescriptor, validateParameters, validatePlan, validateLuaDiagnostic } = require("./contracts");
+  validateDescriptor, bindDescriptor, validateBoundDescriptor, validateParameters, validatePlan, validateLuaDiagnostic } = require("./contracts");
 const { openCheckedFile, readWorkspaceLimits } = require("./workspaces");
 
 const hash = bytes => createHash("sha256").update(bytes).digest("hex");
@@ -71,8 +71,10 @@ function createLuaCoordinator({ runtime, workspace, runId, registry, policy: ove
   if (!isUuid(runId) || !Number.isSafeInteger(memoryBytes) || memoryBytes < 1) fail("PIPELINE_LUA_REQUEST_INVALID", "Invalid Lua coordinator configuration");
   const registryManifest = registry.manifest();
   const runtimeManifest = runtime.manifest();
+  deadlineAt ??= Date.now() + runtimeManifest.policy.runTimeoutMs;
+  if (!Number.isSafeInteger(deadlineAt)) fail("PIPELINE_LUA_REQUEST_INVALID", "Invalid Lua run deadline");
   const maxLogBytes = Math.min(1048576, runtimeManifest.policy.logBytes);
-  if (!(runtimeManifest.tools.find(tool => tool.id === "lua-worker")?.protocolBytes >= protocolBytes)) {
+  if (!["lua-planner", "lua-transform"].every(id => runtimeManifest.tools.find(tool => tool.id === id)?.protocolBytes >= protocolBytes)) {
     fail("PIPELINE_TOOL_INVALID", "Lua worker requires bounded diagnostic transport");
   }
   const plans = new WeakSet();
@@ -89,16 +91,10 @@ function createLuaCoordinator({ runtime, workspace, runId, registry, policy: ove
     return result;
   }
   function bind(value) {
-    const result = { ...descriptor(value), ...identity };
-    return freeze({ ...result, descriptorHash: digest(result) });
+    return bindDescriptor(descriptor(value), identity, { policy });
   }
   function cached(value) {
-    const copy = cloneValue(value, policy, "PIPELINE_DESCRIPTOR_INVALID");
-    record(copy, ["apiVersion", "pluginId", "parameterSchema", "requiredCapabilities", "bundleHash", "policyHash", "registryHash", "descriptorHash"],
-      "PIPELINE_DESCRIPTOR_INVALID", "cached descriptor");
-    const normalized = bind(metadata(copy));
-    if (canonical(normalized) !== canonical(copy)) fail("PIPELINE_DESCRIPTOR_CHANGED", "Cached plugin descriptor identity changed");
-    return metadata(normalized);
+    return descriptor(metadata(validateBoundDescriptor(value, { identity, policy })));
   }
   async function invoke(mode, extra, signal, { context, emit = async () => {}, reportDiagnostic = async () => {} } = {}) {
     signal?.throwIfAborted();
@@ -127,11 +123,11 @@ function createLuaCoordinator({ runtime, workspace, runId, registry, policy: ove
       await fs.writeFile(path.join(root, "request.json"), bytes, { flag: "wx", mode: 0o400 });
       files.push({ path: "request.json", size: bytes.length, contentHash: hash(bytes) });
       worker = await runtime.createWorkspace({ runId, stepId: context?.step.id || mode, input: { root, files, directories: [...directories] }, signal,
-        ...(deadlineAt === undefined ? {} : { deadlineAt }) });
+        deadlineAt });
       const decoder = new StringDecoder("utf8");
       const streamedDiagnostics = [], members = new Map(Object.entries(context?.inputs || {}).map(([key, input]) => [key, new Set(input.files.map(file => file.path))]));
       let pending = "", streamBytes = 0, logBytes = 0, logCount = 0, diagnosticBytes = 2;
-      const result = await runtime.runContained({ workspace: worker, tool: runtime.resolveTool("lua-worker"), args: [workerPath], signal,
+      const result = await runtime.runContained({ workspace: worker, tool: runtime.resolveTool(mode === "transform" ? "lua-transform" : "lua-planner"), args: [workerPath], signal,
         outputLimitBytes: maxLogBytes + protocolBytes,
         onOutput: context ? async (chunk, channel) => {
           if (channel !== "stdout") return;
@@ -255,8 +251,11 @@ function createLuaAdapter({ execute }) {
   };
 }
 
-function createLuaTool({ timeoutMs = 5000 } = {}) {
-  return { id: "lua-worker", path: "/usr/local/bin/node", timeoutMs, protocolBytes };
+function createLuaTools({ planningTimeoutMs = 5000, transformTimeoutMs = 30000 } = {}) {
+  return [
+    { id: "lua-planner", path: "/usr/local/bin/node", timeoutMs: planningTimeoutMs, protocolBytes },
+    { id: "lua-transform", path: "/usr/local/bin/node", timeoutMs: transformTimeoutMs, protocolBytes },
+  ];
 }
 
-module.exports = { luaBundle, parseLuaResponse, createLuaCoordinator, createLuaAdapter, createLuaTool };
+module.exports = { luaBundle, parseLuaResponse, createLuaCoordinator, createLuaAdapter, createLuaTools };

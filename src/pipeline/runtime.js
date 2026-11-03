@@ -275,9 +275,10 @@ async function createPodmanRuntime({ root, coordinatorId, transport = {}, policy
   }
   async function createWorkspace({ runId, stepId, input, signal, queue = true, deadlineAt = Date.now() + policy.runTimeoutMs }) {
     if (!accepting) throw error("PIPELINE_RUNTIME_STOPPING");
-    if (!isUuid(runId) || !Number.isSafeInteger(deadlineAt) || deadlineAt <= Date.now() || deadlineAt > Date.now() + policy.runTimeoutMs) throw error("PIPELINE_WORKER_IDENTITY_INVALID");
+    if (!isUuid(runId) || !Number.isSafeInteger(deadlineAt) || deadlineAt > Date.now() + policy.runTimeoutMs) throw error("PIPELINE_WORKER_IDENTITY_INVALID");
     name(stepId);
     signal?.throwIfAborted();
+    if (deadlineAt <= Date.now()) throw error("PIPELINE_RUN_DEADLINE");
     if (!queue && gate.active >= gate.limit) throw error("PIPELINE_WORKER_BUSY");
     const release = await gate.acquire({ signal });
     if (!accepting || signal?.aborted) { release(); signal?.throwIfAborted(); throw error("PIPELINE_RUNTIME_STOPPING"); }

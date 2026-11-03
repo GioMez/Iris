@@ -2,12 +2,14 @@ const { createHash } = require("node:crypto");
 const { isDeepStrictEqual, types: { isProxy } } = require("node:util");
 const { uuidv7, isUuid } = require("../ids");
 const { authorizeProjectRecord, canCancelRun, PROJECT_OWNER_LOCK } = require("../project-access");
-const { cloneValue, readPolicy, name, logicalPath, record, freeze, resolveTarget } = require("./contracts");
+const { cloneValue, readPolicy, name, logicalPath, record, freeze, resolveTarget, validateBoundDescriptor } = require("./contracts");
 
 const ACTIVE = new Set(["queued", "planning", "running"]);
 const NEXT = { queued: ["planning", "failed", "cancelled", "interrupted"], planning: ["running", "failed", "cancelled", "interrupted"], running: ["failed", "cancelled", "interrupted"] };
 const STEP_NEXT = { pending: ["running", "cancelled", "blocked"], running: ["succeeded", "failed", "cancelled"] };
 const HASH = /^[a-f0-9]{64}$/;
+const EVENT_BYTES = 1048576;
+const LOG_TRUNCATED = '{"truncated":true}\n';
 
 function invalid(store, code = "PIPELINE_REQUEST_INVALID", status = 400) {
   throw store.requestError(code, status);
@@ -26,15 +28,21 @@ function identity(store, value) {
   for (const key of ["bundleHash", "policyHash", "registryHash"]) if (typeof value[key] !== "string" || !HASH.test(value[key])) invalid(store);
 }
 const authorize = (store, queryable, id, principal, capability) => authorizeProjectRecord(queryable, id, principal, capability, store.requestError);
+function owned(store, row) {
+  if (!isUuid(store.coordinatorId) || row.coordinator_id !== store.coordinatorId) invalid(store, "PIPELINE_COORDINATOR_CHANGED", 409);
+}
 
-async function readRecord(client, id, projectId = null, lock = false) {
-  const result = await client.query(`SELECT * FROM build_outputs WHERE id=$1 AND kind='pipeline'
+async function readRecord(client, id, projectId = null, lock = false, progress = false) {
+  const columns = progress ? `id,project_id,status,target,request_order,event_sequence,created_by,
+    coordinator_id,approval_id,bundle_hash,policy_hash,registry_hash,deadline_at,
+    octet_length(log) AS log_bytes,right(log,${LOG_TRUNCATED.length})='${LOG_TRUNCATED}' AS logs_truncated` : "*";
+  const result = await client.query(`SELECT ${columns} FROM build_outputs WHERE id=$1 AND kind='pipeline'
     AND ($2::uuid IS NULL OR project_id=$2)${lock ? " FOR UPDATE" : ""}`, [id, projectId]);
   return result.rows[0] || null;
 }
-async function lookup(store, id, principal = null, projectId = null) {
+async function lookup(store, id, principal = null, projectId = null, progress = false) {
   if (!isUuid(id) || (projectId !== null && !isUuid(projectId))) invalid(store, "PIPELINE_RUN_NOT_FOUND", 404);
-  const row = await readRecord(store.pool, id, projectId);
+  const row = await readRecord(store.pool, id, projectId, false, progress);
   if (!row) invalid(store, "PIPELINE_RUN_NOT_FOUND", 404);
   if (principal) {
     const access = await store.pool.query(`SELECT 1 FROM project_members m JOIN users u ON u.id=m.user_id
@@ -52,7 +60,7 @@ async function view(client, row) {
     saveRevision: row.save_revision, snapshotHash: row.snapshot_hash, bundleHash: row.bundle_hash,
     policyHash: row.policy_hash, registryHash: row.registry_hash, planHash: row.plan_hash,
     approvalId: row.approval_id, parameters: row.parameters, reason: row.terminal_reason,
-    artifactCount: row.artifact_count, storagePath: row.storage_path,
+    artifactCount: row.artifact_count, storagePath: row.storage_path, log: row.log, logsTruncated: row.log.endsWith(LOG_TRUNCATED),
     steps: rows.map(s => ({ id: s.step_id, adapter: { id: s.adapter_id, version: s.adapter_version }, state: s.state,
       startedAt: s.started_at, completedAt: s.completed_at, diagnostics: s.diagnostics })),
   };
@@ -109,10 +117,10 @@ async function authorityReason(store, client, row) {
   if (a.status !== "active" || !["owner", "editor"].includes(a.role)) return "compile-permission-revoked";
   return null;
 }
-async function withRun(store, id, principal, capability, action, projectId = null) {
-  const initial = await lookup(store, id, principal, projectId);
+async function withRun(store, id, principal, capability, action, projectId = null, progress = false) {
+  const initial = await lookup(store, id, principal, projectId, progress);
   return transaction(store, initial.project_id, principal, capability, async (client, notices, stopped) => {
-    const row = await readRecord(client, id, initial.project_id, true);
+    const row = await readRecord(client, id, initial.project_id, true, progress);
     if (!row) invalid(store, "PIPELINE_RUN_NOT_FOUND", 404);
     return action(client, row, notices, stopped);
   }, principal?.sub || initial.created_by);
@@ -198,8 +206,25 @@ async function getPipeline(store, projectId, principal) {
     } : null };
   }, () => authorize(store, store.pool, projectId, principal, "read"));
 }
+
+async function cacheDescriptor(store, projectId, approvalId, principal, value) {
+  return transaction(store, projectId, principal, "compile", async client => {
+    const { rows } = await client.query(`SELECT a.* FROM pipeline_approvals a
+      JOIN project_pipelines p ON p.project_id=a.project_id AND p.approval_id=a.id
+      WHERE a.project_id=$1 AND a.id=$2 AND p.enabled AND a.revoked_at IS NULL`, [projectId, approvalId]);
+    const approval = rows[0];
+    if (!approval || approval.policy_hash !== store.policyHash || approval.registry_hash !== store.registryHash) invalid(store, "PIPELINE_APPROVAL_REQUIRED", 409);
+    const descriptor = checked(store, () => validateBoundDescriptor(value, { identity: {
+      bundleHash: approval.bundle_hash, policyHash: approval.policy_hash, registryHash: approval.registry_hash,
+    } }));
+    if (approval.descriptor && !isDeepStrictEqual(approval.descriptor, descriptor)) invalid(store, "PIPELINE_DESCRIPTOR_CHANGED", 409);
+    await client.query("UPDATE pipeline_approvals SET descriptor=$2::jsonb WHERE id=$1", [approvalId, JSON.stringify(descriptor)]);
+    return descriptor;
+  });
+}
 async function transitionRun(store, id, expectedState, nextState, details = {}) {
   return withRun(store, id, null, null, async (client, row, notices, stopped) => {
+    owned(store, row);
     if (!ACTIVE.has(row.status) || row.status !== expectedState) return view(client, row);
     if (!NEXT[row.status].includes(nextState)) invalid(store, "PIPELINE_TRANSITION_INVALID", 409);
     const reason = await authorityReason(store, client, row);
@@ -218,18 +243,84 @@ async function transitionRun(store, id, expectedState, nextState, details = {}) 
     return finish(client, row, nextState, terminal ? details.reason : null, notices, stopped);
   });
 }
+
+function checkDiagnostic(store, stepId, item) {
+  if (!item || typeof item !== "object" || Array.isArray(item)
+    || (item.stepId !== undefined && item.stepId !== stepId)) invalid(store, "PIPELINE_DIAGNOSTICS_INVALID");
+  function text(value) {
+    if (typeof value === "string" && (value.includes("\0") || !value.isWellFormed())) invalid(store, "PIPELINE_DIAGNOSTICS_INVALID");
+    if (value && typeof value === "object") for (const [key, item] of Object.entries(value)) { text(key); text(item); }
+  }
+  // JSONB cannot represent NUL or lone surrogates. Reject them at this boundary
+  // rather than returning a database error or altering diagnostic text.
+  text(item);
+}
+
+async function checkDiagnostics(store, client, id, stepId, diagnostics) {
+  if (!Array.isArray(diagnostics)) invalid(store, "PIPELINE_DIAGNOSTICS_INVALID");
+  const { rows } = await client.query("SELECT step_id,diagnostics FROM pipeline_steps WHERE build_id=$1", [id]);
+  const previous = rows.find(step => step.step_id === stepId)?.diagnostics;
+  if (!previous) invalid(store, "PIPELINE_STEP_CONFLICT", 409);
+  if (previous.some((item, index) => !isDeepStrictEqual(item, diagnostics[index]))) invalid(store, "PIPELINE_DIAGNOSTICS_CHANGED", 409);
+  for (let i = previous.length; i < diagnostics.length; i++) checkDiagnostic(store, stepId, diagnostics[i]);
+  const encoded = JSON.stringify(diagnostics);
+  const bytes = rows.reduce((total, step) => total + (step.step_id === stepId ? 0 : Buffer.byteLength(JSON.stringify(step.diagnostics))), Buffer.byteLength(encoded));
+  if (bytes > EVENT_BYTES) invalid(store, "PIPELINE_DIAGNOSTICS_LIMIT");
+  return encoded;
+}
+
+// A worker output callback cannot await its own drain. Reject lost authority
+// here; the coordinator aborts the worker and finalizes after the callback exits.
+async function recordProgress(store, id, value) {
+  const event = jsonValue(store, value);
+  checked(store, () => { record(event, ["stepId", "diagnostic", "level", "message"], "PIPELINE_PROGRESS_INVALID", "progress event"); name(event.stepId); });
+  const diagnostic = Object.hasOwn(event, "diagnostic");
+  if (diagnostic ? Object.hasOwn(event, "level") || Object.hasOwn(event, "message") :
+    !["debug", "info", "warning", "error"].includes(event.level) || typeof event.message !== "string") invalid(store, "PIPELINE_PROGRESS_INVALID");
+  return withRun(store, id, null, null, async (client, row, notices) => {
+    owned(store, row);
+    const receipt = () => ({ id: row.id, projectId: row.project_id, target: row.target, requestOrder: row.request_order,
+      sequence: row.event_sequence, state: row.status, logsTruncated: row.logs_truncated });
+    if (!ACTIVE.has(row.status)) return receipt();
+    if (await authorityReason(store, client, row)) invalid(store, "PIPELINE_RUN_AUTHORITY_CHANGED", 409);
+    const { rows } = await client.query("SELECT state,jsonb_array_length(diagnostics) AS count FROM pipeline_steps WHERE build_id=$1 AND step_id=$2", [id, event.stepId]);
+    const step = rows[0];
+    if (row.status !== "running" || !step || step.state === "pending") invalid(store, "PIPELINE_STEP_CONFLICT", 409);
+    if (step.state !== "running") return receipt();
+    if (diagnostic) {
+      checkDiagnostic(store, event.stepId, event.diagnostic);
+      const encoded = JSON.stringify(event.diagnostic);
+      const budget = await client.query("SELECT sum(octet_length(diagnostics::text)) AS bytes FROM pipeline_steps WHERE build_id=$1", [id]);
+      // JSONB's text form adds formatting whitespace. Most events fit even that
+      // upper bound; near the limit, measure compact JSON to preserve capacity.
+      if (Number(budget.rows[0].bytes) + Buffer.byteLength(encoded) + (step.count ? 1 : 0) > EVENT_BYTES) {
+        const previous = await client.query("SELECT diagnostics FROM pipeline_steps WHERE build_id=$1 AND step_id=$2", [id, event.stepId]);
+        await checkDiagnostics(store, client, id, event.stepId, [...previous.rows[0].diagnostics, event.diagnostic]);
+      }
+      await client.query("UPDATE pipeline_steps SET diagnostics=diagnostics || $3::jsonb WHERE build_id=$1 AND step_id=$2", [id, event.stepId, `[${encoded}]`]);
+    } else {
+      if (row.logs_truncated) return receipt();
+      const frame = JSON.stringify(event) + "\n";
+      row.logs_truncated = row.log_bytes + Buffer.byteLength(frame) + Buffer.byteLength(LOG_TRUNCATED) > EVENT_BYTES;
+      await client.query("UPDATE build_outputs SET log=log || $2 WHERE id=$1", [id, row.logs_truncated ? LOG_TRUNCATED : frame]);
+    }
+    const update = await client.query("UPDATE build_outputs SET event_sequence=event_sequence+1 WHERE id=$1 RETURNING event_sequence", [id]);
+    row.event_sequence = update.rows[0].event_sequence;
+    const result = receipt(); notices.push(result); return result;
+  }, null, true);
+}
+
 async function transitionStep(store, id, stepId, expectedState, nextState, details = {}) {
   return withRun(store, id, null, null, async (client, row, notices, stopped) => {
+    owned(store, row);
     if (!ACTIVE.has(row.status)) return view(client, row);
     const reason = await authorityReason(store, client, row);
     if (reason) return finish(client, row, "cancelled", reason, notices, stopped);
     if (row.status !== "running" || !STEP_NEXT[expectedState]?.includes(nextState)) invalid(store, "PIPELINE_TRANSITION_INVALID", 409);
-    const diagnostics = jsonValue(store, details.diagnostics === undefined ? [] : details.diagnostics);
-    if (!Array.isArray(diagnostics)) invalid(store);
-    const encoded = JSON.stringify(diagnostics);
-    const budget = await client.query(`SELECT COALESCE(sum(octet_length(diagnostics::text)),0)
-      + octet_length($3::jsonb::text) AS bytes FROM pipeline_steps WHERE build_id=$1 AND step_id<>$2`, [id, stepId, encoded]);
-    if (Number(budget.rows[0].bytes) > 1048576) invalid(store, "PIPELINE_DIAGNOSTICS_LIMIT");
+    const previous = await client.query("SELECT diagnostics FROM pipeline_steps WHERE build_id=$1 AND step_id=$2 AND state=$3", [id, stepId, expectedState]);
+    if (!previous.rowCount) invalid(store, "PIPELINE_STEP_CONFLICT", 409);
+    const diagnostics = details.diagnostics === undefined ? previous.rows[0].diagnostics : jsonValue(store, details.diagnostics);
+    const encoded = await checkDiagnostics(store, client, id, stepId, diagnostics);
     const update = await client.query(`UPDATE pipeline_steps SET state=$4,
       started_at=CASE WHEN $4='running' THEN CURRENT_TIMESTAMP ELSE started_at END,
       completed_at=CASE WHEN $4='running' THEN NULL ELSE CURRENT_TIMESTAMP END,diagnostics=$5::jsonb
@@ -275,6 +366,7 @@ function publication(store, id, artifacts) {
   return freeze({ artifacts: values, hash: digest.update("]").digest("hex"), path: values.length ? `output/${id}` : null });
 }
 async function publicationReady(store, client, row, notices, stopped) {
+  owned(store, row);
   if (!ACTIVE.has(row.status)) return view(client, row);
   const reason = await authorityReason(store, client, row);
   if (reason) return finish(client, row, "cancelled", reason, notices, stopped);
@@ -368,4 +460,4 @@ async function recheckRunPermissions(store, { projectId = null, userId = null } 
   }
 }
 
-module.exports = { approveBundle, revokeApproval, createRun, getRun, getPipeline, cancelRun, transitionRun, transitionStep, publishRun, reconcileRuns, recheckRunPermissions };
+module.exports = { approveBundle, revokeApproval, createRun, getRun, getPipeline, cacheDescriptor, cancelRun, transitionRun, transitionStep, recordProgress, publishRun, reconcileRuns, recheckRunPermissions };

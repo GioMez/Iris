@@ -43,7 +43,7 @@ async function fixture(t, { native = false, sources = { "iris.lua": script, "set
   t.after(async () => { await runtime?.close(); await disposeRunWorkspace(workspace); await fs.rm(root, { recursive: true }); });
   const policy = readRuntimePolicy({ image: image || `sha256:${"a".repeat(64)}`, memoryBytes: 268435456, totalMemoryBytes: 335544320,
     outputBytes: 16777216, tempBytes: 8388608, outputEntries: 1024, tempEntries: 64 });
-  const tools = [require("../src/pipeline/lua").createLuaTool()];
+  const tools = require("../src/pipeline/lua").createLuaTools();
   if (native) runtime = await createPodmanRuntime({ root: path.join(root, "runtime"), coordinatorId: uuidv7(),
     transport: { connection: process.env.IRIS_TEST_PODMAN_CONNECTION, home: process.env.IRIS_TEST_PODMAN_HOME }, policy, tools });
   const boundary = native ? { ...runtime, createWorkspace: options => { starts++; admissions.push(options.stepId); return runtime.createWorkspace(options); } } : {
@@ -108,6 +108,19 @@ test("Lua coordinator retains request evidence when worker setup needs engine re
   assert.equal(request.modules.length, 2);
 });
 
+test("Lua invocations share the coordinator's original whole-run deadline", async t => {
+  const f = await fixture(t), deadlines = [], before = Date.now();
+  const host = f.createHost({ runtime: { ...f.boundary, async createWorkspace(options) {
+    deadlines.push(options.deadlineAt);
+    throw Object.assign(new Error("admission probe"), { code: "PIPELINE_RUN_DEADLINE" });
+  } } });
+  const after = Date.now();
+  for (let i = 0; i < 2; i++) await assert.rejects(host.inspectLua({ approval: host.identity }), { code: "PIPELINE_RUN_DEADLINE" });
+  assert.ok(Number.isSafeInteger(deadlines[0]));
+  assert.ok(deadlines[0] >= before + 1800000 && deadlines[0] <= after + 1800000);
+  assert.equal(deadlines[1], deadlines[0]);
+});
+
 test("Lua approval changes when trusted containment implementation changes", async t => {
   const f = await fixture(t), source = require.resolve("../src/pipeline/lua"), localRequire = createRequire(source);
   const sync = require("node:fs"), module = { exports: {} };
@@ -136,6 +149,28 @@ test("contained Lua planning uses approved defaults and rejects invalid paramete
   assert.deepEqual(await fs.readdir(f.workspace.root), ["snapshot"]);
 });
 
+test("default Lua transforms can run beyond the five-second planning deadline", contained, async t => {
+  const { createLuaAdapter } = require("../src/pipeline/lua");
+  const controller = new AbortController();
+  let f, plan, timer;
+  t.after(() => clearTimeout(timer));
+  const plugin = `return {apiVersion=1,pluginId='deadlines',plan=function() return {
+    apiVersion=1,pluginId='deadlines',steps={{id='wait',adapter={id='iris.lua',version='1.0.0'},
+      options={script='iris.lua',entrypoint='wait'}}},targets={default={steps={'wait'},publish=iris.array{}}}} end,
+    wait=function(ctx) ctx.log('info','ready') while true do end end}`;
+  f = await fixture(t, { native: true, sources: { "iris.lua": plugin }, adapters: [
+    createLuaAdapter({ execute: context => f.host.transformLua({ approval: f.host.identity, plan, context,
+      emit: () => { timer = setTimeout(() => controller.abort(), 6500); } }) }),
+  ] });
+  const descriptor = await f.host.inspectLua({ approval: f.host.identity });
+  plan = await f.host.planLua({ approval: f.host.identity, descriptor });
+  const result = await executePlan({ plan, target: "default", workspace: f.workspace, registry: f.registry,
+    signal: controller.signal, gate: new ConcurrencyGate({ limit: 1 }) });
+  assert.equal(result.state, "cancelled", JSON.stringify(result.steps));
+  assert.equal(controller.signal.aborted, true);
+  assert.deepEqual(await fs.readdir(path.join(f.root, "runtime")), ["installation.json"]);
+});
+
 test("contained Lua planning rejects a stale cached schema before calling project plan", contained, async t => {
   const f = await fixture(t, { native: true });
   const descriptor = await f.host.inspectLua({ approval: f.host.identity });
@@ -152,6 +187,24 @@ test("contained Lua planner failure is rejected even when its worker exits zero"
   const descriptor = await f.host.inspectLua({ approval: f.host.identity });
   await assert.rejects(f.host.planLua({ approval: f.host.identity, descriptor, parameters: {} }), { code: "PIPELINE_LUA_EXECUTION_FAILED" });
   assert.deepEqual(await fs.readdir(f.workspace.root), ["snapshot"]);
+});
+
+for (const mode of ["inspect", "plan"]) test(`contained Lua ${mode} loops stop at the planning deadline`, contained, async t => {
+  const f = await fixture(t, { native: true, sources: { "iris.lua": mode === "inspect" ? "while true do end" :
+    "return {apiVersion=1,pluginId='loop',plan=function() while true do end end}" } });
+  const approval = f.host.identity;
+  const descriptor = mode === "plan" ? await f.host.inspectLua({ approval }) : null;
+  const signal = AbortSignal.timeout(12000);
+  await assert.rejects(mode === "inspect" ? f.host.inspectLua({ approval, signal }) :
+    f.host.planLua({ approval, descriptor, signal }), { code: "PIPELINE_LUA_TIMEOUT" });
+  assert.equal(signal.aborted, false, "the planner deadline must precede the outer cancellation");
+  assert.deepEqual(await fs.readdir(path.join(f.root, "runtime")), ["installation.json"]);
+});
+
+test("an expired whole-run deadline rejects Lua admission and leaves no worker", contained, async t => {
+  const f = await fixture(t, { native: true }), host = f.createHost({ deadlineAt: Date.now() - 1 });
+  await assert.rejects(host.inspectLua({ approval: host.identity }), { code: "PIPELINE_RUN_DEADLINE" });
+  assert.deepEqual(await fs.readdir(path.join(f.root, "runtime")), ["installation.json"]);
 });
 
 test("Lua coordinator refuses malformed or oversized worker result frames", () => {

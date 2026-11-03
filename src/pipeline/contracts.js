@@ -163,6 +163,26 @@ function validateDescriptor(value, { policy: overrides } = {}) {
     requiredCapabilities: names(source.requiredCapabilities, policy.maxValues, code).sort() });
 }
 
+function bindDescriptor(value, identity, { policy } = {}) {
+  const hashes = {};
+  for (const key of ["bundleHash", "policyHash", "registryHash"]) {
+    if (typeof identity?.[key] !== "string" || !/^[a-f0-9]{64}$/.test(identity[key])) fail("PIPELINE_DESCRIPTOR_INVALID", "Invalid descriptor identity");
+    hashes[key] = identity[key];
+  }
+  const result = { ...validateDescriptor(value, { policy }), ...hashes };
+  return freeze({ ...result, descriptorHash: createHash("sha256").update(canonical(result)).digest("hex") });
+}
+
+function validateBoundDescriptor(value, { identity, policy } = {}) {
+  const copy = cloneValue(value, readPolicy(policy), "PIPELINE_DESCRIPTOR_INVALID");
+  record(copy, ["apiVersion", "pluginId", "parameterSchema", "requiredCapabilities", "bundleHash", "policyHash", "registryHash", "descriptorHash"],
+    "PIPELINE_DESCRIPTOR_INVALID", "cached descriptor");
+  const { apiVersion, pluginId, parameterSchema, requiredCapabilities } = copy;
+  const normalized = bindDescriptor({ apiVersion, pluginId, parameterSchema, requiredCapabilities }, identity, { policy });
+  if (canonical(normalized) !== canonical(copy)) fail("PIPELINE_DESCRIPTOR_CHANGED", "Cached plugin descriptor identity changed");
+  return normalized;
+}
+
 function validateLuaDiagnostic(value, { policy = readPolicy(), hasMember = () => false } = {}) {
   const code = "PIPELINE_DIAGNOSTICS_INVALID", item = cloneValue(value, policy, code);
   record(item, ["severity", "code", "message", "input", "file", "line", "column"], code, "Lua diagnostic");
@@ -315,5 +335,5 @@ function resolveTarget(plan, targetName) {
   return freeze({ steps: plan.order.filter(id => required.has(id)).map(id => byId.get(id)), publish: target.publish, primaryPreview: target.primaryPreview });
 }
 
-module.exports = { DEFAULT_POLICY, LUA_DATA_POLICY, SNAPSHOT_TYPE, validatePlan, resolveTarget, validateParameters, validateDescriptor, validateLuaDiagnostic,
+module.exports = { DEFAULT_POLICY, LUA_DATA_POLICY, SNAPSHOT_TYPE, validatePlan, resolveTarget, validateParameters, validateDescriptor, bindDescriptor, validateBoundDescriptor, validateLuaDiagnostic,
   readPolicy, cloneValue, createSchemaValidator, portContract, name, names, logicalPath, canonical, record, freeze, fail };

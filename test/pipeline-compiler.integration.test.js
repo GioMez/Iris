@@ -75,7 +75,7 @@ for (const family of ["latex", "lilypond"]) test(`approved Lua generates a nativ
   for (const broken of [false, true]) {
     let host, plan;
     const f = await fixture(t, { "iris.lua": plugin, [main]: source }, { projectType: family }, {
-      tools: [require("../src/pipeline/lua").createLuaTool()],
+      tools: require("../src/pipeline/lua").createLuaTools(),
       adapters: [createLuaAdapter({ execute: context => host.transformLua({ approval: host.identity, plan, context }) })],
     });
     host = createLuaCoordinator({ runtime: f.runtime, workspace: f.workspace, runId: uuidv7(), registry: f.registry });
@@ -127,7 +127,7 @@ test("changing a Lua-generated include changes only its declared dependent LilyP
       "main.ly": '\\version "2.24.1"\n\\include "generated/include.ily"\n\\score { \\new Staff { \\generatedMusic } }\n',
       "control.ly": '\\version "2.24.1"\n\\score { \\new Staff { d\'1 } }\n',
     }, { projectType: "lilypond" }, {
-      tools: [require("../src/pipeline/lua").createLuaTool()],
+      tools: require("../src/pipeline/lua").createLuaTools(),
       adapters: [createLuaAdapter({ execute: context => host.transformLua({ approval: host.identity, plan, context }) })],
     });
     host = createLuaCoordinator({ runtime: f.runtime, workspace: f.workspace, runId: uuidv7(), registry: f.registry });

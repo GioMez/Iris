@@ -9,7 +9,7 @@ const { initializeSchema } = require("../src/database");
 const { uuidv7 } = require("../src/ids");
 const { createProjectMutations } = require("../src/project-mutations");
 const { publishCompileOutput } = require("../src/builds");
-const { validatePlan } = require("../src/pipeline/contracts");
+const { validatePlan, canonical, validateDescriptor } = require("../src/pipeline/contracts");
 const { createRegistry } = require("../src/pipeline/registry");
 const { connectionString, isolatedSchema } = require("./helpers/isolated-schema.cjs");
 const { deferred, serverFixture } = require("./helpers/server-fixture.cjs");
@@ -38,7 +38,7 @@ async function fixture(t, server = false) {
   }
   const events = [], stopped = [];
   const store = {
-    pool, requestError, policyHash: hash, registryHash: hash,
+    pool, requestError, policyHash: hash, registryHash: hash, coordinatorId,
     mutations: http?.app.projectMutations || createProjectMutations({ fs, getDb: () => pool, backupRoot: path.join(root, "backups"), requestError }),
     emit: async event => { events.push(event); },
     stop: async id => { stopped.push(id); },
@@ -67,6 +67,171 @@ async function ready(f, run, plan = validationPlan()) {
   await runs.transitionStep(f.store, run.id, "validate", "pending", "running");
   await runs.transitionStep(f.store, run.id, "validate", "running", "succeeded");
 }
+
+async function running(f, run) {
+  await runs.transitionRun(f.store, run.id, "queued", "planning");
+  await runs.transitionRun(f.store, run.id, "planning", "running", { plan: validationPlan() });
+  await runs.transitionStep(f.store, run.id, "validate", "pending", "running");
+}
+
+function descriptor(identity, pluginId = "fixture") {
+  const value = { ...validateDescriptor({ apiVersion: 1, pluginId }), ...identity };
+  return { ...value, descriptorHash: createHash("sha256").update(canonical(value)).digest("hex") };
+}
+
+test("explicit inspection caches a checked descriptor for readers without granting them execution", options, async t => {
+  const f = await fixture(t), approval = await f.approve(), value = descriptor(f.identity);
+  for (const role of ["viewer", "outsider"]) await assert.rejects(
+    runs.cacheDescriptor(f.store, f.projectId, approval.id, f.principals[role], value), { statusCode: role === "viewer" ? 403 : 404 });
+  await runs.cacheDescriptor(f.store, f.projectId, approval.id, f.principals.editor, value);
+  value.pluginId = "mutated";
+  const metadata = await runs.getPipeline(f.store, f.projectId, f.principals.viewer);
+  assert.equal(metadata.descriptor.pluginId, "fixture");
+  assert.equal(metadata.descriptor.descriptorHash, descriptor(f.identity).descriptorHash);
+  await assert.rejects(runs.cacheDescriptor(f.store, f.projectId, approval.id, f.principals.editor, descriptor(f.identity, "changed")),
+    { errorCode: "PIPELINE_DESCRIPTOR_CHANGED" });
+});
+
+test("descriptor caching rejects stale approval and execution policy after inspection", options, async t => {
+  for (const change of ["reapproval", "revocation", "policy", "registry"]) {
+    const f = await fixture(t), approval = await f.approve();
+    if (change === "reapproval") await f.approve();
+    if (change === "revocation") await runs.revokeApproval(f.store, f.projectId, approval.id, f.principals.owner);
+    if (change === "policy") f.store.policyHash = otherHash;
+    if (change === "registry") f.store.registryHash = otherHash;
+    await assert.rejects(runs.cacheDescriptor(f.store, f.projectId, approval.id, f.principals.editor, descriptor(f.identity)),
+      { errorCode: "PIPELINE_APPROVAL_REQUIRED" }, change);
+    assert.equal((await f.pool.query("SELECT descriptor FROM pipeline_approvals WHERE id=$1", [approval.id])).rows[0].descriptor, null);
+  }
+});
+
+test("descriptor caching rejects corrupt hashes and executable schemas before persistence", options, async t => {
+  const f = await fixture(t), approval = await f.approve(), value = descriptor(f.identity);
+  for (const corrupt of [{ ...value, descriptorHash: otherHash }, { ...value, bundleHash: otherHash },
+    { ...value, parameterSchema: { type: "object", properties: { input: { type: "string", pattern: "x" } } } }]) {
+    await assert.rejects(runs.cacheDescriptor(f.store, f.projectId, approval.id, f.principals.editor, corrupt));
+  }
+  assert.equal((await runs.getPipeline(f.store, f.projectId, f.principals.viewer)).descriptor, null);
+});
+
+test("a stale coordinator cannot advance or publish another coordinator's run", options, async t => {
+  const f = await fixture(t), approval = await f.approve(), run = await f.accept(approval);
+  const stale = { ...f.store, coordinatorId: uuidv7() };
+  await assert.rejects(runs.transitionRun(stale, run.id, "queued", "planning"), { errorCode: "PIPELINE_COORDINATOR_CHANGED" });
+  await running(f, run);
+  await assert.rejects(runs.transitionStep(stale, run.id, "validate", "running", "succeeded"), { errorCode: "PIPELINE_COORDINATOR_CHANGED" });
+  await runs.transitionStep(f.store, run.id, "validate", "running", "succeeded");
+  await assert.rejects(runs.publishRun(stale, run.id, []), { errorCode: "PIPELINE_COORDINATOR_CHANGED" });
+  assert.equal((await runs.getRun(f.store, run.id, f.principals.viewer)).state, "running");
+});
+
+test("live run progress survives HTTP resync and cancellation without late writes", options, async t => {
+  const f = await fixture(t, true), approval = await f.approve(), run = await f.accept(approval);
+  await running(f, run);
+  const diagnostic = { severity: "warning", message: "live warning", stepId: "validate" };
+  await runs.recordProgress(f.store, run.id, { stepId: "validate", diagnostic });
+  await runs.recordProgress(f.store, run.id, { stepId: "validate", level: "info", message: "live log" });
+  const response = await f.request(`/api/projects/${f.projectId}/runs/${run.id}`, { cookie: f.cookies.viewer });
+  assert.equal(response.status, 200);
+  const { run: current } = await response.json();
+  assert.equal(current.state, "running");
+  assert.deepEqual(current.steps[0].diagnostics, [diagnostic]);
+  assert.deepEqual(current.log.trim().split("\n").map(JSON.parse), [{ stepId: "validate", level: "info", message: "live log" }]);
+  assert.equal(current.logsTruncated, false);
+  assert.equal(current.sequence, "6");
+  assert.equal(JSON.stringify(f.events).includes("live warning"), false);
+  const cancelled = await runs.cancelRun(f.store, run.id, f.principals.owner);
+  const late = await runs.recordProgress(f.store, run.id, { stepId: "validate", diagnostic: { ...diagnostic, message: "too late" } });
+  assert.equal(late.sequence, cancelled.sequence);
+  assert.equal(late.state, "cancelled");
+  assert.deepEqual((await runs.getRun(f.store, run.id, f.principals.viewer)).steps[0].diagnostics, [diagnostic]);
+});
+
+test("step completion preserves live diagnostics and rejects replacing their prefix", options, async t => {
+  const f = await fixture(t), approval = await f.approve(), run = await f.accept(approval);
+  await running(f, run);
+  const diagnostic = { severity: "warning", message: "retained" };
+  await runs.recordProgress(f.store, run.id, { stepId: "validate", diagnostic });
+  await assert.rejects(runs.transitionStep(f.store, run.id, "validate", "running", "succeeded", { diagnostics: [] }),
+    { errorCode: "PIPELINE_DIAGNOSTICS_CHANGED" });
+  const completed = await runs.transitionStep(f.store, run.id, "validate", "running", "succeeded");
+  assert.deepEqual(completed.steps[0].diagnostics, [diagnostic]);
+  const late = await runs.recordProgress(f.store, run.id, { stepId: "validate", diagnostic });
+  assert.equal(late.sequence, completed.sequence);
+});
+
+test("run progress rejects stale ownership and nonrunning steps before accepting data", options, async t => {
+  const f = await fixture(t), approval = await f.approve(), run = await f.accept(approval);
+  const event = { stepId: "validate", diagnostic: { severity: "warning", message: "check" } };
+  await assert.rejects(runs.recordProgress(f.store, run.id, event), { errorCode: "PIPELINE_STEP_CONFLICT" });
+  await running(f, run);
+  await assert.rejects(runs.recordProgress({ ...f.store, coordinatorId: uuidv7() }, run.id, event), { errorCode: "PIPELINE_COORDINATOR_CHANGED" });
+  await assert.rejects(runs.recordProgress(f.store, run.id, { ...event, stepId: "absent" }), { errorCode: "PIPELINE_STEP_CONFLICT" });
+  await f.pool.query("UPDATE project_members SET role='viewer' WHERE project_id=$1 AND user_id=$2", [f.projectId, f.principals.editor.sub]);
+  await assert.rejects(runs.recordProgress(f.store, run.id, event), { errorCode: "PIPELINE_RUN_AUTHORITY_CHANGED" });
+  assert.deepEqual(f.stopped, [], "an output callback must not await its own worker drain");
+  assert.deepEqual((await runs.getRun(f.store, run.id, f.principals.viewer)).steps[0].diagnostics, []);
+  assert.equal((await runs.transitionRun(f.store, run.id, "running", "failed", { reason: "progress-rejected" })).state, "cancelled");
+  assert.deepEqual(f.stopped, [run.id]);
+});
+
+test("diagnostic persistence rejects PostgreSQL-incompatible strings without losing earlier progress", options, async t => {
+  const f = await fixture(t), approval = await f.approve(), run = await f.accept(approval);
+  await running(f, run);
+  const diagnostic = { severity: "warning", message: "retained" };
+  await runs.recordProgress(f.store, run.id, { stepId: "validate", diagnostic });
+  for (const message of ["zero\0byte", "unpaired\ud800"]) await assert.rejects(
+    runs.recordProgress(f.store, run.id, { stepId: "validate", diagnostic: { severity: "warning", message } }),
+    { errorCode: "PIPELINE_DIAGNOSTICS_INVALID" });
+  const current = await runs.getRun(f.store, run.id, f.principals.viewer);
+  assert.deepEqual(current.steps[0].diagnostics, [diagnostic]);
+  assert.equal(current.sequence, "5");
+});
+
+test("log saturation retains complete UTF-8 frames while diagnostics keep their independent budget", options, async t => {
+  const f = await fixture(t), approval = await f.approve(), run = await f.accept(approval);
+  await running(f, run);
+  const message = "𝄞".repeat(15000), diagnostic = { severity: "warning", message, notes: Array(500).fill("") };
+  for (let i = 0; i < 18; i++) await runs.recordProgress(f.store, run.id, { stepId: "validate", level: "info", message });
+  const full = await runs.getRun(f.store, run.id, f.principals.viewer);
+  assert.ok(Buffer.byteLength(full.log) <= 1048576);
+  assert.equal(full.logsTruncated, true);
+  const frames = full.log.trim().split("\n").map(JSON.parse);
+  assert.equal(frames.length, 18);
+  assert.equal(frames[0].message, message);
+  assert.deepEqual(frames.at(-1), { truncated: true });
+  const ignored = await runs.recordProgress(f.store, run.id, { stepId: "validate", level: "info", message: "ignored" });
+  assert.equal(ignored.sequence, full.sequence);
+  for (let i = 0; i < 17; i++) await runs.recordProgress(f.store, run.id, { stepId: "validate", diagnostic });
+  await assert.rejects(runs.recordProgress(f.store, run.id, { stepId: "validate", diagnostic }), { errorCode: "PIPELINE_DIAGNOSTICS_LIMIT" });
+  const final = await runs.transitionStep(f.store, run.id, "validate", "running", "succeeded", { diagnostics: Array(17).fill(diagnostic) });
+  assert.equal(final.steps[0].diagnostics.length, 17);
+});
+
+test("incremental progress avoids transferring accumulated history on every event", options, async t => {
+  const f = await fixture(t), approval = await f.approve(), run = await f.accept(approval);
+  await running(f, run);
+  let returnedBytes = 0;
+  const pool = { query: (...args) => f.pool.query(...args), async connect() {
+    const client = await f.pool.connect();
+    return { async query(...args) {
+      const result = await client.query(...args);
+      returnedBytes += Buffer.byteLength(JSON.stringify(result.rows));
+      return result;
+    }, release: () => client.release() };
+  } };
+  const store = { ...f.store, pool, mutations: createProjectMutations({ fs, getDb: () => pool,
+    backupRoot: path.join(f.root, "measured-backups"), requestError }) };
+  for (const kind of ["diagnostic", "log"]) for (let i = 0; i < 128; i++) {
+    await runs.recordProgress(store, run.id, kind === "diagnostic" ?
+      { stepId: "validate", diagnostic: { severity: "warning", message: "x".repeat(4000) } } :
+      { stepId: "validate", level: "info", message: "x".repeat(4000) });
+  }
+  assert.ok(returnedBytes < 10 * 1048576, `${returnedBytes} bytes returned for about 1 MiB of new events`);
+  const result = await runs.getRun(f.store, run.id, f.principals.viewer);
+  assert.equal(result.steps[0].diagnostics.length, 128);
+  assert.equal(result.log.trim().split("\n").length, 128);
+});
 
 test("only owners approve exact bundles; rejected identity or authority leaves no durable run", options, async t => {
   const f = await fixture(t);
@@ -135,9 +300,8 @@ test("cancellation releases the project gate before waiting for a worker's pendi
   const f = await fixture(t), approval = await f.approve(), run = await f.accept(approval);
   let observedState;
   f.store.stop = async id => {
-    const write = f.store.mutations.gate(f.projectId, async () => {
-      observedState = (await f.pool.query("SELECT status FROM build_outputs WHERE id=$1", [id])).rows[0].status;
-    });
+    const write = runs.recordProgress(f.store, id, { stepId: "validate", level: "info", message: "late event" })
+      .then(record => { observedState = record.state; });
     let timer;
     try {
       await Promise.race([write, new Promise((resolve, reject) => {

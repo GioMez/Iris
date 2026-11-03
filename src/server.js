@@ -212,6 +212,7 @@ const activePipelineRuns = new Map();
 const pipelineCoordinatorId = uuidv7();
 const pipelineRunStore = {
   get pool() { return db; },
+  coordinatorId: pipelineCoordinatorId,
   mutations: projectMutations, requestError,
   emit: collabNotifyRun,
   stop: async id => { await activePipelineRuns.get(id)?.stop(); },
