@@ -7,11 +7,13 @@ ENV PORT=3000
 ENV DATA_DIR=/app/data
 ENV PUBLIC_DIR=/app/public
 ENV TEMPLATE_DIR=/app/data/templates
+RUN apk add --no-cache lua5.4=5.4.8-r0 && ln -s /usr/bin/lua5.4 /usr/local/bin/lua
 COPY package.json package-lock.json .npmrc ./
 RUN npm ci --omit=dev --omit=optional && npm cache clean --force
 
 COPY src ./src
 COPY db/schema.sql ./db/schema.sql
+COPY db/migrations ./db/migrations
 COPY public ./public
 COPY LICENSE THIRD_PARTY_NOTICES.md ./
 

@@ -3,7 +3,7 @@ const { createHash, randomBytes } = require("node:crypto");
 const { until, operationSignal } = require("./disposable.cjs");
 const { withBrowser } = require("./browser.cjs");
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
-const tables = ["iris_schema", "users", "projects", "project_members", "project_files", "document_versions", "build_outputs", "build_artifacts", "audit_events", "project_deletions"];
+const tables = ["iris_schema", "users", "projects", "project_members", "project_files", "document_versions", "build_outputs", "build_artifacts", "audit_events", "project_deletions", "pipeline_approvals", "project_pipelines", "pipeline_steps"];
 const snapshotSQL = `SELECT jsonb_build_object(${tables.map((name) => `'${name}', (SELECT COALESCE(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text), '[]'::jsonb) FROM ${name} t)`).join(",")});`;
 // Runs inside either runtime to compare every file and its mode at the frozen point.
 const filesystemProbe = `const fs=require('node:fs/promises'),path=require('node:path'),crypto=require('node:crypto');
@@ -142,7 +142,7 @@ async function journey(source, target, { native = false, browser = false, browse
   await drain(source, api);
   await source.stop(); // A stopped, drained writer also prevents a later client from changing either layer.
   const beforeDB = JSON.parse(await source.sql(snapshotSQL)), beforeFS = await source.files();
-  assert.equal(beforeDB.iris_schema[0].version, 2);
+  assert.equal(beforeDB.iris_schema[0].version, 3);
   assert.equal(beforeDB.projects.length, 4);
   assert.equal(beforeDB.build_outputs.length, 2);
   const backup = await source.backup();
@@ -164,4 +164,49 @@ async function journey(source, target, { native = false, browser = false, browse
   assert.deepEqual(await source.files(), beforeFS, "target writes cannot mutate source storage");
   console.log(`PASS drained backup + separate-instance restore: ${tables.length} tables, ${Object.keys(beforeFS).length} filesystem entries; login, permissions, builds, source/settings and target-only mutation`);
 }
-module.exports = { journey, filesystemProbe };
+// Serialized into the application service: exercise the packaged runtime and
+// interpreter under its real UID, environment, mounts and process reaper.
+async function luaRuntimeProbe() {
+  const fs = require("node:fs/promises"), path = require("node:path"), assert = require("node:assert/strict");
+  const { uuidv7 } = require("./src/ids");
+  const { createNativeRuntime } = require("./src/pipeline/runtime");
+  const { createRunWorkspace, disposeRunWorkspace } = require("./src/pipeline/workspaces");
+  const { createLuaTools, createLuaCoordinator, createLuaAdapter } = require("./src/pipeline/lua");
+  const { createRegistry } = require("./src/pipeline/registry");
+  const { executePlan } = require("./src/pipeline/executor");
+  const { ConcurrencyGate } = require("./src/throttle");
+  assert.equal(process.env.LUA_BIN_PATH, "/usr/local/bin");
+  const root = await fs.mkdtemp(path.join(process.env.DATA_DIR, ".lua-smoke-"));
+  let runtime, workspace;
+  try {
+    const source = path.join(root, "source"); await fs.mkdir(source);
+    await fs.writeFile(path.join(source, "iris.lua"), `return {apiVersion=1,pluginId='smoke',plan=function() return {
+      apiVersion=1,pluginId='smoke',steps={{id='generate',adapter={id='iris.lua',version='1.0.0'},
+        options={script='iris.lua',entrypoint='generate'},outputs={out={kind='file',mediaType='application/octet-stream',path='bytes.bin'}}}},
+      targets={default={steps={'generate'},publish={{step='generate',port='out'}}}}} end,
+      generate=function(ctx) ctx.write('out','bytes.bin',string.char(0,255,128,10)) end}`);
+    runtime = await createNativeRuntime({ root: path.join(root, "runtime"), coordinatorId: uuidv7(), tools: createLuaTools() });
+    workspace = await createRunWorkspace({ root: source, files: [{ id: uuidv7(), path: "iris.lua" }], directories: [], settings: {} }, { root: path.join(root, "runs") });
+    let host, plan;
+    const registry = createRegistry([createLuaAdapter({ execute: context => host.transformLua({ approval: host.identity, plan, context }) })]);
+    host = createLuaCoordinator({ runtime, workspace, runId: uuidv7(), registry });
+    const descriptor = await host.inspectLua({ approval: host.identity });
+    plan = await host.planLua({ approval: host.identity, descriptor });
+    const result = await executePlan({ plan, target: "default", workspace, registry, gate: new ConcurrencyGate({ limit: 1 }) });
+    assert.equal(result.state, "succeeded", JSON.stringify(result.steps));
+    assert.deepEqual(await fs.readFile(path.join(result.artifacts[0].root, result.artifacts[0].path)), Buffer.from([0,255,128,10]));
+    const worker = await runtime.createWorkspace({ runId: uuidv7(), stepId: "cancel" }), controller = new AbortController();
+    const stopped = await runtime.runTool({ workspace: worker, tool: runtime.resolveTool("lua-transform"), signal: controller.signal,
+      args: ["-e", `require('/app/src/pipeline/lua-vm').executeLua({mode:'transform',script:'iris.lua',entrypoint:'wait',
+        modules:{'iris.lua':'return {wait=function(ctx) ctx.log("info","ready");while true do end end}'},
+        host:{log:()=>console.log('ready')}}).catch(()=>{process.exitCode=1})`], onOutput: () => controller.abort() });
+    assert.equal(stopped.cancelled, true); assert.equal(stopped.drained, true);
+    await runtime.disposeWorkspace(worker);
+    assert.deepEqual(await fs.readdir(path.join(root, "runtime")), ["installation.json"]);
+  } finally {
+    await runtime?.close();
+    if (workspace) await disposeRunWorkspace(workspace);
+    await fs.rm(root, { recursive: true, force: true });
+  }
+}
+module.exports = { journey, filesystemProbe, luaRuntimeProbe };

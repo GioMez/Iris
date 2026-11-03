@@ -424,6 +424,24 @@ A confirmed deletion with filesystem cleanup still pending returns
 Startup resumes ready cleanup even with retention off; enabled sweeps also retry
 it. A ready receipt with a live project row requires inspection.
 
+### Lua runtime recovery
+
+The Lua runtime keeps version-2 JSON receipts beside its private workspace
+directories. Each receipt identifies the installation, coordinator, run, step
+and deadline. On initialization, the runtime removes valid prior `preparing`
+or `idle` workspaces. A `running` receipt, malformed receipt or failed cleanup
+requires operator recovery and reports `PIPELINE_WORKER_RECOVERY_REQUIRED`.
+Production pipeline lifecycle wiring remains under development on this branch;
+the runtime's caller selects the workspace root.
+
+Stop the owning Iris process before investigating. Preserve the receipt and
+workspace, inspect the matching run and establish whether any of its native
+processes remain. A persisted PID can refer to a different process after a
+restart; the runtime never signals it during recovery. After confirming that
+the execution has ended and preserving needed evidence, remove only that
+workspace and its matching receipt, then restart. Keep `installation.json`.
+Do not clear uncertain receipts merely to make startup succeed.
+
 ## Compiler trust and instance boundaries
 
 Iris spawns allowlisted tools without a shell, forces LaTeX `-no-shell-escape`,
@@ -433,3 +451,18 @@ LilyPond executes Guile, and both toolchains can process complex source input.
 Run the qualified native model with trusted source authors and an appropriately
 restricted operating-system account. Iris does not provide isolated remote
 compiler workers or a multi-tenant execution sandbox.
+
+Lua plugins use the same native trust model. The author API provides approved
+project-local modules and checked file access. Exact-bundle approval includes
+all project `.lua` files, registry identity, runtime policy and trusted
+implementation identities. Changes require a matching approval before execution.
+These controls do not turn the Lua interpreter into an operating-system sandbox.
+
+Normal cancellation stops the owned POSIX process group and waits for it to
+drain. A coordinator SIGKILL, machine failure or a descendant that leaves that
+group can require operator cleanup. Iris does not enforce aggregate native
+memory, PID or scratch-filesystem quotas. Its
+[runtime limits](configuration.md#lua-pipeline-runtime-limits) bound admitted
+work, metadata, logs and retained outputs. Docker/Podman Compose runs tools in
+the Iris service with its existing mounts and account; Iris does not launch
+nested containers or depend on systemd or Bubblewrap.

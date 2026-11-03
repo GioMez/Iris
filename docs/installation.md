@@ -39,6 +39,8 @@ installation and tests work without Git history.
 - A LaTeX distribution for document builds, LilyPond for score builds, or both.
   Install BibTeX, Biber and MakeIndex if your chosen pipelines use them.
 - `synctex` for LaTeX PDF/source navigation. It usually comes with TeX Live.
+- Lua **5.4 or 5.5** for Lua pipeline execution, available as `lua`. Iris ships
+  its JSON codec; you do not need LuaRocks or interpreter extension modules.
 
 The qualified native environment uses macOS arm64, Node 26.8.2, PostgreSQL 18.6,
 TeX Live 2026 (pdfTeX 1.40.29, SyncTeX utility 1.5), LilyPond 2.26.0/Guile 3.0
@@ -52,6 +54,7 @@ psql --version
 pdflatex --version
 synctex help
 lilypond --version
+lua -v
 ```
 
 ### Dependencies and configuration
@@ -90,6 +93,20 @@ set `TEX_BIN_PATH` and `LILYPOND_BIN_PATH`. Set their respective `*_PATH_LOCKED`
 flags to `true` to prevent project overrides. A service manager may give Iris
 a different PATH from your interactive terminal.
 
+Set `LUA_BIN_PATH` to the directory containing `lua`, or leave it empty to use
+PATH. If your package names the executable `lua5.4`, provide a `lua` symlink in
+an operator-owned directory and select that directory. Projects cannot change
+this setting. Missing optional executables do not prevent editor startup.
+See [Lua runtime limits](configuration.md#lua-pipeline-runtime-limits) for the
+current integration status and execution bounds.
+
+Native Lua/runtime qualification used macOS 27.0.1 arm64, Node 26.12.1 and
+Lua 5.5.1, with TeX Live 2026, LilyPond 2.26.0, Ghostscript 10.08.0 and
+Biber 2.22. A separate source-built Lua 5.4.9 passed bridge, worker and
+extracted-source-package checks. These checks cover source generation, binary
+I/O, explicit compiler passes and retained navigation; they exclude browser
+author controls and production pipeline HTTP workflows.
+
 ### Provision PostgreSQL
 
 As a PostgreSQL administrator, create a restricted role and an empty database.
@@ -122,10 +139,11 @@ Use the supplied [Dockerfile](../Dockerfile) and
 [docker-compose.yml](../docker-compose.yml) with either engine. Build the local
 image **`localhost/iris:1.1.0`** from the tagged or extracted source. You do not
 need a published Iris image or registry credentials. The build downloads the
-official Node base image and locked npm dependencies; Compose downloads official
-PostgreSQL 18.
+official Node base image, pinned Alpine Lua package and locked npm dependencies;
+Compose downloads official PostgreSQL 18.
 
-The image runs Node 24.18.0 on Alpine 3.23 as UID 1000. Compose gives Iris a
+The image runs Node 24.18.0 and Lua 5.4.8 on Alpine 3.23 as UID 1000.
+`/usr/local/bin/lua` selects the packaged interpreter. Compose gives Iris a
 read-only root filesystem, writable project storage and a 256 MiB temporary
 `/tmp`. It runs two services: **`webapp`** and **`postgres`**.
 
@@ -173,8 +191,9 @@ docker build -t localhost/iris:1.1.0 .
 docker compose --env-file .env -f docker-compose.yml -p iris up -d
 ```
 
-Qualification used **Docker Engine 29.8.0 / Docker Compose 5.5.1** on Linux arm64,
-with Docker running as a separate nested daemon in a disposable VM.
+Earlier compiler-free-image qualification used **Docker Engine 29.8.0 /
+Docker Compose 5.5.1** on Linux arm64, with Docker running as a separate nested
+daemon in a disposable VM. That result does not cover the added Lua package.
 
 ### Podman
 
@@ -189,8 +208,21 @@ podman compose --env-file .env -f docker-compose.yml -p iris up -d
 
 If Podman runs in a VM, keep the source directory in a folder shared with that
 VM: Compose mounts the PostgreSQL initialization script from it. Both engines
-use the same Compose file. Qualification used **rootless Podman 6.1.1 /
+use the same Compose file. Earlier qualification used **rootless Podman 6.1.1 /
 podman-compose 1.6.0** on Linux arm64 with SELinux.
+
+The Lua-enabled image passed installation smoke on 2026-11-03 using macOS arm64
+Podman client **6.1.4**, Linux arm64 server **5.6.1** and podman-compose **1.6.0**.
+The smoke ran approved Lua planning, binary generation and process-group
+cancellation inside the Compose application service, repeated those checks after
+restart and restore, and compared all 13 schema-3 tables plus stored file bytes
+and modes. It also verified the stock image's missing-compiler result. This
+qualifies the packaged runtime, not production pipeline HTTP or browser controls.
+
+The native installation smoke on the same date passed LaTeX/LilyPond builds,
+forward/inverse source navigation, restart and separate-instance restore under
+Node 26.12.1 and PostgreSQL 18.6 on macOS arm64. Chrome **156.0.8078.48** painted
+both PDFs in Iris. That browser journey covers the existing compiler workflow.
 
 ### Check service status (optional)
 
@@ -215,7 +247,7 @@ you provide a compatible toolchain in Iris's runtime. A host path in a setting
 does not install a compiler. Install a toolchain inside the container that
 matches its environment, architecture and runtime dependencies.
 
-The distribution supplies one compiler-free Iris image recipe and the
+The distribution supplies one Iris image recipe with Lua and the
 PostgreSQL service. Use the native installation above for the qualified
 compilation setup. Container smoke verification checks the stock image's
 missing-compiler result.

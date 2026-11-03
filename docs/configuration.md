@@ -71,6 +71,7 @@ appropriate proxy routing to Iris's root routes.
 | `TEX_PATH_LOCKED` | `false` | Prevent a project from overriding that directory. |
 | `LILYPOND_BIN_PATH` | empty | Directory containing `lilypond`; empty uses PATH. |
 | `LILYPOND_PATH_LOCKED` | `false` | Prevent a project from overriding that directory. |
+| `LUA_BIN_PATH` | empty | Operator-selected directory containing `lua` 5.4 or 5.5; empty uses PATH. Projects cannot override it. |
 | `COMPILE_TIMEOUT_MS` | `30000` | Timeout for each compiler step, not the entire multipass build. |
 | `COMPILE_LOG_LIMIT` | `1048576` | Captured log bytes per step and stored trace. |
 | `BUILD_ARCHIVE_MAX_MB` | `128` | Aggregate generated-file bytes buffered into a build ZIP, in MiB. |
@@ -85,9 +86,39 @@ conversion. ZIP import limits both the request and expanded contents to
 the receiving instance's import limits.
 
 Paths refer to the environment running Iris. The stock Linux container has no
-compilers. Native toolchains, custom profile arguments and the reduced compiler
-environment are described under [Compilation](development.md#compiler-contract).
+TeX or LilyPond; it includes Lua. Native toolchains, custom profile arguments and
+the reduced compiler environment are described under
+[Compilation](development.md#compiler-contract).
 PDF navigation has separate fixed [resource budgets](source-navigation.md#storage-and-budgets).
+
+### Lua pipeline runtime limits
+
+The Lua runtime uses the installed interpreter through `lua -E`, which ignores
+Lua initialization environment variables. A missing interpreter fails the
+requested operation with `PIPELINE_RUNTIME_UNAVAILABLE`; an unsupported Lua
+version fails with `PIPELINE_LUA_VERSION_UNSUPPORTED`. Ordinary editor startup
+does not require Lua. Compose forwards `LUA_BIN_PATH`; its value must name a
+directory inside the application container.
+
+The runtime currently has these internal defaults. They are not environment
+variables or project options. Production pipeline HTTP and author controls
+remain under development on this branch.
+
+| Limit | Default |
+| --- | --- |
+| Lua descriptor inspection or planning | 5 seconds per invocation |
+| Lua transform | 30 seconds per invocation |
+| Whole pipeline run | 30 minutes, shared across planning and execution |
+| Active native workspaces / waiting admissions | 2 / 8 |
+| Generated artifact | 128 MiB per file |
+| Retained generated outputs | 512 MiB and 20,000 entries |
+| Ordinary tool log | 1 MiB |
+| Returned plan | 1 MiB, 128 steps, 64 targets, 2,048 dependency edges |
+
+Checked I/O and exported-output limits do not cap total interpreter/compiler
+memory, process count or scratch-disk use. See the
+[execution trust boundary](administration.md#compiler-trust-and-instance-boundaries)
+and [recovery procedure](administration.md#lua-runtime-recovery).
 
 ## Password hashing and admission
 

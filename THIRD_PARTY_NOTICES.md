@@ -79,7 +79,7 @@ https://github.com/lezer-parser/generator.
 
 The HP03 TeX grammar/catalog and LilyPond boundary probe are original Iris
 sources, not copied third-party language catalogs. Regenerate the parser with
-`npm run build:languages`; see [the development workflow](docs/development.md#generated-language-sources-hp03).
+`npm run build:languages`; see [the development workflow](docs/development.md#generated-language-sources-and-qualification).
 
 ### Bundled language Worker (HP08)
 
@@ -343,6 +343,35 @@ The `bare-path` NOTICE also states:
 Sources: https://github.com/mafintosh/tar-stream,
 https://github.com/mafintosh/fast-fifo, https://github.com/mafintosh/streamx,
 https://github.com/mafintosh/teex and https://github.com/holepunchto.
+
+## Lua interpreter in the container image
+
+The Dockerfile installs Alpine's `lua5.4` **5.4.8-r0** package and exposes its
+interpreter as `/usr/local/bin/lua`. Native installations use the operator's Lua.
+
+Copyright (C) 1994-2025 Lua.org, PUC-Rio.
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+Source and license: https://github.com/lua/lua/blob/v5.4.8/lua.h.
+Alpine package: https://pkgs.alpinelinux.org/package/v3.23/main/aarch64/lua5.4.
 
 ## dkjson
 
