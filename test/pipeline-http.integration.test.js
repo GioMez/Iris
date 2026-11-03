@@ -342,6 +342,34 @@ test("run admission retains snapshots when rejection cleanup fails", nativeLua, 
   assert.equal((await f.pool.query("SELECT count(*) FROM build_outputs")).rows[0].count, "0");
 });
 
+for (const operation of ["inspection", "run"]) test(`${operation} snapshot setup retains partial sources when copy and cleanup both fail`, nativeLua, async t => {
+  const f = await fixture(t, generatingScript), descriptor = await inspect(f);
+  const root = path.join(await fs.realpath(f.dataDir), ".pipeline-staging"), open = fs.open, remove = fs.rm;
+  t.mock.method(fs, "open", async (file, ...args) => {
+    if (file.startsWith(root + path.sep) && file.endsWith("/snapshot/unused.lua")) {
+      throw Object.assign(new Error("Controlled snapshot copy failure"), { code: "ENOSPC" });
+    }
+    return open(file, ...args);
+  });
+  t.mock.method(fs, "rm", async (file, ...args) => {
+    if (path.dirname(file) === root) throw Object.assign(new Error("Controlled partial snapshot cleanup failure"), { code: "EACCES" });
+    return remove(file, ...args);
+  });
+  const endpoint = operation === "inspection" ? `${f.base}/pipeline/inspect` : `${f.base}/runs`;
+  const body = operation === "inspection" ? {} : { target: "main", parameters: {}, descriptorHash: descriptor.descriptorHash };
+  const response = await f.request(endpoint, { method: "POST", body });
+  assert.equal(response.status, 503, await response.clone().text());
+  assert.equal((await response.json()).errorCode, "PIPELINE_WORKER_RECOVERY_REQUIRED");
+  assert.ok(f.app.healthPayload().pendingWrites > 0);
+  const retained = await fs.readdir(root);
+  assert.equal(retained.length, 1);
+  assert.equal(await fs.readFile(path.join(root, retained[0], "snapshot/iris.lua"), "utf8"), generatingScript);
+  assert.equal((await f.pool.query("SELECT count(*) FROM build_outputs")).rows[0].count, "0");
+  assert.equal((await f.request(endpoint, { method: "POST", body })).status, 503);
+  await f.app.startGracefulShutdown("SIGTERM", f.server);
+  assert.deepEqual(f.exits, [1]);
+});
+
 test("accepted Lua runs use authoritative live source even after later edits", nativeLua, async t => {
   const f = await fixture(t, generatingScript), descriptor = await inspect(f);
   const file = f.project.data.project.nodes.find(file => file.path === "main.ly");

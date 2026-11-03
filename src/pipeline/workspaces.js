@@ -141,7 +141,8 @@ async function createRunWorkspace(snapshot, policy, { signal } = {}) {
     products.set(workspace.snapshot, workspace);
     return workspace;
   } catch (error) {
-    await fs.rm(root, { recursive: true, force: true });
+    try { await fs.rm(root, { recursive: true, force: true }); }
+    catch { fail("PIPELINE_WORKER_RECOVERY_REQUIRED", "Snapshot cleanup is unconfirmed"); }
     throw error;
   }
 }
