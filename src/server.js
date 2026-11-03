@@ -17,12 +17,15 @@ const { recordAuditEvent } = require("./audit");
 const { normalizeProjectPath, collectProjectFiles, reconcileProjectFiles, remapImportedFileIds } = require("./project-files");
 const { createProjectMutations } = require("./project-mutations");
 const { createProjectDeletions } = require("./project-deletions");
+const pipelineRuns = require("./pipeline/runs");
 const { hashContent, isVersionableText, contentChanged } = require("./versions");
 const { CollabRooms, CollabError, peerColor, normalizePresence } = require("./collab");
 const { isSystemRole, isUserStatus, isAccountStatus, leavesNoActiveAdmin, normalizeSearch, userDeletionBlock } = require("./admin");
 const {
   isProjectRole,
   roleHasCapability,
+  authorizeProjectRecord,
+  PROJECT_OWNER_LOCK,
   canCreateProjects,
   canHoldProjectRole,
   leavesNoOwner,
@@ -205,6 +208,14 @@ let shuttingDown = false;
 let inFlight = 0;
 let inFlightMutations = 0;
 const activeBuilds = new Set();
+const activePipelineRuns = new Map();
+const pipelineCoordinatorId = uuidv7();
+const pipelineRunStore = {
+  get pool() { return db; },
+  mutations: projectMutations, requestError,
+  emit: collabNotifyRun,
+  stop: async id => { await activePipelineRuns.get(id)?.stop(); },
+};
 const backgroundPending = new Set();
 const activeChildren = new Set();
 let shutdownPromise = null;
@@ -1571,17 +1582,7 @@ function projectRetention(row) {
 // requester's role. A permission change takes effect at once because this runs on
 // every request, exactly like the per-request account check in requireUser.
 async function authorizeProject(id, user, capability, queryable = db) {
-  const { rows } = await queryable.query(
-    `SELECT p.id, p.name, p.storage_path, p.created_at, p.updated_at, p.revision,
-            p.build_keep, p.build_days, p.version_keep, p.version_days, m.role
-     FROM projects p JOIN project_members m ON m.project_id = p.id
-     WHERE p.id = $1 AND m.user_id = $2`,
-    [id, user.sub]
-  );
-  if (!rows.length) throw requestError("PROJECT_NOT_FOUND", 404);
-  const row = rows[0];
-  if (!roleHasCapability(row.role, capability)) throw requestError("PROJECT_FORBIDDEN", 403);
-  return { ...withStorageDir(row), role: row.role };
+  return withStorageDir(await authorizeProjectRecord(queryable, id, user, capability, requestError));
 }
 
 function authorizedProjectGate(id, user, capability, action) {
@@ -1635,10 +1636,6 @@ async function getProjectTemplate(req, res, type, encodedFileName) {
     "x-content-type-options": "nosniff",
   });
 }
-
-// Serializes owner-invariant changes per project, so concurrent role changes on
-// the same project cannot race past the last-owner check.
-const PROJECT_OWNER_LOCK = 4952;
 
 // Account conversion locks users before owned projects. Sharing must use the
 // same order, including INSERT's target and invited_by foreign-key references.
@@ -2793,6 +2790,23 @@ function collabNotifyBuild({ projectId, buildId, status, user }) {
   });
 }
 
+async function collabNotifyRun(event) {
+  // HTTP resync owns the full record. Recheck membership even when a revocation
+  // is still waiting for its collaboration recheck.
+  for (const session of collabSessions) {
+    if (session.projectId !== event.projectId || !collabActive(session)) continue;
+    let project, generation;
+    do {
+      generation = collabAccessGeneration;
+      if (!await collabAuthenticate(session)) break;
+      project = await collabMembership(event.projectId, session.user.sub);
+    } while (generation !== collabAccessGeneration && collabActive(session));
+    if (project && collabActive(session) && session.projectId === event.projectId) {
+      collabSend(session.socket, { t: "run", ...event });
+    }
+  }
+}
+
 async function collabHandleMessage(session, raw) {
   if (!await collabAuthenticate(session) || !collabActive(session)) return;
   let message;
@@ -2910,6 +2924,7 @@ function collabCloseSession(session, code = 1000, reason = "") {
 // sessions already in progress.
 async function collabRecheckProject(projectId) {
   collabAccessGeneration++;
+  await pipelineRuns.recheckRunPermissions(pipelineRunStore, { projectId });
   const sessions = Array.from(collabSessions).filter((session) =>
     session.projectId === projectId
     || Array.from(session.rooms.values()).some((entry) => entry.projectId === projectId));
@@ -4424,13 +4439,15 @@ async function deleteBuildOutput(req, res, user, projectId, buildId) {
   try {
     await client.query("BEGIN");
     const { rows } = await client.query(
-      `SELECT id, status, format, storage_path FROM build_outputs
+      `SELECT id, kind, status, format, storage_path, publication_state FROM build_outputs
        WHERE id = $1 AND project_id = $2 FOR UPDATE`,
       [buildId, projectId]
     );
     if (!rows.length) throw requestError("BUILD_NOT_FOUND", 404);
     build = rows[0];
     if (build.status === "running" && activeBuilds.has(buildId)) throw requestError("BUILD_IN_PROGRESS", 409);
+    if (build.kind === "pipeline" && ["queued", "planning", "running"].includes(build.status)) throw requestError("BUILD_IN_PROGRESS", 409);
+    if (build.publication_state === "prepared") throw requestError("PROJECT_RECOVERY_REQUIRED", 409);
     originalDirectory = await resolveBuildDirectory(
       project.storageDir, buildId, build.storage_path || buildStoragePath(buildId)
     );
@@ -4746,7 +4763,7 @@ async function reconcileStalledBuildsNow() {
        status = 'failed', completed_at = CURRENT_TIMESTAMP,
        log = CASE WHEN log = '' THEN $2 ELSE log || E'\\n' || $2 END,
        errors = errors || $3::jsonb
-     WHERE status = 'running' AND created_at < $1
+     WHERE kind = 'compiler' AND status = 'running' AND created_at < $1
      RETURNING id, project_id`,
     [
       cutoff,
@@ -4787,24 +4804,20 @@ async function pruneProjectVersions(projectId, policy, now) {
   return rowCount || 0;
 }
 
-// The same double condition for builds, with one addition: the most recent
-// successful build is never pruned whatever its age. It is what the editor
-// restores when the project is reopened, and a project whose last good output
-// aged out would open showing nothing at all — which reads as data loss even
-// though the sources are intact. Builds still running are excluded outright:
-// their directory is being written to.
+// Keep the latest accepted success for each kind/target, regardless of completion
+// order or age. Active runs and prepared publication evidence cannot be pruned.
 async function pruneProjectBuilds(projectId, storageDir, policy, now) {
   const { rows } = await db.query(
     `WITH ranked AS (
        SELECT id, created_at,
               ROW_NUMBER() OVER (ORDER BY created_at DESC, id DESC) AS position
        FROM build_outputs
-       WHERE project_id = $1 AND status <> 'running'
+       WHERE project_id = $1 AND status NOT IN ('queued','planning','running') AND publication_state <> 'prepared'
      ),
      protected_build AS (
-       SELECT id FROM build_outputs
+       SELECT DISTINCT ON (kind, target) id FROM build_outputs
        WHERE project_id = $1 AND status = 'succeeded'
-       ORDER BY created_at DESC, id DESC LIMIT 1
+       ORDER BY kind, target, request_order DESC
      )
      DELETE FROM build_outputs b
      USING ranked
@@ -4980,6 +4993,8 @@ function resumeProjectDeletions() {
 function startRetentionSweep() {
   // Confirmed deletions are resumed even when history retention is disabled.
   resumeProjectDeletions().catch((err) => console.error("Project deletion startup cleanup failed", err));
+  startBackgroundWrite(() => pipelineRuns.reconcileRuns(pipelineRunStore, new Set([pipelineCoordinatorId])))
+    .catch((err) => console.error("Pipeline startup reconciliation failed", err.message || err));
   if (!RETENTION_ENABLED) {
     console.log("Retention sweep disabled (RETENTION_ENABLED=false)");
     return null;
@@ -5003,6 +5018,10 @@ function startRetentionSweep() {
 const PROJECT_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})$`);
 const PROJECT_TEMPLATE_FILE_ROUTE = /^\/api\/project-templates\/(latex|lilypond)\/([^/]+)$/;
 const PROJECT_COMPILE_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/compile$`);
+const PROJECT_PIPELINE_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/pipeline$`);
+const PROJECT_PIPELINE_APPROVAL_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/pipeline/approval/(${UUID_PATTERN})$`);
+const PROJECT_RUN_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/runs/(${UUID_PATTERN})$`);
+const PROJECT_RUN_CANCEL_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/runs/(${UUID_PATTERN})/cancel$`);
 const PROJECT_BUILDS_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/builds$`);
 const PROJECT_BUILD_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/builds/(${UUID_PATTERN})$`);
 const PROJECT_BUILD_NAVIGATION_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/builds/(${UUID_PATTERN})/navigation$`);
@@ -5235,7 +5254,10 @@ async function adminUpdateUser(req, res, actor, targetId) {
     client.release();
   }
 
-  if (wantsStatus && nextStatus === "disabled") collabRevokeUser(targetId);
+  if (wantsStatus && nextStatus === "disabled") {
+    collabRevokeUser(targetId);
+    await pipelineRuns.recheckRunPermissions(pipelineRunStore, { userId: targetId });
+  }
   if (nextUsername && nextUsername !== before.username) {
     await audit({ ...sessionActor(req, actor), action: "user.username_changed", targetType: "user", targetId, metadata: { from: before.username, to: nextUsername } });
   }
@@ -5938,6 +5960,23 @@ async function handleApi(req, res, url) {
 
   const compileMatch = url.pathname.match(PROJECT_COMPILE_ROUTE);
   if (compileMatch && req.method === "POST") return compileProject(req, res, user, compileMatch[1]);
+
+  const pipelineMatch = url.pathname.match(PROJECT_PIPELINE_ROUTE);
+  if (pipelineMatch && req.method === "GET") {
+    return json(res, 200, { pipeline: await pipelineRuns.getPipeline(pipelineRunStore, pipelineMatch[1], user) });
+  }
+  const approvalMatch = url.pathname.match(PROJECT_PIPELINE_APPROVAL_ROUTE);
+  if (approvalMatch && req.method === "DELETE") {
+    return json(res, 200, await pipelineRuns.revokeApproval(pipelineRunStore, approvalMatch[1], approvalMatch[2], user));
+  }
+  const runMatch = url.pathname.match(PROJECT_RUN_ROUTE);
+  if (runMatch && req.method === "GET") {
+    return json(res, 200, { run: await pipelineRuns.getRun(pipelineRunStore, runMatch[2], user, runMatch[1]) });
+  }
+  const cancelRunMatch = url.pathname.match(PROJECT_RUN_CANCEL_ROUTE);
+  if (cancelRunMatch && req.method === "POST") {
+    return json(res, 200, { run: await pipelineRuns.cancelRun(pipelineRunStore, cancelRunMatch[2], user, cancelRunMatch[1]) });
+  }
 
   const buildArtifactMatch = url.pathname.match(PROJECT_BUILD_ARTIFACT_ROUTE);
   if (buildArtifactMatch && req.method === "GET") {

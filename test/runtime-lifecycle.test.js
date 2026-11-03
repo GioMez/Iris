@@ -447,6 +447,18 @@ test("startup reconciliation and retention roots are counted and skip new work i
   await frozen(f);
 });
 
+test("pipeline startup reconciliation remains counted while retention is disabled", options, async (t) => {
+  const f = await seed(t, { RETENTION_ENABLED: "false" });
+  const held = pause(t, f, "beforeQuery", sql => typeof sql === "string" && sql.startsWith("SELECT id,coordinator_id,deadline_at FROM build_outputs"));
+  f.app.startRetentionSweep();
+  await held.entered;
+  await marker(f, true);
+  assert.ok((await health(f)).pendingWrites > 0);
+  held.release();
+  await frozen(f);
+  assert.equal((await health(f)).pendingWrites, 0);
+});
+
 test("shutdown waits for disconnected HTTP, background tail and final collab touch before db.end; calls reuse one promise", options, async (t) => {
   const f = await seed(t);
   const client = await opened(t, f);

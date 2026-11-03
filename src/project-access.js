@@ -1,5 +1,5 @@
-// Project authorization model. Pure, so the capability matrix and the last-owner
-// invariant are unit-tested without a database.
+// Shared project authorization. The capability matrix and last-owner invariant
+// are pure; authorizeProjectRecord applies them to current membership records.
 //
 // A project role grants a fixed set of capabilities. Roles are per project and
 // distinct from the server role: a server admin gets no project access here.
@@ -11,11 +11,13 @@
 // leavesNoOwner below still means what it says.
 
 const PROJECT_ROLES = new Set(["owner", "editor", "viewer"]);
+// Shared by membership/owner changes and pipeline acceptance/publication.
+const PROJECT_OWNER_LOCK = 4952;
 
 const EXTERNAL_SYSTEM_ROLE = "external";
 
 const CAPABILITIES = {
-  owner: new Set(["read", "write", "compile", "share", "delete", "deleteBuild"]),
+  owner: new Set(["read", "write", "compile", "share", "delete", "deleteBuild", "approvePipeline"]),
   editor: new Set(["read", "write", "compile"]),
   viewer: new Set(["read"]),
 };
@@ -27,6 +29,24 @@ function isProjectRole(value) {
 function roleHasCapability(role, capability) {
   const set = CAPABILITIES[role];
   return set ? set.has(capability) : false;
+}
+
+async function authorizeProjectRecord(queryable, id, user, capability, requestError) {
+  const { rows } = await queryable.query(
+    `SELECT p.id, p.name, p.storage_path, p.created_at, p.updated_at, p.revision,
+            p.build_keep, p.build_days, p.version_keep, p.version_days, m.role
+     FROM projects p JOIN project_members m ON m.project_id = p.id
+     JOIN users u ON u.id = m.user_id AND u.status = 'active'
+     WHERE p.id = $1 AND m.user_id = $2`,
+    [id, user.sub]
+  );
+  if (!rows.length) throw requestError("PROJECT_NOT_FOUND", 404);
+  if (!roleHasCapability(rows[0].role, capability)) throw requestError("PROJECT_FORBIDDEN", 403);
+  return rows[0];
+}
+
+function canCancelRun(role, actorId, submitterId) {
+  return role === "owner" || (role === "editor" && actorId === submitterId);
 }
 
 // A project has to start somewhere, and an external account is never that place:
@@ -66,11 +86,14 @@ function escapeLikePattern(value) {
 }
 
 module.exports = {
+  PROJECT_OWNER_LOCK,
   PROJECT_ROLES,
   CAPABILITIES,
   EXTERNAL_SYSTEM_ROLE,
   isProjectRole,
   roleHasCapability,
+  authorizeProjectRecord,
+  canCancelRun,
   canCreateProjects,
   canHoldProjectRole,
   leavesNoOwner,
