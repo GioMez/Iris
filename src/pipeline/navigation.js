@@ -5,6 +5,7 @@ const { isUuid } = require("../ids");
 const mapping = require("../source-mapping");
 const { checkedPath, openCheckedFile } = require("./workspaces");
 const { logicalPath, fail } = require("./contracts");
+const { MEDIA_TYPE: LAYOUT_TYPE } = require("./layout");
 
 // Compiler paths are private. Each native sidecar receives an artifact-ID alias
 // so equal native filenames from different steps/ports cannot select another PDF.
@@ -20,7 +21,7 @@ async function collectCompilerMapping({ context, compiled, products, projectId, 
   const artifacts = [], aliases = new Map(), nativeFiles = new Map(), mappedArtifacts = new Set();
   let sources, mappingError;
   try {
-    for (const product of products) for (const file of product.files) {
+    for (const product of products.filter(product => product.mediaType !== LAYOUT_TYPE)) for (const file of product.files) {
       const origin = byOutput.get(`${product.outputPort}:${file.path}`);
       if (!origin || origin.contentHash !== file.contentHash || origin.size !== file.size || !isUuid(file.id)
         || file.producerStep !== compiled.stepId || file.outputPort !== product.outputPort) throw mapping.failure("stale-artifact");

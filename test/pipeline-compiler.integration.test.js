@@ -69,6 +69,24 @@ test("a required layout cannot silently compile without a declared layout output
   assert.equal(f.compiled.size, 0);
 });
 
+for (const family of ["latex", "lilypond"]) test(`${family} layout sidecars preserve independent native source navigation`, native, async t => {
+  const { collectCompilerMapping } = require("../src/pipeline/navigation");
+  const main = family === "latex" ? "main.tex" : "main.ly";
+  let navigation;
+  const f = await fixture(t, { [main]: family === "latex"
+    ? "\\documentclass{article}\n\\begin{document}\nMapped source.\n\\end{document}\n"
+    : '\\version "2.26.0"\n\\score { \\new Staff { c\'1 } }\n' }, { projectType: family }, {
+    onArtifacts: async (context, products) => { navigation = await collectCompilerMapping({ context, products,
+      compiled: f.compiled.get("compile"), projectId: uuidv7(), runId: uuidv7() }); },
+  });
+  const compile = step("compile", family, main, { sourceMapping: true });
+  compile.outputs.layout = { kind: "layout", mediaType: "application/vnd.iris.layout+json", path: "layout.json" };
+  const result = await f.run([compile]);
+  assert.equal(result.state, "succeeded", JSON.stringify(result.steps));
+  assert.equal(navigation.manifest.status, "ready", JSON.stringify(navigation.manifest));
+  assert.deepEqual(navigation.mappedArtifacts, [result.artifacts[0].id]);
+});
+
 for (const family of ["latex", "lilypond"]) test(`installed Lua reads the typed final ${family} layout and exact PDF identity`, nativeLua, async t => {
   const { createLuaCoordinator, createLuaAdapter, createLuaTools } = require("../src/pipeline/lua");
   const plugin = await fs.readFile(path.join(__dirname, "fixtures/pipelines/inspect-layout.lua"), "utf8");
