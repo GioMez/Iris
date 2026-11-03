@@ -9,13 +9,12 @@ const { compileFunction } = require("node:vm");
 const { uuidv7 } = require("../src/ids");
 const { createRegistry } = require("../src/pipeline/registry");
 const { createRunWorkspace, disposeRunWorkspace } = require("../src/pipeline/workspaces");
-const { createPodmanRuntime, readRuntimePolicy } = require("../src/pipeline/runtime");
+const { createNativeRuntime, readRuntimePolicy } = require("../src/pipeline/runtime");
 const { executePlan } = require("../src/pipeline/executor");
 const { ConcurrencyGate } = require("../src/throttle");
 
 const hash = bytes => createHash("sha256").update(bytes).digest("hex");
-const image = process.env.IRIS_TEST_PIPELINE_IMAGE;
-const contained = { skip: !image, timeout: 90000 };
+const nativeLua = { skip: process.env.IRIS_TEST_LUA !== "1", timeout: 90000 };
 const script = `local count=require('settings').count
 return {apiVersion=1,pluginId='generate',parameterSchema={type='object',properties={count={type='integer',default=count,minimum=1}}},
   plan=function(ctx)
@@ -41,13 +40,12 @@ async function fixture(t, { native = false, sources = { "iris.lua": script, "set
   let runtime, starts = 0;
   const admissions = [];
   t.after(async () => { await runtime?.close(); await disposeRunWorkspace(workspace); await fs.rm(root, { recursive: true }); });
-  const policy = readRuntimePolicy({ image: image || `sha256:${"a".repeat(64)}`, memoryBytes: 268435456, totalMemoryBytes: 335544320,
-    outputBytes: 16777216, tempBytes: 8388608, outputEntries: 1024, tempEntries: 64 });
+  const policy = readRuntimePolicy({ outputBytes: 16777216, outputEntries: 1024 });
   const tools = require("../src/pipeline/lua").createLuaTools();
-  if (native) runtime = await createPodmanRuntime({ root: path.join(root, "runtime"), coordinatorId: uuidv7(),
-    transport: { connection: process.env.IRIS_TEST_PODMAN_CONNECTION, home: process.env.IRIS_TEST_PODMAN_HOME }, policy, tools });
+  if (native) runtime = await createNativeRuntime({ root: path.join(root, "runtime"), coordinatorId: uuidv7(), policy, tools });
   const boundary = native ? { ...runtime, createWorkspace: options => { starts++; admissions.push(options.stepId); return runtime.createWorkspace(options); } } : {
-    manifest: () => ({ policy, tools }), createWorkspace() { starts++; throw new Error("Unexpected worker admission"); },
+    manifest: () => ({ policy, tools }), resolveTool: id => tools.find(tool => tool.id === id),
+    createWorkspace() { starts++; throw new Error("Unexpected worker admission"); },
   };
   const { createLuaCoordinator } = require("../src/pipeline/lua");
   const registry = createRegistry([...definitions, ...adapters]);
@@ -95,7 +93,7 @@ test("Lua snapshot creation detects edits after approval while preserving accept
   await assert.rejects(f.createHost({ registry }).inspectLua({ approval }), { code: "PIPELINE_APPROVAL_REQUIRED" });
 });
 
-test("Lua coordinator retains request evidence when worker setup needs engine recovery", async t => {
+test("Lua coordinator retains request evidence when worker setup needs recovery", async t => {
   const f = await fixture(t);
   const host = f.createHost({ runtime: { ...f.boundary, async createWorkspace() {
     throw Object.assign(new Error("unconfirmed setup cleanup"), { code: "PIPELINE_WORKER_RECOVERY_REQUIRED" });
@@ -121,13 +119,13 @@ test("Lua invocations share the coordinator's original whole-run deadline", asyn
   assert.equal(deadlines[1], deadlines[0]);
 });
 
-test("Lua approval changes when trusted containment implementation changes", async t => {
+test("Lua approval changes when trusted runtime implementation changes", async t => {
   const f = await fixture(t), source = require.resolve("../src/pipeline/lua"), localRequire = createRequire(source);
   const sync = require("node:fs"), module = { exports: {} };
   // Simulate an installed runtime-source update without altering this checkout.
   const changedRequire = id => id === "node:fs" ? { ...sync, readFileSync(file, ...args) {
     const value = sync.readFileSync(file, ...args);
-    return file === require.resolve("../src/pipeline/runtime") ? Buffer.concat([value, Buffer.from("\n// changed containment\n")]) : value;
+    return file === require.resolve("../src/pipeline/runtime") ? Buffer.concat([value, Buffer.from("\n// changed runtime\n")]) : value;
   } } : localRequire(id);
   compileFunction(sync.readFileSync(source, "utf8"), ["require", "module", "__dirname"], { filename: source })(changedRequire, module, path.dirname(source));
   const host = module.exports.createLuaCoordinator({ runtime: f.boundary, workspace: f.workspace, runId: uuidv7(), registry: f.registry });
@@ -135,7 +133,7 @@ test("Lua approval changes when trusted containment implementation changes", asy
   assert.equal(f.starts(), 0);
 });
 
-test("contained Lua planning uses approved defaults and rejects invalid parameters before admission", contained, async t => {
+test("native Lua planning uses approved defaults and rejects invalid parameters before admission", nativeLua, async t => {
   const f = await fixture(t, { native: true }), approval = f.host.identity;
   const descriptor = await f.host.inspectLua({ approval });
   assert.equal(descriptor.parameterSchema.properties.count.default, 3);
@@ -149,7 +147,7 @@ test("contained Lua planning uses approved defaults and rejects invalid paramete
   assert.deepEqual(await fs.readdir(f.workspace.root), ["snapshot"]);
 });
 
-test("default Lua transforms can run beyond the five-second planning deadline", contained, async t => {
+test("default Lua transforms can run beyond the five-second planning deadline", nativeLua, async t => {
   const { createLuaAdapter } = require("../src/pipeline/lua");
   const controller = new AbortController();
   let f, plan, timer;
@@ -171,7 +169,7 @@ test("default Lua transforms can run beyond the five-second planning deadline", 
   assert.deepEqual(await fs.readdir(path.join(f.root, "runtime")), ["installation.json"]);
 });
 
-test("contained Lua planning rejects a stale cached schema before calling project plan", contained, async t => {
+test("native Lua planning rejects a stale cached schema before calling project plan", nativeLua, async t => {
   const f = await fixture(t, { native: true });
   const descriptor = await f.host.inspectLua({ approval: f.host.identity });
   await assert.rejects(f.host.planLua({ approval: f.host.identity, descriptor: {
@@ -180,7 +178,7 @@ test("contained Lua planning rejects a stale cached schema before calling projec
   assert.equal(f.starts(), 1);
 });
 
-test("contained Lua planner failure is rejected even when its worker exits zero", contained, async t => {
+test("native Lua planner failure is rejected even when its worker exits zero", nativeLua, async t => {
   const f = await fixture(t, { native: true, sources: {
     "iris.lua": "return {apiVersion=1,pluginId='failure',plan=function() error('failed plan') end}",
   } });
@@ -189,7 +187,7 @@ test("contained Lua planner failure is rejected even when its worker exits zero"
   assert.deepEqual(await fs.readdir(f.workspace.root), ["snapshot"]);
 });
 
-for (const mode of ["inspect", "plan"]) test(`contained Lua ${mode} loops stop at the planning deadline`, contained, async t => {
+for (const mode of ["inspect", "plan"]) test(`native Lua ${mode} loops stop at the planning deadline`, nativeLua, async t => {
   const f = await fixture(t, { native: true, sources: { "iris.lua": mode === "inspect" ? "while true do end" :
     "return {apiVersion=1,pluginId='loop',plan=function() while true do end end}" } });
   const approval = f.host.identity;
@@ -201,7 +199,7 @@ for (const mode of ["inspect", "plan"]) test(`contained Lua ${mode} loops stop a
   assert.deepEqual(await fs.readdir(path.join(f.root, "runtime")), ["installation.json"]);
 });
 
-test("an expired whole-run deadline rejects Lua admission and leaves no worker", contained, async t => {
+test("an expired whole-run deadline rejects Lua admission and leaves no worker", nativeLua, async t => {
   const f = await fixture(t, { native: true }), host = f.createHost({ deadlineAt: Date.now() - 1 });
   await assert.rejects(host.inspectLua({ approval: host.identity }), { code: "PIPELINE_RUN_DEADLINE" });
   assert.deepEqual(await fs.readdir(path.join(f.root, "runtime")), ["installation.json"]);
@@ -236,7 +234,7 @@ test("descriptor validation rejects an explicit null schema rather than inventin
   assert.throws(() => validateDescriptor({ apiVersion: 1, pluginId: "null", parameterSchema: null }), { code: "PIPELINE_SCHEMA_INVALID" });
 });
 
-test("contained Lua transforms preserve binary products and bind source/generated diagnostics", contained, async t => {
+test("native Lua transforms preserve binary products and bind source/generated diagnostics", nativeLua, async t => {
   const { createLuaAdapter } = require("../src/pipeline/lua");
   let f, plan;
   const events = [], bytes = Buffer.from([0, 255, 128, 10]);
@@ -281,7 +279,7 @@ test("contained Lua transforms preserve binary products and bind source/generate
   assert.deepEqual(f.admissions, ["inspect", "plan", "generate", "check"]);
 });
 
-for (const corruptReply of [false, true]) test(`contained Lua failure retains diagnostics with ${corruptReply ? "a changed final reply" : "a matching final reply"}`, contained, async t => {
+for (const corruptReply of [false, true]) test(`native Lua failure retains diagnostics with ${corruptReply ? "a changed final reply" : "a matching final reply"}`, nativeLua, async t => {
   const { createLuaAdapter } = require("../src/pipeline/lua");
   let f, plan;
   const plugin = `return {apiVersion=1,pluginId='failure',plan=function() return {
@@ -314,7 +312,7 @@ for (const corruptReply of [false, true]) test(`contained Lua failure retains di
   assert.deepEqual(await fs.readdir(path.join(f.workspace.root, "steps/fail/output")), []);
 });
 
-test("Lua timeout retains a live diagnostic after log saturation and publishes no product", contained, async t => {
+test("Lua timeout retains a live diagnostic after log saturation and publishes no product", nativeLua, async t => {
   const { createLuaAdapter } = require("../src/pipeline/lua");
   let f, plan;
   const logs = [], progress = [];
@@ -342,7 +340,7 @@ test("Lua timeout retains a live diagnostic after log saturation and publishes n
   assert.deepEqual(await fs.readdir(path.join(f.root, "runtime")), ["installation.json"]);
 });
 
-test("cancelling a running Lua transform drains its worker and prevents partial product export", contained, async t => {
+test("cancelling a running Lua transform drains its worker and prevents partial product export", nativeLua, async t => {
   const { createLuaAdapter } = require("../src/pipeline/lua");
   let f, plan;
   const controller = new AbortController(), events = [], progress = [];

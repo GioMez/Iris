@@ -6291,6 +6291,7 @@ module.exports = {
   resolveProjectFile,
   readCompileArtifacts,
   runCompilePipeline,
+  kpathseaSearchPath,
   parseCompileLog,
   buildOutputView,
 };

@@ -1,134 +1,180 @@
 const fs = require("node:fs/promises");
+const { constants } = require("node:fs");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
+const { createHash } = require("node:crypto");
 const { StringDecoder } = require("node:string_decoder");
-const { pipeline } = require("node:stream/promises");
 const { uuidv7, isUuid } = require("../ids");
 const { ConcurrencyGate } = require("../throttle");
-const { fail, name } = require("./contracts");
+const { fail, name, logicalPath, freeze } = require("./contracts");
 const { createTransferArchive, extractTransferArchive } = require("./transfers");
+const { checkedPath, copyFile } = require("./workspaces");
 
-const DEFAULTS = Object.freeze({ memoryBytes: 1073741824, totalMemoryBytes: 2147483648, cpus: 2, pids: 64,
-  outputBytes: 536870912, outputEntries: 20000, tempBytes: 134217728, tempEntries: 4096,
-  logBytes: 1048576, timeoutMs: 120000, runTimeoutMs: 1800000, controlTimeoutMs: 15000, concurrency: 2, queueLimit: 8 });
+const DEFAULTS = Object.freeze({ outputBytes: 536870912, outputEntries: 20000, logBytes: 1048576,
+  timeoutMs: 120000, runTimeoutMs: 1800000, cleanupTimeoutMs: 5000, concurrency: 2, queueLimit: 8 });
 const error = code => Object.assign(new Error(code), { code });
-const HOLDER_MEMORY = 8388608;
-const reservationBytes = policy => policy.memoryBytes + policy.outputBytes + policy.tempBytes + HOLDER_MEMORY;
+const pathError = () => fail("PIPELINE_PATH_INVALID", "Invalid pipeline workspace path");
 
-function readRuntimePolicy(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) fail("PIPELINE_RUNTIME_POLICY_INVALID", "Invalid contained runtime policy");
-  const { image, ...overrides } = value, result = { ...DEFAULTS };
-  if (typeof image !== "string" || !/^(?:sha256:|[a-zA-Z0-9._/:\-]+@sha256:)[a-f0-9]{64}$/.test(image)) fail("PIPELINE_RUNTIME_POLICY_INVALID", "Worker image requires an exact digest");
-  for (const [key, value] of Object.entries(overrides)) {
-    if (!Object.hasOwn(result, key) || !Number.isSafeInteger(value) || value < (key === "queueLimit" ? 0 : 1)) fail("PIPELINE_RUNTIME_POLICY_INVALID", "Invalid contained resource limit");
-    result[key] = value;
+function readRuntimePolicy(value = {}) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw error("PIPELINE_RUNTIME_POLICY_INVALID");
+  const result = { ...DEFAULTS };
+  for (const [key, limit] of Object.entries(value)) {
+    if (!Object.hasOwn(result, key) || !Number.isSafeInteger(limit) || limit < (key === "queueLimit" ? 0 : 1)) throw error("PIPELINE_RUNTIME_POLICY_INVALID");
+    result[key] = limit;
   }
-  if (!Number.isSafeInteger(reservationBytes(result)) || reservationBytes(result) > result.totalMemoryBytes
-    || result.controlTimeoutMs > 2147483647 || result.runTimeoutMs > 2147483647 || result.timeoutMs > result.runTimeoutMs) {
-    fail("PIPELINE_RUNTIME_POLICY_INVALID", "Invalid contained resource reservation");
-  }
-  return Object.freeze({ image, ...result });
+  if (result.runTimeoutMs > 2147483647 || result.cleanupTimeoutMs > 2147483647 || result.timeoutMs > result.runTimeoutMs) throw error("PIPELINE_RUNTIME_POLICY_INVALID");
+  return Object.freeze(result);
 }
 
-// The CLI is a host control client, never the worker. Pass only its transport
-// environment; container arguments supply a separate explicit environment.
-function commandClient(transport, policy) {
-  const prefix = transport.connection ? ["--connection", transport.connection] : [];
-  const env = Object.fromEntries(["PATH", "TMPDIR", "XDG_RUNTIME_DIR"].filter(key => process.env[key]).map(key => [key, process.env[key]]));
-  env.HOME = transport.home || process.env.HOME;
-  env.LANG = "C.UTF-8";
-  function start(args, { timeoutMs = policy.controlTimeoutMs, maxBytes = 1048576, onOutput, onOutputLimit, captureStreams = false, control = true, input, consume, signal } = {}) {
-    signal?.throwIfAborted();
-    const child = spawn(transport.command || "podman", [...prefix, ...args], { env, shell: false, stdio: [input ? "pipe" : "ignore", "pipe", "pipe"] });
-    let bytes = 0, truncated = false, failure = null, callbacks = Promise.resolve();
-    let transferred, io = Promise.resolve();
-    const chunks = [], output = { stdout: [], stderr: [] };
-    const done = new Promise((resolve, reject) => {
-      const stop = reason => { failure ||= reason; child.kill("SIGKILL"); };
-      const abort = () => stop(signal.reason);
-      const timer = setTimeout(() => stop(error("PIPELINE_CONTROL_TIMEOUT")), timeoutMs);
-      signal?.addEventListener("abort", abort, { once: true });
-      const capture = channel => chunk => {
-        const remaining = Math.max(0, maxBytes - bytes), retained = chunk.subarray(0, remaining);
-        if (retained.length) {
-          chunks.push(retained); bytes += retained.length;
-          if (captureStreams) output[channel].push(retained);
-          if (onOutput) callbacks = callbacks.then(() => onOutput(retained, channel)).catch(() => { failure ||= error("PIPELINE_OUTPUT_CALLBACK_FAILED"); });
+function environment(value = {}) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).length > 64
+    || Object.entries(value).some(([key, item]) => !/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(key) || typeof item !== "string" || item.includes("\0"))
+    || Buffer.byteLength(JSON.stringify(value)) > 65536) throw error("PIPELINE_TOOL_INVALID");
+  return { ...value };
+}
+
+async function executable(command, searchPath) {
+  if (typeof command !== "string" || !command || command.includes("\0")
+    || (!path.isAbsolute(command) && !/^[a-zA-Z0-9_.+-]+$/.test(command))) throw error("PIPELINE_TOOL_INVALID");
+  const candidates = path.isAbsolute(command) ? [command] : searchPath.split(path.delimiter).filter(Boolean).map(dir => path.resolve(dir, command));
+  for (const candidate of candidates) {
+    let input;
+    try {
+      const resolved = await fs.realpath(candidate);
+      await fs.access(resolved, constants.X_OK);
+      input = await fs.open(resolved, "r");
+      const before = await input.stat();
+      if (!before.isFile()) continue;
+      const hash = createHash("sha256");
+      for await (const chunk of input.createReadStream({ autoClose: false })) hash.update(chunk);
+      const after = await input.stat();
+      if (before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) throw error("PIPELINE_TOOL_CHANGED");
+      return { command, path: candidate, resolved, contentHash: hash.digest("hex") };
+    } catch (err) { if (!["ENOENT", "ENOTDIR", "EACCES"].includes(err.code)) throw err; }
+    finally { await input?.close(); }
+  }
+  return { command, path: command, resolved: null, contentHash: null };
+}
+
+// Process groups provide ordinary POSIX cancellation, not an OS sandbox. Never
+// use a persisted PID as a signal target after the owning coordinator restarts.
+function startProcess(tool, args, options) {
+  const { cwd, env, timeoutMs, cleanupTimeoutMs, maxBytes, onOutput, captureStreams, limitOutput } = options;
+  const child = spawn(tool.path, args, { cwd, env, shell: false, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
+  let failure, exited = false, closed = false, groupGone = false, killSent = false, settled = false, code, exitSignal;
+  let timedOut = false, cancelled = false, truncated = false, outputLimited = false, retained = 0, timer, cleanupTimer, monitor;
+  let callbacks = Promise.resolve();
+  const chunks = [], output = { stdout: [], stderr: [] };
+  let resolve, reject;
+  const done = new Promise((yes, no) => { resolve = yes; reject = no; });
+  done.catch(() => {});
+  function exists() {
+    if (!child.pid) return false;
+    try { process.kill(process.platform === "win32" ? child.pid : -child.pid, 0); return true; }
+    catch (err) { if (err.code === "ESRCH") return false; if (err.code === "EPERM") return true; throw err; }
+  }
+  function kill() {
+    if (!child.pid || groupGone || killSent) return;
+    // Darwin can return EPERM for another signal while a killed process exits.
+    // Send once, then retain ownership until the group disappears.
+    try { process.kill(process.platform === "win32" ? child.pid : -child.pid, "SIGKILL"); killSent = true; }
+    catch (err) { if (err.code === "ESRCH") groupGone = true; else failure ||= err; }
+  }
+  function finish() {
+    if (settled || !closed || !groupGone) return;
+    settled = true; clearTimeout(timer); clearTimeout(cleanupTimer); clearInterval(monitor);
+    callbacks.then(() => {
+      if (failure) reject(failure);
+      else {
+        function decode(chunks, limit) {
+          const text = Buffer.from(Buffer.concat(chunks).toString("utf8"));
+          truncated ||= text.length > limit;
+          return new StringDecoder("utf8").write(text.subarray(0, limit));
         }
-        if (chunk.length > remaining) {
-          if (!truncated) onOutputLimit?.();
-          truncated = true;
-          if (control) { failure = error("PIPELINE_CONTROL_OUTPUT_LIMIT"); child.kill("SIGKILL"); }
+        const log = decode(chunks, maxBytes), streams = {};
+        if (captureStreams) {
+          streams.stdout = decode(output.stdout, maxBytes);
+          streams.stderr = decode(output.stderr, maxBytes - Buffer.byteLength(streams.stdout));
         }
-      };
-      if (!consume) child.stdout.on("data", capture("stdout"));
-      child.stderr.on("data", capture("stderr"));
-      child.once("error", () => { failure = error("PIPELINE_RUNTIME_UNAVAILABLE"); });
-      child.once("close", async (code, exitSignal) => {
-        clearTimeout(timer);
-        await io; await callbacks;
-        signal?.removeEventListener("abort", abort);
-        const text = Buffer.from(Buffer.concat(chunks).toString("utf8"));
-        const log = new StringDecoder("utf8").write(text.subarray(0, maxBytes));
-        if (failure) reject(failure);
-        else resolve({ code, signal: exitSignal, log, truncated: truncated || text.length > maxBytes, ...(consume ? { value: transferred } : {}),
-          ...(captureStreams ? { stdout: Buffer.concat(output.stdout).toString("utf8"), stderr: Buffer.concat(output.stderr).toString("utf8") } : {}) });
-      });
-      const streams = [];
-      if (input) streams.push(pipeline(input, child.stdin, { signal }).catch(stop));
-      if (consume) streams.push(Promise.resolve().then(() => consume(child.stdout)).then(value => { transferred = value; }).catch(stop));
-      io = Promise.all(streams);
+        resolve({ code, signal: exitSignal, log, truncated, outputLimited, cancelled, timedOut, drained: true, ...streams });
+      }
     });
-    done.catch(() => {});
-    return { done };
   }
-  async function run(args) {
-    const result = await start(args).done;
-    if (result.code !== 0) throw error("PIPELINE_ENGINE_COMMAND_FAILED");
-    return result.log;
+  function observe() {
+    if (exited && !groupGone) {
+      try { groupGone = !exists(); } catch (err) { failure ||= err; }
+    }
+    finish();
   }
-  return { start, run };
+  function terminate(reason) {
+    failure ||= reason;
+    if (settled) return;
+    kill();
+    monitor ||= setInterval(observe, 20);
+    cleanupTimer ||= setTimeout(() => {
+      observe();
+      if (settled) return;
+      settled = true; clearTimeout(timer); clearInterval(monitor);
+      child.stdout.destroy(); child.stderr.destroy();
+      reject(error("PIPELINE_WORKER_RECOVERY_REQUIRED"));
+    }, cleanupTimeoutMs);
+  }
+  for (const channel of ["stdout", "stderr"]) child[channel].on("data", chunk => {
+    const remaining = Math.max(0, maxBytes - retained), bytes = chunk.subarray(0, remaining);
+    if (bytes.length) {
+      chunks.push(bytes); retained += bytes.length;
+      if (captureStreams) output[channel].push(bytes);
+      if (onOutput) {
+        child[channel].pause();
+        callbacks = callbacks.then(() => { if (!failure) return onOutput(bytes, channel); }).catch(err => terminate(err))
+          .finally(() => child[channel].resume());
+      }
+    }
+    if (chunk.length > remaining) {
+      truncated = true;
+      if (limitOutput) { outputLimited = true; terminate(); }
+    }
+  });
+  child.once("error", () => { failure ||= error("PIPELINE_RUNTIME_UNAVAILABLE"); });
+  child.once("exit", () => { exited = true; terminate(); observe(); });
+  child.once("close", (value, signal) => { code = value; exitSignal = signal; exited = true; closed = true; observe(); });
+  timer = setTimeout(() => { timedOut = true; terminate(); }, timeoutMs);
+  return { child, done, drained: () => closed && groupGone,
+    stop() { cancelled = true; terminate(); } };
 }
 
-async function createPodmanRuntime({ root, coordinatorId, transport = {}, policy: values, tools }) {
-  const policy = readRuntimePolicy(values), client = commandClient(transport, policy);
+async function createNativeRuntime({ root, coordinatorId, policy: values, tools }) {
+  const policy = readRuntimePolicy(values), searchPath = process.env.PATH || "";
   if (!isUuid(coordinatorId) || !path.isAbsolute(root)) throw error("PIPELINE_RUNTIME_POLICY_INVALID");
-  const registered = new Map(), tokens = new WeakSet(), workspaces = new Map();
   if (!Array.isArray(tools) || tools.length > 128) throw error("PIPELINE_TOOL_INVALID");
+  const registered = new Map(), tokens = new WeakSet(), workspaces = new Map();
   for (const definition of tools) {
     name(definition.id);
-    if (registered.has(definition.id) || !/^\/[a-zA-Z0-9_./-]+$/.test(definition.path) || definition.path.split("/").includes("..")
-      || !Number.isSafeInteger(definition.timeoutMs) || definition.timeoutMs < 1 || definition.timeoutMs > policy.runTimeoutMs) throw error("PIPELINE_TOOL_INVALID");
-    const env = definition.env === undefined ? {} : definition.env;
-    const protocolBytes = definition.protocolBytes ?? 0;
+    if (registered.has(definition.id) || !Number.isSafeInteger(definition.timeoutMs) || definition.timeoutMs < 1 || definition.timeoutMs > policy.runTimeoutMs) throw error("PIPELINE_TOOL_INVALID");
+    const env = environment(definition.env), protocolBytes = definition.protocolBytes ?? 0;
     if (!Number.isSafeInteger(protocolBytes) || protocolBytes < 0 || protocolBytes > 16777216
       || !Number.isSafeInteger(policy.logBytes + protocolBytes)) throw error("PIPELINE_TOOL_INVALID");
-    if (!env || typeof env !== "object" || Array.isArray(env) || Object.keys(env).length > 64
-      || Object.entries(env).some(([key, value]) => !/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(key) || typeof value !== "string" || value.includes("\0"))
-      || Buffer.byteLength(JSON.stringify(env)) > 65536) throw error("PIPELINE_TOOL_INVALID");
-    const tool = Object.freeze({ id: definition.id, path: definition.path, timeoutMs: definition.timeoutMs, protocolBytes, env: Object.freeze({ ...env }) });
+    const dependencies = definition.dependencies || [];
+    if (!Array.isArray(dependencies) || dependencies.length > 16) throw error("PIPELINE_TOOL_INVALID");
+    const identity = await executable(definition.path, env.PATH || searchPath);
+    const tool = freeze({ id: definition.id, ...identity, timeoutMs: definition.timeoutMs, protocolBytes, env,
+      dependencies: await Promise.all(dependencies.map(command => executable(command, env.PATH || searchPath))) });
     tokens.add(tool); registered.set(tool.id, tool);
   }
-  const info = JSON.parse(await client.run(["info", "--format", "json"]));
-  if (info.host?.os !== "linux" || info.host.cgroupVersion !== "v2" || !info.host.security?.rootless || !info.host.security?.seccompEnabled
-    || !["cpu", "memory", "pids"].every(value => info.host.cgroupControllers?.includes(value))) throw error("PIPELINE_CONTAINMENT_UNAVAILABLE");
-  if (policy.totalMemoryBytes > info.host.memTotal) throw error("PIPELINE_RUNTIME_CAPACITY");
-  await client.run(["image", "exists", policy.image]);
   await fs.mkdir(root, { recursive: true, mode: 0o700 });
+  root = await fs.realpath(root);
   const identityPath = path.join(root, "installation.json");
   try { await fs.writeFile(identityPath, JSON.stringify({ installationId: uuidv7() }), { flag: "wx", mode: 0o600 }); }
-  catch (error) { if (error.code !== "EEXIST") throw error; }
+  catch (err) { if (err.code !== "EEXIST") throw err; }
   const { installationId } = JSON.parse(await fs.readFile(identityPath, "utf8"));
   if (!isUuid(installationId)) throw error("PIPELINE_RUNTIME_IDENTITY_INVALID");
-  const gate = new ConcurrencyGate({ limit: Math.min(policy.concurrency, Math.floor(policy.totalMemoryBytes / reservationBytes(policy))), queueLimit: policy.queueLimit });
+  const gate = new ConcurrencyGate({ limit: policy.concurrency, queueLimit: policy.queueLimit });
   let accepting = true;
-  function get(workspace) {
+  const get = workspace => {
     const state = workspaces.get(workspace);
     if (!state) throw error("PIPELINE_WORKER_WORKSPACE_INVALID");
     return state;
-  }
-  const labels = state => ({ "iris.installation": installationId, "iris.coordinator": state.record.coordinatorId, "iris.workspace": state.record.id, "iris.run": state.record.runId });
-  const labelArgs = state => Object.entries(labels(state)).flatMap(([key, value]) => ["--label", `${key}=${value}`]);
+  };
   async function syncRoot() {
     const handle = await fs.open(root, "r");
     try { await handle.sync(); } finally { await handle.close(); }
@@ -137,337 +183,161 @@ async function createPodmanRuntime({ root, coordinatorId, transport = {}, policy
     const destination = path.join(root, `${state.record.id}.json`), temporary = path.join(root, `.receipt-${state.record.id}-${uuidv7()}.tmp`);
     const handle = await fs.open(temporary, "wx", 0o600);
     try {
-      try { await handle.writeFile(JSON.stringify(state.record)); await handle.sync(); }
-      finally { await handle.close(); }
-      await fs.rename(temporary, destination);
-      await syncRoot();
-    } finally {
-      await fs.unlink(temporary).catch(error => { if (error.code !== "ENOENT") throw error; });
-    }
-  }
-  async function inspectOwned(state, kind, id) {
-    const records = JSON.parse(await client.run([...(kind === "volume" ? ["volume"] : []), "inspect", id]));
-    const record = records[0], found = kind === "volume" ? record.Labels : record.Config?.Labels;
-    if (!Object.entries(labels(state)).every(([key, value]) => found?.[key] === value)) throw error("PIPELINE_WORKER_OWNERSHIP_INVALID");
-    return record;
-  }
-  async function exists(kind, id) {
-    const result = await client.start([kind, "exists", id]).done;
-    if (result.code === 0) return true;
-    if (result.code === 1) return false;
-    throw error("PIPELINE_ENGINE_COMMAND_FAILED");
+      try { await handle.writeFile(JSON.stringify(state.record)); await handle.sync(); } finally { await handle.close(); }
+      await fs.rename(temporary, destination); await syncRoot();
+    } finally { await fs.unlink(temporary).catch(err => { if (err.code !== "ENOENT") throw err; }); }
   }
   async function reconcile() {
-    const receipts = new Map(), blocked = new Set(), recovered = [];
-    for (const [workspace, state] of workspaces) {
-      if (!state.setupFailure) continue;
-      try { await disposeWorkspace(workspace); recovered.push(state.record.id); }
-      catch { blocked.add(state.record.id); }
-    }
+    const recovered = [], blocked = [];
     for (const file of await fs.readdir(root)) {
-      if (!file.endsWith(".json") || file === "installation.json") continue;
+      if (!file.endsWith(".json") || file === "installation.json" || !isUuid(file.slice(0, -5))) continue;
       const id = file.slice(0, -5);
-      if (!isUuid(id)) continue;
+      if ([...workspaces.values()].some(state => state.record.id === id)) continue;
       try {
         const location = path.join(root, file), stat = await fs.lstat(location);
         if (!stat.isFile() || stat.nlink !== 1 || stat.size > 65536) throw error("PIPELINE_WORKER_RECOVERY_REQUIRED");
         const record = JSON.parse(await fs.readFile(location, "utf8"));
-        if (record.id !== id || record.installationId !== installationId || !isUuid(record.coordinatorId) || !isUuid(record.runId)
-          || !Number.isSafeInteger(record.deadlineAt) || !Array.isArray(record.volumes) || !Array.isArray(record.containers)
-          || record.volumes.length > 16 || record.containers.length > 128
-          || record.volumes.some(value => typeof value !== "string" || !value.startsWith(`iris-${id}-`) || !/^iris-[a-z0-9-]+$/.test(value))
-          || record.containers.some(value => typeof value !== "string" || !value.startsWith("iris-") || !isUuid(value.slice(5)))) throw error("PIPELINE_WORKER_RECOVERY_REQUIRED");
+        if (record.version !== 2 || record.id !== id || record.installationId !== installationId || !isUuid(record.coordinatorId)
+          || !isUuid(record.runId) || !Number.isSafeInteger(record.deadlineAt) || !["preparing", "idle"].includes(record.phase)) throw error("PIPELINE_WORKER_RECOVERY_REQUIRED");
         name(record.stepId);
-        receipts.set(id, { record });
-      } catch { blocked.add(id); }
+        await fs.rm(path.join(root, id), { recursive: true, force: true });
+        await fs.unlink(location); recovered.push(id);
+      } catch { blocked.push(id); }
     }
-    // Engine labels also cover a command whose acknowledgement or receipt update
-    // was lost. Retain a fresh receipt before removing such orphaned resources.
-    for (const kind of ["container", "volume"]) {
-      const args = kind === "container" ? ["ps", "--all"] : ["volume", "ls"];
-      const ids = (await client.run([...args, "--filter", `label=iris.installation=${installationId}`, "--format", kind === "container" ? "{{.ID}}" : "{{.Name}}"])).trim().split("\n").filter(Boolean);
-      for (const engineId of ids) {
-        const [entry] = JSON.parse(await client.run([...(kind === "volume" ? ["volume"] : []), "inspect", engineId]));
-        const found = kind === "volume" ? entry.Labels : entry.Config?.Labels;
-        const id = found?.["iris.workspace"], runId = found?.["iris.run"], owner = found?.["iris.coordinator"];
-        if (found?.["iris.installation"] !== installationId || !isUuid(id) || !isUuid(runId) || !isUuid(owner)) {
-          blocked.add(isUuid(id) ? id : "unidentified"); continue;
-        }
-        if (blocked.has(id)) continue;
-        let state = receipts.get(id);
-        if (!state) {
-          state = { record: { id, installationId, coordinatorId: owner, runId, stepId: "recovery", deadlineAt: Date.now(), volumes: [], containers: [] } };
-          receipts.set(id, state);
-        }
-        if (state.record.runId !== runId || state.record.coordinatorId !== owner) { blocked.add(id); continue; }
-        const actual = kind === "volume" ? entry.Name : entry.Name?.replace(/^\//, "");
-        if (typeof actual !== "string" || (kind === "container" ? !actual.startsWith("iris-") || !isUuid(actual.slice(5)) : !actual.startsWith(`iris-${id}-`))) {
-          blocked.add(id); continue;
-        }
-        const collection = kind === "volume" ? state.record.volumes : state.record.containers;
-        if (!collection.includes(actual)) collection.push(actual);
-      }
-    }
-    for (const [id, state] of receipts) {
-      if (blocked.has(id) || [...workspaces.values()].some(active => active.record.id === id)) continue;
-      try {
-        await save(state);
-        for (const container of [...state.record.containers]) {
-          if (await exists("container", container)) {
-            await inspectOwned(state, "container", container);
-            await client.run(["rm", "--force", "--time=0", container]);
-          }
-          state.record.containers = state.record.containers.filter(value => value !== container); await save(state);
-        }
-        for (const volume of [...state.record.volumes]) {
-          if (await exists("volume", volume)) {
-            await inspectOwned(state, "volume", volume);
-            await client.run(["volume", "rm", volume]);
-          }
-          state.record.volumes = state.record.volumes.filter(value => value !== volume); await save(state);
-        }
-        await fs.unlink(path.join(root, `${id}.json`)); recovered.push(id);
-      } catch { blocked.add(id); }
-    }
-    if (blocked.size) throw error("PIPELINE_WORKER_RECOVERY_REQUIRED");
+    if (blocked.length) throw error("PIPELINE_WORKER_RECOVERY_REQUIRED");
     for (const file of await fs.readdir(root)) {
       const match = /^\.receipt-(.{36})-(.{36})\.tmp$/.exec(file);
-      if (!match || !isUuid(match[1]) || !isUuid(match[2]) || [...workspaces.values()].some(active => active.record.id === match[1])) continue;
-      await fs.unlink(path.join(root, file));
+      if (match && isUuid(match[1]) && isUuid(match[2]) && ![...workspaces.values()].some(state => state.record.id === match[1])) await fs.unlink(path.join(root, file));
     }
-    await syncRoot();
-    return { recovered };
-  }
-  async function removeContainer(state, worker) {
-    if (await exists("container", worker.name)) {
-      await inspectOwned(state, "container", worker.name);
-      await client.run(["rm", "--force", "--time=0", worker.name]);
-    }
-    worker.removed = true;
-  }
-  function containerArgs(state, id, resources, timeoutMs, executable, args, { inputWritable = false, env = {} } = {}) {
-    return ["create", "--name", id, ...labelArgs(state), "--pull=never", "--network=none", "--read-only", "--read-only-tmpfs=false",
-      "--ipc=none", "--cap-drop=all", "--security-opt=no-new-privileges", "--log-driver=none", "--user=65534:65534",
-      `--memory=${resources.memoryBytes}`, `--memory-swap=${resources.memoryBytes}`, `--pids-limit=${resources.pids}`, `--cpus=${resources.cpus}`,
-      "--ulimit=nofile=256:256", `--timeout=${Math.max(1, Math.ceil(timeoutMs / 1000))}`, "--workdir=/work", "--unsetenv-all",
-      ...Object.entries({ PATH: "/usr/local/bin:/usr/bin:/bin", HOME: "/work", TMPDIR: "/tmp", LANG: "C.UTF-8", ...env })
-        .map(([key, value]) => `--env=${key}=${value}`),
-      `--volume=${state.record.volumes[0]}:/work:rw,nocopy,nosuid,nodev,noexec`, `--volume=${state.record.volumes[1]}:/tmp:rw,nocopy,nosuid,nodev,noexec`,
-      ...(state.record.volumes[2] ? [`--volume=${state.record.volumes[2]}:/input:${inputWritable ? "rw" : "ro"},nocopy`] : []),
-      "--entrypoint", executable, policy.image, ...args];
-  }
-  async function stopHolder(state) {
-    if (!state.holder) return;
-    const holder = state.holder;
-    await removeContainer(state, holder);
-    state.record.containers = state.record.containers.filter(id => id !== holder.name);
-    await save(state); state.holder = null;
-  }
-  async function stopWorker(state, worker) {
-    return worker.stopping ||= (async () => {
-      await worker.prepared;
-      // A lost create acknowledgement does not prove the container is absent.
-      await worker.created?.catch(() => {});
-      if (!worker.removed) await removeContainer(state, worker);
-      await worker.execution?.done.catch(() => {});
-      worker.confirmDrain();
-    })().finally(() => { worker.stopping = null; });
+    await syncRoot(); return { recovered };
   }
   async function createWorkspace({ runId, stepId, input, signal, queue = true, deadlineAt = Date.now() + policy.runTimeoutMs }) {
     if (!accepting) throw error("PIPELINE_RUNTIME_STOPPING");
     if (!isUuid(runId) || !Number.isSafeInteger(deadlineAt) || deadlineAt > Date.now() + policy.runTimeoutMs) throw error("PIPELINE_WORKER_IDENTITY_INVALID");
-    name(stepId);
-    signal?.throwIfAborted();
+    name(stepId); signal?.throwIfAborted();
     if (deadlineAt <= Date.now()) throw error("PIPELINE_RUN_DEADLINE");
     if (!queue && gate.active >= gate.limit) throw error("PIPELINE_WORKER_BUSY");
     const release = await gate.acquire({ signal });
-    if (!accepting || signal?.aborted) { release(); signal?.throwIfAborted(); throw error("PIPELINE_RUNTIME_STOPPING"); }
-    if (deadlineAt <= Date.now()) { release(); throw error("PIPELINE_RUN_DEADLINE"); }
-    const id = uuidv7(), workspace = Object.freeze({ id, runId, stepId });
-    const setupController = new AbortController(), effective = signal ? AbortSignal.any([signal, setupController.signal]) : setupController.signal;
+    if (!accepting || signal?.aborted || deadlineAt <= Date.now()) {
+      release(); signal?.throwIfAborted(); throw error(accepting ? "PIPELINE_RUN_DEADLINE" : "PIPELINE_RUNTIME_STOPPING");
+    }
+    const id = uuidv7(), directory = path.join(root, id);
+    const workspace = Object.freeze({ id, runId, stepId, inputRoot: path.join(directory, "input"), workRoot: path.join(directory, "work"), tempRoot: path.join(directory, "tmp") });
+    const controller = new AbortController(), effective = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
     let setupDone;
-    const setup = new Promise(resolve => { setupDone = resolve; });
-    const state = { record: { id, installationId, coordinatorId, runId, stepId, deadlineAt, volumes: [], containers: [] }, release, setup,
-      setupController, worker: null, cancelled: false, disposing: null };
+    const state = { record: { version: 2, id, installationId, coordinatorId, runId, stepId, deadlineAt, phase: "preparing", pid: null },
+      release, controller, cancelled: false, setup: new Promise(resolve => { setupDone = resolve; }) };
     workspaces.set(workspace, state);
-    function checkSetup() {
-      if (!accepting || state.cancelled) throw error("PIPELINE_RUNTIME_STOPPING");
+    try {
+      await save(state); effective.throwIfAborted();
+      await fs.mkdir(directory, { mode: 0o700 });
+      await fs.mkdir(workspace.workRoot, { mode: 0o700 }); await fs.mkdir(workspace.tempRoot, { mode: 0o700 });
+      if (input) {
+        const sizes = input.files?.map(file => file.size) || [];
+        const total = sizes.reduce((sum, size) => sum + size, 0);
+        if (!Number.isSafeInteger(total) || total < 0) throw error("PIPELINE_INPUT_CHANGED");
+        await extractTransferArchive(createTransferArchive(input, { signal: effective }), workspace.inputRoot,
+          { maxArtifactBytes: Math.max(1, ...sizes), maxOutputBytes: Math.max(1, total), maxOutputEntries: input.files.length + input.directories.length + 1 }, { signal: effective });
+      } else await fs.mkdir(workspace.inputRoot, { mode: 0o700 });
       effective.throwIfAborted();
       if (deadlineAt <= Date.now()) throw error("PIPELINE_RUN_DEADLINE");
-    }
-    try {
-      await save(state);
-      for (const [suffix, bytes, entries] of [["work", policy.outputBytes, policy.outputEntries], ["tmp", policy.tempBytes, policy.tempEntries]]) {
-        checkSetup();
-        const volume = `iris-${id}-${suffix}`;
-        state.record.volumes.push(volume); await save(state);
-        checkSetup();
-        await client.run(["volume", "create", ...labelArgs(state), "--opt=type=tmpfs", "--opt=device=tmpfs",
-          `--opt=o=size=${bytes},nr_inodes=${entries},uid=65534,gid=65534,mode=1777,nosuid,nodev,noexec`, volume]);
-      }
-      if (input) {
-        // Only setup writes this disk-backed volume. Tools mount it read-only;
-        // source size does not consume or inherit the writable tmpfs allowance.
-        checkSetup();
-        const volume = `iris-${id}-input`;
-        state.record.volumes.push(volume); await save(state); checkSetup();
-        await client.run(["volume", "create", ...labelArgs(state), volume]);
-      }
-      checkSetup();
-      const remaining = deadlineAt - Date.now();
-      if (remaining <= 0) throw error("PIPELINE_RUN_DEADLINE");
-      state.holder = { name: `iris-${uuidv7()}` };
-      state.record.containers.push(state.holder.name); await save(state);
-      checkSetup();
-      await client.run(containerArgs(state, state.holder.name, { memoryBytes: HOLDER_MEMORY, pids: 1, cpus: 0.01 }, remaining,
-        "/bin/sleep", [String(Math.ceil(remaining / 1000))], { inputWritable: true }));
-      checkSetup();
-      await client.run(["start", state.holder.name]);
-      const holder = await inspectOwned(state, "container", state.holder.name);
-      if (!holder.State.Running) throw error("PIPELINE_WORKSPACE_LOST");
-      checkSetup();
-      if (input) {
-        const result = await client.start(["cp", "-", `${state.holder.name}:/input`], {
-          input: createTransferArchive(input, { signal: effective }), signal: effective, timeoutMs: deadlineAt - Date.now(),
-        }).done;
-        if (result.code !== 0) throw error("PIPELINE_ENGINE_COMMAND_FAILED");
-        checkSetup();
-      }
+      state.record.phase = "idle"; await save(state);
       return workspace;
     } catch (failure) {
-      state.setupFailure = true;
       setupDone();
       try { await disposeWorkspace(workspace); }
-      catch (cleanupFailure) {
-        // Unconfirmed cleanup retains both the reservation and recovery receipt.
-        throw Object.assign(error("PIPELINE_WORKER_RECOVERY_REQUIRED"), { cause: new AggregateError([failure, cleanupFailure]) });
-      }
+      catch (cause) { throw Object.assign(error("PIPELINE_WORKER_RECOVERY_REQUIRED"), { cause: new AggregateError([failure, cause]) }); }
       throw failure;
     } finally { setupDone(); }
   }
-  async function runContained({ tool, args, workspace, signal, onOutput, captureStreams = false, outputLimitBytes }) {
+  async function runTool({ tool, args, workspace, signal, onOutput, captureStreams = false, outputLimitBytes, env }) {
     const state = get(workspace);
     if (state.cancelled) throw error("PIPELINE_WORKSPACE_CANCELLED");
     if (!tokens.has(tool) || !Array.isArray(args) || args.length > 256 || args.some(value => typeof value !== "string" || value.includes("\0"))
-      || Buffer.byteLength(JSON.stringify(args)) > 65536
-      || (outputLimitBytes !== undefined && (!Number.isSafeInteger(outputLimitBytes) || outputLimitBytes < 1))) throw error("PIPELINE_TOOL_INVALID");
-    if (state.worker || state.transfer || state.setupFailure) throw error("PIPELINE_WORKER_BUSY");
+      || Buffer.byteLength(JSON.stringify(args)) > 65536 || (outputLimitBytes !== undefined && (!Number.isSafeInteger(outputLimitBytes) || outputLimitBytes < 1))) throw error("PIPELINE_TOOL_INVALID");
+    const extraEnv = environment(env);
+    if (state.worker || state.transfer) throw error("PIPELINE_WORKER_BUSY");
     signal?.throwIfAborted();
     const remaining = state.record.deadlineAt - Date.now();
     if (remaining <= 0) throw error("PIPELINE_RUN_DEADLINE");
-    const timeoutMs = Math.min(tool.timeoutMs, remaining), started = Date.now();
-    let confirmDrain, complete, preparationDone;
-    const drained = new Promise(resolve => { confirmDrain = resolve; }), completed = new Promise(resolve => { complete = resolve; });
-    const prepared = new Promise(resolve => { preparationDone = resolve; });
-    const worker = { name: `iris-${uuidv7()}`, removed: false, stopping: null, execution: null, created: null,
-      cancelled: false, confirmDrain, drained, completed, prepared };
-    state.worker = worker; state.record.containers.push(worker.name);
-    let timer, timedOut = false, outputLimited = false, stoppingError = null;
-    const stop = () => {
-      if (signal?.aborted) state.cancelled = true;
-      stopWorker(state, worker).catch(error => { stoppingError = error; });
-    };
+    let complete;
+    const worker = { completed: new Promise(resolve => { complete = resolve; }) };
+    state.worker = worker;
+    const abort = () => { state.cancelled = true; worker.process?.stop(); };
+    signal?.addEventListener("abort", abort, { once: true });
+    const started = Date.now();
     try {
-      if (!state.holder || !await exists("container", state.holder.name)
-        || !(await inspectOwned(state, "container", state.holder.name)).State.Running) throw error("PIPELINE_WORKSPACE_LOST");
-      await save(state);
-      if (signal?.aborted || worker.cancelled) {
-        worker.removed = true; preparationDone(); worker.confirmDrain();
-        return { code: null, signal: null, log: "", truncated: false, cancelled: true, timedOut: false, oomKilled: false, drained: true, durationMs: Date.now() - started };
+      for (const identity of [tool, ...tool.dependencies]) {
+        if (!identity.resolved) throw error("PIPELINE_RUNTIME_UNAVAILABLE");
+        const current = await executable(identity.path, searchPath);
+        if (current.resolved !== identity.resolved || current.contentHash !== identity.contentHash) throw error("PIPELINE_TOOL_CHANGED");
       }
-      const argsCreate = containerArgs(state, worker.name, policy, timeoutMs, tool.path, args, { env: tool.env });
-      worker.created = client.run(argsCreate);
-      try { await worker.created; } finally { preparationDone(); }
-      if (signal?.aborted || worker.cancelled) {
-        await stopWorker(state, worker);
-        return { code: null, signal: null, log: "", truncated: false, cancelled: true, timedOut: false, oomKilled: false, drained: true, durationMs: Date.now() - started };
-      }
-      worker.execution = client.start(["start", "--attach", worker.name], { timeoutMs: timeoutMs + 2 * policy.controlTimeoutMs,
-        maxBytes: Math.min(policy.logBytes + tool.protocolBytes, outputLimitBytes ?? policy.logBytes + tool.protocolBytes), onOutput, captureStreams, control: false,
-        onOutputLimit: outputLimitBytes === undefined ? undefined : () => { outputLimited = true; stop(); } });
-      signal?.addEventListener("abort", stop, { once: true });
-      timer = setTimeout(() => { timedOut = true; stop(); }, timeoutMs);
-      const result = await worker.execution.done;
-      result.oomKilled = false;
-      if (worker.stopping) await worker.stopping;
-      if (!worker.removed) {
-        const inspection = await inspectOwned(state, "container", worker.name);
-        if (inspection.State.Running || inspection.State.Pid !== 0) throw error("PIPELINE_WORKER_DRAIN_REQUIRED");
-        result.code = inspection.State.ExitCode;
-        result.oomKilled = inspection.State.OOMKilled === true;
-        if (inspection.State.ExitCode !== 0 && Date.now() - started >= timeoutMs) timedOut = true;
-        await removeContainer(state, worker);
-      }
-      worker.confirmDrain();
-      if (stoppingError) throw stoppingError;
-      return { ...result, cancelled: worker.cancelled || signal?.aborted === true, timedOut, outputLimited, drained: true, durationMs: Date.now() - started };
+      state.record.phase = "running"; await save(state);
+      if (state.cancelled || signal?.aborted) return { code: null, signal: null, log: "", truncated: false, cancelled: true, timedOut: false, drained: true };
+      const timeoutMs = Math.min(tool.timeoutMs, state.record.deadlineAt - Date.now());
+      if (timeoutMs <= 0) throw error("PIPELINE_RUN_DEADLINE");
+      worker.process = startProcess(tool, args, { cwd: workspace.workRoot,
+        env: { PATH: searchPath, HOME: workspace.workRoot, TMPDIR: workspace.tempRoot, LANG: "C.UTF-8", ...tool.env, ...extraEnv },
+        timeoutMs, cleanupTimeoutMs: policy.cleanupTimeoutMs, maxBytes: Math.min(policy.logBytes + tool.protocolBytes, outputLimitBytes ?? policy.logBytes + tool.protocolBytes),
+        onOutput, captureStreams, limitOutput: outputLimitBytes !== undefined });
+      state.record.pid = worker.process.child.pid || null; await save(state);
+      if (state.cancelled || signal?.aborted) worker.process.stop();
+      return { ...await worker.process.done, durationMs: Date.now() - started };
     } catch (failure) {
-      if (!worker.created) { worker.removed = true; preparationDone(); worker.confirmDrain(); }
-      else {
-        try { await stopWorker(state, worker); }
-        catch {
-          // Preserve the caller's execution/resource lease and recovery receipt.
-          // Independent stop/recovery calls can retry the engine boundary without
-          // waiting for a project gate held by that caller.
-          await worker.drained;
-        }
-      }
+      worker.process?.stop();
+      await worker.process?.done.catch(() => {});
       throw failure;
     } finally {
-      clearTimeout(timer); signal?.removeEventListener("abort", stop);
+      signal?.removeEventListener("abort", abort);
       try {
-        if (worker.removed) {
-          state.record.containers = state.record.containers.filter(id => id !== worker.name);
-          await save(state);
-          if (state.cancelled || signal?.aborted || timedOut) await stopHolder(state);
-          state.worker = null;
+        if (!worker.process || worker.process.drained()) {
+          state.record.phase = "idle"; state.record.pid = null; await save(state); state.worker = null;
         }
       } finally { complete(); }
     }
   }
   async function stop(workspace) {
     const state = get(workspace);
-    state.cancelled = true;
-    state.setupController.abort();
-    state.transfer?.controller.abort();
-    await state.setup;
-    await state.transfer?.completed;
-    const worker = state.worker;
-    if (worker) {
-      worker.cancelled = true;
-      await stopWorker(state, worker);
-      await worker.completed;
+    state.cancelled = true; state.controller.abort(); state.transfer?.controller.abort();
+    await state.setup; await state.transfer?.completed;
+    if (state.worker) {
+      state.worker.process?.stop(); await state.worker.completed;
+      if (state.worker) throw error("PIPELINE_WORKER_RECOVERY_REQUIRED");
     }
-    await stopHolder(state);
   }
   async function exportWorkspace({ workspace, destination, directory, signal }) {
     const state = get(workspace);
-    // A single top-level name avoids traversing an untrusted ancestor. Do not
-    // append '/.' here: Podman must archive, rather than follow, a replaced root.
     if (directory !== undefined) name(directory, "PIPELINE_PATH_INVALID");
     if (state.cancelled) throw error("PIPELINE_WORKSPACE_CANCELLED");
-    if (state.worker || state.transfer || state.setupFailure) throw error("PIPELINE_WORKER_BUSY");
-    signal?.throwIfAborted();
+    if (state.worker || state.transfer) throw error("PIPELINE_WORKER_BUSY");
     const controller = new AbortController(), effective = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
-    let complete, manifest;
-    const transfer = { controller, completed: new Promise(resolve => { complete = resolve; }) };
-    state.transfer = transfer;
+    let complete, created = false, total = 0, entries = 0;
+    state.transfer = { controller, completed: new Promise(resolve => { complete = resolve; }) };
+    const files = [], directories = [];
+    function check() { effective.throwIfAborted(); if (Date.now() >= state.record.deadlineAt) throw error("PIPELINE_RUN_DEADLINE"); }
+    async function walk(rel) {
+      check();
+      const location = rel ? (await checkedPath(workspace.workRoot, rel, true)).file : workspace.workRoot;
+      if (rel && ++entries > policy.outputEntries) throw error("PIPELINE_OUTPUT_LIMIT");
+      if (rel) { directories.push(rel); await fs.mkdir(path.join(destination, rel), { mode: 0o700 }); }
+      for await (const item of await fs.opendir(location)) {
+        check(); const relative = logicalPath(rel ? `${rel}/${item.name}` : item.name, "PIPELINE_PATH_INVALID");
+        const stat = await fs.lstat(path.join(workspace.workRoot, relative));
+        if (stat.isDirectory()) await walk(relative);
+        else {
+          if (!stat.isFile() || stat.nlink !== 1) pathError();
+          if (++entries > policy.outputEntries || stat.size + total > policy.outputBytes) throw error("PIPELINE_OUTPUT_LIMIT");
+          const copied = await copyFile(workspace.workRoot, relative, path.join(destination, relative), policy.outputBytes - total, null, effective);
+          total += copied.size; files.push(copied);
+        }
+      }
+    }
     try {
-      if (!state.holder || !await exists("container", state.holder.name)
-        || !(await inspectOwned(state, "container", state.holder.name)).State.Running) throw error("PIPELINE_WORKSPACE_LOST");
-      const remaining = state.record.deadlineAt - Date.now();
-      if (remaining <= 0) throw error("PIPELINE_RUN_DEADLINE");
-      const result = await client.start(["cp", `${state.holder.name}:/work/${directory ?? "."}`, "-"], {
-        signal: effective, timeoutMs: remaining,
-        consume: async source => manifest = await extractTransferArchive(source, destination,
-          { maxArtifactBytes: policy.outputBytes, maxOutputBytes: policy.outputBytes, maxOutputEntries: policy.outputEntries }, { signal: effective }),
-      }).done;
-      if (result.code !== 0) throw error("PIPELINE_ENGINE_COMMAND_FAILED");
-      effective.throwIfAborted();
-      if (Date.now() >= state.record.deadlineAt) throw error("PIPELINE_RUN_DEADLINE");
-      return manifest;
+      check(); await fs.mkdir(destination, { mode: 0o700 }); created = true;
+      await walk(directory || ""); check();
+      return freeze({ root: destination, files: files.sort((a, b) => a.path.localeCompare(b.path, "en")), directories: directories.sort() });
     } catch (failure) {
-      if (manifest) await fs.rm(destination, { recursive: true, force: true });
+      if (created) await fs.rm(destination, { recursive: true, force: true });
       throw failure;
     } finally { state.transfer = null; complete(); }
   }
@@ -476,26 +346,21 @@ async function createPodmanRuntime({ root, coordinatorId, transport = {}, policy
     if (!state) return;
     return state.disposing ||= (async () => {
       await stop(workspace);
-      for (const volume of [...state.record.volumes]) {
-        if (await exists("volume", volume)) {
-          await inspectOwned(state, "volume", volume);
-          await client.run(["volume", "rm", volume]);
-        }
-        state.record.volumes = state.record.volumes.filter(id => id !== volume); await save(state);
-      }
-      await fs.unlink(path.join(root, `${state.record.id}.json`));
-      await syncRoot();
+      await fs.rm(path.join(root, state.record.id), { recursive: true, force: true });
+      await fs.unlink(path.join(root, `${state.record.id}.json`)); await syncRoot();
       workspaces.delete(workspace); state.release();
     })().finally(() => { state.disposing = null; });
   }
   async function close() {
     accepting = false; gate.drain("PIPELINE_RUNTIME_STOPPING");
-    for (const workspace of workspaces.keys()) await disposeWorkspace(workspace);
+    const results = await Promise.allSettled([...workspaces.keys()].map(disposeWorkspace));
+    const failures = results.filter(result => result.status === "rejected").map(result => result.reason);
+    if (failures.length) throw Object.assign(error("PIPELINE_WORKER_RECOVERY_REQUIRED"), { cause: new AggregateError(failures) });
   }
   await reconcile();
-  return Object.freeze({ createWorkspace, runContained, exportWorkspace, stop, disposeWorkspace, close, reconcile,
-    manifest() { return Object.freeze({ policy, tools: Object.freeze([...registered.values()].sort((a, b) => a.id.localeCompare(b.id, "en"))) }); },
+  return Object.freeze({ createWorkspace, runTool, exportWorkspace, stop, disposeWorkspace, close, reconcile,
+    manifest() { return freeze({ policy, tools: [...registered.values()].sort((a, b) => a.id.localeCompare(b.id, "en")) }); },
     resolveTool(id) { const tool = registered.get(id); if (!tool) throw error("PIPELINE_TOOL_INVALID"); return tool; } });
 }
 
-module.exports = { readRuntimePolicy, createPodmanRuntime };
+module.exports = { readRuntimePolicy, createNativeRuntime };

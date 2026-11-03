@@ -19,10 +19,6 @@ No Git or personal paths are needed. No supplied database URL is ever used.
 --lua                      Enable installed-Lua suites; requires Lua 5.4 or 5.5.
 --lua-bin DIR              Enable Lua suites with DIR/lua instead of PATH.
 --pg-bin DIR               PostgreSQL binaries (default: pg_config --bindir).
---pipeline-image DIGEST    Enable rootless Podman worker tests with this installed
-                           digest-pinned image. No image is pulled or built.
---podman-connection NAME   Podman connection for worker tests. Only the transport
-                           reads the caller's Podman configuration and HOME.
 --pattern REGEXP           node:test name filter.
 --concurrency N            File concurrency (default 4).
 --timeout MS               Whole suite deadline (default 600000).
@@ -37,10 +33,9 @@ TEST_DATABASE_URL. SIGINT/SIGTERM and failures trigger bounded owned cleanup.
 async function main() {
   const { values, positionals } = parseArgs({ allowPositionals: true, options: {
     help: { type: "boolean" }, browser: { type: "boolean" }, native: { type: "boolean" }, lua: { type: "boolean" },
-    ...Object.fromEntries(["browser-executable", "pg-bin", "lua-bin", "pipeline-image", "podman-connection", "pattern", "concurrency", "timeout", "test-timeout"].map((key) => [key, { type: "string" }])),
+    ...Object.fromEntries(["browser-executable", "pg-bin", "lua-bin", "pattern", "concurrency", "timeout", "test-timeout"].map((key) => [key, { type: "string" }])),
   } });
   if (values.help) return console.log(help);
-  if (values["podman-connection"] && !values["pipeline-image"]) throw new Error("--podman-connection requires --pipeline-image");
   const number = (key, fallback) => {
     const value = values[key] ?? String(fallback);
     if (!/^[1-9]\d*$/.test(value) || !Number.isSafeInteger(Number(value))) throw new Error(`Invalid --${key}`);
@@ -70,7 +65,7 @@ async function main() {
     // serverFixture deliberately disables dotenv but its default static path is
     // cwd-relative. A read-only source link lets all suites share the empty cwd.
     await fs.symlink(path.join(root, "public"), path.join(work.cwd, "public"), "dir");
-    console.log(`Isolated suite: ${tests.length} files; browser=${browser ? "enabled" : "SKIPPED"}; native=${values.native ? "enabled" : "SKIPPED"}; lua=${lua ? "enabled" : "SKIPPED"}; pipeline=${values["pipeline-image"] ? "enabled" : "SKIPPED"}`);
+    console.log(`Isolated suite: ${tests.length} files; browser=${browser ? "enabled" : "SKIPPED"}; native=${values.native ? "enabled" : "SKIPPED"}; lua=${lua ? "enabled" : "SKIPPED"}`);
     const result = await run(process.execPath, ["--test", "--test-reporter=tap", `--test-concurrency=${concurrency}`, `--test-timeout=${testTimeout}`,
       ...(values.pattern ? [`--test-name-pattern=${values.pattern}`] : []), ...tests], {
       cwd: work.cwd, timeout, allowFailure: true,
@@ -81,8 +76,6 @@ async function main() {
         IRIS_TEST_BROWSER: browser ? "1" : "0", IRIS_TEST_COMPILERS: values.native ? "1" : "0",
         IRIS_TEST_LUA: lua ? "1" : "0", ...(lua ? { LUA_BIN_PATH: luaBin } : {}),
         ...(values["browser-executable"] ? { IRIS_BROWSER_EXECUTABLE: path.resolve(values["browser-executable"]) } : {}),
-        ...(values["pipeline-image"] ? { IRIS_TEST_PIPELINE_IMAGE: values["pipeline-image"], IRIS_TEST_PODMAN_HOME: process.env.HOME,
-          IRIS_TEST_PODMAN_CONNECTION: values["podman-connection"] || "" } : {}),
       },
     });
     process.exitCode ||= result.code ?? 1;

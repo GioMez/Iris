@@ -45,7 +45,7 @@ async function executePlan({ plan, target, workspace, registry, gate, signal = n
       try {
         const context = await materializeInputs(workspace, step, artifacts, { signal, policy: plan.policy, reportDiagnostic });
         signal.throwIfAborted();
-        // Registered adapters settle only after contained workers have drained.
+        // Registered adapters settle only after their owned workers have drained.
         const outcome = await definitions.get(step.id).execute(context);
         const diagnostics = cloneValue(outcome?.diagnostics ?? result.diagnostics, plan.policy);
         if (!Array.isArray(diagnostics)) fail("PIPELINE_DIAGNOSTICS_INVALID", "Invalid pipeline diagnostics");

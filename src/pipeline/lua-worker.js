@@ -3,7 +3,7 @@ const path = require("node:path");
 const { Worker, isMainThread, parentPort, workerData } = require("node:worker_threads");
 
 // Private file protocol. The coordinator stages this tree through the runtime's
-// checked transfer manifest, and the engine mounts it read-only at /input.
+// checked transfer manifest into a private native workspace.
 async function executeRequest({ inputRoot, workRoot }) {
   const { executeLua } = require("./lua-vm");
   const { createLuaIO, readLuaFile } = require("./lua-io");
@@ -18,7 +18,7 @@ async function executeRequest({ inputRoot, workRoot }) {
     try { parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); }
     catch { fail("PIPELINE_LUA_REQUEST_INVALID", "Invalid Lua worker request"); }
     const code = "PIPELINE_LUA_REQUEST_INVALID", request = cloneValue(parsed, LUA_DATA_POLICY, code);
-    record(request, ["version", "mode", "script", "entrypoint", "modules", "context", "inputs", "outputs", "policy", "limits", "eventLimits", "expectedDescriptor"], code, "Lua worker request");
+    record(request, ["version", "mode", "script", "entrypoint", "modules", "context", "inputs", "outputs", "policy", "limits", "eventLimits", "expectedDescriptor", "timeoutMs"], code, "Lua worker request");
     if (request.version !== 1 || !["inspect", "plan", "transform"].includes(request.mode)) fail(code, "Unsupported Lua worker request");
     logicalPath(request.script, code);
     if (!Array.isArray(request.modules) || !request.modules.length || request.modules.length > 20000) fail(code, "Invalid Lua module manifest");
@@ -44,7 +44,7 @@ async function executeRequest({ inputRoot, workRoot }) {
       host = Object.fromEntries(["read", "list", "write", "log", "diagnostic"].map(key => [key, io[key]]));
     }
     const value = await executeLua({ mode: request.mode, script: request.script, modules, context: request.context,
-      entrypoint: request.entrypoint, host, policy, maxIoBytes: budget.maxArtifactBytes,
+      entrypoint: request.entrypoint, host, policy, maxIoBytes: budget.maxArtifactBytes, timeoutMs: request.timeoutMs,
       expectedDescriptor: request.expectedDescriptor });
     response = { version: 1, value };
   } catch (error) {
@@ -56,7 +56,7 @@ async function executeRequest({ inputRoot, workRoot }) {
   fs.writeFileSync(path.join(responseRoot, "result.json"), JSON.stringify(response), { flag: "wx", mode: 0o600 });
 }
 
-function runLuaWorker({ inputRoot = "/input", workRoot = "/work" } = {}) {
+function runLuaWorker({ inputRoot, workRoot }) {
   return new Promise((resolve, reject) => {
     const worker = new Worker(__filename, { workerData: { irisLuaWorker: true, inputRoot, workRoot } });
     worker.on("message", frame => process.stdout.write(frame));
@@ -66,5 +66,5 @@ function runLuaWorker({ inputRoot = "/input", workRoot = "/work" } = {}) {
 }
 
 if (!isMainThread && workerData?.irisLuaWorker === true) executeRequest(workerData).catch(() => { process.exitCode = 1; });
-else if (require.main === module) runLuaWorker().catch(() => { process.exitCode = 1; });
+else if (require.main === module) runLuaWorker({ inputRoot: process.argv[2], workRoot: process.argv[3] }).catch(() => { process.exitCode = 1; });
 module.exports = { runLuaWorker };

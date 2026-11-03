@@ -12,7 +12,7 @@ const { openCheckedFile, readWorkspaceLimits } = require("./workspaces");
 const hash = bytes => createHash("sha256").update(bytes).digest("hex");
 const digest = value => hash(canonical(value));
 const compare = (a, b) => a < b ? -1 : a > b ? 1 : 0;
-const workerPath = "/opt/iris/src/pipeline/lua-worker.js";
+const workerPath = path.join(__dirname, "lua-worker.js");
 // One MiB of diagnostics plus JSON-line envelopes for at most 1,000 events.
 const protocolBytes = 1048576 + 16000;
 const implementationHash = digest(["lua.js", "lua-worker.js", "lua-io.js", "lua-vm.js", "lua-bootstrap.lua", "lua-process.lua", "vendor/dkjson.lua", "contracts.js",
@@ -98,8 +98,9 @@ function createLuaCoordinator({ runtime, workspace, runId, registry, policy: ove
   }
   async function invoke(mode, extra, signal, { context, emit = async () => {}, reportDiagnostic = async () => {} } = {}) {
     signal?.throwIfAborted();
+    const tool = runtime.resolveTool(mode === "transform" ? "lua-transform" : "lua-planner");
     const request = cloneValue({ version: 1, mode, script: bundle.script, modules: bundle.modules,
-      policy, limits: budget, eventLimits: { maxLogBytes }, ...extra }, LUA_DATA_POLICY, "PIPELINE_LUA_REQUEST_INVALID");
+      policy, limits: budget, eventLimits: { maxLogBytes }, timeoutMs: tool.timeoutMs, ...extra }, LUA_DATA_POLICY, "PIPELINE_LUA_REQUEST_INVALID");
     const bytes = Buffer.from(JSON.stringify(request));
     const root = await fs.mkdtemp(path.join(workspace.root, "lua-"));
     let worker, recoveryRequired = false;
@@ -127,7 +128,7 @@ function createLuaCoordinator({ runtime, workspace, runId, registry, policy: ove
       const decoder = new StringDecoder("utf8");
       const streamedDiagnostics = [], members = new Map(Object.entries(context?.inputs || {}).map(([key, input]) => [key, new Set(input.files.map(file => file.path))]));
       let pending = "", streamBytes = 0, logBytes = 0, logCount = 0, diagnosticBytes = 2;
-      const result = await runtime.runContained({ workspace: worker, tool: runtime.resolveTool(mode === "transform" ? "lua-transform" : "lua-planner"), args: [workerPath], signal,
+      const result = await runtime.runTool({ workspace: worker, tool, args: [workerPath, worker.inputRoot, worker.workRoot], signal,
         outputLimitBytes: maxLogBytes + protocolBytes,
         onOutput: context ? async (chunk, channel) => {
           if (channel !== "stdout") return;
@@ -158,7 +159,6 @@ function createLuaCoordinator({ runtime, workspace, runId, registry, policy: ove
       signal?.throwIfAborted();
       if (result.drained !== true) fail("PIPELINE_WORKER_RECOVERY_REQUIRED", "Lua worker drain is unconfirmed");
       if (result.timedOut) fail("PIPELINE_LUA_TIMEOUT", "Lua worker timed out");
-      if (result.oomKilled) fail("PIPELINE_LUA_MEMORY_LIMIT", "Lua worker memory limit exceeded");
       if (result.outputLimited || result.truncated) fail("PIPELINE_LUA_RESPONSE_INVALID", "Lua worker event transport exceeded its limit");
       if (result.cancelled || result.code !== 0 || result.signal) fail("PIPELINE_LUA_WORKER_FAILED", "Lua worker failed");
       if (context && !result.truncated && (pending + decoder.end()).length) fail("PIPELINE_LOG_INVALID", "Incomplete Lua log record");
@@ -189,7 +189,7 @@ function createLuaCoordinator({ runtime, workspace, runId, registry, policy: ove
       recoveryRequired = error.code === "PIPELINE_WORKER_RECOVERY_REQUIRED";
       throw error;
     } finally {
-      // Keep staging evidence if engine cleanup cannot be confirmed.
+      // Keep staging evidence if worker cleanup cannot be confirmed.
       if (worker) await runtime.disposeWorkspace(worker);
       if (!recoveryRequired) await fs.rm(root, { recursive: true, force: true });
     }
@@ -251,10 +251,12 @@ function createLuaAdapter({ execute }) {
   };
 }
 
-function createLuaTools({ planningTimeoutMs = 5000, transformTimeoutMs = 30000 } = {}) {
+function createLuaTools({ planningTimeoutMs = 5000, transformTimeoutMs = 30000, luaBinPath = process.env.LUA_BIN_PATH || "" } = {}) {
+  const bin = luaBinPath ? path.resolve(luaBinPath) : "", env = { LUA_BIN_PATH: bin };
+  const dependencies = [bin ? path.join(bin, "lua") : "lua"];
   return [
-    { id: "lua-planner", path: "/usr/local/bin/node", timeoutMs: planningTimeoutMs, protocolBytes },
-    { id: "lua-transform", path: "/usr/local/bin/node", timeoutMs: transformTimeoutMs, protocolBytes },
+    { id: "lua-planner", path: process.execPath, timeoutMs: planningTimeoutMs, protocolBytes, env, dependencies },
+    { id: "lua-transform", path: process.execPath, timeoutMs: transformTimeoutMs, protocolBytes, env, dependencies },
   ];
 }
 

@@ -27,8 +27,8 @@ function limits(policy) {
   return Object.freeze(result);
 }
 
-// The caller holds the source gate; workers cannot mutate this host tree. Check
-// each component as well as the opened inode, so links never become inputs.
+// The caller holds the source gate or owns an immutable staging tree. Check
+// each component and the opened inode before copying into a worker workspace.
 async function checkedPath(root, rel, directory = false) {
   const parts = relative(rel).split("/");
   let current = root, info = await fs.lstat(root);
@@ -292,4 +292,4 @@ async function disposeRunWorkspace(workspace) {
 }
 
 module.exports = { createRunWorkspace, materializeInputs, materializeOverlay, validateOutputs, disposeRunWorkspace,
-  checkedPath, openCheckedFile, readWorkspaceLimits: limits };
+  checkedPath, openCheckedFile, copyFile, readWorkspaceLimits: limits };

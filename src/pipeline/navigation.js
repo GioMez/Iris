@@ -39,7 +39,7 @@ async function collectCompilerMapping({ context, compiled, products, projectId, 
   } catch (error) { mappingError = error; }
   context.signal?.throwIfAborted();
   const manifest = await mapping.collectSourceMapping({ ...base, artifacts, sources, mappingError,
-    snapshotRoot: compiled.family === "latex" ? "/work" : "/input", backend: compiled.family,
+    snapshotRoot: compiled.snapshotRoot, backend: compiled.family,
     async readMap(name, limit) {
       context.signal?.throwIfAborted();
       const relative = aliases.get(name);
@@ -147,8 +147,8 @@ function createRunMappingCollector({ projectId, runId }) {
   };
 }
 
-function createNavigationTools({ texBinPath = "/usr/bin" } = {}) {
-  return [{ id: "synctex", path: path.posix.join(texBinPath, "synctex"), timeoutMs: 5000,
+function createNavigationTools({ texBinPath = "" } = {}) {
+  return [{ id: "synctex", path: texBinPath ? path.resolve(texBinPath, "synctex") : "synctex", timeoutMs: 5000,
     env: { SYNCTEX_EDITOR: "", SYNCTEX_VIEWER: "" } }];
 }
 
@@ -157,6 +157,7 @@ function createNavigationTools({ texBinPath = "/usr/bin" } = {}) {
 async function navigateCompilerMapping({ navigation, products, runtime, projectId, runId, query, enabled, signal }) {
   let worker, timer, effective;
   const aliases = new Map(), artifacts = [], budget = new AbortController();
+  const deadlineAt = Date.now() + 5000;
   function add(name, source, size, contentHash) {
     if (aliases.has(name)) throw mapping.failure("malformed-map");
     logicalPath(source.path, "PIPELINE_MAPPING_INVALID");
@@ -193,42 +194,49 @@ async function navigateCompilerMapping({ navigation, products, runtime, projectI
       try { await fs.lstat(path.join(file.source.root, relative)); return true; }
       catch (error) { if (error.code === "ENOENT") return false; throw error; }
     },
-    directory: async () => "/input",
+    async directory() {
+      try {
+        if (!worker) {
+          effective = signal ? AbortSignal.any([signal, budget.signal]) : budget.signal;
+          const remaining = deadlineAt - Date.now();
+          if (remaining <= 0) throw mapping.failure("timeout");
+          timer = setTimeout(() => budget.abort(mapping.failure("timeout")), remaining);
+          const selected = navigation.manifest.artifacts.filter(artifact => artifact.syncFile && (query.direction === "inverse"
+            ? artifact.id === query.artifactId : artifact.inputs.some(input => input.sourceFileId === query.sourceFileId)));
+          const files = selected.flatMap(artifact => [aliases.get(artifact.fileName), aliases.get(artifact.syncFile)]);
+          worker = await runtime.createWorkspace({ runId, stepId: "navigation", queue: false, signal: effective, deadlineAt,
+            input: { directories: [], files } });
+        }
+        effective.throwIfAborted();
+        return worker.inputRoot;
+      } catch (error) { rejectQuery(error); }
+    },
     async close() {
       clearTimeout(timer);
       if (worker) await runtime.disposeWorkspace(worker);
     },
   };
-  async function runQuery(command, args, { timeoutMs }) {
+  function rejectQuery(error) {
+    if (signal?.aborted) throw mapping.failure("cancelled");
+    if (budget.signal.aborted) throw budget.signal.reason;
+    const reason = { PIPELINE_WORKER_BUSY: "busy", PIPELINE_RUN_DEADLINE: "timeout",
+      PIPELINE_RUNTIME_UNAVAILABLE: "engine-missing", PIPELINE_INPUT_CHANGED: "stale-artifact" }[error.code];
+    if (reason) throw mapping.failure(reason);
+    throw error;
+  }
+  async function runQuery(command, args) {
     try {
-      if (!worker) {
-        const deadlineAt = Date.now() + timeoutMs;
-        effective = signal ? AbortSignal.any([signal, budget.signal]) : budget.signal;
-        timer = setTimeout(() => budget.abort(mapping.failure("timeout")), timeoutMs);
-        const selected = navigation.manifest.artifacts.filter(artifact => artifact.syncFile && (query.direction === "inverse"
-          ? artifact.id === query.artifactId : artifact.inputs.some(input => input.sourceFileId === query.sourceFileId)));
-        const files = selected.flatMap(artifact => [aliases.get(artifact.fileName), aliases.get(artifact.syncFile)]);
-        worker = await runtime.createWorkspace({ runId, stepId: "navigation", queue: false, signal: effective, deadlineAt,
-          input: { directories: [], files } });
-      }
       effective.throwIfAborted();
       let tool;
       try { tool = runtime.resolveTool("synctex"); } catch { throw mapping.failure("engine-missing"); }
-      const result = await runtime.runContained({ workspace: worker, tool, args, signal: effective, captureStreams: true, outputLimitBytes: 1048576 });
+      const result = await runtime.runTool({ workspace: worker, tool, args, signal: effective, captureStreams: true, outputLimitBytes: 1048576 });
       effective.throwIfAborted();
       if (result.outputLimited || result.truncated) throw mapping.failure("output-limit");
       if (result.timedOut) throw mapping.failure("timeout");
       if (result.cancelled) throw mapping.failure("cancelled");
       if (result.code !== 0 || !result.drained) throw mapping.failure("query-failed");
       return { stdout: result.stdout, stderr: result.stderr };
-    } catch (error) {
-      if (signal?.aborted) throw mapping.failure("cancelled");
-      if (budget.signal.aborted) throw budget.signal.reason;
-      const reason = { PIPELINE_WORKER_BUSY: "busy", PIPELINE_RUN_DEADLINE: "timeout", PIPELINE_CONTROL_TIMEOUT: "timeout",
-        PIPELINE_RUNTIME_UNAVAILABLE: "engine-missing", PIPELINE_INPUT_CHANGED: "stale-artifact" }[error.code];
-      if (reason) throw mapping.failure(reason);
-      throw error;
-    }
+    } catch (error) { rejectQuery(error); }
   }
   return mapping.navigateSourceMapping({ projectId, buildId: runId, artifacts, query, enabled, signal, runQuery }, storage);
 }

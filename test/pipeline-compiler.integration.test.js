@@ -14,34 +14,27 @@ const { createRegistry } = require("../src/pipeline/registry");
 const { validatePlan } = require("../src/pipeline/contracts");
 const { createRunWorkspace, disposeRunWorkspace } = require("../src/pipeline/workspaces");
 const { executePlan } = require("../src/pipeline/executor");
-const { createPodmanRuntime } = require("../src/pipeline/runtime");
+const { createNativeRuntime } = require("../src/pipeline/runtime");
 const helpers = require("../src/server");
-const native = { skip: !process.env.IRIS_TEST_PIPELINE_IMAGE || process.env.IRIS_TEST_COMPILERS !== "1", timeout: 180000 };
+const native = { skip: process.env.IRIS_TEST_COMPILERS !== "1", timeout: 180000 };
+const nativeLua = { ...native, skip: native.skip || process.env.IRIS_TEST_LUA !== "1" };
 
 async function fixture(t, files, settings = {}, { onOutput, onCompiled, onArtifacts, timeoutMs = 60000, adapters = [], tools = [] } = {}) {
   const { createCompilerTools, createCompilerAdapters } = require("../src/pipeline/compilers");
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "iris-pipeline-compilers-"));
   const source = path.join(root, "source"), stateRoot = path.join(root, "runtime");
   await fs.mkdir(source);
-  const transport = { command: "podman", connection: process.env.IRIS_TEST_PODMAN_CONNECTION || null, home: process.env.IRIS_TEST_PODMAN_HOME };
   let workspace, runtime;
   t.after(async () => {
     if (runtime) {
       await runtime.close();
-      const { installationId } = JSON.parse(await fs.readFile(path.join(stateRoot, "installation.json"), "utf8"));
-      for (const args of [["ps", "--all"], ["volume", "ls"]]) {
-        const { stdout } = await promisify(execFile)("podman", [...(transport.connection ? ["--connection", transport.connection] : []),
-          ...args, "--filter", `label=iris.installation=${installationId}`, "--format", "{{.Name}}"],
-        { env: { PATH: process.env.PATH, HOME: transport.home }, timeout: 15000 });
-        assert.equal(stdout.trim(), "");
-      }
+      assert.deepEqual(await fs.readdir(stateRoot), ["installation.json"]);
     }
     if (workspace) await disposeRunWorkspace(workspace);
     await fs.rm(root, { recursive: true, force: true });
   });
-  runtime = await createPodmanRuntime({ root: stateRoot, coordinatorId: uuidv7(), transport,
-    policy: { image: process.env.IRIS_TEST_PIPELINE_IMAGE, memoryBytes: 805306368, totalMemoryBytes: 1342177280,
-      outputBytes: 134217728, tempBytes: 268435456, timeoutMs, runTimeoutMs: 300000 }, tools: [...createCompilerTools({ timeoutMs }), ...tools],
+  runtime = await createNativeRuntime({ root: stateRoot, coordinatorId: uuidv7(),
+    policy: { outputBytes: 134217728, timeoutMs, runTimeoutMs: 300000 }, tools: [...createCompilerTools({ timeoutMs }), ...tools],
   });
   if (typeof files === "function") files = await files(runtime, root);
   for (const [file, body] of Object.entries(files)) {
@@ -66,7 +59,7 @@ const step = (id, family, main, options = {}, kind = "file") => ({ id, adapter: 
   outputs: { output: { kind, mediaType: "application/pdf", path: kind === "file" ? `${id}/result.pdf` : `${id}/documents` } },
 });
 
-for (const family of ["latex", "lilypond"]) test(`approved Lua generates a native ${family} include with retained output and diagnostic provenance`, native, async t => {
+for (const family of ["latex", "lilypond"]) test(`approved Lua generates a native ${family} include with retained output and diagnostic provenance`, nativeLua, async t => {
   const { createLuaCoordinator, createLuaAdapter } = require("../src/pipeline/lua");
   const plugin = await fs.readFile(path.join(__dirname, "fixtures/pipelines/generate.lua"), "utf8");
   const main = family === "latex" ? "main.tex" : "main.ly";
@@ -105,7 +98,7 @@ for (const family of ["latex", "lilypond"]) test(`approved Lua generates a nativ
   }
 });
 
-test("changing a Lua-generated include changes only its declared dependent LilyPond score", native, async t => {
+test("changing a Lua-generated include changes only its declared dependent LilyPond score", nativeLua, async t => {
   const { createLuaCoordinator, createLuaAdapter } = require("../src/pipeline/lua");
   const base = await fs.readFile(path.join(__dirname, "fixtures/pipelines/generate.lua"), "utf8");
   const plugin = `local plugin=(function() ${base} end)()
@@ -148,7 +141,7 @@ test("changing a Lua-generated include changes only its declared dependent LilyP
   assert.deepEqual(samples[0].control, samples[1].control);
 });
 
-test("contained SyncTeX navigates retained renamed PDFs after source removal and rejects changed sidecars", native, async t => {
+test("native SyncTeX navigates retained renamed PDFs after source removal and rejects changed sidecars", native, async t => {
   const { collectCompilerMapping, navigateCompilerMapping, createNavigationTools } = require("../src/pipeline/navigation");
   const projectId = uuidv7(), runId = uuidv7(), include = "parts/é text.tex";
   let navigation, context;
@@ -193,7 +186,7 @@ test("contained SyncTeX navigates retained renamed PDFs after source removal and
 });
 
 for (const mode of ["standard", "transformed", "landscape"]) {
-  test(`contained LilyPond navigation matches rendered music across books and physical pages (${mode})`, native, async t => {
+  test(`native LilyPond navigation matches rendered music across books and physical pages (${mode})`, native, async t => {
     const { collectCompilerMapping, navigateCompilerMapping } = require("../src/pipeline/navigation");
     const projectId = uuidv7(), runId = uuidv7(), include = "parts/é air.ly";
     const transform = mode === "transformed" ? `#(let* ((m (resolve-module '(lily framework-ps))) (original (module-ref m 'output-stencils)))
@@ -330,7 +323,7 @@ test("compiler collections preserve independently named LilyPond books and priva
   assert.ok((await fs.readdir(f.compiled.get("books").outputDir)).some(file => file.endsWith(".iris-map.tsv")));
 });
 
-test("failed contained compilation retains source diagnostics and blocks its dependent step", native, async t => {
+test("failed native compilation retains source diagnostics and blocks its dependent step", native, async t => {
   const f = await fixture(t, { "main.tex": "\\documentclass{article}\n\\begin{document}\n\\input{parts/broken}\n\\end{document}\n",
     "parts/broken.tex": "\\UndefinedIrisCommand\n" });
   const downstream = step("later", "latex", "main.tex"); downstream.after = ["broken"];
@@ -350,7 +343,7 @@ test("failed contained compilation retains source diagnostics and blocks its dep
 });
 
 for (const family of ["latex", "lilypond"]) {
-  test(`contained ${family} diagnostics identify the generating artifact without inventing a project file`, native, async t => {
+  test(`native ${family} diagnostics identify the generating artifact without inventing a project file`, native, async t => {
     const generatedPath = family === "latex" ? "generated/broken.tex" : "generated/broken.ily";
     const bytes = "\\UndefinedIrisCommand\n";
     const generator = { id: "fixture-generator", version: "1.0.0", implementationHash: "a".repeat(64), capabilities: [],
@@ -421,7 +414,7 @@ test("compiler metadata binds renamed and duplicated PDFs to each validated outp
 });
 
 for (const family of ["latex", "lilypond"]) {
-  test(`contained ${family} maps bind final artifact hashes and recorded source revisions`, native, async t => {
+  test(`native ${family} maps bind final artifact hashes and recorded source revisions`, native, async t => {
     const { collectCompilerMapping } = require("../src/pipeline/navigation");
     const main = family === "latex" ? "main.tex" : "main.ly", include = family === "latex" ? "parts/text.tex" : "parts/music.ily";
     let compiled, navigation, rejected;
@@ -462,7 +455,7 @@ for (const family of ["latex", "lilypond"]) {
 }
 
 for (const [format, mediaType] of [["png", "image/png"], ["svg", "image/svg+xml"], ["ps", "application/postscript"], ["eps", "application/postscript"]]) {
-  test(`contained LilyPond retains ${format} output selection`, native, async t => {
+  test(`native LilyPond retains ${format} output selection`, native, async t => {
     const f = await fixture(t, { "main.ly": '\\version "2.24.1"\n\\score { { c\'1 } }\n' });
     const compile = step("score", "lilypond", "main.ly", { format, args: "-dresolution=72" }, "collection");
     compile.outputs.output.mediaType = mediaType;
@@ -480,7 +473,7 @@ for (const [format, mediaType] of [["png", "image/png"], ["svg", "image/svg+xml"
 }
 
 for (const engine of ["xelatex", "lualatex", "xetex"]) {
-  test(`contained ${engine} preserves a custom multipass profile`, native, async t => {
+  test(`native ${engine} preserves a custom multipass profile`, native, async t => {
     const f = await fixture(t, { "main.tex": engine === "xetex" ? "Iris plain XeTeX.\\bye\n" : "\\documentclass{article}\n\\begin{document}Iris engine fixture.\\end{document}\n" });
     const result = await f.run([step("custom", "latex", "main.tex", { engine, profile: { mode: "custom", steps: [
       { tool: "[engine]", args: ["-recorder", "[main]"] }, { tool: "[engine]", args: ["-recorder", "[main]"] },
@@ -493,7 +486,7 @@ for (const engine of ["xelatex", "lualatex", "xetex"]) {
 }
 
 for (const mode of ["bibtex", "biber", "index"]) {
-  test(`contained ${mode} profile retains auxiliary output and selects final-pass diagnostics`, native, async t => {
+  test(`native ${mode} profile retains auxiliary output and selects final-pass diagnostics`, native, async t => {
     const preamble = mode === "biber" ? "\\usepackage{biblatex}\\addbibresource{refs.bib}" : mode === "index" ? "\\usepackage{makeidx}\\makeindex" : "";
     const body = mode === "biber" ? "\\cite{iris}\\printbibliography" : mode === "index" ? "Iris\\index{Iris}\\printindex" : "\\cite{iris}\\bibliographystyle{plain}\\bibliography{refs}";
     const f = await fixture(t, { "main.tex": `\\documentclass{article}\n${preamble}\n\\begin{document}${body}\\end{document}\n`,
@@ -506,7 +499,7 @@ for (const mode of ["bibtex", "biber", "index"]) {
   });
 }
 
-test("cancelling an active contained compiler drains it and blocks further passes", native, async t => {
+test("cancelling an active native compiler drains it and blocks further passes", native, async t => {
   const controller = new AbortController();
   const f = await fixture(t, { "main.tex": "\\documentclass{article}\n\\begin{document}\\message{IRIS-CANCEL-READY}\\loop\\iftrue\\repeat\\end{document}\n" }, {}, {
     timeoutMs: 15000, onOutput: (context, chunk) => { if (chunk.toString().includes("IRIS-CANCEL-READY")) controller.abort(); },
@@ -539,18 +532,13 @@ test("generated include artifacts feed both compiler families without mutating t
 });
 
 for (const engine of ["xelatex", "lualatex"]) {
-  test(`contained ${engine} loads a byte-exact project font through a nested source include`, native, async t => {
-    const f = await fixture(t, async (runtime, root) => {
-      const worker = await runtime.createWorkspace({ runId: uuidv7(), stepId: "font-fixture" });
-      try {
-        const result = await runtime.runContained({ workspace: worker, tool: runtime.resolveTool("compiler-setup"), args: ["-e",
-          "const fs=require('node:fs');fs.mkdirSync('/work/font');fs.copyFileSync('/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf','/work/font/Project.ttf')"] });
-        assert.equal(result.code, 0, result.log);
-        const exported = await runtime.exportWorkspace({ workspace: worker, directory: "font", destination: path.join(root, "font-source") });
-        return { "fonts/Project.ttf": await fs.readFile(path.join(exported.root, "font/Project.ttf")),
+  test(`native ${engine} loads a byte-exact project font through a nested source include`, native, async t => {
+    const f = await fixture(t, async () => {
+        const { stdout } = await promisify(execFile)("fc-match", ["-f", "%{file}", "serif"], { timeout: 5000 });
+        assert.ok(path.isAbsolute(stdout));
+        return { "fonts/Project.ttf": await fs.readFile(stdout),
           "main.tex": "\\documentclass{article}\n\\usepackage{fontspec}\n\\setmainfont{Project.ttf}[Path=fonts/]\n\\begin{document}\\input{parts/text}\\end{document}\n",
           "parts/text.tex": "Project font: café, music.\n" };
-      } finally { await runtime.disposeWorkspace(worker); }
     });
     const result = await f.run([step("font", "latex", "main.tex", { engine })]);
     assert.equal(result.state, "succeeded", JSON.stringify(result.steps));
