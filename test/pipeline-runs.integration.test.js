@@ -74,6 +74,73 @@ async function running(f, run) {
   await runs.transitionStep(f.store, run.id, "validate", "pending", "running");
 }
 
+function previewPlan() {
+  const registry = createRegistry([{ id: "check", version: "1.0.0", implementationHash: hash,
+    inputs: {}, outputs: { report: { kinds: ["file"], mediaTypes: ["application/pdf"], required: true } },
+    optionsSchema: { type: "object" }, execute: async () => {}, capabilities: [] }]);
+  return validatePlan({ apiVersion: 1, pluginId: "preview", steps: [{ id: "validate", adapter: { id: "check", version: "1.0.0" },
+    outputs: { report: { kind: "file", mediaType: "application/pdf", path: "final.pdf" } } }],
+    targets: { check: { steps: ["validate"], publish: [{ step: "validate", port: "report" }], primaryPreview: { step: "validate", port: "report" } } } }, { registry });
+}
+
+test("primary preview survives plan completion and a fresh run-store reader", options, async t => {
+  const f = await fixture(t), run = await f.accept(await f.approve());
+  assert.equal(run.primaryPreview, null);
+  await ready(f, run, previewPlan());
+  const current = await runs.getRun({ ...f.store, coordinatorId: uuidv7() }, run.id, f.principals.viewer);
+  assert.deepEqual(current.primaryPreview, { step: "validate", port: "report" });
+  const cancelled = await runs.cancelRun(f.store, run.id, f.principals.owner);
+  assert.deepEqual(cancelled.primaryPreview, current.primaryPreview);
+});
+
+for (const damage of ["missing", "wrong-port", "ambiguous", "unsafe-media"]) test(`publication refuses a ${damage} primary preview before filesystem publication`, options, async t => {
+  const f = await fixture(t), run = await f.accept(await f.approve());
+  await ready(f, run, previewPlan());
+  let published = false;
+  f.store.publish = async () => { published = true; };
+  const artifact = { id: uuidv7(), name: "final.pdf", storagePath: `output/${run.id}/validate/report/final.pdf`,
+    logicalPath: "final.pdf", producerStep: "validate", outputPort: "report", mimeType: "application/pdf", size: 7, contentHash: hash };
+  const artifacts = damage === "missing" ? [] : [artifact];
+  if (damage === "wrong-port") artifact.outputPort = "other";
+  if (damage === "unsafe-media") artifact.mimeType = "text/html";
+  if (damage === "ambiguous") artifacts.push({ ...artifact, id: uuidv7(), name: "second.pdf", logicalPath: "second.pdf", storagePath: `output/${run.id}/validate/report/second.pdf` });
+  await assert.rejects(runs.publishRun(f.store, run.id, artifacts), { errorCode: "PIPELINE_PREVIEW_INVALID" });
+  assert.equal(published, false);
+  assert.deepEqual((await f.pool.query("SELECT status,publication_state,artifact_count FROM build_outputs WHERE id=$1", [run.id])).rows[0],
+    { status: "running", publication_state: "none", artifact_count: 0 });
+});
+
+test("build readers expose target identity and choose the newest accepted success within each target", options, async t => {
+  const f = await fixture(t, true), approval = await f.approve();
+  const first = await f.accept(approval), second = await f.accept(approval), other = await f.accept(approval, { target: "other" });
+  const failed = await f.accept(approval);
+  const plan = validationPlan(), registry = createRegistry([{ id: "check", version: "1.0.0", implementationHash: hash,
+    inputs: {}, outputs: {}, optionsSchema: { type: "object" }, execute: async () => {}, capabilities: [] }]);
+  const otherPlan = validatePlan({ apiVersion: 1, pluginId: "fixture", steps: [{ id: "validate", adapter: { id: "check", version: "1.0.0" } }],
+    targets: { other: { steps: ["validate"], publish: [] } } }, { registry });
+  for (const run of [second, other, first]) { await ready(f, run, run === other ? otherPlan : plan); await runs.publishRun(f.store, run.id, []); }
+  await runs.transitionRun(f.store, failed.id, "queued", "failed", { reason: "fixture-failure" });
+  // Wall-clock timestamps must not substitute for the server's accepted order.
+  await f.pool.query("UPDATE build_outputs SET created_at=created_at + INTERVAL '1 day' WHERE id=$1", [first.id]);
+  const base = `/api/projects/${f.projectId}/builds`;
+  const listed = await (await f.request(`${base}?kind=pipeline&target=check&limit=1`, { cookie: f.cookies.viewer })).json();
+  assert.equal(listed.latestSuccessfulId, second.id);
+  assert.equal(listed.builds.length, 1); assert.equal(listed.builds[0].id, failed.id);
+  assert.equal(listed.builds[0].kind, "pipeline"); assert.equal(listed.builds[0].target, "check");
+  assert.equal(listed.builds[0].requestOrder, failed.requestOrder);
+  const otherList = await (await f.request(`${base}?kind=pipeline&target=other`, { cookie: f.cookies.viewer })).json();
+  assert.equal(otherList.latestSuccessfulId, other.id); assert.equal(otherList.builds.length, 1);
+  const empty = await (await f.request(`${base}?kind=compiler&target=default`, { cookie: f.cookies.viewer })).json();
+  assert.deepEqual(empty.builds, []); assert.equal(empty.latestSuccessfulId, null);
+  const detail = await (await f.request(`${base}/${second.id}`, { cookie: f.cookies.viewer })).json();
+  assert.equal(detail.build.kind, "pipeline"); assert.equal(detail.build.target, "check");
+  assert.equal(detail.build.primaryPreview, null); assert.equal(detail.primaryPreviewArtifactId, null);
+  for (const query of ["kind=other", "target=../other", "target="]) {
+    assert.equal((await f.request(`${base}?${query}`, { cookie: f.cookies.viewer })).status, 400);
+  }
+  assert.equal((await f.request(`${base}?kind=pipeline&target=check`, { cookie: f.cookies.outsider })).status, 404);
+});
+
 function descriptor(identity, pluginId = "fixture") {
   const value = { ...validateDescriptor({ apiVersion: 1, pluginId }), ...identity };
   return { ...value, descriptorHash: createHash("sha256").update(canonical(value)).digest("hex") };

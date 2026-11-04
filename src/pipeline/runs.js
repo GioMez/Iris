@@ -2,7 +2,7 @@ const { createHash } = require("node:crypto");
 const { isDeepStrictEqual, types: { isProxy } } = require("node:util");
 const { uuidv7, isUuid } = require("../ids");
 const { authorizeProjectRecord, canCancelRun, PROJECT_OWNER_LOCK } = require("../project-access");
-const { cloneValue, readPolicy, name, logicalPath, record, freeze, resolveTarget, validateBoundDescriptor } = require("./contracts");
+const { cloneValue, readPolicy, name, logicalPath, record, freeze, resolveTarget, validateBoundDescriptor, isPreviewMediaType } = require("./contracts");
 
 const ACTIVE = new Set(["queued", "planning", "running"]);
 const NEXT = { queued: ["planning", "failed", "cancelled", "interrupted"], planning: ["running", "failed", "cancelled", "interrupted"], running: ["failed", "cancelled", "interrupted"] };
@@ -59,6 +59,7 @@ async function view(client, row) {
     createdByLabel: row.created_by_label, createdAt: row.created_at, completedAt: row.completed_at,
     saveRevision: row.save_revision, snapshotHash: row.snapshot_hash, bundleHash: row.bundle_hash,
     policyHash: row.policy_hash, registryHash: row.registry_hash, planHash: row.plan_hash,
+    primaryPreview: row.primary_preview,
     approvalId: row.approval_id, parameters: row.parameters, reason: row.terminal_reason,
     artifactCount: row.artifact_count, storagePath: row.storage_path, log: row.log, logsTruncated: row.log.endsWith(LOG_TRUNCATED),
     steps: rows.map(s => ({ id: s.step_id, adapter: { id: s.adapter_id, version: s.adapter_version }, state: s.state,
@@ -232,7 +233,8 @@ async function transitionRun(store, id, expectedState, nextState, details = {}) 
     if (nextState === "running") {
       const selected = checked(store, () => resolveTarget(details.plan, row.target));
       if (!isDeepStrictEqual(details.plan.parameters, row.parameters)) invalid(store, "PIPELINE_PARAMETERS_INVALID");
-      await client.query("UPDATE build_outputs SET plan_hash=$2 WHERE id=$1", [id, details.plan.planHash]);
+      await client.query("UPDATE build_outputs SET plan_hash=$2,primary_preview=$3::jsonb WHERE id=$1",
+        [id, details.plan.planHash, selected.primaryPreview === null ? null : JSON.stringify(selected.primaryPreview)]);
       const steps = selected.steps.map(s => ({ step_id: s.id, adapter_id: s.adapter.id, adapter_version: s.adapter.version, implementation_hash: s.adapter.implementationHash }));
       await client.query(`INSERT INTO pipeline_steps (build_id,step_id,adapter_id,adapter_version,implementation_hash,state)
         SELECT $1,s.step_id,s.adapter_id,s.adapter_version,s.implementation_hash,'pending'
@@ -382,6 +384,10 @@ async function publishRun(store, id, artifacts) {
     const steps = await client.query("SELECT step_id FROM pipeline_steps WHERE build_id=$1", [id]);
     const producers = new Set(steps.rows.map(step => step.step_id));
     if (manifest.artifacts.some(artifact => !producers.has(artifact.producerStep))) invalid(store);
+    if (row.primary_preview) {
+      const matches = manifest.artifacts.filter(a => a.producerStep === row.primary_preview.step && a.outputPort === row.primary_preview.port);
+      if (matches.length !== 1 || !isPreviewMediaType(matches[0].mimeType)) invalid(store, "PIPELINE_PREVIEW_INVALID");
+    }
     if (row.publication_state === "prepared") {
       if (row.publication_hash !== manifest.hash || row.publication_path !== manifest.path) invalid(store, "PIPELINE_PUBLICATION_CONFLICT", 409);
     } else await client.query("UPDATE build_outputs SET publication_state='prepared',publication_hash=$2,publication_path=$3 WHERE id=$1", [id, manifest.hash, manifest.path]);

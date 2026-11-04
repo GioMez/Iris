@@ -198,6 +198,7 @@ CREATE TABLE build_outputs (
   policy_hash CHAR(64),
   registry_hash CHAR(64),
   plan_hash CHAR(64),
+  primary_preview JSONB,
   approval_id UUID,
   save_revision INTEGER,
   parameters JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -210,6 +211,15 @@ CREATE TABLE build_outputs (
   publication_path TEXT,
   CONSTRAINT build_outputs_kind_check CHECK (kind IN ('compiler', 'pipeline')),
   CONSTRAINT build_outputs_target_check CHECK (target ~ '^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$'),
+  CONSTRAINT build_outputs_primary_preview_check CHECK (
+    primary_preview IS NULL OR (kind = 'pipeline' AND plan_hash IS NOT NULL
+      AND jsonb_typeof(primary_preview) = 'object'
+      AND primary_preview - 'step' - 'port' = '{}'::jsonb
+      AND jsonb_typeof(primary_preview->'step') = 'string'
+      AND jsonb_typeof(primary_preview->'port') = 'string'
+      AND primary_preview->>'step' ~ '^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$'
+      AND primary_preview->>'port' ~ '^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$') IS TRUE
+  ),
   CONSTRAINT build_outputs_request_order_key UNIQUE (request_order),
   CONSTRAINT build_outputs_save_revision_check CHECK (save_revision >= 0),
   CONSTRAINT build_outputs_event_sequence_check CHECK (event_sequence >= 0),
@@ -314,6 +324,8 @@ CREATE TABLE build_artifacts (
 CREATE UNIQUE INDEX uq_build_artifacts_legacy_name ON build_artifacts (build_id, name) WHERE producer_step IS NULL;
 CREATE UNIQUE INDEX uq_build_artifacts_port_path ON build_artifacts (build_id, producer_step, output_port, logical_path) WHERE producer_step IS NOT NULL;
 CREATE INDEX idx_build_outputs_target_success ON build_outputs (project_id, kind, target, request_order DESC) WHERE status = 'succeeded';
+CREATE INDEX idx_build_outputs_request ON build_outputs (project_id, request_order DESC);
+CREATE INDEX idx_build_outputs_target_request ON build_outputs (project_id, kind, target, request_order DESC);
 CREATE INDEX idx_build_outputs_active ON build_outputs (coordinator_id) WHERE status IN ('queued', 'planning', 'running');
 CREATE INDEX idx_build_outputs_project ON build_outputs (project_id, created_at DESC, id DESC);
 CREATE INDEX idx_build_outputs_source_revision ON build_outputs (source_revision_id) WHERE source_revision_id IS NOT NULL;

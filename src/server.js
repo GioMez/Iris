@@ -4092,7 +4092,7 @@ const BUILD_OUTPUT_FIELDS = `
   id, project_id, source_file_id, source_revision_id, source_content_hash, created_by, created_by_label,
   created_at, completed_at, status, project_type, compiler, format, main_path,
   display_name, storage_path, size, content_hash, artifact_count, duration_ms,
-  exit_code, signal, timed_out`;
+  exit_code, signal, timed_out, kind, target, request_order, primary_preview`;
 
 function buildOutputView(row, diagnostics = false) {
   return {
@@ -4106,6 +4106,10 @@ function buildOutputView(row, diagnostics = false) {
     createdAt: toMillis(row.created_at),
     completedAt: row.completed_at ? toMillis(row.completed_at) : null,
     status: row.status,
+    kind: row.kind,
+    target: row.target,
+    requestOrder: row.request_order,
+    primaryPreview: row.primary_preview,
     projectType: row.project_type,
     compiler: row.compiler,
     format: row.format,
@@ -4135,6 +4139,9 @@ function buildArtifactView(row, projectId, buildId) {
     mimeType: row.mime_type,
     size: Number(row.size),
     contentHash: row.content_hash,
+    producerStep: row.producer_step,
+    outputPort: row.output_port,
+    logicalPath: row.logical_path,
     url,
     downloadUrl: `${url}?download=1`,
   };
@@ -4217,6 +4224,9 @@ async function finalizeBuildOutput({ id, status, storagePath, artifacts, result 
 
 async function listBuildOutputs(req, res, user, projectId, url) {
   await authorizeProject(projectId, user, "read");
+  const kind = url.searchParams.get("kind"), target = url.searchParams.get("target");
+  if ((kind !== null && !["compiler", "pipeline"].includes(kind))
+    || (target !== null && !/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/.test(target))) throw requestError("PIPELINE_REQUEST_INVALID", 400);
   const requestedLimit = Number(url.searchParams.get("limit"));
   const requestedOffset = Number(url.searchParams.get("offset"));
   const limit = Number.isSafeInteger(requestedLimit) && requestedLimit > 0 ? Math.min(requestedLimit, 200) : 50;
@@ -4226,14 +4236,16 @@ async function listBuildOutputs(req, res, user, projectId, url) {
   const [{ rows }, latest] = await Promise.all([
     db.query(
       `SELECT ${BUILD_OUTPUT_FIELDS} FROM build_outputs
-       WHERE project_id = $1 ORDER BY created_at DESC, id DESC LIMIT $2 OFFSET $3`,
-      [projectId, limit + 1, offset]
+       WHERE project_id = $1 AND ($4::text IS NULL OR kind=$4) AND ($5::text IS NULL OR target=$5)
+       ORDER BY request_order DESC LIMIT $2 OFFSET $3`,
+      [projectId, limit + 1, offset, kind, target]
     ),
     db.query(
       `SELECT id FROM build_outputs
-       WHERE project_id = $1 AND status = 'succeeded'
-       ORDER BY created_at DESC, id DESC LIMIT 1`,
-      [projectId]
+        WHERE project_id = $1 AND status = 'succeeded'
+          AND ($2::text IS NULL OR kind=$2) AND ($3::text IS NULL OR target=$3)
+        ORDER BY request_order DESC LIMIT 1`,
+      [projectId, kind, target]
     ),
   ]);
   const hasMore = rows.length > limit;
@@ -4266,14 +4278,16 @@ async function getBuildOutput(req, res, user, projectId, buildId) {
     : Promise.resolve([]);
   const [{ rows: artifacts }, files] = await Promise.all([
     db.query(
-      `SELECT id, name, storage_path, mime_type, size, content_hash
-       FROM build_artifacts WHERE build_id = $1 ORDER BY name`,
+      `SELECT id, name, storage_path, mime_type, size, content_hash, producer_step, output_port, logical_path
+       FROM build_artifacts WHERE build_id = $1 ORDER BY name, storage_path`,
       [buildId]
     ),
     filesPromise,
   ]);
   json(res, 200, {
     build: buildOutputView(build, true),
+    primaryPreviewArtifactId: build.primary_preview ? artifacts.find(a => a.producer_step === build.primary_preview.step
+      && a.output_port === build.primary_preview.port && PipelineContracts.isPreviewMediaType(a.mime_type))?.id || null : null,
     artifacts: artifacts.map((artifact) => buildArtifactView(artifact, projectId, buildId)),
     files: files.map((file) => buildFileView(file, projectId, buildId)),
     directorySize: files.reduce((total, file) => total + Number(file.size), 0),

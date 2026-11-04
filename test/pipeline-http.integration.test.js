@@ -285,9 +285,14 @@ test("asynchronous Lua runs persist progress and publish byte-exact generated do
   const buildResponse = await f.request(`${f.base}/builds/${run.id}`, {}, "viewer");
   assert.equal(buildResponse.status, 200);
   const build = await buildResponse.json();
+  assert.equal(build.build.kind, "pipeline"); assert.equal(build.build.target, "main");
+  assert.equal(build.build.requestOrder, run.requestOrder);
+  assert.equal(build.build.primaryPreview, null); assert.equal(build.primaryPreviewArtifactId, null);
   assert.equal(build.artifacts.length, 1);
   assert.equal(build.files.length, 1, "private publication receipts must not enter downloads");
   const artifact = build.artifacts[0], download = await f.request(artifact.url, {}, "viewer");
+  assert.equal(artifact.producerStep, "generate"); assert.equal(artifact.outputPort, "text");
+  assert.equal(artifact.logicalPath, "generated/result.txt");
   assert.equal(download.status, 200);
   assert.deepEqual(Buffer.from(await download.arrayBuffer()), Buffer.concat([Buffer.from("music = { c'1 }\r\n".repeat(2)), Buffer.from([0, 255])]));
   assert.equal(await fs.readFile(path.join(f.dir, "main.ly"), "utf8"), "music = { c'1 }\r\n");
@@ -585,8 +590,11 @@ for (const family of ["latex", "lilypond"]) for (const mode of ["single-pass", "
     }
   }
   const build = await (await f.request(`${f.base}/builds/${run.id}`)).json();
-  const artifact = step => build.artifacts.find(item => item.path.startsWith(`output/${run.id}/${step}/`));
-  const composed = artifact("compose"), base = build.artifacts.find(item => item.path.startsWith(`output/${run.id}/compile/`) && item.mimeType === "application/pdf");
+  const artifact = step => build.artifacts.find(item => item.producerStep === step);
+  const composed = artifact("compose"), base = build.artifacts.find(item => item.producerStep === "compile" && item.outputPort === "output");
+  assert.deepEqual(run.primaryPreview, { step: "compose", port: "output" });
+  assert.deepEqual(build.build.primaryPreview, run.primaryPreview);
+  assert.equal(build.primaryPreviewArtifactId, composed.id);
   const download = await f.request(composed.url), pdfBytes = Buffer.from(await download.arrayBuffer());
   assert.match(download.headers.get("content-disposition"), /^inline;/);
   assert.equal(download.headers.get("x-content-type-options"), "nosniff");

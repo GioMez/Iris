@@ -16,7 +16,7 @@ test("fresh initialization creates current tables and a constrained singleton ve
     "audit_events", "build_artifacts", "build_outputs", "document_versions", "iris_schema",
     "pipeline_approvals", "pipeline_steps", "project_deletions", "project_files", "project_members", "project_pipelines", "projects", "users",
   ]);
-  assert.deepEqual((await pool.query("SELECT * FROM iris_schema")).rows, [{ singleton: true, version: 3 }]);
+  assert.deepEqual((await pool.query("SELECT * FROM iris_schema")).rows, [{ singleton: true, version: 4 }]);
   await assert.rejects(pool.query("INSERT INTO iris_schema VALUES (TRUE, 2)"), { code: "23505" });
   await assert.rejects(pool.query("INSERT INTO iris_schema VALUES (FALSE, 2)"), { code: "23514" });
   await assert.rejects(pool.query("UPDATE iris_schema SET version = NULL"), { code: "23502" });
@@ -31,7 +31,7 @@ test("repeat initialization preserves rows, identities and the explicit version"
   await initializeSchema(pool);
   assert.deepEqual((await pool.query("SELECT * FROM audit_events")).rows, before);
   assert.deepEqual(await objects(pool), catalog);
-  assert.deepEqual((await pool.query("SELECT * FROM iris_schema")).rows, [{ singleton: true, version: 3 }]);
+  assert.deepEqual((await pool.query("SELECT * FROM iris_schema")).rows, [{ singleton: true, version: 4 }]);
 });
 
 for (const isolation of ["read committed", "repeatable read"]) {
@@ -59,7 +59,7 @@ for (const isolation of ["read committed", "repeatable read"]) {
       assert.deepEqual(await objects(barrier), [], "no DDL is visible before admission");
       await barrier.query("COMMIT");
       await Promise.all(pending);
-      assert.deepEqual((await pool.query("SELECT * FROM iris_schema")).rows, [{ singleton: true, version: 3 }]);
+      assert.deepEqual((await pool.query("SELECT * FROM iris_schema")).rows, [{ singleton: true, version: 4 }]);
       for (const client of clients) {
         assert.equal((await client.query("SHOW default_transaction_isolation")).rows[0].default_transaction_isolation, isolation);
       }
@@ -102,7 +102,7 @@ for (const ddl of ["CREATE SEQUENCE reserved_ids", "CREATE VIEW reserved_view AS
   });
 }
 
-for (const version of [0, 1, 4]) {
+for (const version of [0, 1, 5]) {
   test(`schema version ${version} is refused without rewriting the marker or current rows`, options, async (t) => {
     const pool = await isolatedSchema(t);
     await initializeSchema(pool);
@@ -166,7 +166,7 @@ test("DDL failure rolls back every object and permits a clean retry", options, a
   assert.equal(injected, true);
   assert.deepEqual(await objects(pool), []);
   await initializeSchema(pool);
-  assert.deepEqual((await pool.query("SELECT * FROM iris_schema")).rows, [{ singleton: true, version: 3 }]);
+  assert.deepEqual((await pool.query("SELECT * FROM iris_schema")).rows, [{ singleton: true, version: 4 }]);
 });
 
 test("initialization identifies only the first application schema in the search path", options, async (t) => {
@@ -180,7 +180,7 @@ test("initialization identifies only the first application schema in the search 
     await client.query(`SET search_path TO ${schema}, ${otherSchema}`);
     await initializeSchema({ connect: async () => ({ query: client.query.bind(client), release() {} }) });
     assert.equal((await client.query("SELECT count(*)::int AS n FROM pg_class WHERE relnamespace = current_schema()::regnamespace AND relkind = 'r'")).rows[0].n, 13);
-    assert.deepEqual((await client.query(`SELECT * FROM ${schema}.iris_schema`)).rows, [{ singleton: true, version: 3 }]);
+    assert.deepEqual((await client.query(`SELECT * FROM ${schema}.iris_schema`)).rows, [{ singleton: true, version: 4 }]);
   } finally { client.release(); }
 });
 
@@ -212,7 +212,7 @@ test("permission errors retain PostgreSQL's diagnosis instead of requesting a sc
   };
   try {
     await assert.rejects(initializeSchema(restricted), { code: "42501", message: "permission denied for table iris_schema" });
-    assert.deepEqual((await pool.query("SELECT * FROM iris_schema")).rows, [{ singleton: true, version: 3 }]);
+    assert.deepEqual((await pool.query("SELECT * FROM iris_schema")).rows, [{ singleton: true, version: 4 }]);
   } finally {
     await pool.query(`REVOKE USAGE ON SCHEMA ${schema} FROM ${role}; DROP ROLE ${role}`);
   }
