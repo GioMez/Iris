@@ -87,7 +87,10 @@ test("explicit manifests cannot smuggle excluded paths, traversal, duplicate nam
 test("language archive retains generator inputs/runtime and regenerates without Git", async t => {
   const f = await fixture(t);
   const repo = path.resolve(__dirname, "..");
-  const languageFiles = ["scripts/build-languages.cjs", "public/iris-language-service.mjs", "public/iris-language-state.mjs", "public/iris-syntax-style.mjs",
+  const languageFiles = [".gitattributes", "public/languages/.gitattributes", "test/fixtures/languages/.gitattributes",
+    "test/helpers/language-browser.cjs", "test/helpers/language-performance.cjs", "test/helpers/language-fixtures.cjs",
+    "test/helpers/language-metrics.cjs", "test/helpers/language-qualification.cjs", "test/language-performance.browser.test.js",
+    "scripts/build-languages.cjs", "public/iris-language-service.mjs", "public/iris-language-state.mjs", "public/iris-syntax-style.mjs",
     "public/iris-language-policy.mjs", "public/iris-language-tasks.mjs", "public/iris-language-parser.mjs", "public/iris-tex-highlighting.mjs", "public/iris-lilypond-highlighting.mjs",
     "public/iris-language-editing.mjs", "public/iris-language-completion.mjs",
     "public/iris-language-worker-client.mjs", "public/iris-language-worker.mjs", "public/iris-language-transfer.mjs",
@@ -116,6 +119,12 @@ test("language archive retains generator inputs/runtime and regenerates without 
   const packaged = path.join(extracted, `iris-${version}`);
   await assert.rejects(fs.stat(path.join(packaged, ".git")), { code: "ENOENT" });
   for (const name of languageFiles) assert.deepEqual(await fs.readFile(path.join(packaged, name)), f.files[name]);
+  const captured = spawnSync(process.execPath, ["-e", "require('./test/helpers/language-qualification.cjs').sourceManifest().then(value => console.log(JSON.stringify(value)))"], { cwd: packaged, encoding: "utf8" });
+  assert.equal(captured.status, 0, captured.stderr);
+  const manifest = JSON.parse(captured.stdout);
+  for (const name of [".gitattributes", "public/languages/.gitattributes"]) {
+    assert.equal(manifest.sourceHashes[name], createHash("sha256").update(f.files[name]).digest("hex"), name);
+  }
   // Dependency resolution uses the installed locked ancestor node_modules;
   // the candidate and extracted tree have no Git metadata or build fallback.
   const run = (...args) => spawnSync(process.execPath, ["scripts/build-languages.cjs", ...args], { cwd: packaged, encoding: "utf8" });
@@ -144,7 +153,8 @@ test("grammar packaging is restricted to intended language source and fixture tr
   assert.equal(included("public/languages/latex/latex.grammar"), true);
   assert.equal(included("public/languages/lilypond/lilypond.grammar"), true);
   assert.equal(included("test/fixtures/languages/lilypond-boundaries.grammar"), true);
-  for (const name of ["public/unrelated.grammar", "src/private.grammar", "test/unrelated.grammar", "public/languages/.private/x.grammar", "public/languages/tmp/x.grammar", "docs/superpowers/x.grammar"]) assert.equal(included(name), false, name);
+  for (const name of ["public/unrelated.grammar", "src/private.grammar", "test/unrelated.grammar", "public/languages/.private/x.grammar", "public/languages/tmp/x.grammar", "docs/superpowers/x.grammar",
+    "src/.gitattributes", "public/languages/.private/.gitattributes", "docs/superpowers/.gitattributes"]) assert.equal(included(name), false, name);
 });
 
 test("an extracted source archive runs installed Lua with its trusted bootstrap and codec", { skip: process.env.IRIS_TEST_LUA !== "1" }, async t => {

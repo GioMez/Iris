@@ -28,6 +28,7 @@ dependencies, drafts, planning documents and temporary artifacts are excluded.
 Review the explicit candidate manifest; only a reviewed final ref is a release.
 `;
 const rootFiles = new Set(["package.json", "package-lock.json", "LICENSE", "THIRD_PARTY_NOTICES.md", "README.md", "TRANSLATING.md", ".npmrc", ".gitignore", ".dockerignore", ".env.example", "Dockerfile", "docker-compose.yml"]);
+const sourceAttributes = new Set([".gitattributes", "public/languages/.gitattributes", "test/fixtures/languages/.gitattributes"]);
 const required = ["package.json", "package-lock.json", "LICENSE", "THIRD_PARTY_NOTICES.md", "README.md", ".npmrc", ".env.example", ".dockerignore", "Dockerfile", "docker-compose.yml", "db/schema.sql", "db/migrations/003-pipelines.sql", "db/migrations/004-primary-preview.sql", "db/init/01-create-iris-user.sh", "src/server.js", "public/Iris.html", "public/templates/.metadata.json", "scripts/test.cjs", "scripts/smoke.cjs"];
 function safePath(name) {
   if (typeof name !== "string" || !name || /[\\\x00-\x1f\x7f:]/.test(name) || name.split("/").some((part) => !part || part === "." || part === "..")) throw new Error(`Unsafe archive path: ${JSON.stringify(name)}`);
@@ -35,7 +36,7 @@ function safePath(name) {
 }
 function included(name) {
   safePath(name);
-  if (rootFiles.has(name)) return true;
+  if (rootFiles.has(name) || sourceAttributes.has(name)) return true;
   if (!/^(src|public|db|test|scripts|docs|branding)\//.test(name)) return false;
   if (name.startsWith("docs/superpowers/")) return false;
   const parts = name.split("/");
