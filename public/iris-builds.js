@@ -98,9 +98,8 @@
     try {
       const listed = await window.IrisProjects.listBuildOutputs({ limit: 50, offset: 0 });
       if (seq !== buildState.previewSeq || window.IrisProjects.currentProjectId() !== projectId) return;
-      const latest = (listed.builds || []).find((build) => build.status !== "running");
-      if (!latest) return;
-      const payload = await window.IrisProjects.loadBuildOutput(latest.id);
+      if (!listed.latestSuccessfulId) return;
+      const payload = await window.IrisProjects.loadBuildOutput(listed.latestSuccessfulId);
       if (seq !== buildState.previewSeq || window.IrisProjects.currentProjectId() !== projectId) return;
       await window.IrisApp.showBuildOutput(payload, { activateWorkspace: false });
       if (seq !== buildState.previewSeq || window.IrisProjects.currentProjectId() !== projectId) return;
@@ -505,20 +504,22 @@
       setNotice(t("builds.deleted"));
       if (!wasPreviewed) return;
 
-      const latestCompleted = buildState.builds.find((build) => build.status !== "running");
-      if (!latestCompleted) {
+      const replacementId = buildState.latestSuccessfulId;
+      if (!replacementId) {
         await window.IrisApp.clearBuildOutput(deletedId);
         return;
       }
       try {
-        const payload = await window.IrisProjects.loadBuildOutput(latestCompleted.id);
+        const payload = await window.IrisProjects.loadBuildOutput(replacementId);
         if (operationSeq !== buildState.operationSeq || window.IrisProjects.currentProjectId() !== projectId) return;
         if (window.IrisApp.currentBuildId() !== deletedId) return;
         await window.IrisApp.showBuildOutput(payload, { activateWorkspace: false });
+        if (operationSeq !== buildState.operationSeq || window.IrisProjects.currentProjectId() !== projectId) return;
+        await window.IrisApp.clearBuildOutput(deletedId);
       } catch (error) {
         if (operationSeq !== buildState.operationSeq || window.IrisProjects.currentProjectId() !== projectId) return;
         if (window.IrisApp.currentBuildId() !== deletedId) return;
-        await window.IrisApp.clearBuildOutput(latestCompleted.id);
+        await window.IrisApp.clearBuildOutput(replacementId);
         await window.IrisApp.clearBuildOutput(deletedId);
         setNotice(t("builds.deletedPreviewFailed"), true);
       }
@@ -597,20 +598,22 @@
       setNotice(resultMessage, failedIds.length > 0);
       if (!wasPreviewed) return;
 
-      const latestCompleted = buildState.builds.find((build) => build.status !== "running");
-      if (!latestCompleted) {
+      const replacementId = buildState.latestSuccessfulId;
+      if (!replacementId) {
         await window.IrisApp.clearBuildOutput(previewedId);
         return;
       }
       try {
-        const payload = await window.IrisProjects.loadBuildOutput(latestCompleted.id);
+        const payload = await window.IrisProjects.loadBuildOutput(replacementId);
         if (operationSeq !== buildState.operationSeq || window.IrisProjects.currentProjectId() !== projectId) return;
         if (window.IrisApp.currentBuildId() !== previewedId) return;
         await window.IrisApp.showBuildOutput(payload, { activateWorkspace: false });
+        if (operationSeq !== buildState.operationSeq || window.IrisProjects.currentProjectId() !== projectId) return;
+        await window.IrisApp.clearBuildOutput(previewedId);
       } catch (error) {
         if (operationSeq !== buildState.operationSeq || window.IrisProjects.currentProjectId() !== projectId) return;
         if (window.IrisApp.currentBuildId() !== previewedId) return;
-        await window.IrisApp.clearBuildOutput(latestCompleted.id);
+        await window.IrisApp.clearBuildOutput(replacementId);
         await window.IrisApp.clearBuildOutput(previewedId);
         setNotice(`${resultMessage} ${t("builds.replacementPreviewFailed")}`, true);
       }

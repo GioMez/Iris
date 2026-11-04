@@ -2162,40 +2162,23 @@
         compileProfile: state.compileProfile,
       }));
       if (generation !== state.compileGeneration) return;
-      const outputGeneration = ++state.outputGeneration;
-      state.previewBuildId = res.buildId || null;
+      ++state.outputGeneration;
       clearNewerBuild();
       const ms = ((res.durationMs || (performance.now() - t0)) / 1000).toFixed(1);
       buildLog(f, res, ms);
       updateCompileStatus(res, ms);
-      if (res.success && Array.isArray(res.artifacts) && res.artifacts.length) await renderCompiledOutput(res);
-      else if (res.pdfBase64) await renderPdf(res);
-      else {
-        const loadGeneration = ++state.pdfLoadGeneration;
-        await releasePdfDocument();
-        if (outputGeneration !== state.outputGeneration || loadGeneration !== state.pdfLoadGeneration) return;
-        rememberPreviewPosition();
-        state.previewPagesReady = false;
-        clearCompiledArtifacts();
-        state.previewKind = "empty";
-        updateZoomLabel();
-        $("pvEmpty").hidden = false;
-        $("pvPages").innerHTML = "";
-        state.pages = [];
-        $("pgTot").textContent = "–";
-        $("pgCur").textContent = "–";
+      if (res.success && Array.isArray(res.artifacts) && res.artifacts.length) {
+        state.previewBuildId = res.buildId || null;
+        await renderCompiledOutput(res);
+      } else if (res.success && res.pdfBase64) {
+        state.previewBuildId = res.buildId || null;
+        await renderPdf(res);
+      } else {
         setView("diagnostics");
       }
     } catch (err) {
       if (generation !== state.compileGeneration) return;
-      const outputGeneration = ++state.outputGeneration;
-      const loadGeneration = ++state.pdfLoadGeneration;
-      await releasePdfDocument();
-      if (generation !== state.compileGeneration || outputGeneration !== state.outputGeneration || loadGeneration !== state.pdfLoadGeneration) return;
-      rememberPreviewPosition();
-      state.previewPagesReady = false;
-      clearCompiledArtifacts();
-      state.previewBuildId = null;
+      ++state.outputGeneration;
       const ms = ((performance.now() - t0) / 1000).toFixed(1);
       const message = window.IrisI18n.error(err, "editor.compileFailed");
       const errorMessage = err.message || t("editor.compileError");
@@ -2434,7 +2417,7 @@
         blobUrl: URL.createObjectURL(blob),
       };
     });
-    const pdfs = state.compiledArtifacts.filter((artifact) => artifact.mimeType === "application/pdf" || /\.pdf$/i.test(artifact.fileName));
+    const pdfs = state.compiledArtifacts.filter((artifact) => artifact.mimeType === "application/pdf");
     $("pdfArtifactControl").hidden = pdfs.length < 2;
     $("pdfArtifact").innerHTML = pdfs.map((artifact) => `<option value="${esc(artifact.id)}">${esc(artifact.fileName)}</option>`).join("");
     const format = String(res.outputFormat || "output").toUpperCase();
@@ -2451,12 +2434,14 @@
     rememberPreviewPosition();
     state.previewPagesReady = false;
     const artifacts = prepareCompiledArtifacts(res);
-    state.previewKind = (format === "png" || format === "svg") ? "image" : "static";
+    const image = ["png", "jpeg", "gif", "webp", "svg"].includes(format);
+    state.previewKind = image ? "image" : "static";
     state.pages = [];
     $("pvPages").innerHTML = "";
-    if (format === "png" || format === "svg") {
+    if (image) {
       const imageLoads = [];
-      artifacts.forEach((artifact) => {
+      const mimeType = format === "svg" ? "image/svg+xml" : `image/${format}`;
+      artifacts.filter(artifact => artifact.mimeType === mimeType).forEach((artifact) => {
         const page = document.createElement("div");
         page.className = "image-preview";
         const img = document.createElement("img");
@@ -2496,7 +2481,7 @@
     const artifacts = Array.isArray(res.artifacts) && res.artifacts.length
       ? prepareCompiledArtifacts(res)
       : prepareCompiledArtifacts({ outputFormat: "pdf", artifacts: [{ name: res.pdfName || "output.pdf", base64: res.pdfBase64, size: res.pdfSize, mimeType: "application/pdf" }] });
-    const primary = artifacts[0];
+    const primary = artifacts.find(artifact => artifact.id === res.primaryPreviewArtifactId) || artifacts[0];
     state.pdfArtifactId = primary.id || null;
     $("pdfArtifact").value = state.pdfArtifactId || "";
     state.previewKind = "pdf";
@@ -2981,7 +2966,9 @@
     const build = payload && payload.build;
     if (!build) return false;
     const artifacts = Array.isArray(payload.artifacts) ? payload.artifacts : [];
-    const succeeded = build.status === "succeeded" && artifacts.length > 0;
+    const succeeded = build.status === "succeeded";
+    const primary = artifacts.find(artifact => artifact.id === payload.primaryPreviewArtifactId) || artifacts[0];
+    const hasPreview = succeeded && !!primary;
     const sourceName = String(build.mainPath || t("toolbar.output")).split("/").pop();
     const source = { name: sourceName, path: build.mainPath || sourceName };
     const seconds = ((Number(build.durationMs) || 0) / 1000).toFixed(1);
@@ -2989,8 +2976,9 @@
     const res = {
       success: succeeded,
       buildId: build.id,
-      outputFormat: build.format,
-      outputName: artifacts[0] ? artifacts[0].name : build.displayName,
+      outputFormat: build.kind === "pipeline" ? primary?.mimeType?.split("/")[1] : build.format,
+      outputName: primary ? primary.name : build.displayName,
+      primaryPreviewArtifactId: payload.primaryPreviewArtifactId,
       artifacts,
       durationMs: build.durationMs,
       exitCode: build.exitCode,
@@ -3002,7 +2990,6 @@
       diagnostics: build.diagnostics,
     };
     const outputGeneration = ++state.outputGeneration;
-    state.previewBuildId = build.id;
     // Whatever brought this build on screen — our own compilation, the notice's
     // refresh, or the history dialog — the preview is no longer behind.
     clearNewerBuild();
@@ -3010,24 +2997,17 @@
     setCompileDiagnostics(res);
     buildLog(source, res, seconds, false);
     updateCompileStatus(res, seconds, compiledAt);
-    if (succeeded) {
+    if (hasPreview) {
+      state.previewBuildId = build.id;
       await renderCompiledOutput(res);
+      if (outputGeneration !== state.outputGeneration) return false;
+      setView("preview");
     } else {
-      const loadGeneration = ++state.pdfLoadGeneration;
-      await releasePdfDocument();
-      if (outputGeneration !== state.outputGeneration || loadGeneration !== state.pdfLoadGeneration) return false;
-      rememberPreviewPosition();
-      state.previewPagesReady = false;
-      clearCompiledArtifacts();
-      state.previewKind = "empty";
-      state.pages = [];
-      $("pvPages").innerHTML = "";
-      $("pvEmpty").innerHTML = `<div class="big">${ti("terminal-2")}</div><span>${esc(t("builds.noArtifacts"))}</span>`;
-      $("pvEmpty").hidden = false;
-      $("pgTot").textContent = "–";
-      $("pgCur").textContent = "–";
+      if (!state.compiledArtifacts.length) {
+        $("pvEmpty").innerHTML = `<div class="big">${ti("terminal-2")}</div><span>${esc(t("builds.noArtifacts"))}</span>`;
+        $("pvEmpty").hidden = false;
+      }
       setView("diagnostics");
-      updateZoomLabel();
     }
     if (outputGeneration !== state.outputGeneration) return false;
     if (options.activateWorkspace !== false) setWorkspaceView("preview");

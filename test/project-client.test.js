@@ -358,6 +358,15 @@ function diagnosticBuild(diagnostics, overrides = {}) {
 
 function diagnosticRows(h) { return h.get("diagnosticsList").children; }
 
+test("build output loading rejects a response from a replaced same-project session", options, async () => {
+  const h = harness(); await h.open();
+  const loading = h.projects.loadBuildOutput("build-1"), request = h.requests.at(-1);
+  const rejected = assert.rejects(loading, error => error.stale === true);
+  await h.open();
+  request.reply({ build: { id: "build-1", status: "succeeded", kind: "pipeline" }, artifacts: [], primaryPreviewArtifactId: null });
+  await rejected;
+});
+
 function bibliographyData(text = "@book{a,title={A},xcustom={hidden needle}}", kind = "bib") {
   const data = projectData();
   Object.assign(data.project.nodes[0], { path: `refs.${kind}`, name: `refs.${kind}`, kind, content: text });

@@ -310,8 +310,8 @@ for (const phase of ["idle", "running"]) test(`startup reconciles ${phase} nativ
     assert.equal((await fetch(`http://127.0.0.1:${port}/api/health`)).status, 200);
     assert.equal((await app.stop()).code, 0);
   } else {
-    assert.match(app.output(), /PIPELINE_WORKER_RECOVERY_REQUIRED/);
     assert.equal((await app.done).code, 1);
+    assert.match(app.output(), /PIPELINE_WORKER_RECOVERY_REQUIRED/);
     assert.deepEqual(JSON.parse(await fs.readFile(path.join(root, `${id}.json`), "utf8")), receipt);
     assert.equal(await fs.readFile(path.join(root, id, "evidence"), "utf8"), "retain uncertain execution");
   }

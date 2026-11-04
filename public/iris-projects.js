@@ -497,20 +497,22 @@
   }
 
   async function loadBuildOutput(buildId) {
-    const projectId = currentId;
+    const projectId = currentId, generation = openGeneration;
     if (!projectId) throw new Error(t("projects.noneOpen"));
     const detail = await api(`/api/projects/${projectId}/builds/${buildId}`);
-    const artifacts = await Promise.all((detail.artifacts || []).map(async (artifact) => {
+    if (currentId !== projectId || generation !== openGeneration) throw staleSession();
+    const previewTypes = new Set(["application/pdf", "image/png", "image/jpeg", "image/gif", "image/webp"]);
+    const previewArtifacts = (detail.artifacts || []).filter(artifact => detail.build.kind !== "pipeline" || previewTypes.has(artifact.mimeType));
+    const artifacts = await Promise.all(previewArtifacts.map(async (artifact) => {
       const response = await fetch(artifact.url, { credentials: "same-origin" });
       if (!response.ok) throw await errorFromResponse(response);
       return {
         ...artifact,
-        name: artifact.path || artifact.name,
         bytes: new Uint8Array(await response.arrayBuffer()),
       };
     }));
-    if (currentId !== projectId) throw new Error(t("projects.noneOpen"));
-    return { build: detail.build, artifacts };
+    if (currentId !== projectId || generation !== openGeneration) throw staleSession();
+    return { build: detail.build, artifacts, primaryPreviewArtifactId: detail.primaryPreviewArtifactId };
   }
 
   async function downloadBuildArtifact(artifact) {
