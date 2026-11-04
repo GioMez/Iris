@@ -40,9 +40,10 @@ test.before(async t => {
 });
 
 async function fixture(t, variant = {}) {
-  const user = (await server.pool.query("INSERT INTO users (id,username,email,display_name) VALUES ($1,$2,$3,'Pipeline author') RETURNING *",
+  const service = variant.server || server;
+  const user = (await service.pool.query("INSERT INTO users (id,username,email,display_name) VALUES ($1,$2,$3,'Pipeline author') RETURNING *",
     [uuidv7(), `pipeline-${uuidv7()}`, `${uuidv7()}@example.test`])).rows[0];
-  const cookie = server.cookieFor(user), request = (url, options = {}) => server.request(url, { cookie, ...options });
+  const cookie = service.cookieFor(user), request = (url, options = {}) => service.request(url, { cookie, ...options });
   const nodes = [{ id: "script", type: "file", name: "iris.lua", path: "iris.lua", content: variant.script || plugin },
     { id: "main", type: "file", name: "main.tex", path: "main.tex", content: "\\documentclass{article}\n\\begin{document}Browser fixture.\\end{document}\n" }];
   for (const [name, color] of [["red", rgb(1, 0, 0)], ["blue", rgb(0, 0, 1)]]) {
@@ -55,10 +56,10 @@ async function fixture(t, variant = {}) {
   const id = (await created.json()).project.id, base = `/api/projects/${id}`;
   let browserCookie = cookie;
   if (variant.role) {
-    const member = (await server.pool.query("INSERT INTO users (id,username,email,display_name) VALUES ($1,$2,$3,'Pipeline member') RETURNING *",
+    const member = (await service.pool.query("INSERT INTO users (id,username,email,display_name) VALUES ($1,$2,$3,'Pipeline member') RETURNING *",
       [uuidv7(), `member-${uuidv7()}`, `${uuidv7()}@example.test`])).rows[0];
-    await server.pool.query("INSERT INTO project_members (project_id,user_id,role) VALUES ($1,$2,$3)", [id, member.id, variant.role]);
-    browserCookie = server.cookieFor(member);
+    await service.pool.query("INSERT INTO project_members (project_id,user_id,role) VALUES ($1,$2,$3)", [id, member.id, variant.role]);
+    browserCookie = service.cookieFor(member);
   }
   let descriptor;
   const approve = async () => {
@@ -82,10 +83,13 @@ async function fixture(t, variant = {}) {
   };
   const run = async (target = "main", parameters = {}) => completed((await submit(target, parameters)).id);
   const context = await browser.newContext({ viewport: variant.viewport || { width: 1440, height: 900 }, reducedMotion: "reduce", colorScheme: variant.theme || "dark" });
-  await context.addCookies([{ name: "iris_session", value: browserCookie.slice("iris_session=".length), url: server.baseUrl }]);
+  await context.addCookies([{ name: "iris_session", value: browserCookie.slice("iris_session=".length), url: service.baseUrl }]);
   if (variant.theme) await context.addInitScript(theme => localStorage.setItem("iris_theme", theme), variant.theme);
   const page = await context.newPage(); page.setDefaultTimeout(6000);
   const notices = []; let deliverRun;
+  if (!variant.holdRunNotices) page.on("websocket", socket => socket.on("framereceived", ({ payload }) => {
+    const message = JSON.parse(String(payload)); if (message.t === "run") notices.push(message);
+  }));
   if (variant.holdRunNotices) await page.routeWebSocket("**/api/collab", socket => {
     const remote = socket.connectToServer();
     remote.onMessage(raw => {
@@ -104,7 +108,7 @@ async function fixture(t, variant = {}) {
     assert.deepEqual(errors, []);
   });
   const open = async () => {
-    await page.goto(server.baseUrl, { waitUntil: "networkidle" });
+    await page.goto(service.baseUrl, { waitUntil: "networkidle" });
     await page.evaluate(async id => { await IrisEditor.ready; await IrisProjects.openProject(id); }, id);
     await page.waitForFunction(() => ["live", "readonly"].includes(IrisCollab.status()));
   };
@@ -222,9 +226,33 @@ async function runState(f, wanted) {
   catch (error) {
     const ui = await f.page.evaluate(() => ({ state: document.getElementById("pipelineRunState").textContent, notice: document.getElementById("pipelineNotice").textContent }));
     const builds = (await (await f.request(`${f.base}/builds`)).json()).builds.map(({ id, status, target }) => ({ id, status, target }));
-    throw new Error(`${error.message}; ${JSON.stringify({ ui, builds })}`);
+    throw new Error(`${error.message}; ${JSON.stringify({ ui, builds, notices: f.notices.slice(-8) })}`);
   }
 }
+
+for (const [mode, message] of [["missing-tool", /not installed|cannot start/], ["unsupported-pdf", /cannot preserve/]]) {
+  test(`mounted pipeline controls explain the ${mode} adapter failure`, options, async t => {
+    const { failurePlugin } = require("./helpers/pipeline-failure.cjs");
+    const service = await serverFixture(t, { PUBLIC_DIR: path.resolve(__dirname, "../public"), LUA_BIN_PATH: process.env.LUA_BIN_PATH || "", LILYPOND_BIN_PATH: "/iris-missing-compiler" });
+    const f = await fixture(t, { server: service, script: await failurePlugin(mode, "main.tex") });
+    await f.approve(); await f.open(); await controls(f);
+    await f.page.locator("#pipelineTargetsInspect").click(); await f.page.locator("#pipelineRun").click(); await runState(f, "failed");
+    assert.match(await f.page.locator("#pipelineSteps").textContent(), message);
+    await f.page.waitForFunction(() => document.querySelector("#diagnosticsList .diagnostic-message"));
+    assert.match(await f.page.locator("#diagnosticsList").textContent(), message);
+  });
+}
+
+test("Compile refreshes approval from another client instead of starting an ordinary compiler", options, async t => {
+  const f = await fixture(t); await f.open(); await f.approve();
+  const ordinary = [];
+  f.page.on("request", request => { if (request.url().endsWith(`${f.base}/compile`)) ordinary.push(request.url()); });
+  await f.page.locator("#btnCompile").click();
+  await until(async () => ordinary.length || (await f.page.locator("#pipelineNotice").textContent()).length, "current Compile routing", 5000);
+  assert.deepEqual(ordinary, []);
+  assert.match(await f.page.locator("#pipelineNotice").textContent(), /Inspect/);
+  assert.equal((await (await f.request(`${f.base}/builds`)).json()).builds.length, 0);
+});
 
 test("owners approve source, inspect parameters and targets, then run from mounted controls", options, async t => {
   const f = await fixture(t); await f.open(); await controls(f);
@@ -457,6 +485,39 @@ test("a notification gap and interleaved older progress cannot drop the newest r
   f.deliverRun(oldNotices.at(-1)); release();
   await f.painted(newer.id);
   assert.equal(await f.page.locator("#pipelineRunState").getAttribute("data-state"), "succeeded");
+});
+
+for (const update of ["new-run", "new-sequence"]) test(`delayed target history cannot replace live ${update} state after reconnect`, options, async t => {
+  const f = await fixture(t, { holdRunNotices: true }); await f.approve(); const success = await f.run();
+  await f.open(); await f.painted(success.id); await controls(f);
+  await f.page.locator("#pipelineTargetsInspect").click(); await f.page.locator("#pipelineTarget").selectOption("main");
+  await f.page.waitForFunction(() => !document.getElementById("pipelineRun").disabled);
+  const old = update === "new-run" ? success : await f.submit("main", { loop: true });
+  if (update === "new-sequence") await until(() => f.notices.some(event => event.runId === old.id && event.state === "running"), "old running notice", 5000);
+  let release, reached, held = false;
+  const gate = new Promise(resolve => { release = resolve; }), requested = new Promise(resolve => { reached = resolve; });
+  t.after(() => release());
+  await f.page.route(`**${f.base}/runs/${old.id}`, async route => {
+    if (held) return route.continue();
+    held = true;
+    const response = await route.fetch(); reached(); await gate;
+    await route.fulfill({ response, headers: { ...response.headers(), "x-delayed-history": "1" } });
+  });
+  await f.page.evaluate(id => { IrisCollab.disconnect(); IrisCollab.watchProject(id); }, f.id);
+  await requested;
+  const newer = update === "new-run" ? await f.submit("main", { loop: true }) : old;
+  t.after(() => f.request(`${f.base}/runs/${newer.id}/cancel`, { method: "POST", body: {} }));
+  if (update === "new-sequence") await f.request(`${f.base}/runs/${old.id}/cancel`, { method: "POST", body: {} });
+  const state = update === "new-run" ? "running" : "cancelled";
+  await until(() => f.notices.some(event => event.runId === newer.id && event.state === state), "new run notice", 5000);
+  f.deliverRun(f.notices.findLast(event => event.runId === newer.id && event.state === state));
+  await runState(f, state);
+  const response = f.page.waitForResponse(r => r.headers()["x-delayed-history"] === "1");
+  release(); await (await response).finished();
+  await f.page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  assert.equal(await f.page.locator("#pipelineRunState").getAttribute("data-state"), state);
+  assert.equal(await f.page.locator("#pipelineCancel").isEnabled(), update === "new-run");
+  assert.equal(await f.page.evaluate(() => IrisApp.currentBuildId()), success.id);
 });
 
 test("open-ended JSON parameters preserve a property named parameters after target inspection", options, async t => {

@@ -1,5 +1,8 @@
 /* ===================== Iris · compiler diagnostics ===================== */
 (function () {
+  function message(item) {
+    return item.errorCode ? `${window.IrisI18n.error(item, "pipelines.stepFailed")} (${item.errorCode})` : item.message;
+  }
   function lineRange(text, number) {
     if (!Number.isSafeInteger(number) || number < 1) return null;
     let from = 0;
@@ -36,12 +39,12 @@
       const severity = document.createElement("span");
       severity.className = "diagnostic-severity";
       severity.textContent = item.severity === "warning" ? t("diagnostics.warning") : t("diagnostics.error");
-      const message = document.createElement("span");
-      message.className = "diagnostic-message";
-      message.textContent = item.message;
+      const text = document.createElement("span");
+      text.className = "diagnostic-message";
+      text.textContent = message(item);
       body.appendChild(severity);
       body.appendChild(location);
-      body.appendChild(message);
+      body.appendChild(text);
       if (button.disabled && item.file) {
         const hint = document.createElement("span");
         hint.className = "diagnostic-hint";
@@ -108,5 +111,5 @@
     return { extension: [field, gutter], effect, read };
   }
 
-  window.IrisDiagnostics = { lineRange, renderList, createGutter };
+  window.IrisDiagnostics = { message, lineRange, renderList, createGutter };
 })();

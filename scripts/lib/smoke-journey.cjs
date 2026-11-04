@@ -47,6 +47,33 @@ const sources = {
   latex: "\\documentclass{article}\n\\begin{document}\nA stable release smoke.\n\\end{document}\n",
   lilypond: '\\version "2.24.3"\n\\relative c\' { c4 d e f }\n',
 };
+const luaModule = "return {bytes=string.char(0,255,128,10)}\r\n";
+const luaSource = `local helper=require('helpers.bytes')
+return {apiVersion=1,pluginId='installation-smoke',plan=function() return {
+  apiVersion=1,pluginId='installation-smoke',steps={{id='generate',adapter={id='iris.lua',version='1.0.0'},
+    options={script='iris.lua',entrypoint='generate'},outputs={out={kind='file',mediaType='application/octet-stream',path='bytes.bin'}}}},
+  targets={main={steps={'generate'},publish={{step='generate',port='out'}}}}} end,
+  generate=function(ctx) ctx.write('out','bytes.bin',helper.bytes);ctx.diagnostic({severity='warning',message='Smoke diagnostic'}) end}`;
+async function verifyPipeline(api, record) {
+  const base = `/api/projects/${record.id}`;
+  for (const [file, text] of [["iris.lua", luaSource], ["helpers/bytes.lua", luaModule]]) {
+    assert.equal((await api.request(`${base}/files/download?path=${file}`, { binary: true })).toString(), text);
+  }
+  const { pipeline } = await api.request(`${base}/pipeline`);
+  if (!record.pipelineRun) {
+    assert.equal(pipeline.enabled, false); assert.equal(pipeline.approval, null);
+    return;
+  }
+  // This smoke revokes before export/restart: historical bytes survive disablement.
+  assert.equal(pipeline.enabled, false); assert.ok(pipeline.approval.revokedAt);
+  const { run } = await api.request(`${base}/runs/${record.pipelineRun}`);
+  assert.equal(run.state, "succeeded");
+  const detail = await api.request(`${base}/builds/${run.id}`);
+  assert.deepEqual(detail.build.warnings, ["Smoke diagnostic"]);
+  assert.equal(detail.build.diagnostics[0].stepId, "generate");
+  assert.equal(detail.artifacts.length, 1);
+  assert.deepEqual(await api.request(detail.artifacts[0].url, { binary: true }), Buffer.from([0,255,128,10]));
+}
 async function verifyProject(api, record, compiled) {
   const base = `/api/projects/${record.id}`;
   const data = await api.request(base);
@@ -57,6 +84,7 @@ async function verifyProject(api, record, compiled) {
   assert.equal(source.toString(), sources[record.type]);
   const note = await api.request(`${base}/files/download?path=notes.txt`, { binary: true });
   assert.equal(note.toString(), "Portable é 😀\r\nByte-preserving source.\r\n");
+  await verifyPipeline(api, record);
   if (!record.build) return;
   const build = await api.request(`${base}/builds/${record.build.buildId}`);
   assert.equal(build.build.status, compiled ? "succeeded" : "failed");
@@ -86,6 +114,7 @@ async function preview(work, instance, api, records, executable) {
     await page.goto(instance.url, { waitUntil: "networkidle", timeout: 15000 });
     for (const record of records) {
       await page.evaluate(async (id) => { await IrisEditor.ready; await IrisProjects.openProject(id); }, record.id);
+      await page.evaluate(async id => IrisApp.showBuildOutput(await IrisProjects.loadBuildOutput(id)), record.build.buildId);
       await page.waitForFunction((id) => IrisApp.currentBuildId() === id && document.querySelector(".pdf-page canvas")?.width > 0, record.build.buildId, { timeout: 15000 });
       assert.equal(await page.locator(".cm-content").count(), 1);
     }
@@ -113,7 +142,9 @@ async function journey(source, target, { native = false, browser = false, browse
     const made = await api.request("/api/projects", { method: "POST", status: 201, body: { name: `Smoke ${type}`, data: {
       projectType: type, language: "en", sourceMapping: true, autoSave: false, autoSaveDelay: 900,
       project: { nodes: [{ id: "main", type: "file", name: file, path: file, kind: file.split(".").pop(), content: sources[type] },
-        { id: "note", type: "file", name: "notes.txt", path: "notes.txt", kind: "txt", content: "Portable é 😀\r\nByte-preserving source.\r\n" }] },
+        { id: "note", type: "file", name: "notes.txt", path: "notes.txt", kind: "txt", content: "Portable é 😀\r\nByte-preserving source.\r\n" },
+        { id: "plugin", type: "file", name: "iris.lua", path: "iris.lua", content: luaSource },
+        { type: "folder", name: "helpers", children: [{ id: "module", type: "file", name: "bytes.lua", path: "helpers/bytes.lua", content: luaModule }] }] },
     } } });
     const record = { id: made.project.id, type, file };
     const base = `/api/projects/${record.id}`;
@@ -123,16 +154,26 @@ async function journey(source, target, { native = false, browser = false, browse
     assert.equal(record.build.success, native, record.build.log);
     if (native) record.pdfHash = hash(Buffer.from(record.build.artifacts[0].base64, "base64"));
     else assert.match(record.build.log, /ENOENT|not found|spawn/i, "stock image reports an unavailable compiler");
+    const metadata = (await api.request(`${base}/pipeline`)).pipeline;
+    assert.equal(metadata.enabled, false); assert.equal(metadata.approval, null);
+    const { approval } = await api.request(`${base}/pipeline/approval`, { method: "POST", status: 201, body: { identity: metadata.candidate } });
+    const { descriptor } = await api.request(`${base}/pipeline/inspect`, { method: "POST", body: {} });
+    const accepted = await api.request(`${base}/runs`, { method: "POST", status: 202, body: { target: "main", parameters: {}, descriptorHash: descriptor.descriptorHash } });
+    record.pipelineRun = accepted.run.id;
+    await until(async () => !["queued", "planning", "running"].includes((await api.request(`${base}/runs/${record.pipelineRun}`)).run.state), "installed pipeline completion", 15000);
+    await api.request(`${base}/pipeline/approval/${approval.id}`, { method: "DELETE" });
+    await api.request(`${base}/runs`, { method: "POST", status: 409, body: { target: "main", parameters: {}, descriptorHash: descriptor.descriptorHash } });
     await verifyProject(api, record, native);
     const archive = await api.request(`${base}/archive`, { binary: true });
     const imported = await api.request("/api/projects/import?filename=smoke.zip", { method: "POST", body: archive, status: 201 });
     assert.notEqual(imported.project.id, record.id);
-    await verifyProject(api, { ...record, id: imported.project.id, build: null }, native);
+    await verifyProject(api, { ...record, id: imported.project.id, build: null, pipelineRun: null }, native);
     await viewer.request(`/api/projects/${imported.project.id}`, { status: 404 });
     record.members = await api.request(`${base}/members`);
     records.push(record);
   }
   console.log(`PASS create, source bytes/settings, viewer permissions, export/import; ${native ? "LaTeX + LilyPond compile, PDF bytes and forward/inverse navigation" : "compiler-free image returns honest failed build records"}`);
+  console.log("PASS installed Lua HTTP approval, project modules, binary publication, diagnostics, disablement and authority-free import");
   if (browser) await preview(work, source, api, records, browserExecutable);
   else console.log("SKIP browser PDF painting (enable --browser on the native smoke)");
   await source.restart(); await ready(source);
@@ -142,9 +183,9 @@ async function journey(source, target, { native = false, browser = false, browse
   await drain(source, api);
   await source.stop(); // A stopped, drained writer also prevents a later client from changing either layer.
   const beforeDB = JSON.parse(await source.sql(snapshotSQL)), beforeFS = await source.files();
-  assert.equal(beforeDB.iris_schema[0].version, 3);
+  assert.equal(beforeDB.iris_schema[0].version, 4);
   assert.equal(beforeDB.projects.length, 4);
-  assert.equal(beforeDB.build_outputs.length, 2);
+  assert.equal(beforeDB.build_outputs.length, 4);
   const backup = await source.backup();
   await target.restore(backup);
   assert.deepEqual(JSON.parse(await target.sql(snapshotSQL)), beforeDB, "every database row restored before startup");

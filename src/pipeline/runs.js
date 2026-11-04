@@ -416,18 +416,20 @@ async function reconcileRuns(store, activeOwners) {
   let cursor = "00000000-0000-0000-0000-000000000000";
   for (;;) {
     const { rows } = await store.pool.query(`SELECT id,coordinator_id,deadline_at FROM build_outputs WHERE kind='pipeline'
-      AND status IN ('queued','planning','running') AND id>$1 ORDER BY id LIMIT 100`, [cursor]);
+      AND (status IN ('queued','planning','running') OR publication_state='prepared') AND id>$1 ORDER BY id LIMIT 100`, [cursor]);
     if (!rows.length) break;
     for (const candidate of rows) {
       cursor = candidate.id;
       if (activeOwners.has(candidate.coordinator_id) && candidate.deadline_at.getTime() > Date.now()) continue;
       try {
         const interrupted = await withRun(store, candidate.id, null, null, async (client, row, notices, stopped) => {
-          if (!ACTIVE.has(row.status)) return false;
-          if (row.publication_state === "prepared" && row.publication_path) {
+          // Cancellation and revocation end execution, not publication recovery.
+          // Inspect prepared evidence even when another operation made the run terminal.
+          if (row.publication_state === "prepared") {
             const inspected = store.inspectPublication ? await store.inspectPublication(row) : { state: "unavailable" };
             if (!["absent", "matching"].includes(inspected.state)) { result.unresolved.push(row.id); return false; }
           }
+          if (!ACTIVE.has(row.status)) return false;
           await finish(client, row, "interrupted", "coordinator-interrupted", notices, stopped);
           return true;
         });

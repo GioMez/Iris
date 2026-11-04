@@ -39,13 +39,14 @@
     const run = state.run;
     $("pipelineRunState").dataset.state = run?.state || "";
     $("pipelineRunState").textContent = run ? `${run.target}: ${t(`states.${run.state}`)}` : "";
+    if (run?.state === "failed" && run.reason) $("pipelineRunState").textContent += `: ${window.IrisDiagnostics.message({ errorCode: run.reason.toUpperCase().replaceAll("-", "_") })}`;
     $("pipelineSteps").replaceChildren();
     for (const step of run?.steps || []) {
       const item = document.createElement("li");
       item.textContent = `${step.id}: ${t(`states.${step.state}`)}`;
       for (const diagnostic of step.diagnostics || []) {
         const line = document.createElement("div");
-        line.textContent = `${diagnostic.file ? `${diagnostic.file}${diagnostic.line ? `:${diagnostic.line}` : ""}: ` : ""}${diagnostic.message}`;
+        line.textContent = `${diagnostic.file ? `${diagnostic.file}${diagnostic.line ? `:${diagnostic.line}` : ""}: ` : ""}${window.IrisDiagnostics.message(diagnostic)}`;
         item.appendChild(line);
       }
       $("pipelineSteps").appendChild(item);
@@ -133,6 +134,7 @@
         parameterFields(descriptor);
       }
       render();
+      return true;
     } catch (error) { if (current(owner) && seq === owner.refreshSeq) errorNotice(error); }
   }
   async function action(work) {
@@ -153,17 +155,20 @@
     await window.IrisApp.showBuildOutput(payload, { activateWorkspace: false });
     if (current(owner) && seq === owner.viewSeq) owner.previewVersion = window.IrisApp.previewVersion();
   }
+  function acceptRun(owner, run) {
+    if (!current(owner) || run.target !== owner.target) return false;
+    if (owner.run && (BigInt(run.requestOrder) < BigInt(owner.run.requestOrder) || (run.id === owner.run.id && BigInt(run.sequence) < BigInt(owner.run.sequence)))) return false;
+    owner.run = run; render(); return true;
+  }
   async function adoptRun(owner, run) {
-    if (!current(owner) || run.target !== owner.target) return;
-    if (owner.run && (BigInt(run.requestOrder) < BigInt(owner.run.requestOrder) || (run.id === owner.run.id && run.sequence < owner.run.sequence))) return;
-    owner.run = run; render(); await terminalPreview(owner, run);
+    if (acceptRun(owner, run)) await terminalPreview(owner, run);
   }
   async function runEvent(event) {
     const owner = state;
     if (!current(owner) || event.projectId !== owner.projectId || event.target !== owner.target) return;
-    if (owner.run && (BigInt(event.requestOrder) < BigInt(owner.run.requestOrder) || (event.runId === owner.run.id && event.sequence <= owner.run.sequence))) return;
+    if (owner.run && (BigInt(event.requestOrder) < BigInt(owner.run.requestOrder) || (event.runId === owner.run.id && BigInt(event.sequence) <= BigInt(owner.run.sequence)))) return;
     if (owner.wanted && (BigInt(event.requestOrder) < BigInt(owner.wanted.requestOrder)
-      || (event.runId === owner.wanted.runId && event.sequence <= owner.wanted.sequence))) return;
+      || (event.runId === owner.wanted.runId && BigInt(event.sequence) <= BigInt(owner.wanted.sequence)))) return;
     owner.wanted = event;
     if (owner.fetching) return;
     owner.fetching = true;
@@ -179,7 +184,8 @@
   async function selectTarget({ preview = true } = {}) {
     const owner = state, target = owner.target, seq = ++owner.viewSeq;
     const previousId = window.IrisApp.currentBuildId(), version = window.IrisApp.previewVersion();
-    owner.run = null; owner.terminal = null; owner.previewVersion = preview ? version : null; render();
+    if (owner.run?.target !== target) owner.run = null;
+    owner.terminal = null; owner.previewVersion = preview ? version : null; render();
     if (!target) return;
     try {
       const listed = await projects().listBuildOutputs({ kind: "pipeline", target });
@@ -187,12 +193,11 @@
       const latest = listed.builds[0];
       const run = latest ? (await projects().getPipelineRun(latest.id)).run : null;
       if (!current(owner) || seq !== owner.viewSeq) return;
-      owner.run = run;
-      render();
+      if (run ? !acceptRun(owner, run) : owner.run) return;
       if (!preview || version !== window.IrisApp.previewVersion()) return;
       if (listed.latestSuccessfulId) {
         const payload = await projects().loadBuildOutput(listed.latestSuccessfulId);
-        if (!current(owner) || seq !== owner.viewSeq || version !== window.IrisApp.previewVersion()) return;
+        if (!current(owner) || seq !== owner.viewSeq || owner.run !== run || version !== window.IrisApp.previewVersion()) return;
         await window.IrisApp.showBuildOutput(payload, { activateWorkspace: false });
         if (!current(owner) || seq !== owner.viewSeq) return;
         if (!payload.artifacts.length) await window.IrisApp.clearBuildOutput(previousId);
@@ -221,9 +226,9 @@
   }
   async function compile() {
     const owner = state;
-    if (!owner.metadata) await refresh();
+    const refreshed = await refresh();
     if (!current(owner)) return true;
-    if (!owner.metadata) { window.IrisApp.openPipelineControls(); return true; }
+    if (!refreshed) { window.IrisApp.openPipelineControls(); return true; }
     if (!owner.metadata.enabled) return false;
     await run(); return true;
   }

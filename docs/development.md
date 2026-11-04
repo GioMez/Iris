@@ -390,6 +390,9 @@ node scripts/smoke.cjs --native --browser
 It verifies first-admin login/password changes, project creation, LaTeX/LilyPond
 builds, PDF bytes/navigation, export/import, full PostgreSQL/application restart,
 and a coordinated database/filesystem restore into a separate installation.
+The development smoke also needs Lua 5.4/5.5 and exercises HTTP approval,
+inspection, project modules, binary publication, diagnostics and revocation.
+Export/import preserves Lua bytes without granting the imported project approval.
 `--native` without `--browser` skips browser painting; it still verifies native
 PDFs and navigation through HTTP.
 
@@ -601,6 +604,14 @@ including identical messages from distinct steps, rather than applying the
 ordinary compiler's display cap. Generated locations cannot attach to editable
 project files by filename. The UI retains a successful preview while displaying
 failed-run diagnostics.
+
+Adapter failures retain a stable code in the terminal run reason and a structured
+host diagnostic when the diagnostic budget permits it. The UI localizes host
+codes and retains authored diagnostic text. At capacity, Iris preserves the
+authored diagnostics and exposes the terminal code separately. Ordinary compile
+admission checks pipeline enablement under the project mutation gate and rejects
+an enabled project with `PIPELINE_TARGET_REQUIRED` instead of choosing another
+compiler workflow.
 
 The artifact registry lists previewable products. Build-file scanning exposes
 other safe regular outputs, including MIDI and bibliography products. Symlinks,

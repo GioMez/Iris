@@ -111,6 +111,17 @@ test("pipeline metadata and owner approval bind all Lua files without executing 
   assert.equal(await fs.readFile(path.join(f.dir, "unused.lua"), "utf8"), "return 1\r\n");
 });
 
+test("ordinary compilation refuses an enabled pipeline before saving or creating a build", options, async t => {
+  const f = await fixture(t);
+  const before = (await f.pool.query("SELECT revision FROM projects WHERE id=$1", [f.id])).rows[0].revision;
+  assert.equal((await f.approve((await f.metadata()).candidate)).status, 201);
+  const response = await f.request(`${f.base}/compile`, { method: "POST", body: {} });
+  assert.equal(response.status, 409);
+  assert.equal((await response.json()).errorCode, "PIPELINE_TARGET_REQUIRED");
+  assert.equal((await f.pool.query("SELECT revision FROM projects WHERE id=$1", [f.id])).rows[0].revision, before);
+  assert.equal((await f.pool.query("SELECT count(*) FROM build_outputs")).rows[0].count, "0");
+});
+
 test("explicit Lua inspection requires current approval and caches its descriptor for readers", nativeLua, async t => {
   const f = await fixture(t);
   const inspect = role => f.request(`${f.base}/pipeline/inspect`, { method: "POST", body: {} }, role);
@@ -205,6 +216,23 @@ test("configured missing Lua permits metadata and approval but fails explicit in
   assert.equal((await inspected.json()).errorCode, "PIPELINE_RUNTIME_UNAVAILABLE");
   assert.equal((await f.metadata()).descriptor, null);
 });
+
+for (const [mode, code] of [["missing-tool", "PIPELINE_RUNTIME_UNAVAILABLE"], ["unsupported-pdf", "PIPELINE_PDF_UNSUPPORTED"]]) {
+  test(`pipeline history retains the ${mode} adapter failure code`, nativeLua, async t => {
+    const { failurePlugin } = require("./helpers/pipeline-failure.cjs");
+    const f = await fixture(t, await failurePlugin(mode, "main.ly"), { LILYPOND_BIN_PATH: "/iris-missing-compiler" });
+    const descriptor = await inspect(f);
+    const accepted = await f.request(`${f.base}/runs`, { method: "POST", body: { target: "main", parameters: {}, descriptorHash: descriptor.descriptorHash } });
+    assert.equal(accepted.status, 202);
+    const run = await terminalRun(f, (await accepted.json()).run.id);
+    assert.equal(run.state, "failed");
+    assert.equal(run.reason, code.toLowerCase().replaceAll("_", "-"));
+    const failed = run.steps.find(step => step.state === "failed");
+    assert.equal(failed.diagnostics.at(-1).errorCode, code);
+    const detail = await (await f.request(`${f.base}/builds/${run.id}`)).json();
+    assert.ok(detail.build.diagnostics.some(item => item.errorCode === code && item.stepId === failed.id));
+  });
+}
 
 for (const mode of ["descriptor", "targets"]) for (const change of ["approval", "permission", "shutdown"]) test(`${change} revocation cancels an executing ${mode} inspection before its deadline`, nativeLua, async t => {
   const f = await fixture(t, mode === "descriptor" ? "while true do end" : generatingScript.replace("plan=function(ctx)", "plan=function(ctx) while true do end"));

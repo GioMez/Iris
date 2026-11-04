@@ -306,8 +306,10 @@ for (const corruptReply of [false, true]) test(`native Lua failure retains diagn
   const result = await executePlan({ plan, target: "default", workspace: f.workspace, registry: f.registry,
     gate: new ConcurrencyGate({ limit: 1, queueLimit: 1 }) });
   assert.equal(result.state, "failed");
-  assert.equal(result.steps[0].errorCode, corruptReply ? "PIPELINE_DIAGNOSTICS_CHANGED" : "PIPELINE_LUA_EXECUTION_FAILED");
-  assert.deepEqual(result.steps[0].diagnostics, [{ severity: "error", message: "retained failure", stepId: "fail" }]);
+  const code = corruptReply ? "PIPELINE_DIAGNOSTICS_CHANGED" : "PIPELINE_LUA_EXECUTION_FAILED";
+  assert.equal(result.steps[0].errorCode, code);
+  assert.deepEqual(result.steps[0].diagnostics, [{ severity: "error", message: "retained failure", stepId: "fail" },
+    { severity: "error", errorCode: code, message: code }]);
   assert.deepEqual(result.artifacts, []);
   assert.deepEqual(await fs.readdir(path.join(f.workspace.root, "steps/fail/output")), []);
 });
@@ -333,7 +335,8 @@ test("Lua timeout retains a live diagnostic after log saturation and publishes n
     gate: new ConcurrencyGate({ limit: 1, queueLimit: 1 }), emit: event => progress.push(structuredClone(event)) });
   assert.equal(result.state, "failed");
   assert.equal(result.steps[0].errorCode, "PIPELINE_LUA_TIMEOUT");
-  assert.deepEqual(result.steps[0].diagnostics, [{ severity: "warning", message: "before timeout", stepId: "wait" }]);
+  assert.deepEqual(result.steps[0].diagnostics, [{ severity: "warning", message: "before timeout", stepId: "wait" },
+    { severity: "error", errorCode: "PIPELINE_LUA_TIMEOUT", message: "PIPELINE_LUA_TIMEOUT" }]);
   assert.deepEqual(progress[1], { stepId: "wait", diagnostic: result.steps[0].diagnostics[0] });
   assert.equal(logs.length, 17);
   assert.deepEqual(result.artifacts, []);

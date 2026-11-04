@@ -222,6 +222,7 @@ const activePipelineRuns = new Map();
 const activePipelineInspections = new Set();
 let pipelineExecution;
 let pipelineNavigationFailure;
+let pipelineReconciliation, pipelineRecoveryFailure;
 const pipelineCoordinatorId = uuidv7();
 const pipelineRunStore = {
   get pool() { return db; },
@@ -4696,7 +4697,8 @@ async function inspectProjectPipeline(req, res, user, id) {
   try {
     PipelineContracts.record(body, ["parameters", "descriptorHash"], "PIPELINE_REQUEST_INVALID", "inspection request");
     const inspectTargets = Object.hasOwn(body, "parameters") || Object.hasOwn(body, "descriptorHash");
-    if (pipelineNavigationFailure || [...activePipelineInspections, ...activePipelineRuns.values()].some(operation => operation.failure)) throw requestError("PIPELINE_WORKER_RECOVERY_REQUIRED", 503);
+    await pipelineReconciliation;
+    if (pipelineRecoveryFailure || pipelineNavigationFailure || [...activePipelineInspections, ...activePipelineRuns.values()].some(operation => operation.failure)) throw requestError("PIPELINE_WORKER_RECOVERY_REQUIRED", 503);
     const state = await pipelineRuns.getPipeline(pipelineRunStore, id, user);
     const candidate = await pipelineCandidate(id, user, "compile");
     approval = state.approval;
@@ -4797,7 +4799,9 @@ async function executeProjectPipeline(operation, execution, workspace, approval,
         if (composed.has(context.step.id)) mapping.collectComposition({ context, products, relation: composed.get(context.step.id) });
       } });
     if (result.state !== "succeeded") {
-      await pipelineRuns.transitionRun(store, id, state, result.state, { reason: result.state === "cancelled" ? "execution-cancelled" : "execution-failed" });
+      const failureCode = result.steps.find(step => step.state === "failed")?.errorCode;
+      await pipelineRuns.transitionRun(store, id, state, result.state, { reason: result.state === "cancelled" ? "execution-cancelled"
+        : failureCode ? failureCode.toLowerCase().replaceAll("_", "-") : "execution-failed" });
       return;
     }
     const artifacts = [], output = path.join(workspace.root, "publish");
@@ -4844,7 +4848,8 @@ async function createProjectPipelineRun(req, res, user, projectId) {
     if (!descriptor || descriptor.descriptorHash !== body.descriptorHash) throw requestError("PIPELINE_DESCRIPTOR_CHANGED", 409);
     const parameters = PipelineContracts.validateParameters(descriptor.parameterSchema, Object.hasOwn(body, "parameters") ? body.parameters : {});
     if (shuttingDown) throw requestError("PIPELINE_RUNTIME_STOPPING", 503);
-    if (pipelineNavigationFailure || [...activePipelineInspections, ...activePipelineRuns.values()].some(operation => operation.failure)) throw requestError("PIPELINE_WORKER_RECOVERY_REQUIRED", 503);
+    await pipelineReconciliation;
+    if (pipelineRecoveryFailure || pipelineNavigationFailure || [...activePipelineInspections, ...activePipelineRuns.values()].some(operation => operation.failure)) throw requestError("PIPELINE_WORKER_RECOVERY_REQUIRED", 503);
     enforceRateLimit(compileLimiter, `compile:${user.sub}:${projectId}`, "COMPILE_RATE_LIMITED");
     const controller = new AbortController(), signal = controller.signal, id = uuidv7();
     operation = { id, projectId, user, controller, done: new Promise(resolve => { complete = resolve; }),
@@ -4945,6 +4950,8 @@ async function compileProject(req, res, user, id) {
     const { row, data, projectType, engine, binPath, main, mainPath, storedLilypondArgs, outputFormat, compileProfile, buildFiles } = await authorizedProjectGate(id, user, "compile", async (project) => {
       const setup = await projectMutations.transaction({ id, storageDir: project.storageDir }, async (client, protect) => {
         const row = await authorizeProject(id, user, "compile", client);
+        const pipeline = await client.query("SELECT enabled FROM project_pipelines WHERE project_id=$1", [id]);
+        if (pipeline.rows[0]?.enabled) throw requestError("PIPELINE_TARGET_REQUIRED", 409);
         if (body.data && typeof body.data === "object") requireProjectRevision(body, row);
         const name = body.name == null ? row.name : cleanName(body.name);
         const data = body.data && typeof body.data === "object" ? body.data : await readProjectFile(row.storageDir, { strictRead: true });
@@ -5417,8 +5424,15 @@ function resumeProjectDeletions() {
 function startRetentionSweep() {
   // Confirmed deletions are resumed even when history retention is disabled.
   resumeProjectDeletions().catch((err) => console.error("Project deletion startup cleanup failed", err));
-  startBackgroundWrite(() => pipelineRuns.reconcileRuns(pipelineRunStore, new Set([pipelineCoordinatorId])))
-    .catch((err) => console.error("Pipeline startup reconciliation failed", err.message || err));
+  pipelineReconciliation = startBackgroundWrite(async () => {
+    try {
+      const result = await pipelineRuns.reconcileRuns(pipelineRunStore, new Set([pipelineCoordinatorId]));
+      pipelineRecoveryFailure = result.unresolved.length ? requestError("PIPELINE_WORKER_RECOVERY_REQUIRED", 503) : null;
+    } catch (error) {
+      pipelineRecoveryFailure = requestError("PIPELINE_WORKER_RECOVERY_REQUIRED", 503);
+      console.error("Pipeline startup reconciliation failed", error.message || error);
+    }
+  });
   if (!RETENTION_ENABLED) {
     console.log("Retention sweep disabled (RETENTION_ENABLED=false)");
     return null;
@@ -6521,7 +6535,8 @@ function healthPayload() {
     status: healthStatus({ shuttingDown, maintenance: active }),
     maintenance: active,
     pendingWrites: inFlightMutations + backgroundPending.size + collabPendingWrites() + (collabDrainPromise ? 1 : 0)
-      + [...activePipelineInspections, ...activePipelineRuns.values()].filter(operation => operation.failure).length + Number(Boolean(pipelineNavigationFailure)),
+      + [...activePipelineInspections, ...activePipelineRuns.values()].filter(operation => operation.failure).length
+      + Number(Boolean(pipelineNavigationFailure)) + Number(Boolean(pipelineRecoveryFailure)),
   };
 }
 
@@ -6622,6 +6637,7 @@ function startGracefulShutdown(signal, server) {
       await drainCollabWrites();
     }
     if (pipelineNavigationFailure) throw pipelineNavigationFailure;
+    if (pipelineRecoveryFailure) throw pipelineRecoveryFailure;
     if (!shutdownForced) {
       if (pipelineExecution) await (await pipelineExecution).runtime.close();
       await db.end();

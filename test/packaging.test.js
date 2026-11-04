@@ -9,7 +9,7 @@ const { pathToFileURL } = require("node:url");
 
 const release = path.resolve(__dirname, "../scripts/release.cjs");
 const required = ["LICENSE", "THIRD_PARTY_NOTICES.md", "README.md", ".npmrc", ".env.example",
-  ".dockerignore", "Dockerfile", "docker-compose.yml", "db/schema.sql", "db/migrations/003-pipelines.sql", "db/init/01-create-iris-user.sh",
+  ".dockerignore", "Dockerfile", "docker-compose.yml", "db/schema.sql", "db/migrations/003-pipelines.sql", "db/migrations/004-primary-preview.sql", "db/init/01-create-iris-user.sh",
   "src/server.js", "public/Iris.html", "public/templates/.metadata.json", "scripts/test.cjs", "scripts/smoke.cjs"];
 async function fixture(t) {
   const root = await fs.mkdtemp(path.resolve(__dirname, "../.iris-package-test-"));
@@ -195,10 +195,29 @@ test("release rejects mismatched metadata, incomplete manifests, implicit checko
   assert.match(f.run().stderr, /missing.*db\/schema.sql/i);
   await fs.writeFile(f.manifest, JSON.stringify(Object.keys(f.files).filter((name) => name !== "db/migrations/003-pipelines.sql")));
   assert.match(f.run().stderr, /missing.*db\/migrations\/003-pipelines.sql/i);
+  await fs.writeFile(f.manifest, JSON.stringify(Object.keys(f.files).filter((name) => name !== "db/migrations/004-primary-preview.sql")));
+  assert.match(f.run().stderr, /missing.*db\/migrations\/004-primary-preview.sql/i);
   await fs.writeFile(f.manifest, JSON.stringify(Object.keys(f.files)));
   result = f.run();
   assert.equal(result.status, 0, result.stderr);
   assert.equal(f.run().status, 1, "never replace an existing release directory");
+});
+
+test("source archives preserve the EPS input needed by native layout qualification", async t => {
+  const f = await fixture(t), name = "test/fixtures/pipelines/layout-image.eps";
+  const bytes = await fs.readFile(path.join(__dirname, "fixtures/pipelines/layout-image.eps"));
+  await fs.mkdir(path.dirname(path.join(f.source, name)), { recursive: true });
+  await fs.writeFile(path.join(f.source, name), bytes);
+  await fs.writeFile(f.manifest, JSON.stringify([...Object.keys(f.files), name]));
+  const built = f.run();
+  assert.equal(built.status, 0, built.stderr);
+  const extracted = path.join(f.root, "extracted"); await fs.mkdir(extracted);
+  const tar = spawnSync("tar", ["-xzf", path.join(f.output, "iris-1.0.0.tar.gz"), "-C", extracted], { encoding: "utf8" });
+  assert.equal(tar.status, 0, tar.stderr);
+  assert.deepEqual(await fs.readFile(path.join(extracted, "iris-1.0.0", name)), bytes);
+  const { included } = require(release);
+  assert.equal(included("src/private.eps"), false);
+  assert.equal(included("test/unrelated.eps"), false);
 });
 
 test("archive preserves actual offline font CSS, binaries, pinned inventory and full licenses", async t => {

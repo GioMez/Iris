@@ -7,6 +7,8 @@ Start with the [project introduction](../README.md) or choose a guide below.
 
 - [User guide](user-guide.md): sign in, create a project, edit, compile, share
   and recover work.
+- [Lua pipelines](lua-pipelines.md): approved project plugins, typed parameters,
+  source generation, actual layout and PDF composition in the development source.
 - [Editor languages](editor-languages.md): TeX/LilyPond support, conservative
   contexts and editing limits.
 - [PDF and source controls](user-guide.md#move-between-pdf-and-source): jump

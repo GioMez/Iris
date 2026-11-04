@@ -295,7 +295,8 @@ handle a custom `MAINTENANCE_FILE` at its configured path. Restore ownership
 and modes so the target service user can read and write its storage.
 
 Start the target with its own DB settings, `DATA_DIR`, `TEMPLATE_DIR`, port and
-session secret. Use Iris 1.1.0 with schema 2. The backed-up local passwords still
+session secret. Use the source version matching the backup: released Iris 1.1.0
+uses schema 2; the Lua-enabled development source uses schema 4. The backed-up local passwords still
 work; a new signing secret requires fresh logins. Verify project contents,
 memberships, history and output downloads, then make a target-only change to
 check that the target uses separate storage/database state. Successful
@@ -424,6 +425,43 @@ A confirmed deletion with filesystem cleanup still pending returns
 Startup resumes ready cleanup even with retention off; enabled sweeps also retry
 it. A ready receipt with a live project row requires inspection.
 
+### Lua pipeline upgrades and disablement
+
+Released `R1.1.0` uses schema 2; the Lua-enabled development source uses schema 4.
+Before upgrading, drain and stop Iris and take a coordinated
+[database/filesystem backup](#backup-and-restore). Keep the source revision and
+configuration that produced it. Start one Iris process with the new source;
+startup applies the schema-2 or schema-3 migrations in one transaction. It
+preserves existing projects, memberships, history, artifacts and storage paths.
+Read the [schema contract](development.md#persistence-contract) for migration
+ownership and unknown historical preview selections.
+
+Existing projects keep their ordinary compiler workflow. Opening, saving or
+importing Lua files does not enable execution. An owner approves the exact source
+bundle and runtime identities through the [author controls](lua-pipelines.md).
+Upgrading trusted implementations or tool executables can invalidate approval;
+inspect the changed source/policy and approve again before executing it.
+
+To disable a project's pipeline, choose **Disable and revoke approval** under
+Settings → Compilation. Revocation cancels affected work, preserves retained
+outputs and diagnostics, and returns Compile to the ordinary workflow. Removing
+Lua from PATH only makes execution unavailable; it does not revoke authority.
+
+Binary downgrade to `R1.1.0` is incompatible with schema 4. Do not edit the schema
+marker or drop pipeline tables to force startup. Restore the coordinated
+pre-upgrade database and filesystem backup into a separate installation with its
+matching older source/configuration. Preserve post-upgrade work separately before
+switching users back to that installation.
+
+Upgrade qualification used a fresh `R1.1.0` production-only installation on
+macOS arm64 with Node 26.12.1 and PostgreSQL 18.6. After compiling LaTeX and
+LilyPond projects, the development source upgraded the same database and storage
+to schema 4. Checks preserved the nine historical tables' existing columns and
+20 file hashes, including navigation sidecars; both retained builds still
+supported source navigation, and memberships survived. The included Lua files
+remained disabled. A separate check ran the unmodified `R1.1.0` schema initializer
+against schema 4 and confirmed rejection without changing retained data.
+
 ### Lua runtime recovery
 
 The Lua runtime keeps version-2 JSON receipts beside its private workspace
@@ -451,6 +489,13 @@ bytes. Matching or absent publications permit an interrupted run record; uncerta
 or mismatching publications remain unresolved. Recovery does not delete renamed
 output to make the database transition succeed. Build-file downloads and ZIPs
 exclude the private receipt and source-navigation sidecars.
+
+An unresolved startup reconciliation keeps health `pendingWrites` above zero,
+blocks new pipeline inspections/runs and causes shutdown to report failure.
+Cancelling a run or revoking approval does not discharge a prepared publication's
+recovery obligation; another restart still checks its retained evidence.
+Matching completed publication bytes permit an `interrupted` record; they do not
+prove that the original database finalization committed successfully.
 
 Stop the owning Iris process before investigating. Preserve the receipt and
 workspace, inspect the matching run and establish whether any of its native

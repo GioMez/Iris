@@ -1,5 +1,6 @@
 {
   "pipelines": {
+    "stepFailed": "The pipeline step failed. Check its diagnostics and log.",
     "title": "Lua pipeline",
     "description": "Use the project's iris.lua plugin to generate sources and process compiled outputs.",
     "refresh": "Refresh",
@@ -961,6 +962,7 @@
     "PIPELINE_RUNTIME_STOPPING": "Iris is shutting down. Try again after it restarts.",
     "PIPELINE_WORKER_RECOVERY_REQUIRED": "Pipeline cleanup needs administrator attention. Iris has retained recovery evidence.",
     "PIPELINE_REQUEST_INVALID": "The pipeline request is invalid.",
+    "PIPELINE_TARGET_REQUIRED": "This project uses a Lua pipeline. Inspect and select a target in Settings → Compilation before running it.",
     "PIPELINE_BUNDLE_CHANGED": "The Lua source has changed. Refresh the pipeline details before approving it.",
     "PIPELINE_APPROVAL_REQUIRED": "A project owner must approve the current Lua source before it can run.",
     "PIPELINE_DESCRIPTOR_CHANGED": "The plugin returned different options for the same approved source. Check the Lua descriptor.",
@@ -970,6 +972,11 @@
     "PIPELINE_LAYOUT_COMPILE_FAILED": "Layout inspection requires a successful compilation.",
     "PIPELINE_LAYOUT_FAILED": "PDF layout inspection failed or exceeded its time limit.",
     "PIPELINE_LAYOUT_LIMIT": "The PDF layout exceeds its metadata limit.",
+    "PIPELINE_PDF_UNSUPPORTED": "Iris cannot preserve this PDF's form, signature or annotation behavior. Check the composition inputs.",
+    "PIPELINE_PDF_INVALID": "The PDF or placement manifest is invalid or does not match its input artifacts.",
+    "PIPELINE_PDF_TIMEOUT": "PDF composition exceeded its time limit.",
+    "PIPELINE_PDF_FAILED": "PDF composition failed. Check the input PDFs and placements.",
+    "PIPELINE_OUTPUT_LIMIT": "The pipeline step exceeded its output size or entry limit.",
     "PIPELINE_LUA_VERSION_UNSUPPORTED": "The Lua interpreter version is unsupported. Install Lua 5.4 or 5.5.",
     "PIPELINE_LUA_TIMEOUT": "The Lua operation exceeded its time limit.",
     "PIPELINE_RUN_DEADLINE": "The pipeline run exceeded its time limit.",

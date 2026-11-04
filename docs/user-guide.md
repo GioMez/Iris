@@ -128,6 +128,13 @@ Press **Compile**. Iris saves the project, copies the effective source into a
 build workspace and runs the selected tools. You can continue editing during
 compilation, but the output represents that saved copy.
 
+The development source also supports an approved project `iris.lua` plugin.
+Use **Settings → Compilation → Lua pipeline** to approve source, inspect options
+and targets, and run or cancel work. When enabled, **Compile** uses the selected
+Lua target. See [Lua pipelines](lua-pipelines.md) for source generation, actual
+layout, PDF composition, permissions and retained previews. Released `R1.1.0`
+does not include these controls.
+
 ### LaTeX
 
 Choose pdfLaTeX, XeLaTeX or LuaLaTeX from the **engine** control in the editor

@@ -1,5 +1,6 @@
 {
   "pipelines": {
+    "stepFailed": "Il passaggio della pipeline non è riuscito. Controlla la diagnostica e il registro.",
     "title": "Pipeline Lua",
     "description": "Usa il plugin iris.lua del progetto per generare sorgenti ed elaborare gli output compilati.",
     "refresh": "Aggiorna",
@@ -961,6 +962,7 @@
     "PIPELINE_RUNTIME_STOPPING": "Iris si sta arrestando. Riprova dopo il riavvio.",
     "PIPELINE_WORKER_RECOVERY_REQUIRED": "La pulizia della pipeline richiede l'intervento dell'amministratore. Iris ha conservato i dati per il ripristino.",
     "PIPELINE_REQUEST_INVALID": "La richiesta della pipeline non è valida.",
+    "PIPELINE_TARGET_REQUIRED": "Questo progetto usa una pipeline Lua. Esamina e seleziona una destinazione in Impostazioni → Compilazione prima di avviarla.",
     "PIPELINE_BUNDLE_CHANGED": "Il sorgente Lua è cambiato. Aggiorna i dettagli della pipeline prima di approvarlo.",
     "PIPELINE_APPROVAL_REQUIRED": "Un proprietario del progetto deve approvare il sorgente Lua attuale prima dell'esecuzione.",
     "PIPELINE_DESCRIPTOR_CHANGED": "Il plugin ha restituito opzioni diverse per lo stesso sorgente approvato. Controlla il descrittore Lua.",
@@ -970,6 +972,11 @@
     "PIPELINE_LAYOUT_COMPILE_FAILED": "L'analisi dell'impaginazione richiede una compilazione riuscita.",
     "PIPELINE_LAYOUT_FAILED": "L'analisi dell'impaginazione del PDF non è riuscita o ha superato il limite di tempo.",
     "PIPELINE_LAYOUT_LIMIT": "L'impaginazione del PDF supera il limite dei metadati.",
+    "PIPELINE_PDF_UNSUPPORTED": "Iris non può preservare il comportamento di moduli, firme o annotazioni di questo PDF. Controlla i file della composizione.",
+    "PIPELINE_PDF_INVALID": "Il PDF o il manifesto dei posizionamenti non è valido o non corrisponde agli artefatti di input.",
+    "PIPELINE_PDF_TIMEOUT": "La composizione PDF ha superato il limite di tempo.",
+    "PIPELINE_PDF_FAILED": "La composizione PDF non è riuscita. Controlla i PDF di input e i posizionamenti.",
+    "PIPELINE_OUTPUT_LIMIT": "Il passaggio della pipeline ha superato il limite di dimensione o di elementi dell'output.",
     "PIPELINE_LUA_VERSION_UNSUPPORTED": "La versione dell'interprete Lua non è supportata. Installa Lua 5.4 o 5.5.",
     "PIPELINE_LUA_TIMEOUT": "L'operazione Lua ha superato il limite di tempo.",
     "PIPELINE_RUN_DEADLINE": "L'esecuzione della pipeline ha superato il limite di tempo.",

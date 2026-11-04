@@ -75,6 +75,14 @@ async function executePlan({ plan, target, workspace, registry, gate, signal = n
       else if (rejected) {
         failed = true;
         result.errorCode = /^[A-Z][A-Z0-9_]{0,63}$/.test(error?.code || "") ? error.code : "PIPELINE_STEP_FAILED";
+        const diagnostic = { severity: "error", errorCode: result.errorCode, message: result.errorCode };
+        const bytes = Buffer.byteLength(JSON.stringify(diagnostic)) + (result.diagnostics.length ? 1 : 0);
+        // Preserve authored diagnostics at capacity. The run owner also retains
+        // the stable failure code as its terminal reason when this cannot fit.
+        if (diagnosticBytes + bytes <= 1048576) {
+          diagnosticBytes += bytes;
+          result.diagnostics.push(diagnostic);
+        }
         await transition("failed");
       } else {
         for (const artifact of produced) artifacts.set(`${step.id}:${artifact.outputPort}`, artifact);

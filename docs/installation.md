@@ -4,6 +4,11 @@ Choose **native installation** for the documented LaTeX/LilyPond compilation
 workflow. The **local container build** runs Iris and PostgreSQL with Docker or
 Podman; the lightweight Iris image contains no compiler toolchains.
 
+The release instructions below obtain `R1.1.0`. The
+[Lua pipeline engine](lua-pipelines.md) belongs to the development source and
+needs that source checkout or a candidate archive built from it. It is not in
+the released `R1.1.0` archive. No new version or release tag has been assigned.
+
 ## Obtain the release sources
 
 Use the source at the exact Git tag **`R1.1.0`**. From a directory where you want
@@ -211,18 +216,25 @@ VM: Compose mounts the PostgreSQL initialization script from it. Both engines
 use the same Compose file. Earlier qualification used **rootless Podman 6.1.1 /
 podman-compose 1.6.0** on Linux arm64 with SELinux.
 
-The Lua-enabled image passed installation smoke on 2026-11-03 using macOS arm64
+The Lua-enabled development image passed installation smoke on 2026-11-04 using macOS arm64
 Podman client **6.1.4**, Linux arm64 server **5.6.1** and podman-compose **1.6.0**.
-The smoke ran approved Lua planning, binary generation and process-group
-cancellation inside the Compose application service, repeated those checks after
-restart and restore, and compared all 13 schema-3 tables plus stored file bytes
-and modes. It also verified the stock image's missing-compiler result. This
-qualifies the packaged runtime, not production pipeline HTTP or browser controls.
+The smoke ran the HTTP approval/inspection/run workflow with project modules,
+binary publication, diagnostics, revocation and import without transferred
+approval. It also checked process-group cancellation inside the Compose service,
+restart and separate-instance restore, comparing all 13 schema-4 tables and
+75 filesystem entries by bytes/mode. The stock image reported missing compilers.
+Browser painting and successful native compilation were disabled in this smoke.
 
-The native installation smoke on the same date passed LaTeX/LilyPond builds,
+The native installation smoke on the same date passed the Lua HTTP workflow,
+LaTeX/LilyPond builds,
 forward/inverse source navigation, restart and separate-instance restore under
-Node 26.12.1 and PostgreSQL 18.6 on macOS arm64. Chrome **156.0.8078.48** painted
-both PDFs in Iris. That browser journey covers the existing compiler workflow.
+Node 26.12.1 and PostgreSQL 18.6 on macOS arm64. Chromium **156.0.8078.80** painted
+both compiler PDFs in Iris. Restore compared 13 tables and 93 filesystem entries.
+A separate reproducible candidate archive passed `npm ci --omit=dev`, native
+HTTP smoke and 103 selected database/Lua/layout/composition/recovery checks without Git or
+ancestor dependencies. These results cover the tested source and platform;
+the [source-navigation guide](source-navigation.md#pipeline-and-composed-outputs)
+records the separate composed-PDF browser journeys.
 
 ### Check service status (optional)
 

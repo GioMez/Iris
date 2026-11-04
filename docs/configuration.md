@@ -103,7 +103,9 @@ directory inside the application container.
 The runtime has these defaults. `COMPILE_CONCURRENCY` and `COMPILE_QUEUE` also
 control native workspace admission; the other limits are internal. The server
 provides exact-source approval, explicit descriptor inspection and asynchronous
-target execution. Browser author controls remain under development.
+target execution. [Author controls](lua-pipelines.md#approve-inspect-and-run) live
+under Settings → Compilation. These features belong to the development source;
+released `R1.1.0` does not include them.
 
 | Limit | Default |
 | --- | --- |

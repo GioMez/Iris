@@ -101,10 +101,11 @@ leaves navigation unavailable and the PDF usable.
 ### Pipeline and composed outputs
 
 Pipeline publication binds navigation sidecars to exact artifact IDs and hashes.
-Verified PDF composition carries base and placed-source correspondence into the
-composed artifact. A forward query prefers the selected composed PDF; inverse
-queries use that artifact's placement transforms and the same source-identity
-checks as ordinary builds. A missing or unsupported map leaves the PDF usable.
+Verified page-preserving PDF composition carries the base PDF's source map into
+the composed artifact. Forward and inverse queries use its unchanged base-page
+coordinates and the same source-identity checks as ordinary builds. Imported
+layer content has no additional editable-source mapping. A missing or unsupported
+base map leaves the PDF usable.
 Generated files retain producer/port/path provenance and do not acquire editable
 project identity from a matching filename.
 

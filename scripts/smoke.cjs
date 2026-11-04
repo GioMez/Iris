@@ -14,7 +14,7 @@ const help = `Usage:
   node scripts/smoke.cjs --engine podman [--connection NAME] [--compose-provider PATH]
 
 --native                  Two disposable native installations and PG18+ cluster;
-                          requires npm ci, pdflatex, lilypond and gs on PATH.
+                          requires npm ci, lua, pdflatex, lilypond and gs on PATH.
 --browser                 Paint both native PDFs in installed Chrome.
 --browser-executable PATH  Enable native PDF browser smoke in this Chromium.
 --pg-bin DIR              PostgreSQL tools (default pg_config --bindir).
@@ -115,7 +115,7 @@ async function containerInstances(work, values) {
   const removeProbe = ownContainer(probeName);
   try {
     await cli(["run", "--rm", "--name", probeName, "--network", "none", "--entrypoint", "sh", image, "-c",
-      "test -r /app/LICENSE && test -r /app/THIRD_PARTY_NOTICES.md && test -r /app/db/schema.sql && test -r /app/db/migrations/003-pipelines.sql && lua -E -e 'assert(_VERSION == \"Lua 5.4\" or _VERSION == \"Lua 5.5\")' && ! command -v pdflatex && ! command -v lilypond && test $(id -u) -eq 1000"]);
+      "test -r /app/LICENSE && test -r /app/THIRD_PARTY_NOTICES.md && test -r /app/db/schema.sql && test -r /app/db/migrations/003-pipelines.sql && test -r /app/db/migrations/004-primary-preview.sql && lua -E -e 'assert(_VERSION == \"Lua 5.4\" or _VERSION == \"Lua 5.5\")' && ! command -v pdflatex && ! command -v lilypond && test $(id -u) -eq 1000"]);
   } finally { await removeProbe(); }
   const instances = [];
   for (const name of ["source", "restore"]) {

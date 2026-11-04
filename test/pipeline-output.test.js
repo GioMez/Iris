@@ -232,16 +232,22 @@ test("widgets sharing appearance characteristics keep the same rotation after pl
   assert.deepEqual(annotations.asArray().map(ref => output.context.lookup(ref).lookup(PDFName.of("MK")).lookup(PDFName.of("R")).asNumber()), [270, 270]);
 });
 
-for (const target of ["base", "layer"]) for (const feature of ["xfa", "script", "signature"]) test(`composition refuses ${feature} preservation on the ${target} with an explicit error`, async () => {
+for (const target of ["base", "layer"]) for (const feature of ["xfa", "script", "signature", "inherited-signature"]) test(`composition refuses ${feature} preservation on the ${target} with an explicit error`, async () => {
   const document = await PDFDocument.create(); const page = document.addPage([300, 300]);
   const layer = await PDFDocument.create(); const layerPage = layer.addPage([100, 100]);
   const pdf = target === "base" ? document : layer, owner = target === "base" ? page : layerPage;
   const field = pdf.getForm().createTextField("answer"); field.addToPage(owner, { x: 10, y: 20, width: 80, height: 15 });
   if (feature === "xfa") pdf.getForm().acroForm.dict.set(PDFName.of("XFA"), pdf.context.register(pdf.context.flateStream("<xfa/>")));
   if (feature === "script") field.acroField.dict.set(PDFName.of("AA"), pdf.context.obj({ K: { S: "JavaScript", JS: PDFString.of('this.getField("answer").value="changed"') } }));
-  if (feature === "signature") {
+  if (feature.endsWith("signature")) {
     field.acroField.dict.set(PDFName.of("FT"), PDFName.of("Sig"));
     field.acroField.dict.set(PDFName.of("V"), pdf.context.obj({ Type: "Sig", ByteRange: [0, 10, 20, 30], Contents: PDFString.of("signed bytes") }));
+    if (feature === "inherited-signature") {
+      const parent = pdf.context.register(pdf.context.obj({ FT: "Sig", T: PDFString.of("signature"), Kids: [field.ref] }));
+      field.acroField.dict.delete(PDFName.of("FT"));
+      field.acroField.dict.set(PDFName.of("Parent"), parent);
+      pdf.getForm().acroForm.dict.set(PDFName.of("Fields"), pdf.context.obj([parent]));
+    }
   }
   const base = identity(await document.save({ updateFieldAppearances: false })), artifact = identity(await layer.save({ updateFieldAppearances: false }));
   await assert.rejects(composePdf({ base, layers: [{ artifact, base: { id: base.id, contentHash: base.contentHash },

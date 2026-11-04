@@ -57,7 +57,8 @@ test("a failed adapter outcome keeps diagnostics and blocks dependents even with
   assert.equal(result.state, "failed");
   assert.deepEqual(result.steps.map(s => s.state), ["failed", "blocked"]);
   assert.equal(result.steps[0].errorCode, "PIPELINE_COMPILE_FAILED");
-  assert.deepEqual(result.steps[0].diagnostics, diagnostics);
+  assert.deepEqual(result.steps[0].diagnostics.slice(0, -1), diagnostics);
+  assert.equal(result.steps[0].diagnostics.at(-1).errorCode, "PIPELINE_COMPILE_FAILED");
 });
 
 for (const cancelled of [false, true]) test(`streamed diagnostics survive adapter ${cancelled ? "cancellation" : "failure"}`, async t => {
@@ -71,9 +72,10 @@ for (const cancelled of [false, true]) test(`streamed diagnostics survive adapte
   const result = await executePlan({ plan: plan(adapters, [step("check")]), target: "main", workspace: f.workspace,
     registry: adapters, signal: controller.signal, gate: new ConcurrencyGate({ limit: 1 }), emit: async event => events.push(structuredClone(event)) });
   assert.equal(result.state, cancelled ? "cancelled" : "failed");
-  assert.deepEqual(result.steps[0].diagnostics, [diagnostic]);
+  const expected = cancelled ? [diagnostic] : [diagnostic, { severity: "error", errorCode: "PIPELINE_LUA_TIMEOUT", message: "PIPELINE_LUA_TIMEOUT" }];
+  assert.deepEqual(result.steps[0].diagnostics, expected);
   assert.deepEqual(events[1], { stepId: "check", diagnostic });
-  assert.deepEqual(events[2].diagnostics, [diagnostic]);
+  assert.deepEqual(events[2].diagnostics, expected);
 });
 
 test("final diagnostics must preserve the streamed prefix and count it only once", async t => {
@@ -87,8 +89,27 @@ test("final diagnostics must preserve the streamed prefix and count it only once
       registry: adapters, gate: new ConcurrencyGate({ limit: 1 }) });
     assert.equal(result.state, replace ? "failed" : "succeeded");
     if (replace) assert.equal(result.steps[0].errorCode, "PIPELINE_DIAGNOSTICS_CHANGED");
-    assert.deepEqual(result.steps[0].diagnostics, Array(10).fill(diagnostic));
+    assert.deepEqual(result.steps[0].diagnostics.slice(0, 10), Array(10).fill(diagnostic));
+    assert.equal(result.steps[0].diagnostics.length, replace ? 11 : 10);
   }
+});
+
+test("an adapter failure preserves a full authored diagnostic budget and its stable code", async t => {
+  const f = await fixture(t), diagnostic = { severity: "warning", message: "x".repeat(60000) };
+  const diagnostics = Array(17).fill(diagnostic);
+  const final = { severity: "warning", message: "" };
+  diagnostics.push(final);
+  final.message = "x".repeat(1048576 - 32 - Buffer.byteLength(JSON.stringify(diagnostics)));
+  const adapters = registry(async context => {
+    for (const item of diagnostics) await context.reportDiagnostic(item);
+    throw Object.assign(new Error("adapter failure"), { code: "PIPELINE_LUA_TIMEOUT" });
+  });
+  const result = await executePlan({ plan: plan(adapters, [step("check")]), target: "main", workspace: f.workspace,
+    registry: adapters, gate: new ConcurrencyGate({ limit: 1 }) });
+  assert.equal(result.state, "failed");
+  assert.equal(result.steps[0].errorCode, "PIPELINE_LUA_TIMEOUT");
+  assert.deepEqual(result.steps[0].diagnostics, diagnostics);
+  assert.equal(Buffer.byteLength(JSON.stringify(result.steps[0].diagnostics)), 1048576 - 32);
 });
 
 test("snapshot bytes and identity include binary files, empty folders and settings without reading old outputs", async t => {

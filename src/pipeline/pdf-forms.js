@@ -10,6 +10,17 @@ const unsupported = () => fail("PIPELINE_PDF_UNSUPPORTED", "PDF form behavior ca
 function validateFormPreservation(document) {
   let values = 0;
   const seen = new Set(), active = new Set();
+  function fieldType(field) {
+    const parents = new Set();
+    while (field) {
+      if (++values > LUA_DATA_POLICY.maxValues) fail("PIPELINE_OUTPUT_LIMIT", "PDF form metadata exceeds its limit");
+      if (parents.has(field) || parents.size > 64) invalid();
+      parents.add(field);
+      const type = field.lookup(name("FT"));
+      if (type) return type.decodeText?.();
+      field = field.lookupMaybe(name("Parent"), PDFDict);
+    }
+  }
   function visit(value, depth = 0) {
     if (++values > LUA_DATA_POLICY.maxValues) fail("PIPELINE_OUTPUT_LIMIT", "PDF form metadata exceeds its limit");
     if (depth > 64) invalid();
@@ -21,7 +32,7 @@ function validateFormPreservation(document) {
     if (value instanceof PDFArray) for (const child of value.asArray()) visit(child, depth + 1);
     else {
       if (value.lookup(name("S"))?.decodeText?.() === "JavaScript") unsupported();
-      if (value.lookup(name("FT"))?.decodeText?.() === "Sig" && value.has(name("V")) && value.lookup(name("V")) !== PDFNull) unsupported();
+      if (value.has(name("V")) && value.lookup(name("V")) !== PDFNull && fieldType(value) === "Sig") unsupported();
       for (const key of ["A", "Next", "Kids"]) if (value.has(name(key))) visit(value.get(name(key)), depth + 1);
       const actions = value.lookupMaybe(name("AA"), PDFDict);
       if (actions) for (const [, action] of actions.entries()) visit(action, depth + 1);
