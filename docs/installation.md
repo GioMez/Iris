@@ -1,57 +1,41 @@
-# Install Iris 1.1.0
+# Install Iris
 
-Choose **native installation** for the documented LaTeX/LilyPond compilation
-workflow. The **local container build** runs Iris and PostgreSQL with Docker or
+Choose **native installation** to run LaTeX/LilyPond tools on the host. The
+**local container build** runs Iris and PostgreSQL with Docker or
 Podman; the lightweight Iris image contains no compiler toolchains.
 
-The release instructions below obtain `R1.1.0`. The
-[Lua pipeline engine](lua-pipelines.md) belongs to the development source and
-needs that source checkout or a candidate archive built from it. It is not in
-the released `R1.1.0` archive. No new version or release tag has been assigned.
+This guide describes the current source branch, including Lua plugins. Use the
+documentation included with the source you install. For an existing installation,
+follow [Upgrade Iris](administration.md#upgrade-iris).
 
-## Obtain the release sources
+## Obtain the source
 
-Use the source at the exact Git tag **`R1.1.0`**. From a directory where you want
-to keep the installation:
+Clone the branch containing this guide into your installation directory:
 
 ```sh
-git clone --branch R1.1.0 --depth 1 https://github.com/GioMez/Iris.git iris-1.1.0
-cd iris-1.1.0
+git clone --branch feat/lua-plugins --depth 1 https://github.com/GioMez/Iris.git iris
+cd iris
 ```
 
-Or download **`iris-1.1.0.tar.gz`** and **`SHA256SUMS`** from the
-[R1.1.0 release](https://github.com/GioMez/Iris/releases/tag/R1.1.0).
-Check the download before extracting it, using `sha256sum -c SHA256SUMS` on
-Linux or `shasum -a 256 -c SHA256SUMS` on macOS. The supplied source archive has
-one `iris-1.1.0/` directory:
-
-```sh
-tar -xzf iris-1.1.0.tar.gz
-cd iris-1.1.0
-```
-
-Run the following installation commands from that source directory. The archive
-includes the lockfile, database schema, templates, guides and verification tools;
-installation and tests work without Git history.
+Run the following commands from that source directory. If using a source archive,
+check its supplied `SHA256SUMS` with `sha256sum -c SHA256SUMS` on Linux or
+`shasum -a 256 -c SHA256SUMS` on macOS before extraction. Source archives include
+the lockfile, migrations, templates and guides; installation needs no Git history.
 
 ## Native installation
 
 ### Requirements
 
 - Node.js **24 or later**, with npm.
-- PostgreSQL **18 or later**, with an empty database for Iris. PostgreSQL 18 is
-  the tested baseline; startup accepts newer majors.
+- PostgreSQL **18 or later**, with an empty database for a new Iris installation.
 - A LaTeX distribution for document builds, LilyPond for score builds, or both.
   Install BibTeX, Biber and MakeIndex if your chosen pipelines use them.
 - `synctex` for LaTeX PDF/source navigation. It usually comes with TeX Live.
 - Lua **5.4 or 5.5** for Lua pipeline execution, available as `lua`. Iris ships
   its JSON codec; you do not need LuaRocks or interpreter extension modules.
 
-The qualified native environment uses macOS arm64, Node 26.8.2, PostgreSQL 18.6,
-TeX Live 2026 (pdfTeX 1.40.29, SyncTeX utility 1.5), LilyPond 2.26.0/Guile 3.0
-and Chrome 152.0.7977.83. See [navigation qualification](source-navigation.md#native-adapters)
-for engine-specific details. Install the tools through your operating system or
-the upstream distributions, then check the executables available to Iris:
+Install the tools through your package manager or their upstream distributions.
+Check the executables available to the account that runs Iris:
 
 ```sh
 node --version
@@ -102,15 +86,8 @@ Set `LUA_BIN_PATH` to the directory containing `lua`, or leave it empty to use
 PATH. If your package names the executable `lua5.4`, provide a `lua` symlink in
 an operator-owned directory and select that directory. Projects cannot change
 this setting. Missing optional executables do not prevent editor startup.
-See [Lua runtime limits](configuration.md#lua-pipeline-runtime-limits) for the
-current integration status and execution bounds.
-
-Native Lua/runtime qualification used macOS 27.0.1 arm64, Node 26.12.1 and
-Lua 5.5.1, with TeX Live 2026, LilyPond 2.26.0, Ghostscript 10.08.0 and
-Biber 2.22. A separate source-built Lua 5.4.9 passed bridge, worker and
-extracted-source-package checks. These checks cover source generation, binary
-I/O, explicit compiler passes and retained navigation; they exclude browser
-author controls and production pipeline HTTP workflows.
+See [Lua runtime limits](configuration.md#lua-pipeline-runtime-limits) for
+execution settings and [Lua pipelines](lua-pipelines.md) for project setup.
 
 ### Provision PostgreSQL
 
@@ -142,7 +119,7 @@ configuration and allow a clean SIGTERM shutdown.
 
 Use the supplied [Dockerfile](../Dockerfile) and
 [docker-compose.yml](../docker-compose.yml) with either engine. Build the local
-image **`localhost/iris:1.1.0`** from the tagged or extracted source. You do not
+image **`localhost/iris:1.1.0`**, the tag referenced by Compose, from your source. You do not
 need a published Iris image or registry credentials. The build downloads the
 official Node base image, pinned Alpine Lua package and locked npm dependencies;
 Compose downloads official PostgreSQL 18.
@@ -196,10 +173,6 @@ docker build -t localhost/iris:1.1.0 .
 docker compose --env-file .env -f docker-compose.yml -p iris up -d
 ```
 
-Earlier compiler-free-image qualification used **Docker Engine 29.8.0 /
-Docker Compose 5.5.1** on Linux arm64, with Docker running as a separate nested
-daemon in a disposable VM. That result does not cover the added Lua package.
-
 ### Podman
 
 Start your Podman engine and make sure a Compose provider, such as
@@ -213,28 +186,7 @@ podman compose --env-file .env -f docker-compose.yml -p iris up -d
 
 If Podman runs in a VM, keep the source directory in a folder shared with that
 VM: Compose mounts the PostgreSQL initialization script from it. Both engines
-use the same Compose file. Earlier qualification used **rootless Podman 6.1.1 /
-podman-compose 1.6.0** on Linux arm64 with SELinux.
-
-The Lua-enabled development image passed installation smoke on 2026-11-04 using macOS arm64
-Podman client **6.1.4**, Linux arm64 server **5.6.1** and podman-compose **1.6.0**.
-The smoke ran the HTTP approval/inspection/run workflow with project modules,
-binary publication, diagnostics, revocation and import without transferred
-approval. It also checked process-group cancellation inside the Compose service,
-restart and separate-instance restore, comparing all 13 schema-4 tables and
-75 filesystem entries by bytes/mode. The stock image reported missing compilers.
-Browser painting and successful native compilation were disabled in this smoke.
-
-The native installation smoke on the same date passed the Lua HTTP workflow,
-LaTeX/LilyPond builds,
-forward/inverse source navigation, restart and separate-instance restore under
-Node 26.12.1 and PostgreSQL 18.6 on macOS arm64. Chromium **156.0.8078.80** painted
-both compiler PDFs in Iris. Restore compared 13 tables and 93 filesystem entries.
-A separate reproducible candidate archive passed `npm ci --omit=dev`, native
-HTTP smoke and 103 selected database/Lua/layout/composition/recovery checks without Git or
-ancestor dependencies. These results cover the tested source and platform;
-the [source-navigation guide](source-navigation.md#pipeline-and-composed-outputs)
-records the separate composed-PDF browser journeys.
+use the same Compose file.
 
 ### Check service status (optional)
 
@@ -259,10 +211,7 @@ you provide a compatible toolchain in Iris's runtime. A host path in a setting
 does not install a compiler. Install a toolchain inside the container that
 matches its environment, architecture and runtime dependencies.
 
-The distribution supplies one Iris image recipe with Lua and the
-PostgreSQL service. Use the native installation above for the qualified
-compilation setup. Container smoke verification checks the stock image's
-missing-compiler result.
+For host-installed compilers, use the native installation procedure above.
 
 ### Persistence and restart
 
@@ -314,7 +263,7 @@ Open **Admin** on the project dashboard to create additional users. There
 is no public signup. Existing accounts and roles survive restarts; Iris does
 not promote a familiar username or email on later startup.
 
-Iris 1.1.0 initializes **database schema 2** and reopens a matching schema.
+Iris initializes an empty database and applies supported migrations at startup.
 An unmarked nonempty schema, incompatible version or malformed marker stops
 startup with `IRIS_SCHEMA_INCOMPATIBLE` without changing the stored objects or
 rows. Keep the reported error and check the database selection; do not change
@@ -326,7 +275,5 @@ Read `/api/health`, sign in, create a project, save and reopen it. On a native
 setup, compile a small source for each installed language and inspect its PDF
 and diagnostics. Restart Iris and check the project again.
 
-The [development guide](development.md#installation-smokes) provides disposable
-installation and restore smokes, including the commands used for the actual
-Docker and Podman qualification. Qualification covers the versions/platforms
-listed here, not other browser engines, architectures or Compose providers.
+For automated installation and restore checks in a disposable environment, use
+the [development smoke commands](development.md#installation-smokes).

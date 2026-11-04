@@ -1,9 +1,16 @@
 # Lua pipelines
 
-This guide describes the installed-Lua pipeline engine in the development source.
-The released `R1.1.0` archive does not contain it. Installation requirements and
-execution limits belong to [configuration](configuration.md#lua-pipeline-runtime-limits);
-operators should read the [native execution boundary](administration.md#compiler-trust-and-instance-boundaries).
+Use a project-local Lua plugin to generate sources, inspect compiled output and
+run a custom build workflow. Install Lua 5.4 or 5.5 on the server; see
+[installation](installation.md#native-installation) and
+[runtime settings](configuration.md#lua-pipeline-runtime-limits).
+
+- [Approve, inspect and run](#approve-inspect-and-run)
+- [Write a plugin](#plugin-and-graph-api-version-1)
+- [Source-generation example](#minimal-source-generation-example)
+- [Parameters](#parameters-and-lua-values) and [transform callbacks](#transform-callbacks)
+- [Compiler and composition adapters](#compiler-and-composition-adapters)
+- [Storage and recovery](#storage-and-recovery)
 
 A project can use `iris.lua` to generate sources, compile LaTeX or standalone
 LilyPond, inspect the compiled layout, and compose PDFs. A plugin returns a static
@@ -26,6 +33,8 @@ the engine does not expand the graph or iterate until convergence.
    With the pipeline enabled, Compile runs the selected target. Iris saves through
    its ordinary project mutation queue before submitting the run.
 
+![Lua pipeline controls showing owner approval, a parameter field, target selection and Run target.](images/lua-pipeline.png)
+
 Opening a project or reading pipeline metadata does not execute Lua. Inspection
 does execute module-level code, so approval precedes inspection. Run admission
 replans against its own snapshot and checks the descriptor identity again.
@@ -44,6 +53,8 @@ cancelled runs retain the successful preview. Target selection loads that target
 latest successful result by accepted request order, not completion time. A target
 without preview output has no preview to select. Reconnecting resynchronizes
 server state and preserves a preview you selected manually from Builds.
+
+![Completed Lua target with its step result and run log control.](images/lua-run.png)
 
 ## Plugin and graph API, version 1
 
@@ -206,7 +217,7 @@ forms. Repeated layers receive independent field names with unique prefixes.
 Internal destinations must resolve to actual placed pages. Iris rejects XFA,
 scripted forms, signed PDFs, partially cropped editable widgets and unsupported
 annotation geometry with `PIPELINE_PDF_UNSUPPORTED`. It does not silently flatten
-these objects. Clipped nonrectangular annotation quadrilaterals remain unqualified.
+these objects.
 
 Verified page-preserving composition preserves the base PDF's source navigation.
 Imported layers do not add editable-source mappings.
@@ -229,71 +240,3 @@ protects the latest successful run per target. Project ZIPs carry Lua sources an
 ordinary files, but do not transfer approval or run authority to an imported
 project. For installation upgrades, downgrade incompatibility and uncertain
 execution/publication recovery, use the [administration guide](administration.md#lua-runtime-recovery).
-
-## Qualification and measured limits
-
-The [installation guide](installation.md#podman) owns native/Compose and
-production-only archive evidence. The [navigation contract](source-navigation.md#pipeline-and-composed-outputs)
-owns composed-PDF browser evidence. Those synthetic journeys establish the
-tested toolchain behavior; an author's own document/score and subjective layout
-acceptance still need review.
-
-The final macOS arm64 verification ran
-`node scripts/test.cjs --lua --native --browser --timeout 1800000` and passed
-2,631 checks with zero failures and 14 skips. One skip requires Windows; the
-other 13 belong to separate opt-in editor-language profiling, load-proof and
-packaging qualification. This run enabled the Lua, native compiler and browser
-cases. It did not enable a new editor-language performance-budget qualification.
-The runner confirmed cleanup of its processes, PostgreSQL cluster and storage.
-
-The whole-branch review found five defects in publication recovery after
-cancellation, concurrent Compile routing, stale target history, adapter failure
-reporting and inherited PDF signature fields. Regression tests reproduced each
-before its fix. The mounted PDF regression also exposed lexical event-sequence
-comparison; controls now compare numeric sequence values across 9→10 and later
-digit boundaries. Signature tests cover structural rejection with synthetic
-signature contents, not cryptographic signature verification.
-
-Linux arm64 qualification on Node 24.22.2, TeX Live 2022 and Ghostscript 10.00.0
-passed 123 PDF/layout checks with zero failures and one reported skip. It covered
-annotations, editable forms, rendered placement, LaTeX layout and base-source
-navigation. The disposable Debian test container needed
-`texlive-fonts-recommended` for XeLaTeX's Zapf Dingbats metrics. Its installed
-LilyPond 2.24.1 could not qualify the fixtures requiring 2.26.0; those two
-compiler-family journeys were excluded. Both-family evidence remains the macOS
-toolchain listed in the navigation contract.
-
-### Cost measurements
-
-These macOS arm64 measurements use Node 26.12.1. They describe synthetic inputs,
-not an end-to-end latency guarantee. Layout samples use MuPDF 1.28.1 at the
-`e11e00a` extractor milestone; composition samples use pdf-lib 1.17.1 at `066198e`.
-
-| Workload | Fresh-process wall time | Peak child RSS | Scope |
-| --- | --- | --- | --- |
-| Layout, six native compiler fixture PDFs | 165.64–216.71 ms | 98.14–107.33 MiB | Checked read/hash, extraction, validation and write, including Node/MuPDF startup. |
-| Layout, 1 / 100 / 1,000 synthetic pages | 164.83–184.09 / 204.20–207.54 / 469.04–485.10 ms | 100.72–101.36 / 115.23–116.23 / 157.59–160.23 MiB | Three samples per size; output 2,170 / 186,800 / 1,866,202 bytes. |
-| Composition, 1 / 100 / 1,000 independent form-bearing placements | 159.78–182.78 / 235.93–241.97 / 1,312.46–1,428.85 ms | 60.08–60.64 / 86.53–87.58 / 207.84–218.66 MiB | Three samples per size; one-page base, translucent layer, one editable text field per placement. |
-
-Composition child CPU ranged from 179.82–184.00 ms for one placement,
-300.51–305.69 ms for 100, and 1,659.85–1,732.28 ms for 1,000. The composition
-measurements include Node/module startup and input reads. Both measurement sets
-exclude compiler execution, coordinator transfer, Lua, database, publication and
-UI; caches were uncontrolled.
-
-After the inherited-signature rejection fix, three fresh-process samples per
-size measured 150.12–151.84 / 216.37–223.17 / 1,298.92–1,337.56 ms wall time for
-1 / 100 / 1,000 placements. Peak RSS was 59.72–59.95 / 87.02–87.83 /
-205.45–211.66 MiB; CPU was 167.82–170.29 / 270.28–279.34 /
-1,608.73–1,667.25 ms. Before/after heap deltas were 2.15–2.18 / 6.38–6.46 /
-42.23–42.30 MiB, not peak heap or allocation totals. Output sizes were
-2,581 / 85,947 / 850,237 bytes. These samples use the same workload and platform;
-other verification was running concurrently. The changed `pdf-forms.js` SHA256
-was `a40601e436bae8ec113934076755c48d47f57f4c32ffd340672e82365260af01`;
-the other measured composition modules match the earlier milestone.
-
-A subsequent 20,000-placement form-bearing probe reached its 120-second process
-bound without a result. Maximum-capacity form composition remains unqualified.
-The admitted entry/byte limits are resource ceilings, not promises that every
-input completes within the execution deadline. Clipped nonrectangular annotation
-hit regions and current Docker-engine execution also retain qualification gaps.

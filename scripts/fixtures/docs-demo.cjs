@@ -105,5 +105,29 @@ South & 12 & 7.1 cm \\
   howpublished = {Demonstration worksheet},
   note = {Invented reference for the Iris demo}
 }
+`), file("iris.lua", `local schema = {
+  type = "object", required = { "copies" },
+  properties = {
+    copies = { type = "integer", title = "Field sheets", minimum = 1, maximum = 20, default = 4 }
+  }
+}
+return {
+  apiVersion = 1, pluginId = "garden-notes", parameterSchema = schema,
+  plan = function(ctx)
+    return {
+      apiVersion = 1, pluginId = "garden-notes", parameterSchema = schema,
+      steps = {{
+        id = "prepare-sheets", adapter = { id = "iris.lua", version = "1.0.0" },
+        options = { script = "iris.lua", entrypoint = "generate" },
+        outputs = { sheets = { kind = "file", mediaType = "text/plain", path = "field-sheets.txt" } }
+      }},
+      targets = { sheets = { steps = { "prepare-sheets" }, publish = {{ step = "prepare-sheets", port = "sheets" }} } }
+    }
+  end,
+  generate = function(ctx)
+    ctx.write("sheets", "field-sheets.txt", string.rep("Bed: ____  Height: ____  Rainfall: ____\\n", ctx.options.parameters.copies))
+    ctx.log("info", "Field sheets ready to download from Builds.")
+  end
+}
 `)] },
 ];

@@ -1,13 +1,9 @@
-# Language qualification corpus (HP-01)
+# Language syntax fixtures
 
-This corpus contains 21 original synthetic sources for LaTeX and LilyPond. The
-authors chose the roles, modes and titles from the language constructs, without
-using Iris parser output as an oracle. `cases.json` records **target expectations
-for HP04-06**. HP-01 tests validate the data and its tooling; they do not certify
-the current grammars against those targets.
-
-**User corpus and user acceptance are pending.** These small cases cover named
-requirements, not the distribution or complexity of personal projects.
+Use these synthetic LaTeX and LilyPond sources to test syntax roles, caret
+contexts and structure. `cases.json` records hand-authored expectations based
+on the language constructs. Review new expectations against the source rather
+than copying the parser's output.
 
 ## Origin, license and syntax
 
@@ -23,8 +19,8 @@ LaTeX cases use LaTeX2e (2025-06 syntax), with the packages/profiles named per
 case: amsmath, graphicx, minted, listings, cleveref, biblatex, xparse and expl3. LilyPond
 cases use 2.26.0 syntax and embedded Guile Scheme. `complete` means a complete
 lexical fragment under those assumptions. Most TeX fragments need a document
-wrapper; paths and reference keys are placeholders. HP-01 does not claim native
-compilation, engraving or font availability.
+wrapper; paths and reference keys are placeholders. Use the native compiler
+tests for complete compilable examples.
 
 `latex-arguments.tex` assumes biblatex's `\cite[prenote][postnote]{keys}`
 signature. Its two optional notes are `see` and `p.~2`; `alpha,beta` is the
@@ -46,7 +42,7 @@ these probes from complete fragments.
 | `id` | Unique lowercase identifier (`a-z`, digits, hyphens). |
 | `kind` | `tex` or `ly`; `.ily` belongs to `ly`. |
 | `file` | Relative source path inside this folder. |
-| `expectations` | `target`, separate from current baseline output. |
+| `expectations` | `target`, marking hand-authored expected behavior. |
 | `origin` | `{type, author, license}`; type is `synthetic` or `user-supplied`. |
 | `syntax` | Version and package/profile assumptions. |
 | `validity` | `{status, note}`; status is `complete`, `incomplete` or `invalid`. |
@@ -98,8 +94,8 @@ not imply `text` or `null`. Semantic argument roles can cover a list (for exampl
 `alpha,beta` is a citation argument). `pitch` covers note names with alterations
 and octave marks, and the chord-repeat token `q`; separate spans cover durations.
 Drum names and pitch-looking markup stay `text` in this vocabulary. Literal,
-string and multiline text spans can include LF. Future rendering checks should
-distinguish lexical spans from painting line breaks.
+string and multiline text spans can include LF. Distinguish lexical spans from
+painted line breaks in rendering tests.
 
 Modes: `text`, `math`, `comment`, `literal`, `music`, `lyrics`, `markup`, `chords`,
 `drums`, `figures`, `scheme`, `string`. A mode is context, not a token color.
@@ -141,13 +137,12 @@ existing `included.ily` declares italiano locally; `included-default.ily` has no
 directive and documents the editor's nederlands assumption. Macro expansion is
 also outside local analysis.
 
-## Helpers and historical baseline
+## Run fixture checks
 
 Use Node 24+ from the repository root:
 
-```powershell
+```sh
 node --test test/language-fixtures.test.js test/ui-colors.test.js test/editor-stream.test.js test/structure.test.js test/completion.test.js
-node -e "const h=require('./test/helpers/language-fixtures.cjs'); console.log(h.loadFixtures().map(f=>({id:f.id,...f.metrics})));"
 ```
 
 `test/helpers/language-fixtures.cjs` exports:
@@ -163,11 +158,6 @@ node -e "const h=require('./test/helpers/language-fixtures.cjs'); console.log(h.
 | `collectBaseline(spec, source)` | Return `{tokens, lines, classes, state, metrics}` using a fresh tokenizer state. |
 | `generateFixture(kind, bytes, {singleLine = false} = {})` | Return `{source, metrics}` with exact UTF-8 byte size and a complete lexical envelope. |
 | `rolesFor(kind, source, options)` / `analysisRolesFor(...)` | Actual service roles; the latter includes tree, summary and availability metadata. |
-
-HP07 removed the legacy runtime TeX/LY scanners and `loadBaselineModules`.
-The observations below describe the HP01 checkout (`4d37c4e`) and remain
-historical evidence. Current gates exercise the Lezer service, its immutable
-summaries and the mounted editor. All annotated source fixtures remain in use.
 
 Metrics are `{bytes, codeUnits, lines}`. Lines include the final empty line after
 a trailing newline. The collector accepts LF, CRLF and CR and preserves their
@@ -185,26 +175,6 @@ fills the final remainder before the closer. They do not cut UTF-8, surrogate
 pairs, commands or comments. Unicode makes byte size differ from code-unit length.
 The generated inputs are synthetic lexical workloads, not native compiler tests.
 
-### Historical differences observed in HP01 (2026-09-15)
-
-- In the exact math fixture, the stream consumes the comment's dollar as a
-  closer, returns `state.math = null` at caret 17 and paints the following prose
-  as math. It supplies no comment token for `[3,15)`.
-- The outline emits `Comment fake` and five literal fake headings from
-  `latex-literal.tex`; regions also include those five literal headings.
-  Completion suppresses suggestions inside `verb`, so current consumers disagree.
-- The outline truncates nested titles and omits part/chapter/deeper levels.
-  It also emits `Definition fake` from a macro definition.
-- The LilyPond stream leaves the annotated notes and durations unclassified.
-  It has no pitch-language/mode/Scheme interpretation.
-- The long `\new Staff \with` case yields only the nested Voice region; the
-  Staff region `[0,438)` is missing. Existing region scans also attach some
-  point directives or scalar variables to a later music block.
-
-These are measured baseline observations, not tests that require bugs to persist.
-See `.drafts/highlighting-parsing-qualification.md` for measurements and the
-HP-01 report for commands and TDD evidence.
-
 ## Extending with user-supplied cases
 
 1. Add a source directly in this folder with permission to redistribute it.
@@ -217,6 +187,5 @@ HP-01 report for commands and TDD evidence.
 4. Review roles, caret modes and outline titles by hand. Add exact UTF-16 ranges
    and source/neighbor anchors. Leave uncertain spans unannotated and explain
    the gap in the case note; do not copy current tokenizer output into targets.
-5. Run the command above. Check target behavior through HP04-06 grammar tests
-   and the controller's browser workflow when available. Record user acceptance
-   separately from a passing corpus validator.
+5. Run the fixture checks, the affected grammar tests and the editor browser
+   tests for the changed behavior.
