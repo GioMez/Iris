@@ -1,6 +1,7 @@
 const assert = require("node:assert/strict");
 const { uuidv7 } = require("../../src/ids");
 const { deferred } = require("./server-fixture.cjs");
+const { until } = require("../../scripts/lib/disposable.cjs");
 
 const sources = {
   latex: { main: "\\documentclass{article}\n\\begin{document}\n\\setcounter{page}{7}\n\\input{parts/é section one.tex}\n\\newpage\nSecond page.\n\\end{document}\n",
@@ -18,12 +19,36 @@ async function journey(t, server, browser, backend = "latex", variant = {}) {
   const created = await request("/api/projects", { method: "POST", body: { name: `Native ${backend}`, data: {
     projectType: backend, language: variant.language || "en", sourceMapping: variant.sourceMapping ?? true,
     project: { nodes: [{ type: "file", id: "main", name: `main.${extension}`, path: `main.${extension}`, kind: extension, content: source.main },
-      { type: "folder", name: "parts", open: true, children: [{ type: "file", id: "part", name: source.name, path: `parts/${source.name}`, kind: extension, content: source.part }] }] },
+      { type: "folder", name: "parts", open: true, children: [{ type: "file", id: "part", name: source.name, path: `parts/${source.name}`, kind: extension, content: source.part }] },
+      ...(variant.pipeline?.nodes || [])] },
   } } });
   assert.equal(created.status, 201); const data = await created.json(), projectId = data.project.id;
-  const compiled = await request(`/api/projects/${projectId}/compile`, { method: "POST", body: {} });
-  assert.equal(compiled.status, 200); const build = await compiled.json();
-  assert.equal(build.success, true, build.log);
+  let build;
+  if (variant.pipeline) {
+    const base = `/api/projects/${projectId}`;
+    const candidate = (await (await request(`${base}/pipeline`)).json()).pipeline.candidate;
+    assert.equal((await request(`${base}/pipeline/approval`, { method: "POST", body: { identity: candidate } })).status, 201);
+    const inspection = await request(`${base}/pipeline/inspect`, { method: "POST", body: {} });
+    assert.equal(inspection.status, 200, await inspection.clone().text());
+    const { descriptor } = await inspection.json();
+    const accepted = await request(`${base}/runs`, { method: "POST", body: { target: "main", parameters: variant.pipeline.parameters,
+      descriptorHash: descriptor.descriptorHash } });
+    assert.equal(accepted.status, 202, await accepted.clone().text());
+    const runId = (await accepted.json()).run.id;
+    let run;
+    await until(async () => {
+      run = (await (await request(`${base}/runs/${runId}`)).json()).run;
+      return !["queued", "planning", "running"].includes(run.state);
+    }, "native pipeline navigation build", 20000);
+    assert.equal(run.state, "succeeded", JSON.stringify(run));
+    const detail = await (await request(`${base}/builds/${runId}`)).json();
+    build = { buildId: runId, artifacts: detail.artifacts, primaryPreviewArtifactId: detail.primaryPreviewArtifactId,
+      data: await (await request(base)).json() };
+  } else {
+    const compiled = await request(`/api/projects/${projectId}/compile`, { method: "POST", body: {} });
+    assert.equal(compiled.status, 200); build = await compiled.json();
+    assert.equal(build.success, true, build.log);
+  }
   const mainId = build.data.project.nodes[0].id, partId = build.data.project.nodes[1].children[0].id;
   const context = await browser.newContext({ viewport: variant.viewport || { width: 1440, height: 900 },
     deviceScaleFactor: variant.scale || 1, reducedMotion: "reduce", colorScheme: variant.theme || "dark" });

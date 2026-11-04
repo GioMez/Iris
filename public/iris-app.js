@@ -2131,6 +2131,7 @@
   }
   async function compile() {
     if (isReadOnly()) { toast(t("projects.readOnlyNotice")); return; }
+    if (window.IrisPipelines && await window.IrisPipelines.compile()) return;
     if (state.compiling) return;
     if (state.dirtyFiles.size) {
       toast(t("editor.saveBeforeCompile"), "err");
@@ -2246,7 +2247,7 @@
   }
 
   function diagnosticSource(item) {
-    if (!item.file || !item.line || /^(?:[A-Za-z]:|\/)|(?:^|\/)\.\.(?:\/|$)/.test(item.file)) return null;
+    if (item.generatedSource || !item.file || !item.line || /^(?:[A-Za-z]:|\/)|(?:^|\/)\.\.(?:\/|$)/.test(item.file)) return null;
     let source = null;
     walk(project.nodes, (file) => {
       if (file.path === item.file && file.kind !== "img" && !file.generated && !file.readOnly && !isFileUnavailable(file.id)) source = file;
@@ -2292,7 +2293,7 @@
   }
   function applyDiagnosticsToEditor() {
     const file = findFile(state.activeId);
-    const items = file && !isFileUnavailable(file.id) ? state.diagnostics.filter((item) => item.file === file.path) : [];
+    const items = file && !isFileUnavailable(file.id) ? state.diagnostics.filter((item) => !item.generatedSource && item.file === file.path) : [];
     if (!items.length) { ed().setDiagnostics([]); return; }
     const versioned = items.find((item) => item.sourceFileId && item.sourceRevisionId);
     if (versioned) {
@@ -2357,7 +2358,7 @@
     if (!file) return;
     const mapped = new Map(ed().diagnostics().map((d) => [d.id, d.line]));
     state.diagnostics.forEach((item) => {
-      if (item.file === file.path && item.line && !item.loading) item.line = mapped.get(item.id) ?? null;
+      if (!item.generatedSource && item.file === file.path && item.line && !item.loading) item.line = mapped.get(item.id) ?? null;
     });
     diagnosticDocuments.set(file.path, ed().getValue());
     renderDiagnostics();
@@ -2656,6 +2657,7 @@
   }
 
   function openSettings() {
+    void window.IrisPipelines?.refresh();
     $("settingsTheme").value = window.IrisTheme?.preference() || "system";
     renderFontList();
     updateTexPathControl();
@@ -4069,6 +4071,8 @@
   }
 
   window.IrisApp = {
+    previewVersion: () => state.outputGeneration,
+    openPipelineControls() { openSettings(); activateSettingsSection("compile"); },
     // Load a project's data into the editor and render everything.
     async load(data, { isCurrent = () => true } = {}) {
       const previous = capturePersistence();

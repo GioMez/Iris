@@ -1,4 +1,37 @@
 {
+  "pipelines": {
+    "title": "Pipeline Lua",
+    "description": "Usa il plugin iris.lua del progetto per generare sorgenti ed elaborare gli output compilati.",
+    "refresh": "Aggiorna",
+    "approve": "Approva questo sorgente",
+    "revoke": "Disabilita e revoca l'approvazione",
+    "inspect": "Esamina le opzioni",
+    "inspectTargets": "Esamina i target",
+    "target": "Target",
+    "targetHint": "Esamina di nuovo i target dopo aver cambiato i parametri. L'esame non esegue i passaggi di compilazione.",
+    "run": "Esegui target",
+    "cancel": "Annulla esecuzione",
+    "log": "Log dell'esecuzione",
+    "loading": "Caricamento dei dettagli della pipeline…",
+    "missing": "Aggiungi iris.lua al progetto per usare una pipeline Lua.",
+    "approved": "Questo sorgente è approvato. Compila esegue il target selezionato.",
+    "approvalRequired": "Un proprietario del progetto deve approvare il sorgente Lua corrente.",
+    "include": "Includi {{name}}",
+    "parametersJson": "Parametri (JSON)",
+    "invalidJson": "Inserisci JSON valido per {{name}}.",
+    "inspectFirst": "Esamina opzioni e target prima di eseguire la pipeline.",
+    "states": {
+      "queued": "In coda",
+      "planning": "Pianificazione",
+      "pending": "In attesa",
+      "running": "In esecuzione",
+      "succeeded": "Riuscita",
+      "failed": "Fallita",
+      "cancelled": "Annullata",
+      "interrupted": "Interrotta",
+      "blocked": "Bloccata"
+    }
+  },
   "syntaxStatus": {
     "partial": "Analisi della sintassi…",
     "formatUnavailable": "La formattazione richiede una sintassi completa e un sorgente di massimo 65.536 unità UTF-16.",
@@ -251,6 +284,7 @@
     "noLocation": "Posizione nel sorgente non indicata",
     "loadingSource": "Ricerca della posizione nel sorgente compilato…",
     "sourceUnavailable": "Questa posizione nel sorgente non è disponibile nel progetto attuale.",
+    "generatedSource": "Generato da {{step}} ({{port}}). Scarica questo sorgente da Compilazioni.",
     "notCompiled": "Compila il progetto per vedere le diagnostiche.",
     "empty": "Nessun errore o avviso in questa compilazione.",
     "failedWithoutLocation": "Compilazione fallita senza un messaggio diagnostico. Consulta la scheda Log per i dettagli."

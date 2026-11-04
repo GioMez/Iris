@@ -98,6 +98,29 @@ artifact discards its geometry; reopening a historical build reads its original
 bytes again. The parser does no work while mapping is off. A parser failure
 leaves navigation unavailable and the PDF usable.
 
+### Pipeline and composed outputs
+
+Pipeline publication binds navigation sidecars to exact artifact IDs and hashes.
+Verified PDF composition carries base and placed-source correspondence into the
+composed artifact. A forward query prefers the selected composed PDF; inverse
+queries use that artifact's placement transforms and the same source-identity
+checks as ordinary builds. A missing or unsupported map leaves the PDF usable.
+Generated files retain producer/port/path provenance and do not acquire editable
+project identity from a matching filename.
+
+A target's checked primary-preview reference selects its PDF or raster output.
+The browser keeps displayed output and navigation identity together across target
+changes, history selection, failed/cancelled runs and reconnects. Target history
+uses accepted request order. A manually selected historical preview survives a
+reconnect instead of yielding to a later completion notice.
+
+The author-controls qualification passed both LaTeX and standalone LilyPond
+composed-output forward/inverse browser journeys on macOS arm64 with Chromium
+156.0.8078.80, Node 26.12.1, PostgreSQL 18.6, Lua 5.5.1, TeX Live 2026,
+LilyPond 2.26.0 and Ghostscript 10.08.0. These use synthetic included sources
+and the decoration fixture. They do not establish Linux composition or
+nonrectangular annotation hit-region fidelity.
+
 ## HTTP API
 
 Use the existing session cookie, same-origin rules and JSON transport:

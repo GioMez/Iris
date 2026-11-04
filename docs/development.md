@@ -269,6 +269,7 @@ ordinary-file mounted performance qualification to HP08, with its targets intact
 | `src/database.js`, `db/schema.sql` | Current schema initialization and compatibility checks. |
 | `src/project-*.js`, `src/versions.js`, `src/builds.js` | Project storage/identity, authorization, mutation compensation, deletion, history and builds. |
 | `src/collab.js` | Text authority and collaboration protocol support. |
+| `src/pipeline/`, `db/migrations/` | Approved Lua graphs, native execution, layout/composition, run authority and data-preserving schema upgrades. |
 | `src/compile-diagnostics.js`, `src/source-mapping*.js`, `src/lilypond/` | Diagnostics and native PDF/source adapters. |
 | `src/admin.js`, `src/audit.js`, `src/retention.js` | Account rules, audit records and retention policy. |
 | `src/request-security.js`, `src/throttle.js`, `src/lifecycle.js` | Request admission, work bounds and shutdown. |
@@ -310,6 +311,7 @@ node scripts/test.cjs --help
 | `--browser` | Enable browser cases with installed Chrome. |
 | `--browser-executable PATH` | Enable browser cases with this Chromium executable. |
 | `--native` | Enable real compiler cases. |
+| `--lua` | Enable installed-Lua bridge and pipeline cases; requires Lua 5.4 or 5.5. |
 | `--pg-bin DIR` | Override `pg_config --bindir` discovery. |
 | `--pattern REGEXP` | Node test-name filter. |
 | `--concurrency N` | Test-file concurrency; default 4. |
@@ -473,11 +475,18 @@ workflow publishes no prebuilt image; operators build from the source tag/archiv
 
 ## Persistence contract
 
-Product **1.1.0** uses database schema **2**. `initializeSchema()` owns the
-initialization transaction and advisory lock `49524953`. It creates nine
-application tables plus the singleton `iris_schema` marker in an empty schema,
-reopens a matching marker, and rejects incompatible or malformed state without
-modifying it. Bump `CURRENT_SCHEMA_VERSION` for an incompatible schema change.
+Released **1.1.0** uses database schema **2**. This development source uses
+schema **4**. `initializeSchema()` owns the initialization transaction and
+advisory lock `49524953`. It initializes an empty schema, reopens a matching
+marker, and upgrades schema 2 through migrations 003 and 004 in one transaction.
+Schema 3 needs only migration 004. Other incompatible or malformed states fail
+without modification. Bump `CURRENT_SCHEMA_VERSION` for an incompatible change.
+
+Migration 003 adds pipeline approvals, settings, step records and run/artifact
+metadata. Migration 004 adds the checked `{step,port}` primary-preview reference.
+Existing records retain unknown selections as null. Upgrades preserve sources,
+identities, memberships, histories and stored paths; imported Lua source does not
+grant execution authority. Older Iris binaries cannot open schema 4.
 
 Project storage keys have the form `projects/<lowercase UUID>`, relative to
 `DATA_DIR`. Sources, fonts and assets live there; `.iris/project.json` stores
@@ -501,6 +510,9 @@ or malformed precondition returns `428 PROJECT_REVISION_REQUIRED`; a stale
 snapshot returns `409 PROJECT_REVISION_CONFLICT` before mutation. Successful
 snapshot saves advance the server revision, including compilation's save phase.
 Realtime flushes/checkpoints without a submitted tree do not advance it.
+Pipeline inspection and run snapshots flush authoritative room text under the
+project gate without advancing this revision. Run creation records compilation
+checkpoints; the UI saves through its mutation queue before submitting a run.
 
 The per-project gate coordinates DB transactions and filesystem compensation.
 Strict source reads fail instead of supplying empty data. Uncertain commits or
@@ -532,6 +544,11 @@ and the database. Positions move through intervening text updates before display
 Browser structure parsing labels shared sections/blocks; those overlap notices
 are advisory. Build notices carry completion/author information; clients fetch
 output through ordinary authorized HTTP routes.
+
+Pipeline run notices carry project/target identity, accepted request order and
+an event sequence. Clients fetch authorized run details after notices and
+resynchronize after the server confirms a project watch on reconnect. Older
+responses cannot replace a newer run or a different project/target selection.
 
 ## Compiler contract
 
@@ -577,6 +594,13 @@ same engine and normalized arguments, retaining auxiliary diagnostics, failed
 passes and setup/publication errors. A truncated final capture cannot prove an
 earlier warning resolved. The retained trace and per-step capture obey
 `COMPILE_LOG_LIMIT`; selected diagnostics cap at 80 per severity.
+
+Pipeline build details read persisted step diagnostics with their executing step
+and source/generated provenance. They retain the pipeline's bounded run budget,
+including identical messages from distinct steps, rather than applying the
+ordinary compiler's display cap. Generated locations cannot attach to editable
+project files by filename. The UI retains a successful preview while displaying
+failed-run diagnostics.
 
 The artifact registry lists previewable products. Build-file scanning exposes
 other safe regular outputs, including MIDI and bibliography products. Symlinks,

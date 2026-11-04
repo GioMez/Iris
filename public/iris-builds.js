@@ -72,6 +72,7 @@
   }
 
   function reset() {
+    window.IrisPipelines?.reset();
     buildState.listSeq += 1;
     buildState.detailSeq += 1;
     buildState.previewSeq += 1;

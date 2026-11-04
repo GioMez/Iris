@@ -704,6 +704,37 @@ test("switching project drops the previous project's file presence", () => {
 
 /* ---- build notifications ---- */
 
+test("run notifications follow the current project and ignore retired sockets", () => {
+  const h = harness(), seen = [];
+  h.collab.onRun(message => seen.push(message)); h.collab.watchProject("p-1");
+  const socket = h.socket(); socket.fire("open");
+  socket.deliver({ t: "run", projectId: "p-other", runId: "foreign", sequence: 1 });
+  socket.deliver({ t: "run", projectId: "p-1", runId: "first", sequence: 3 });
+  h.collab.watchProject("p-2");
+  socket.deliver({ t: "run", projectId: "p-1", runId: "old", sequence: 4 });
+  socket.deliver({ t: "run", projectId: "p-2", runId: "second", sequence: 2 });
+  h.collab.disconnect();
+  socket.deliver({ t: "run", projectId: "p-2", runId: "late", sequence: 5 });
+  assert.deepEqual(seen.map(item => item.runId), ["first", "second"]);
+});
+
+test("project readiness triggers one authoritative resync after each watch or reconnect without an editor room", () => {
+  const h = harness(), ready = [];
+  h.collab.onProjectReady(projectId => ready.push(projectId)); h.collab.watchProject("p-1");
+  const socket = h.socket(); socket.fire("open");
+  socket.deliver({ t: "filepeers", projectId: "p-other", files: [] });
+  socket.deliver({ t: "filepeers", projectId: "p-1", files: [] });
+  socket.deliver({ t: "filepeers", projectId: "p-1", files: [] });
+  assert.deepEqual(ready, ["p-1"]);
+  socket.fire("close", { code: 1006 });
+  h.runTimers();
+  const next = h.socket(); next.fire("open");
+  next.deliver({ t: "filepeers", projectId: "p-1", files: [] });
+  h.collab.watchProject("p-2"); next.deliver({ t: "filepeers", projectId: "p-2", files: [] });
+  assert.deepEqual(ready, ["p-1", "p-1", "p-2"]);
+  assert.equal(h.collab.active(), false);
+});
+
 test("watching a project connects even with no document open", () => {
   const h = harness();
   h.collab.watchProject("p-1");

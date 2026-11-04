@@ -2537,29 +2537,33 @@ function collabPersist(room, { revision = false } = {}) {
 
 async function collabPersistNow(room, revision) {
   if (!room.storageDir) return;
-  return projectMutations.gate(room.projectId, async () => {
-    if (collabRooms.get(room.fileId) !== room) return;
-    const { rows } = await db.query(
-      "SELECT f.path, f.kind, p.storage_path FROM project_files f JOIN projects p ON p.id = f.project_id WHERE f.id = $1 AND f.project_id = $2 AND f.deleted_at IS NULL",
-      [room.fileId, room.projectId]
-    );
-    if (!rows.length) return;
-    room.path = rows[0].path;
-    room.kind = rows[0].kind;
-    room.storageDir = resolveProjectStorageDir(DATA_DIR, rows[0].storage_path);
-    if (room.needsPersist()) {
-      const version = room.version;
-      const text = room.text();
-      const abs = path.join(room.storageDir, room.path);
-      await fs.mkdir(path.dirname(abs), { recursive: true });
-      await fs.writeFile(abs, text, "utf8");
-      room.markPersisted(version);
-      room.flushDeadline = 0;
-      // File identity is rechecked above; timestamp writes alone are coalesced.
-      collabScheduleTouch(room.projectId);
-    }
-    if (revision) await collabCaptureRevisions(room.projectId, [room]);
-  });
+  return projectMutations.gate(room.projectId, () => collabPersistLocked(room, { revision }));
+}
+
+// Caller owns the project gate, including when a pipeline flushes room text
+// before copying its immutable snapshot. This does not adopt a client manifest.
+async function collabPersistLocked(room, { revision = false, force = false } = {}) {
+  if (collabRooms.get(room.fileId) !== room) return;
+  const { rows } = await db.query(
+    "SELECT f.path, f.kind, p.storage_path FROM project_files f JOIN projects p ON p.id = f.project_id WHERE f.id = $1 AND f.project_id = $2 AND f.deleted_at IS NULL",
+    [room.fileId, room.projectId]
+  );
+  if (!rows.length) return;
+  room.path = rows[0].path;
+  room.kind = rows[0].kind;
+  room.storageDir = resolveProjectStorageDir(DATA_DIR, rows[0].storage_path);
+  if (force || room.needsPersist()) {
+    const version = room.version;
+    const text = room.text();
+    const abs = path.join(room.storageDir, room.path);
+    await fs.mkdir(path.dirname(abs), { recursive: true });
+    await fs.writeFile(abs, text, "utf8");
+    room.markPersisted(version);
+    room.flushDeadline = 0;
+    // File identity is rechecked above; timestamp writes alone are coalesced.
+    collabScheduleTouch(room.projectId);
+  }
+  if (revision) await collabCaptureRevisions(room.projectId, [room]);
 }
 
 // Marks the project modified at most once per COLLAB_TOUCH_MS, however many of
@@ -4125,7 +4129,9 @@ function buildOutputView(row, diagnostics = false) {
     timedOut: row.timed_out,
     ...(diagnostics ? {
       log: row.log || "",
-      ...compileDiagnosticsView(row),
+      // Pipeline steps share a persisted run budget and retain distinct step
+      // identities; the compiler-only deduplication/cap would hide those entries.
+      ...compileDiagnosticsView(row, { bounded: row.kind !== "pipeline" }),
     } : {}),
   };
 }
@@ -4276,14 +4282,16 @@ async function getBuildOutput(req, res, user, projectId, buildId) {
       throw error;
     })
     : Promise.resolve([]);
-  const [{ rows: artifacts }, files] = await Promise.all([
+  const [{ rows: artifacts }, files, steps] = await Promise.all([
     db.query(
       `SELECT id, name, storage_path, mime_type, size, content_hash, producer_step, output_port, logical_path
        FROM build_artifacts WHERE build_id = $1 ORDER BY name, storage_path`,
       [buildId]
     ),
     filesPromise,
+    build.kind === "pipeline" ? db.query("SELECT step_id,diagnostics FROM pipeline_steps WHERE build_id=$1 ORDER BY step_id", [buildId]) : null,
   ]);
+  if (steps) build.diagnostics = steps.rows.flatMap(step => step.diagnostics.map(item => ({ ...item, stepId: step.step_id })));
   json(res, 200, {
     build: buildOutputView(build, true),
     primaryPreviewArtifactId: build.primary_preview ? artifacts.find(a => a.producer_step === build.primary_preview.step
@@ -4713,13 +4721,8 @@ async function inspectProjectPipeline(req, res, user, id) {
     const execution = await getPipelineExecution();
     workspace = await authorizedProjectGate(id, user, "compile", async project => {
       signal.throwIfAborted();
-      const data = await projectMutations.transaction({ id, storageDir: project.storageDir }, async (client, protect) => {
-        const row = await authorizeProject(id, user, "compile", client);
-        const data = await readProjectFile(row.storageDir, { strictRead: true });
-        await saveProjectTree(id, row, {}, data, client, protect, { user });
-        return data;
-      });
-      collabReconcileProject(id, data);
+      for (const room of collabRooms.forProject(id)) await collabPersistLocked(room, { force: true });
+      const data = await readProjectFile(project.storageDir, { strictRead: true });
       const files = collectProjectFiles(data.project.nodes).filter(file => inspectTargets || /\.lua$/i.test(file.path))
         .map(file => ({ id: file.node.id, path: file.path, kind: file.kind, binary: fileIsBinaryNode(file.node) }));
       const source = inspectTargets ? pipelineSnapshotSource(project.storageDir, data, files)
@@ -4853,16 +4856,15 @@ async function createProjectPipelineRun(req, res, user, projectId) {
     const execution = await getPipelineExecution();
     operation.deadlineAt = Date.now() + execution.runtime.manifest().policy.runTimeoutMs;
     const { project, data } = await authorizedProjectGate(projectId, user, "compile", async project => {
-      const { data, files } = await projectMutations.transaction({ id: projectId, storageDir: project.storageDir }, async (client, protect) => {
+      for (const room of collabRooms.forProject(projectId)) await collabPersistLocked(room, { force: true });
+      const { data, files } = await projectMutations.transaction({ id: projectId, storageDir: project.storageDir }, async client => {
         signal.throwIfAborted();
         const row = await authorizeProject(projectId, user, "compile", client);
         const data = await readProjectFile(row.storageDir, { strictRead: true });
-        await saveProjectTree(projectId, row, {}, data, client, protect, { user });
         const files = collectProjectFiles(data.project.nodes).map(file => ({ id: file.node.id, path: file.path, kind: file.kind, binary: fileIsBinaryNode(file.node) }));
         const checkpoint = await captureProjectCheckpoint({ projectId, storageDir: row.storageDir, user, reason: "compile", files, strictRead: true }, client);
         return { data, files: files.map(file => ({ ...file, sourceRevisionId: checkpoint.versions.get(file.id) || null })) };
       });
-      collabReconcileProject(projectId, data);
       workspace = await createRunWorkspace(pipelineSnapshotSource(project.storageDir, data, files), { root: path.join(DATA_DIR, ".pipeline-staging") }, { signal });
       return { project, data };
     });

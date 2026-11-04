@@ -1926,3 +1926,14 @@ html.iris-inadmin[data-role="admin"] .admin-screen{display:block}
   *,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}
   .pcard:hover{transform:none}
 }
+/* Lua author controls share the compilation settings' fields and tokens. */
+.pipeline-controls{min-width:0}
+.pipeline-actions{display:flex;flex-wrap:wrap;gap:var(--space-4);margin-block:var(--space-5)}
+.pipeline-parameters{display:grid;gap:var(--space-5);margin-block:var(--space-5)}
+.pipeline-parameters .field{min-width:0;margin:0}
+.pipeline-parameters textarea{width:100%;min-height:6em;resize:vertical}
+.pipeline-include{display:flex;align-items:center;gap:var(--space-4);margin-bottom:var(--space-2)}
+#pipelineIdentity,#pipelineSteps,#pipelineNotice{overflow-wrap:anywhere}
+#pipelineNotice{color:var(--semantic-danger)}
+#pipelineSteps{padding-inline-start:var(--space-7)}
+#pipelineLog{white-space:pre-wrap;overflow-wrap:anywhere;max-height:20em;overflow:auto}

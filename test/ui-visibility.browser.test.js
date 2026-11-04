@@ -131,6 +131,7 @@ async function pageFor(t, variant, { openProject = true, authenticated = true, p
         "/api/project-templates": { templates: { latex: [], lilypond: [] } },
         [`/api/projects/${projectId}`]: data,
         [`/api/projects/${projectId}/builds`]: { builds: [], nextOffset: null },
+        [`/api/projects/${projectId}/pipeline`]: { pipeline: { enabled: false, candidate: null, approval: null, descriptor: null } },
         [`/api/projects/${projectId}/files/${fileId}/versions`]: { versions: fixture.versions },
         [`/api/projects/${projectId}/files/${fileId}/versions/${version.id}`]: { ...version, content: source },
         "/api/admin/users": { users: [] },

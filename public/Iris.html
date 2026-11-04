@@ -461,6 +461,35 @@
           <div id="compileSteps"></div>
           <button class="btn sm" type="button" id="compileAddStep"><span class="ic" data-icon="plus"></span><span data-i18n="settings.step">Step</span></button>
         </div>
+        <div class="settings-section pipeline-controls" id="pipelineControls">
+          <h4 data-i18n="pipelines.title">Lua pipeline</h4>
+          <p class="hint" data-i18n="pipelines.description">Use the project's iris.lua plugin to generate sources and process compiled outputs.</p>
+          <p id="pipelineStatus" role="status" aria-live="polite"></p>
+          <code class="binpath" id="pipelineIdentity"></code>
+          <div class="pipeline-actions">
+            <button class="btn sm" type="button" id="pipelineRefresh" data-i18n="pipelines.refresh">Refresh</button>
+            <button class="btn sm" type="button" id="pipelineApprove" data-i18n="pipelines.approve">Approve this source</button>
+            <button class="btn sm" type="button" id="pipelineRevoke" data-i18n="pipelines.revoke">Disable and revoke approval</button>
+            <button class="btn sm" type="button" id="pipelineInspect" data-i18n="pipelines.inspect">Inspect options</button>
+          </div>
+          <form id="pipelineParameters" class="pipeline-parameters"></form>
+          <div class="pipeline-actions">
+            <button class="btn sm" type="button" id="pipelineTargetsInspect" data-i18n="pipelines.inspectTargets">Inspect targets</button>
+          </div>
+          <div class="field">
+            <label class="label" for="pipelineTarget" data-i18n="pipelines.target">Target</label>
+            <select class="select" id="pipelineTarget" aria-describedby="pipelineTargetHint" disabled></select>
+            <p class="hint" id="pipelineTargetHint" data-i18n="pipelines.targetHint">Inspect targets again after changing parameters. Inspection does not run build steps.</p>
+          </div>
+          <div class="pipeline-actions">
+            <button class="btn cta sm" type="button" id="pipelineRun" data-i18n="pipelines.run" disabled>Run target</button>
+            <button class="btn sm" type="button" id="pipelineCancel" data-i18n="pipelines.cancel" disabled>Cancel run</button>
+          </div>
+          <p id="pipelineNotice" role="alert" hidden></p>
+          <p id="pipelineRunState" role="status" aria-live="polite"></p>
+          <ul id="pipelineSteps"></ul>
+          <details id="pipelineLogDetails" hidden><summary data-i18n="pipelines.log">Run log</summary><pre id="pipelineLog"></pre></details>
+        </div>
       </section>
       <button class="set-accordion-trigger" type="button" data-set="storage" aria-expanded="false" aria-controls="settingsPanelStorage"><span data-icon="database"></span><span data-i18n="settings.storage">Storage</span><span class="set-chevron" data-icon="chevron-down"></span></button>
       <section class="set-pane" id="settingsPanelStorage" role="tabpanel" aria-labelledby="settingsTabStorage" tabindex="0" data-setpane="storage" hidden>
@@ -1516,6 +1545,7 @@
 <script src="iris-app.js"></script>
 <script src="iris-projects.js"></script>
 <script src="iris-builds.js"></script>
+<script src="iris-pipelines.js"></script>
 <script src="iris-admin.js"></script>
 <script src="iris-admin-projects.js"></script>
 <script src="iris-admin-templates.js"></script>

@@ -358,6 +358,18 @@ function diagnosticBuild(diagnostics, overrides = {}) {
 
 function diagnosticRows(h) { return h.get("diagnosticsList").children; }
 
+test("generated diagnostics cannot attach to an editable file with the same path", options, async () => {
+  const h = harness("en", true); await h.open();
+  await h.app.showBuildOutput(diagnosticBuild([{ severity: "error", file: "main.tex", line: 1, column: 0, message: "Generated failure",
+    generatedSource: { artifactId: "generated-1", producerStep: "generate", outputPort: "source", path: "main.tex", contentHash: "a".repeat(64) } }]));
+  assert.equal(diagnosticRows(h)[0].children[0].disabled, true);
+  assert.equal(h.editor.diagnostics().length, 0);
+  assert.equal(h.a.state.diagnostics[0].line, 1);
+  h.editor.replaceRange(0, 0, "new\n");
+  assert.equal(h.a.state.diagnostics[0].line, 1, "editing the project must not move a generated location");
+  assert.match(diagnosticRows(h)[0].children[0].children[1].children[3].textContent, /generate.*source/);
+});
+
 test("build output loading rejects a response from a replaced same-project session", options, async () => {
   const h = harness(); await h.open();
   const loading = h.projects.loadBuildOutput("build-1"), request = h.requests.at(-1);
@@ -365,6 +377,88 @@ test("build output loading rejects a response from a replaced same-project sessi
   await h.open();
   request.reply({ build: { id: "build-1", status: "succeeded", kind: "pipeline" }, artifacts: [], primaryPreviewArtifactId: null });
   await rejected;
+});
+
+test("pipeline run submission saves through the mutation queue and freezes only the run request fields", options, async () => {
+  const h = harness(); await h.open(); h.edit("saved for pipeline");
+  const values = { target: "main", descriptorHash: "a".repeat(64), parameters: { count: 2 } };
+  const started = h.projects.createPipelineRun(values);
+  values.parameters.count = 99;
+  await tick();
+  const saved = h.requests.at(-1);
+  assert.equal(saved.url, "/api/projects/p1"); assert.equal(saved.method, "PUT");
+  assert.equal(saved.body.data.project.nodes[0].content, "saved for pipeline");
+  h.ack(saved, 5); await tick();
+  const request = h.requests.at(-1);
+  assert.equal(request.url, "/api/projects/p1/runs");
+  assert.deepEqual(request.body, { target: "main", descriptorHash: "a".repeat(64), parameters: { count: 2 } });
+  request.reply({ run: { id: "run-1", state: "queued" } });
+  assert.equal((await started).run.id, "run-1");
+  assert.equal(h.app.hasUnsavedChanges(), false);
+});
+
+test("pipeline save conflicts prevent run admission and preserve local edits", options, async () => {
+  const h = harness(); await h.open(); h.edit("local pipeline edit");
+  const started = h.projects.createPipelineRun({ target: "main", parameters: {}, descriptorHash: "a".repeat(64) });
+  const rejected = assert.rejects(started, error => error.status === 409);
+  await tick(); h.requests.at(-1).reply({ errorCode: "PROJECT_REVISION_CONFLICT" }, 409);
+  await rejected;
+  assert.equal(h.requests.some(request => request.url.endsWith("/runs")), false);
+  assert.equal(h.app.hasUnsavedChanges(), true);
+  assert.equal(h.editor.getValue(), "local pipeline edit");
+});
+
+test("a queued project replacement cannot receive the previous project's pipeline run", options, async () => {
+  const h = harness(); await h.open();
+  const started = h.projects.createPipelineRun({ target: "main", parameters: {}, descriptorHash: "a".repeat(64) });
+  const rejected = assert.rejects(started, error => error.stale === true);
+  await tick(); const saving = h.requests.at(-1);
+  const opening = h.projects.openProject("p2");
+  h.ack(saving, 5); await tick();
+  h.requests.at(-1).reply({ ...projectData(), id: "p2" });
+  await opening; await rejected;
+  assert.equal(h.requests.some(request => request.url.endsWith("/runs")), false);
+});
+
+test("run cancellation and approval revocation bypass a pending target inspection", options, async () => {
+  const h = harness(); await h.open();
+  const inspection = h.projects.inspectPipeline({ descriptorHash: "a".repeat(64), parameters: { count: 2 } });
+  await tick(); const inspecting = h.requests.at(-1);
+  assert.equal(inspecting.url, "/api/projects/p1/pipeline/inspect");
+  assert.deepEqual(inspecting.body, { descriptorHash: "a".repeat(64), parameters: { count: 2 } });
+  const cancelled = h.projects.cancelPipelineRun("run-1");
+  const revoked = h.projects.revokePipelineApproval("approval-1");
+  await tick();
+  const cancelRequest = h.requests.find(request => request.url.endsWith("/runs/run-1/cancel"));
+  const revokeRequest = h.requests.find(request => request.url.endsWith("/pipeline/approval/approval-1"));
+  assert.ok(cancelRequest); assert.ok(revokeRequest);
+  assert.equal(cancelRequest.method, "POST"); assert.equal(revokeRequest.method, "DELETE");
+  cancelRequest.reply({ run: { id: "run-1", state: "cancelled" } }); revokeRequest.reply({ revoked: true });
+  await cancelled; await revoked;
+  inspecting.reply({ errorCode: "PIPELINE_APPROVAL_REQUIRED" }, 409);
+  await assert.rejects(inspection, error => error.code === "PIPELINE_APPROVAL_REQUIRED");
+});
+
+for (const method of ["getPipeline", "getPipelineRun"]) test(`${method} rejects metadata after reopening the same project`, options, async () => {
+  const h = harness(); await h.open();
+  const reading = h.projects[method]("run-1"), request = h.requests.at(-1);
+  const rejected = assert.rejects(reading, error => error.stale === true);
+  await h.open(); request.reply({ pipeline: { enabled: false }, run: { id: "run-1", state: "running" } });
+  await rejected;
+});
+
+test("pipeline approval submits the displayed exact identity and build reads retain target filters", options, async () => {
+  const h = harness(); await h.open();
+  const identity = { bundleHash: "a".repeat(64), policyHash: "b".repeat(64), registryHash: "c".repeat(64) };
+  const approving = h.projects.approvePipeline(identity); identity.bundleHash = "d".repeat(64); await tick();
+  const approval = h.requests.at(-1); assert.equal(approval.url, "/api/projects/p1/pipeline/approval");
+  assert.equal(approval.body.identity.bundleHash, "a".repeat(64));
+  approval.reply({ approval: { id: "approval-1" } }); await approving;
+  const listing = h.projects.listBuildOutputs({ kind: "pipeline", target: "proof", limit: 10, offset: 2 });
+  const query = new URL(h.requests.at(-1).url, "http://fixture").searchParams;
+  assert.equal(query.get("kind"), "pipeline"); assert.equal(query.get("target"), "proof");
+  assert.equal(query.get("limit"), "10"); assert.equal(query.get("offset"), "2");
+  h.requests.at(-1).reply({ builds: [], latestSuccessfulId: null }); await listing;
 });
 
 function bibliographyData(text = "@book{a,title={A},xcustom={hidden needle}}", kind = "bib") {

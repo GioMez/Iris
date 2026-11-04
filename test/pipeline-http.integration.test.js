@@ -180,6 +180,23 @@ test("target inspection rejects stale descriptors and invalid parameters before 
   assert.equal((await f.pool.query("SELECT revision FROM projects WHERE id=$1", [f.id])).rows[0].revision, before);
 });
 
+test("pipeline snapshots preserve the project save revision across inspection and run creation", nativeLua, async t => {
+  const f = await fixture(t, generatingScript), before = f.project.data.revision;
+  const descriptor = await inspect(f);
+  assert.equal((await f.pool.query("SELECT revision FROM projects WHERE id=$1", [f.id])).rows[0].revision, before,
+    "descriptor inspection cannot invalidate another client's save base");
+  const target = await f.request(`${f.base}/pipeline/inspect`, { method: "POST", body: { descriptorHash: descriptor.descriptorHash, parameters: {} } });
+  assert.equal(target.status, 200);
+  assert.equal((await f.pool.query("SELECT revision FROM projects WHERE id=$1", [f.id])).rows[0].revision, before);
+  const accepted = await f.request(`${f.base}/runs`, { method: "POST", body: { descriptorHash: descriptor.descriptorHash, target: "main", parameters: {} } });
+  assert.equal(accepted.status, 202); const run = (await accepted.json()).run;
+  assert.equal(run.saveRevision, before);
+  assert.equal((await terminalRun(f, run.id)).state, "succeeded");
+  assert.equal((await f.pool.query("SELECT revision FROM projects WHERE id=$1", [f.id])).rows[0].revision, before);
+  const saved = await f.request(f.base, { method: "PUT", body: { baseRevision: before, data: f.project.data } });
+  assert.equal(saved.status, 200, await saved.clone().text());
+});
+
 test("configured missing Lua permits metadata and approval but fails explicit inspection", options, async t => {
   const f = await fixture(t, script, { LUA_BIN_PATH: "/iris-missing-interpreter" });
   const initial = await f.metadata(); assert.equal((await f.approve(initial.candidate)).status, 201);
@@ -336,6 +353,10 @@ test("asynchronous Lua runs persist progress and publish byte-exact generated do
   const buildResponse = await f.request(`${f.base}/builds/${run.id}`, {}, "viewer");
   assert.equal(buildResponse.status, 200);
   const build = await buildResponse.json();
+  assert.equal(build.build.diagnostics[0].message, "input note");
+  assert.equal(build.build.diagnostics[0].sourceFileId, sourceId);
+  assert.equal(build.build.diagnostics[0].stepId, "generate");
+  assert.deepEqual(build.build.warnings, ["input note"]);
   assert.equal(build.build.kind, "pipeline"); assert.equal(build.build.target, "main");
   assert.equal(build.build.requestOrder, run.requestOrder);
   assert.equal(build.build.primaryPreview, null); assert.equal(build.primaryPreviewArtifactId, null);
@@ -350,6 +371,24 @@ test("asynchronous Lua runs persist progress and publish byte-exact generated do
   assert.equal((await f.request(artifact.url, {}, "outsider")).status, 404);
   await until(() => f.app.healthPayload().pendingWrites === 0, "run cleanup", 4000);
   assert.deepEqual(await fs.readdir(path.join(f.dataDir, ".pipeline-staging")), []);
+});
+
+test("build details retain distinct step diagnostics within the pipeline run budget", nativeLua, async t => {
+  const script = `return {apiVersion=1,pluginId='diagnostics',plan=function() return {
+    apiVersion=1,pluginId='diagnostics',steps={
+      {id='first',adapter={id='iris.lua',version='1.0.0'},options={script='iris.lua',entrypoint='check'},outputs={}},
+      {id='second',adapter={id='iris.lua',version='1.0.0'},options={script='iris.lua',entrypoint='check'},outputs={}}},
+    targets={main={steps={'first','second'},publish=iris.array{}}}}
+    end,check=function(ctx) for i=1,81 do ctx.diagnostic({severity='warning',message='note '..i}) end end}`;
+  const f = await fixture(t, script), descriptor = await inspect(f);
+  const response = await f.request(`${f.base}/runs`, { method: "POST", body: { target: "main", parameters: {}, descriptorHash: descriptor.descriptorHash } });
+  assert.equal(response.status, 202);
+  const run = await terminalRun(f, (await response.json()).run.id);
+  assert.equal(run.state, "succeeded");
+  const { build } = await (await f.request(`${f.base}/builds/${run.id}`)).json();
+  assert.equal(build.diagnostics.length, 162);
+  assert.deepEqual(build.diagnostics.filter(d => d.message === "note 81").map(d => d.stepId), ["first", "second"]);
+  assert.equal(build.warnings.length, 162);
 });
 
 test("run admission rejects invalid parameters and stale descriptors before saving or planning", nativeLua, async t => {

@@ -343,6 +343,7 @@
           if (isCurrent() && currentId === id && document.activeElement === focused) window.IrisApp.focusDocument();
         }, 0);
         if (window.IrisBuilds) void window.IrisBuilds.loadLatest(id);
+        if (window.IrisPipelines) void window.IrisPipelines.activate(id);
       } catch (err) {
         if (!isCurrent()) return false;
         console.error(err);
@@ -475,10 +476,43 @@
   /* ---------------- versioned build outputs ---------------- */
   function currentProjectId() { return currentId; }
 
-  async function listBuildOutputs({ limit = 50, offset = 0 } = {}) {
+  async function listBuildOutputs({ limit = 50, offset = 0, kind, target } = {}) {
     if (!currentId) throw new Error(t("projects.noneOpen"));
     const query = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+    if (kind != null) query.set("kind", kind);
+    if (target != null) query.set("target", target);
     return api(`/api/projects/${currentId}/builds?${query}`);
+  }
+
+  async function pipelineRequest(suffix, options) {
+    const projectId = currentId, generation = openGeneration;
+    if (!projectId) throw staleSession();
+    try { return await api(`/api/projects/${projectId}${suffix}`, options); }
+    finally { if (currentId !== projectId || generation !== openGeneration) throw staleSession(); }
+  }
+
+  function getPipeline() { return pipelineRequest("/pipeline"); }
+  function getPipelineRun(id) { return pipelineRequest(`/runs/${encodeURIComponent(id)}`); }
+  function approvePipeline(identity) {
+    return mutateCurrent("/pipeline/approval", "POST", { identity: clone(identity) }, false);
+  }
+  function inspectPipeline(request = {}) {
+    return mutateCurrent("/pipeline/inspect", "POST", clone(request), false);
+  }
+  // Cancellation and revocation must reach the server while an inspection or
+  // snapshot write still owns the mutation queue. Neither adopts a tree revision.
+  function revokePipelineApproval(id) {
+    return pipelineRequest(`/pipeline/approval/${encodeURIComponent(id)}`, { method: "DELETE" });
+  }
+  function cancelPipelineRun(id) {
+    return pipelineRequest(`/runs/${encodeURIComponent(id)}/cancel`, { method: "POST", body: "{}" });
+  }
+  async function createPipelineRun(request) {
+    const projectId = currentId, generation = openGeneration;
+    const body = clone({ target: request.target, parameters: request.parameters ?? {}, descriptorHash: request.descriptorHash });
+    await mutateCurrent("", "PUT");
+    if (currentId !== projectId || generation !== openGeneration) throw staleSession();
+    return mutateCurrent("/runs", "POST", body, false);
   }
 
   async function getBuildOutput(buildId) {
@@ -1109,6 +1143,7 @@
     downloadCurrentFile, refreshCurrent, renderPicker, onLogout, resolveFileId,
     listFileVersions, getFileVersion, restoreFileVersion, checkpointCurrent,
     currentProjectId, currentRole, listBuildOutputs, getBuildOutput, loadBuildOutput, navigateBuild,
+    getPipeline, approvePipeline, revokePipelineApproval, inspectPipeline, createPipelineRun, getPipelineRun, cancelPipelineRun,
     downloadBuildArtifact, downloadBuildFile, downloadBuildArchive, deleteBuildOutput,
   };
 

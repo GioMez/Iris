@@ -45,7 +45,9 @@
       if (button.disabled && item.file) {
         const hint = document.createElement("span");
         hint.className = "diagnostic-hint";
-        hint.textContent = item.loading ? t("diagnostics.loadingSource") : t("diagnostics.sourceUnavailable");
+        hint.textContent = item.generatedSource
+          ? t("diagnostics.generatedSource", { step: item.generatedSource.producerStep, port: item.generatedSource.outputPort })
+          : item.loading ? t("diagnostics.loadingSource") : t("diagnostics.sourceUnavailable");
         body.appendChild(hint);
       }
       button.appendChild(icon);

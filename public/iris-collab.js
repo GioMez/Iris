@@ -28,6 +28,8 @@
   const peerListeners = [];
   const filePeerListeners = [];
   const buildListeners = [];
+  const runListeners = [];
+  const projectReadyListeners = [];
   // A preflight room shares the transport but cannot replace the editor until
   // navigation has checked its authoritative text and the current UI context.
   let preparedSource = null;
@@ -37,6 +39,7 @@
     // build notifications still arrive while looking at the preview with no file
     // in a room.
     project: null,
+    projectReady: false,
     // The room the app wants open, kept across reconnections so the session is
     // restored automatically.
     desired: null,       // { fileId, kind, metadata }
@@ -173,6 +176,7 @@
       if (state.socket !== socket) return;
       preparedSource?.dispose();
       state.socket = null;
+      state.projectReady = false;
       state.opening = [];
       state.joined = null;
       state.pushing = null;
@@ -278,6 +282,20 @@
     if (message.t === "filepeers") {
       if (message.projectId !== state.project) return;
       setFilePeers(message.files);
+      if (!state.projectReady) {
+        state.projectReady = true;
+        projectReadyListeners.forEach(fn => {
+          try { fn(state.project); } catch (err) { console.error("IrisCollab project listener failed", err); }
+        });
+      }
+      return;
+    }
+
+    if (message.t === "run") {
+      if (message.projectId !== state.project) return;
+      runListeners.forEach(fn => {
+        try { fn(message); } catch (err) { console.error("IrisCollab run listener failed", err); }
+      });
       return;
     }
 
@@ -520,6 +538,7 @@
     watchProject(projectId) {
       if (!projectId || state.project === projectId) return;
       state.project = projectId;
+      state.projectReady = false;
       // Another project's tree is not this one's; the server sends the current
       // state as soon as it has authorized the watch.
       setFilePeers([]);
@@ -570,6 +589,7 @@
       preparedSource?.dispose();
       this.leave();
       state.project = null;
+      state.projectReady = false;
       setFilePeers([]);
       const socket = state.socket;
       state.socket = null;
@@ -593,6 +613,8 @@
     filePeers() { return state.filePeers; },
     watching() { return state.project; },
     onStatus(fn) { listeners.push(fn); },
+    onRun(fn) { runListeners.push(fn); },
+    onProjectReady(fn) { projectReadyListeners.push(fn); },
     onPeers(fn) { peerListeners.push(fn); },
     // Fires when the set of people inside the project's files changes.
     onFilePeers(fn) { filePeerListeners.push(fn); },
