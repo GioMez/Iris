@@ -96,7 +96,7 @@ https://github.com/lezer-parser/generator.
 
 The HP03 TeX grammar/catalog and LilyPond boundary probe are original Iris
 sources, not copied third-party language catalogs. Regenerate the parser with
-`npm run build:languages`; see [the development workflow](docs/development.md#generated-language-sources-and-qualification).
+`npm run build:languages`; see [the development workflow](docs/development.md#build-editor-language-sources).
 
 ### Bundled language Worker (HP08)
 

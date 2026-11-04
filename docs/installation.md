@@ -4,16 +4,16 @@ Choose **native installation** to run LaTeX/LilyPond tools on the host. The
 **local container build** runs Iris and PostgreSQL with Docker or
 Podman; the lightweight Iris image contains no compiler toolchains.
 
-This guide describes the current source branch, including Lua plugins. Use the
+This guide describes Iris 1.2.0, including Lua plugins. Use the
 documentation included with the source you install. For an existing installation,
 follow [Upgrade Iris](administration.md#upgrade-iris).
 
 ## Obtain the source
 
-Clone the branch containing this guide into your installation directory:
+Clone the release tag into your installation directory:
 
 ```sh
-git clone --branch feat/lua-plugins --depth 1 https://github.com/GioMez/Iris.git iris
+git clone --branch R1.2.0 --depth 1 https://github.com/GioMez/Iris.git iris
 cd iris
 ```
 

@@ -385,7 +385,7 @@ and compact layouts. Follow [translation](../TRANSLATING.md) and
 Write current behavior and task-based instructions. Keep measurements, testing
 reports, historical implementation notes and proposals in Git-ignored working
 records under `docs/superpowers/`. Preserve useful development material there
-before removing it from a guide. See [repository documentation rules](https://github.com/GioMez/Iris/blob/feat/lua-plugins/AGENTS.md#documentation-ownership-and-cleanup).
+before removing it from a guide. See [repository documentation rules](https://github.com/GioMez/Iris/blob/R1.2.0/AGENTS.md#documentation-ownership-and-cleanup).
 
 Use the [screenshot capture](images/README.md#reproduce-the-captures) for real UI
 images. Check local links, anchors, image paths, configuration names and commands
