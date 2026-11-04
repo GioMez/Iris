@@ -119,7 +119,7 @@ configuration and allow a clean SIGTERM shutdown.
 
 Use the supplied [Dockerfile](../Dockerfile) and
 [docker-compose.yml](../docker-compose.yml) with either engine. Build the local
-image **`localhost/iris:1.1.0`**, the tag referenced by Compose, from your source. You do not
+image **`localhost/iris:1.2.0`**, the tag referenced by Compose, from your source. You do not
 need a published Iris image or registry credentials. The build downloads the
 official Node base image, pinned Alpine Lua package and locked npm dependencies;
 Compose downloads official PostgreSQL 18.
@@ -169,7 +169,7 @@ background.
 Start your Docker engine, then run:
 
 ```sh
-docker build -t localhost/iris:1.1.0 .
+docker build -t localhost/iris:1.2.0 .
 docker compose --env-file .env -f docker-compose.yml -p iris up -d
 ```
 
@@ -180,7 +180,7 @@ Start your Podman engine and make sure a Compose provider, such as
 detects an installed provider. These commands use your default Podman environment:
 
 ```sh
-podman build -t localhost/iris:1.1.0 .
+podman build -t localhost/iris:1.2.0 .
 podman compose --env-file .env -f docker-compose.yml -p iris up -d
 ```
 
