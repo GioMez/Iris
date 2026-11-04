@@ -73,14 +73,12 @@ function artifactRecord(a) {
   return { id: a.id, fileName: a.fileName, contentHash: a.contentHash, size: a.size };
 }
 
-// Only the private staging output is written. Publication and retention use the
-// existing whole-directory lifecycle. Mapping failures never escape to compile.
-async function publishSourceMapping({ outputDir, snapshotRoot, sources, projectId, buildId, artifacts, backend, enabled, format, mappingError, binPath = "" }) {
-  if (!enabled || format !== "pdf") return envelope(!enabled ? "disabled" : "unsupported");
+// Native parsing and budgets are shared by ordinary builds and contained steps.
+// The host reader resolves logical sidecar names; collection performs no writes.
+async function collectSourceMapping({ snapshotRoot, sources, projectId, buildId, artifacts, backend, mappingError, binPath = "", readMap }) {
   let manifest = { version: 1, projectId, buildId, backend, status: "ready", snapshotRoot,
     ...(backend === "latex" ? { texBinPath: binPath ? path.resolve(snapshotRoot, binPath) : "" } : {}),
     sources: sources || [], artifacts: artifacts.map(artifactRecord), entries: [] };
-  const rawMaps = [];
   try {
     if (mappingError) throw mappingError;
     if (artifacts.length > MAX_MATCHES) throw failure("map-limit");
@@ -90,7 +88,7 @@ async function publishSourceMapping({ outputDir, snapshotRoot, sources, projectI
       if (backend === "latex") {
         for (const suffix of [".synctex.gz", ".synctex"]) {
           const name = stem + suffix;
-          const buffer = await readLocalFile(outputDir, name, MAX_MAP_BYTES - nativeBytes);
+          const buffer = await readMap(name, MAX_MAP_BYTES - nativeBytes);
           if (!buffer) continue;
           if (artifact.syncFile) throw failure("malformed-map");
           nativeBytes += buffer.length;
@@ -106,8 +104,7 @@ async function publishSourceMapping({ outputDir, snapshotRoot, sources, projectI
         }
       } else if (backend === "lilypond") {
         const name = `${stem}.iris-map.tsv`;
-        rawMaps.push(name);
-        const buffer = await readLocalFile(outputDir, name, MAX_MAP_BYTES - nativeBytes);
+        const buffer = await readMap(name, MAX_MAP_BYTES - nativeBytes);
         if (!buffer) continue;
         collected = true;
         nativeBytes += buffer.length;
@@ -127,6 +124,18 @@ async function publishSourceMapping({ outputDir, snapshotRoot, sources, projectI
     manifest = { version: 1, projectId, buildId, backend, status: error.reason === "unsupported" ? "unsupported" : "unavailable",
       ...(error.reason === "unsupported" ? {} : { reason: stableReason(error) }) };
   }
+  return manifest;
+}
+
+// Only the private staging output is written. Publication and retention use the
+// existing whole-directory lifecycle. Mapping failures never escape to compile.
+async function publishSourceMapping({ outputDir, enabled, format, ...options }) {
+  if (!enabled || format !== "pdf") return envelope(!enabled ? "disabled" : "unsupported");
+  const { artifacts, backend } = options, rawMaps = [];
+  const manifest = await collectSourceMapping({ ...options, readMap: (name, limit) => {
+    if (backend === "lilypond" && path.basename(name) === name) rawMaps.push(name);
+    return readLocalFile(outputDir, name, limit);
+  } });
   const temporary = path.join(outputDir, `.iris-navigation-${crypto.randomUUID()}.tmp`);
   try {
     // Compiler output is untrusted. Replace its reserved filename atomically;
@@ -148,39 +157,51 @@ async function publishSourceMapping({ outputDir, snapshotRoot, sources, projectI
 
 const reasons = new Set(["busy", "cancelled", "timeout", "output-limit", "engine-missing", "query-failed", "map-limit", "malformed-map", "collector-failed", "stale-artifact", "storage-error"]);
 function stableReason(error) { return reasons.has(error?.reason) ? error.reason : "storage-error"; }
+const mapStates = new Set(["ready", "missing", "unsupported", "unavailable"]);
+const artifactMapping = (manifest, artifact) => manifest.version === 2 ? artifact : manifest;
 
 function validateManifest(m, { projectId, buildId, artifacts }) {
   if (!m || m.projectId !== projectId || m.buildId !== buildId) throw failure("malformed-map");
-  if (Number.isSafeInteger(m.version) && m.version > 1) throw failure("unsupported");
-  if (m.version !== 1) throw failure("malformed-map");
-  if (!["ready", "missing", "unsupported", "unavailable"].includes(m.status)) throw failure("malformed-map");
+  if (Number.isSafeInteger(m.version) && m.version > 2) throw failure("unsupported");
+  if (![1, 2].includes(m.version)) throw failure("malformed-map");
+  if (!mapStates.has(m.status)) throw failure("malformed-map");
   if (m.status !== "ready") return;
-  if (!["latex", "lilypond"].includes(m.backend)) throw failure("unsupported");
+  if (m.version === 1 && !["latex", "lilypond"].includes(m.backend)) throw failure("unsupported");
   if (m.texBinPath !== undefined && (typeof m.texBinPath !== "string" || (m.texBinPath && (!canonicalPath(m.texBinPath) || !path.isAbsolute(m.texBinPath))))) throw failure("malformed-map");
   if (!Array.isArray(m.sources) || !Array.isArray(m.artifacts) || !Array.isArray(m.entries)
-    || m.sources.length + m.entries.length > MAX_ENTRIES || m.artifacts.length > MAX_MATCHES
-    || canonicalPath(m.snapshotRoot) === null || !m.snapshotRoot.startsWith("/")) throw failure("map-limit");
+    || m.sources.length + m.entries.length > MAX_ENTRIES || m.artifacts.length > MAX_MATCHES) throw failure("map-limit");
+  if (m.version === 1 && (canonicalPath(m.snapshotRoot) === null || !m.snapshotRoot.startsWith("/"))) throw failure("map-limit");
   const ids = new Set(), paths = new Set(), sourceIndex = new Map();
   for (const s of m.sources) {
     if (!s || !isUuid(s.sourceFileId) || !isUuid(s.sourceRevisionId) || !validSourcePath(s.path) || ids.has(s.sourceFileId) || paths.has(s.path)
       || typeof s.text !== "string" || s.text.includes("\r") || hash(s.text) !== s.sourceHash) throw failure("malformed-map");
     ids.add(s.sourceFileId); paths.add(s.path); sourceIndex.set(s.sourceFileId, s);
   }
-  const artifactIds = new Set();
-  const resolve = common.sourceResolver(m.sources, m.snapshotRoot);
+  const artifactIds = new Set(), lilyArtifacts = new Set();
   let count = m.sources.length + m.entries.length, decodedBytes = 0;
   for (const a of m.artifacts) {
     const current = artifacts.find((item) => item.id === a.id);
     if (!current || artifactIds.has(a.id) || !isUuid(a.id) || a.fileName !== path.basename(a.fileName) || !a.fileName.endsWith(".pdf")
       || a.fileName !== current.fileName || a.size !== current.size || a.contentHash !== current.contentHash) throw failure("stale-artifact");
     artifactIds.add(a.id);
+    const info = artifactMapping(m, a);
+    if (!mapStates.has(info.status)) throw failure("malformed-map");
+    if (info.status !== "ready") {
+      if (a.syncFile || a.inputs) throw failure("malformed-map");
+      continue;
+    }
+    if (!["latex", "lilypond"].includes(info.backend)) throw failure("unsupported");
+    if (canonicalPath(info.snapshotRoot) === null || !info.snapshotRoot.startsWith("/")) throw failure("malformed-map");
+    if (info.backend === "lilypond") lilyArtifacts.add(a.id);
     if (a.syncFile) {
+      if (info.backend !== "latex") throw failure("malformed-map");
       if (![a.fileName.slice(0, -4) + ".synctex", a.fileName.slice(0, -4) + ".synctex.gz"].includes(a.syncFile)
         || !/^[a-f0-9]{64}$/.test(a.syncHash) || !Number.isSafeInteger(a.syncSize) || a.syncSize < 0 || !Array.isArray(a.inputs)
         || !Number.isSafeInteger(a.entryCount) || a.entryCount < a.inputs.length || !Number.isSafeInteger(a.decodedBytes) || a.decodedBytes < 0) throw failure("malformed-map");
       count += a.entryCount;
       decodedBytes += a.decodedBytes;
       const tags = new Set();
+      const resolve = common.sourceResolver(m.sources, info.snapshotRoot);
       for (const input of a.inputs) {
         if (!Number.isSafeInteger(input.tag) || input.tag < 1 || tags.has(input.tag) || resolve(input.input)?.sourceFileId !== input.sourceFileId) throw failure("malformed-map");
         tags.add(input.tag);
@@ -188,27 +209,30 @@ function validateManifest(m, { projectId, buildId, artifacts }) {
     }
   }
   if (count > MAX_ENTRIES || decodedBytes + Buffer.byteLength(JSON.stringify(m)) > MAX_MAP_BYTES) throw failure("map-limit");
+  if (m.version === 2 && (!Number.isSafeInteger(m.recordCount) || m.recordCount < count || m.recordCount > MAX_ENTRIES
+    || !Number.isSafeInteger(m.nativeReadBytes) || m.nativeReadBytes < 0 || m.nativeReadBytes > MAX_MAP_BYTES
+    || !Number.isSafeInteger(m.decodedReadBytes) || m.decodedReadBytes < decodedBytes || m.decodedReadBytes > MAX_MAP_BYTES)) throw failure("map-limit");
   m.entries = m.entries.map((entry) => {
     const s = sourceIndex.get(entry.sourceFileId);
-    if (!validMatch(entry) || !s || !artifactIds.has(entry.artifactId) || entry.sourceRevisionId !== s.sourceRevisionId || entry.sourceHash !== s.sourceHash) throw failure("malformed-map");
+    if (!validMatch(entry) || !s || !lilyArtifacts.has(entry.artifactId) || entry.sourceRevisionId !== s.sourceRevisionId || entry.sourceHash !== s.sourceHash) throw failure("malformed-map");
     const { artifactId, page, x, y, width, height, sourceFileId, sourceRevisionId, sourceHash, line, column } = entry;
     return { artifactId, page, x, y, width, height, sourceFileId, sourceRevisionId, sourceHash, line, column };
   });
 }
 
-async function readStored(context, name, limit = MAX_MAP_BYTES) {
-  const file = await resolveBuildFile(context.projectStorageDir, context.buildId, context.storagePath, name);
+async function readStored(storage, name, limit = MAX_MAP_BYTES) {
+  const file = await storage.read(name);
   if (!file) return null;
   try { return await readHandle(file.handle, limit); } finally { await file.handle.close(); }
 }
 
-async function verifyArtifacts(context, manifest, deadline) {
+async function verifyArtifacts(context, manifest, deadline, storage) {
   let remaining = MAX_PDF_BYTES, mapBytes = 0;
   for (const a of manifest.artifacts) {
     if (context.signal?.aborted) throw failure("cancelled");
     if (Date.now() >= deadline) throw failure("timeout");
     if (!Number.isSafeInteger(a.size) || a.size < 0 || a.size > remaining) throw failure("map-limit");
-    const file = await resolveBuildFile(context.projectStorageDir, context.buildId, context.storagePath, a.fileName);
+    const file = await storage.read(a.fileName);
     if (!file) throw failure("stale-artifact");
     try {
       if (file.size !== a.size) throw failure("stale-artifact");
@@ -227,55 +251,87 @@ async function verifyArtifacts(context, manifest, deadline) {
     } finally { await file.handle.close(); }
     remaining -= a.size;
     if (a.syncFile) {
-      const sync = await readStored(context, a.syncFile, MAX_MAP_BYTES - mapBytes);
+      const sync = await readStored(storage, a.syncFile, MAX_MAP_BYTES - mapBytes);
       if (!sync || sync.length !== a.syncSize || hash(sync) !== a.syncHash) throw failure("malformed-map");
       mapBytes += sync.length;
       // The CLI must not select an unchecked alternative of the same job.
       const alternate = a.syncFile.endsWith(".gz") ? a.syncFile.slice(0, -3) : a.syncFile + ".gz";
-      const directory = await resolveBuildDirectory(context.projectStorageDir, context.buildId, context.storagePath);
-      if (!directory || await fs.lstat(path.join(directory, alternate)).catch(() => null)) throw failure("malformed-map");
+      if (await storage.exists(alternate)) throw failure("malformed-map");
     }
   }
   return mapBytes;
 }
 
-async function navigateBuild(context) {
+// Providers supply opened file handles, a bounded manifest and native query
+// paths. Admission and final integrity checks are shared across provider types.
+async function navigateSourceMapping(context, storage) {
   if (!context.enabled) return envelope("disabled");
   if (context.signal?.aborted) return envelope("unavailable", "cancelled");
   if (activeNavigation >= 2) return envelope("unavailable", "busy");
   activeNavigation++;
   const deadline = Date.now() + 5000;
   try {
-    const bytes = await readStored(context, MANIFEST_NAME);
+    storage ??= context.storage;
+    const bytes = await storage.readManifest();
     if (!bytes) return envelope("missing");
+    if (!Buffer.isBuffer(bytes) || bytes.length > MAX_MAP_BYTES) throw failure("map-limit");
     let manifest;
     try { manifest = JSON.parse(bytes.toString("utf8")); } catch { throw failure("malformed-map"); }
     validateManifest(manifest, context);
     if (manifest.status !== "ready") return envelope(manifest.status, manifest.status === "unavailable" ? stableReason(manifest) : undefined);
-    if (bytes.length + await verifyArtifacts(context, manifest, deadline) > MAX_MAP_BYTES) throw failure("map-limit");
-    let matches = [];
-    if (manifest.backend === "lilypond") matches = queryLilyMap(manifest.entries, context.query);
-    else {
-      const directory = await resolveBuildDirectory(context.projectStorageDir, context.buildId, context.storagePath);
-      if (!directory) return envelope("missing");
-      const artifacts = [...manifest.artifacts].sort((a, b) => Number(b.id === context.query.artifactId) - Number(a.id === context.query.artifactId));
-      for (const artifact of artifacts) {
-        if (!artifact.syncFile || (context.query.direction === "inverse" && artifact.id !== context.query.artifactId)) continue;
-        if (Date.now() >= deadline) throw failure("timeout");
-        const candidates = await querySyncTeX({ ...context, ...manifest, directory, artifact, query: context.query,
+    if (bytes.length + await verifyArtifacts(context, manifest, deadline, storage) > MAX_MAP_BYTES) throw failure("map-limit");
+    const matches = [], unavailable = [];
+    const lilyMatches = queryLilyMap(manifest.entries, context.query);
+    const artifacts = [...manifest.artifacts].sort((a, b) => Number(b.id === context.query.artifactId) - Number(a.id === context.query.artifactId));
+    let directory, queriedNative = false;
+    for (const artifact of artifacts) {
+      if (context.query.direction === "inverse" && artifact.id !== context.query.artifactId) continue;
+      const info = artifactMapping(manifest, artifact);
+      if (info.status !== "ready") { unavailable.push(info); continue; }
+      if (Date.now() >= deadline) throw failure("timeout");
+      let candidates;
+      if (info.backend === "lilypond") candidates = lilyMatches.filter(match => match.artifactId === artifact.id);
+      else {
+        if (!artifact.syncFile) continue;
+        directory ??= await storage.directory();
+        if (!directory) return envelope("missing");
+        queriedNative = true;
+        candidates = await querySyncTeX({ ...context, ...manifest, snapshotRoot: info.snapshotRoot, directory, artifact, query: context.query,
           binPath: context.binPath ?? manifest.texBinPath ?? "", timeoutMs: deadline - Date.now() });
-        for (const match of candidates) common.retainNavigationMatch(matches, match, context.query);
-        // A later PDF may improve a page hint even when an earlier one fills
-        // the response. The artifact and shared elapsed-time limits still apply.
-        if (matches.length >= MAX_MATCHES && (context.query.direction !== "forward" || context.query.page === undefined)) break;
       }
+      for (const match of candidates) common.retainNavigationMatch(matches, match, context.query);
+      // A later PDF may improve a page hint even when an earlier one fills
+      // the response. The artifact and shared elapsed-time limits still apply.
+      if (matches.length >= MAX_MATCHES && (context.query.direction !== "forward" || context.query.page === undefined)) break;
     }
     if (context.signal?.aborted) throw failure("cancelled");
-    if (manifest.backend === "latex" && matches.length) await verifyArtifacts(context, manifest, deadline);
+    if (queriedNative && matches.length) await verifyArtifacts(context, manifest, deadline, storage);
     if (context.query.direction === "forward") matches.sort((a, b) => common.compareNavigationMatches(a, b, context.query));
+    if (!matches.length && unavailable.length) {
+      const state = unavailable.find(item => item.status === "unavailable") || unavailable.find(item => item.status === "missing") || unavailable[0];
+      return envelope(state.status, state.status === "unavailable" ? stableReason(state) : undefined);
+    }
     return matches.length ? { status: "ready", matches: matches.slice(0, MAX_MATCHES) } : envelope("no-match");
   } catch (error) { return error.reason === "unsupported" ? envelope("unsupported") : envelope("unavailable", stableReason(error)); }
-  finally { activeNavigation--; }
+  finally {
+    try { await storage?.close?.(); }
+    finally { activeNavigation--; }
+  }
 }
 
-module.exports = { ...common, MANIFEST_NAME, captureMappingSources, lilypondMappingArgs, publishSourceMapping, navigateBuild };
+async function navigateBuild(context) {
+  const directory = () => resolveBuildDirectory(context.projectStorageDir, context.buildId, context.storagePath);
+  const storage = {
+    read: name => resolveBuildFile(context.projectStorageDir, context.buildId, context.storagePath, name),
+    directory,
+    async exists(name) {
+      const root = await directory();
+      return !root || !!await fs.lstat(path.join(root, name)).catch(() => null);
+    },
+    readManifest: () => readStored(storage, MANIFEST_NAME),
+  };
+  return navigateSourceMapping(context, storage);
+}
+
+module.exports = { ...common, MANIFEST_NAME, captureMappingSources, lilypondMappingArgs, collectSourceMapping, publishSourceMapping, navigateBuild, navigateSourceMapping,
+  readMappingHandle: readHandle };

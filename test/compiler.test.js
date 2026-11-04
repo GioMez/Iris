@@ -446,6 +446,63 @@ process.exitCode = observation.code || 0;
   return { cwd, binPath, fontDir: "", texmfVar: "", preLog: "" };
 }
 
+test("an injected step runner uses normalized profiles and retains multipass diagnostic selection", async t => {
+  const f = await multipassFixture(t, [{ log: "warning: transient" }, { log: "Warning--persistent bibliography" }, { log: "clean pass" }, { log: "clean final" }]);
+  const result = await runCompilePipeline({ ...f, binPath: "/no-native-compiler", profile: normalizeCompileProfile({ mode: "bibtex" }, "pdflatex", "main.tex"),
+    runStep: ({ step }) => runCompilePipeline({ ...f, profile: { steps: [step] } }),
+  });
+  assert.equal(result.code, 0, result.log);
+  assert.equal(await fs.readFile(path.join(f.cwd, "step-count"), "utf8"), "4");
+  assert.deepEqual(result.warnings, ["Warning--persistent bibliography"]);
+});
+
+test("cancellation between compiler passes prevents the next tool invocation", async t => {
+  const f = await multipassFixture(t, [{ log: "first pass" }, { log: "must not run" }]), controller = new AbortController();
+  const profile = normalizeCompileProfile({ mode: "bibtex" }, "pdflatex", "main.tex");
+  await assert.rejects(runCompilePipeline({ ...f, profile, signal: controller.signal,
+    runStep: async ({ step }) => {
+      const result = await runCompilePipeline({ ...f, profile: { steps: [step] } });
+      controller.abort(); return result;
+    },
+  }), { name: "AbortError" });
+  assert.equal(await fs.readFile(path.join(f.cwd, "step-count"), "utf8"), "1");
+});
+
+test("combined compiler trace stays bounded while preserving early context and the final diagnostic", async t => {
+  const f = await multipassFixture(t, [
+    { log: "warning: early context\n" + "α".repeat(400000) },
+    { log: "β".repeat(400000) + "\nwarning: final observation" },
+  ]);
+  const profile = normalizeCompileProfile({ mode: "custom", steps: [
+    { tool: "pdflatex", args: ["main.tex"] }, { tool: "pdflatex", args: ["main.tex"] },
+  ] }, "pdflatex", "main.tex");
+  const result = await runCompilePipeline({ ...f, profile });
+  assert.equal(result.code, 0, result.errors.join("\n"));
+  assert.ok(Buffer.byteLength(result.log) <= 1048576);
+  assert.match(result.log, /warning: early context/);
+  assert.match(result.log, /warning: final observation/);
+  assert.ok(!result.log.includes("\uFFFD"));
+  assert.equal(result.truncated, true);
+  assert.deepEqual(result.warnings, ["warning: final observation"]);
+});
+
+test("compiler capture preserves UTF-8 split across stdout and stderr chunks", async t => {
+  const f = await multipassFixture(t, []);
+  await fs.writeFile(path.join(f.binPath, "pdflatex"), `#!${process.execPath}
+process.stdout.write(Buffer.concat([Buffer.from('warning: caf'),Buffer.from([0xc3])]));
+setTimeout(()=>{
+  process.stdout.write(Buffer.from([0xa9,10]));
+  setTimeout(()=>{
+    process.stderr.write(Buffer.concat([Buffer.from('warning: score '),Buffer.from([0xf0,0x9f])]));
+    setTimeout(()=>process.stderr.write(Buffer.from([0x99,0x82,10])),40);
+  },40);
+},40);
+`);
+  const result = await runCompilePipeline({ ...f, profile: normalizeCompileProfile({ mode: "quick" }, "pdflatex", "main.tex") });
+  assert.equal(result.code, 0);
+  assert.deepEqual(result.warnings, ["warning: café", "warning: score 🙂"]);
+});
+
 for (const engine of ["pdflatex", "xelatex", "lualatex", "xetex"]) {
   for (const mode of ["bibtex", "biber"]) {
     for (const [truncated, unresolved] of [[false, false], [false, true], [true, false], [true, true]]) {

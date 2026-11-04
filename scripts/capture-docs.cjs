@@ -8,13 +8,13 @@ const { workspace, postgres, run, launch, freePort, until, operationSignal } = r
 const { withBrowser } = require("./lib/browser.cjs");
 const projects = require("./fixtures/docs-demo.cjs");
 const root = path.resolve(__dirname, "..");
-const help = `Usage: node scripts/capture-docs.cjs --output DIR [--pg-bin DIR] [--browser-executable PATH]
+const help = `Usage: node scripts/capture-docs.cjs --output DIR [--report FILE] [--pg-bin DIR] [--browser-executable PATH]
 
 Capture the shipped UI with original synthetic projects, real PostgreSQL and
 native PDF builds. Requires npm ci, an unprivileged POSIX user, PostgreSQL 18+
-tools, pdflatex (geometry/booktabs), LilyPond 2.26.0 and installed Chrome.
---output DIR              Existing image directory; replaces only the four named
-                          demo PNGs and capture.json. No application data retained.
+tools, pdflatex (geometry/booktabs), LilyPond 2.26.0, Lua 5.4/5.5 and Chrome.
+--output DIR              Existing image directory; replaces the named demo PNGs.
+--report FILE             Optional metadata destination (use a Git-ignored path).
 --pg-bin DIR              PostgreSQL tools (default: pg_config --bindir).
 --browser-executable PATH Chromium executable (default: installed Chrome channel).
 --help                    Show help without starting services.
@@ -22,12 +22,12 @@ tools, pdflatex (geometry/booktabs), LilyPond 2.26.0 and installed Chrome.
 Creates a disposable cluster, credentials, storage and browser context. Ignores
 ambient application configuration and .env. No engine, VM or external database.
 Fixture: scripts/fixtures/docs-demo.cjs. Capture viewport: 1600x1000, DPR 1.
-Fonts load through the shipped page's external font stylesheets; fallback is
-reported. Output includes compiler/browser versions and PNG hashes. Reproduction
+Fonts load through the shipped page's local stylesheets. The optional report
+includes compiler/browser versions and PNG hashes. Reproduction
 preserves the journey, not byte-identical timestamps, fonts or PDF rendering.
 `;
 async function main() {
-  const { values } = parseArgs({ options: { help: { type: "boolean" }, ...Object.fromEntries(["output", "pg-bin", "browser-executable"].map((key) => [key, { type: "string" }])) } });
+  const { values } = parseArgs({ options: { help: { type: "boolean" }, ...Object.fromEntries(["output", "report", "pg-bin", "browser-executable"].map((key) => [key, { type: "string" }])) } });
   if (values.help) return console.log(help);
   if (!values.output) throw new Error("--output is required; see --help");
   const output = await fs.realpath(values.output);
@@ -39,13 +39,14 @@ async function main() {
     for (const [key, command] of [["postgres", pg.tool("psql")], ["pdflatex", "pdflatex"], ["lilypond", "lilypond"]]) {
       versions[key] = (await run(command, ["--version"], { env: work.env, quiet: true })).stdout.toString().split(/\r?\n/)[0];
     }
+    versions.lua = (await run("lua", ["-v"], { env: work.env, quiet: true })).stdout.toString().trim();
     const data = path.join(work.root, "data"), password = randomBytes(24).toString("hex");
     await run(pg.tool("psql"), ["-X", "-v", "ON_ERROR_STOP=1", "-c", `CREATE ROLE iris LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE PASSWORD '${password}'`], { env: pg.env, quiet: true });
     await run(pg.tool("psql"), ["-X", "-v", "ON_ERROR_STOP=1", "-c", "CREATE DATABASE iris OWNER iris"], { env: pg.env, quiet: true });
     const app = launch(process.execPath, [path.join(root, "src/server.js")], { cwd: work.cwd, quiet: true, timeout: 180000, env: {
       ...work.env, DB_HOST: "127.0.0.1", DB_PORT: String(pg.port), DB_NAME: "iris", DB_USER: "iris", DB_PASSWORD: password,
       IRIS_SECRET: randomBytes(32).toString("hex"), PORT: String(port), BIND_ADDRESS: "127.0.0.1", DATA_DIR: data,
-      PUBLIC_DIR: path.join(root, "public"), TEMPLATE_DIR: path.join(data, "templates"), TEX_PATH_LOCKED: "true", LILYPOND_PATH_LOCKED: "true",
+      PUBLIC_DIR: path.join(root, "public"), TEMPLATE_DIR: path.join(data, "templates"),
     } });
     work.cleanups.push(() => app.stop());
     const base = `http://127.0.0.1:${port}`;
@@ -63,13 +64,18 @@ async function main() {
     const account = (await request("/api/auth/login", { username: "admin", password: initial })).user;
     await request("/api/auth/password", { currentPassword: initial, newPassword: randomBytes(24).toString("hex") });
     await request(`/api/admin/users/${account.id || account.sub}`, { name: "Demo administrator", email: "admin@example.test" }, "PATCH");
+    const members = [];
     for (const [username, name, role] of [["alex", "Alex North", "regular"], ["sam", "Sam River", "external"]]) {
-      await request("/api/admin/users", { username, name, email: `${username}@example.test`, role }, "POST", 201);
+      members.push((await request("/api/admin/users", { username, name, email: `${username}@example.test`, role }, "POST", 201)).user);
     }
     const records = [];
     for (const fixture of projects) {
       const made = await request("/api/projects", { name: fixture.name, data: { projectType: fixture.type, language: "en", sourceMapping: true, project: { nodes: fixture.nodes } } }, "POST", 201);
       records.push({ ...fixture, id: made.project.id });
+    }
+    const latex = records.find(record => record.type === "latex");
+    for (const [index, member] of members.entries()) {
+      await request(`/api/projects/${latex.id}/members`, { userId: member.id, role: index ? "viewer" : "editor" }, "POST", 201);
     }
     await withBrowser(work, values["browser-executable"] ? { executablePath: values["browser-executable"] } : { channel: "chrome" }, async (browser) => {
       versions.chromium = browser.version();
@@ -80,14 +86,16 @@ async function main() {
       page.on("pageerror", (error) => errors.push(error.message));
       page.on("requestfailed", (req) => { if (!req.url().startsWith(base)) externalFailures.push({ url: req.url(), error: req.failure()?.errorText }); });
       await page.goto(base, { waitUntil: "networkidle" });
-      const capture = async (name) => {
+      const capture = async (name, selector) => {
         await page.evaluate(() => document.fonts.ready);
         await page.mouse.move(1595, 995);
-        await page.screenshot({ path: path.join(output, name), animations: "disabled" });
+        await (selector ? page.locator(selector) : page).screenshot({ path: path.join(output, name), animations: "disabled" });
         const bytes = await fs.readFile(path.join(output, name));
         captures.push({ name, bytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") });
         console.log(`Captured ${name}: ${bytes.length} bytes`);
       };
+      await page.locator("#pkNew").waitFor({ state: "visible" });
+      await capture("project-dashboard.png");
       for (const record of records) {
         await page.evaluate(async ({ id, type }) => { IrisTheme.setPreference(type === "latex" ? "light" : "dark"); await IrisEditor.ready; await IrisProjects.openProject(id); }, record);
         await page.waitForFunction(() => IrisCollab.status() === "live");
@@ -98,11 +106,68 @@ async function main() {
         await page.waitForFunction(() => !document.querySelector("#btnCompile").disabled);
         await capture(`${record.type}-workspace.png`);
       }
+      await page.locator("#btnSettings").click();
+      await page.locator("#settingsTabCompile").click();
+      await capture("compilation-settings.png", "#settingsModal .modal");
+      await page.locator("#compilePipelineControls").scrollIntoViewIfNeeded();
+      await capture("compilation-workflow.png", "#settingsModal .modal");
+      await page.locator("#settingsModal [data-close]").click();
+      await page.locator("#btnShareProject").click();
+      await page.waitForFunction(() => document.querySelectorAll(".project-share-member").length === 3);
+      await capture("project-sharing.png", "#projectShareModal .modal");
+      await page.locator("#projectShareModal [data-close]").first().click();
       await page.locator("#tree .node .nm").filter({ hasText: "references.bib" }).click();
       await page.locator("#btnPreview").click();
       await page.locator("#bibliographyTable").waitFor({ state: "visible" });
       await page.waitForFunction(() => document.querySelectorAll("#bibliographyRows tr").length === 3);
       await capture("bibliography.png");
+      await page.locator("#tree .node .nm").filter({ hasText: "main.tex" }).click();
+      const source = latex.nodes.find(node => node.name === "main.tex").content;
+      await page.waitForFunction(text => IrisEditor.getValue() === text && IrisCollab.status() === "live", source);
+      const replaceSource = async (text) => {
+        await page.locator(".cm-content").click();
+        await page.keyboard.press("ControlOrMeta+A");
+        await page.keyboard.insertText(text);
+        assert.equal(await page.evaluate(() => IrisEditor.getValue()), text, "editor accepted the demonstration source");
+        await page.waitForFunction(() => !IrisCollab.pending());
+      };
+      await replaceSource(source.replace("\\maketitle", "\\maketitle\n\\undefinedGardenCommand"));
+      const failed = page.waitForResponse(response => response.url() === `${base}/api/projects/${latex.id}/compile` && response.request().method() === "POST");
+      await page.locator("#btnCompile").click();
+      const failure = await (await failed).json();
+      assert.equal(failure.success, false, failure.log);
+      await page.locator("#diagnosticsView").waitFor({ state: "visible" });
+      await page.waitForFunction(() => document.querySelector("#diagnosticsList")?.textContent.includes("Undefined control sequence"));
+      await capture("diagnostics.png");
+      await replaceSource(source);
+      const snapshot = page.waitForResponse(response => response.url().endsWith(`/api/projects/${latex.id}/checkpoint`) && response.request().method() === "POST");
+      await page.locator("#btnSnapshot").click();
+      assert.equal((await snapshot).ok(), true);
+      await page.locator("#btnBuilds").click();
+      await page.locator("[data-build-open]").last().click();
+      await page.locator('#buildsActions [data-build-act="preview"]').waitFor({ state: "visible" });
+      await page.locator(".build-artifact").first().waitFor({ state: "visible" });
+      await capture("compilation-history.png", "#buildsModal .modal");
+      await page.locator("#buildsModal [data-close]").click();
+      await page.locator("#tree .node").filter({ has: page.locator(".nm", { hasText: "main.tex" }) }).locator('[data-act="history"]').click();
+      await page.locator(".ver-item").first().click();
+      await page.waitForFunction(() => document.querySelector("#versionsView")?.textContent.includes("documentclass"));
+      await capture("file-history.png", "#versionsModal .modal");
+      await page.locator("#versionsModal [data-close]").click();
+      await page.locator("#btnSettings").click();
+      await page.locator("#settingsTabCompile").click();
+      await page.locator("#pipelineApprove").click();
+      await page.locator("#pipelineInspect").click();
+      await page.locator('[data-pipeline-param="copies"]').waitFor({ state: "visible" });
+      await page.locator("#pipelineTargetsInspect").click();
+      await page.locator("#pipelineTarget").selectOption("sheets");
+      await page.locator("#pipelineRun").click();
+      await page.locator('#pipelineRunState[data-state="succeeded"]').waitFor({ state: "visible" });
+      await page.locator("#pipelineControls").evaluate(element => element.scrollIntoView({ block: "start" }));
+      await capture("lua-pipeline.png", "#settingsModal .modal");
+      await page.locator("#pipelineLogDetails").scrollIntoViewIfNeeded();
+      await capture("lua-run.png", "#settingsModal .modal");
+      await page.locator("#settingsModal [data-close]").click();
       await page.evaluate(() => IrisAdmin.open());
       await page.locator("#adminUsersPanel").waitFor({ state: "visible" });
       await page.waitForFunction(() => document.querySelectorAll("#adminRows tr").length === 3);
@@ -110,8 +175,8 @@ async function main() {
       const fonts = await page.evaluate(() => ({ plexSans: document.fonts.check('14px "IBM Plex Sans"'), plexMono: document.fonts.check('14px "IBM Plex Mono"') }));
       await page.evaluate(() => IrisCollab.disconnect());
       assert.deepEqual(errors, [], "shipped UI runtime errors");
-      const evidence = { version: require("../package.json").version, schema: 2, viewport: { width: 1600, height: 1000, dpr: 1 }, fixture: "scripts/fixtures/docs-demo.cjs", versions, fonts, externalFailures, captures };
-      await fs.writeFile(path.join(output, "capture.json"), JSON.stringify(evidence, null, 2) + "\n");
+      const evidence = { version: require("../package.json").version, viewport: { width: 1600, height: 1000, dpr: 1 }, fixture: "scripts/fixtures/docs-demo.cjs", versions, fonts, externalFailures, captures };
+      if (values.report) await fs.writeFile(path.resolve(values.report), JSON.stringify(evidence, null, 2) + "\n");
       console.log(JSON.stringify(evidence, null, 2));
     });
   } finally { await work.close(); }

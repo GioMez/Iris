@@ -226,8 +226,7 @@ source bytes, templates and output. Project ZIP exports cannot replace this
 backup. Also preserve deployment configuration/secrets and any template catalog
 outside `DATA_DIR` through your backup process.
 
-The procedure below matches the native and actual-engine restore smokes:
-enter maintenance, wait for the drain, stop Iris cleanly, then copy both layers.
+Enter maintenance, wait for the drain, stop Iris cleanly, then copy both layers.
 Keep the target Iris process stopped until both layers have been restored.
 
 ### Maintenance and the drain
@@ -295,7 +294,7 @@ handle a custom `MAINTENANCE_FILE` at its configured path. Restore ownership
 and modes so the target service user can read and write its storage.
 
 Start the target with its own DB settings, `DATA_DIR`, `TEMPLATE_DIR`, port and
-session secret. Use Iris 1.1.0 with schema 2. The backed-up local passwords still
+session secret. Use the source version matching the backup. The backed-up local passwords still
 work; a new signing secret requires fresh logins. Verify project contents,
 memberships, history and output downloads, then make a target-only change to
 check that the target uses separate storage/database state. Successful
@@ -333,7 +332,7 @@ PG_ID=$(engine ps -a -q --filter "label=com.docker.compose.project=$PROJECT" \
 WEB_ID=$(engine ps -a -q --filter "label=com.docker.compose.project=$PROJECT" \
   --filter "label=com.docker.compose.service=webapp")
 engine run --rm -i --name "$HELPER" --network none --user 0 \
-  -v "$DATA_VOLUME:/restore" --entrypoint node localhost/iris:1.1.0 \
+  -v "$DATA_VOLUME:/restore" --entrypoint node localhost/iris:1.2.0 \
   -e "require('fs').writeFileSync('/restore/.maintenance','')"
 ```
 
@@ -353,7 +352,7 @@ engine exec -i -e "PGPASSWORD=$DB_PASSWORD" "$PG_ID" \
   pg_dump -U iris -d iris --format=custom --no-owner --no-privileges \
   > "$BACKUP/database.dump"
 engine run --rm -i --name "$HELPER" --network none --user 0 \
-  -v "$DATA_VOLUME:/restore" --entrypoint tar localhost/iris:1.1.0 \
+  -v "$DATA_VOLUME:/restore" --entrypoint tar localhost/iris:1.2.0 \
   -cf - -C /restore . > "$BACKUP/storage.tar"
 ```
 
@@ -383,10 +382,10 @@ engine exec -i -e "PGPASSWORD=$TARGET_DB_PASSWORD" "$TARGET_PG_ID" \
   pg_restore -U iris -d iris --exit-on-error --no-owner --no-privileges \
   < "$BACKUP/database.dump"
 engine run --rm -i --name "$HELPER" --network none --user 0 \
-  -v "$TARGET_DATA_VOLUME:/restore" --entrypoint tar localhost/iris:1.1.0 \
+  -v "$TARGET_DATA_VOLUME:/restore" --entrypoint tar localhost/iris:1.2.0 \
   -xpf - -C /restore < "$BACKUP/storage.tar"
 engine run --rm -i --name "$HELPER" --network none --user 0 \
-  -v "$TARGET_DATA_VOLUME:/restore" --entrypoint node localhost/iris:1.1.0 \
+  -v "$TARGET_DATA_VOLUME:/restore" --entrypoint node localhost/iris:1.2.0 \
   -e "require('fs').unlinkSync('/restore/.maintenance')"
 target_compose up -d webapp
 ```
@@ -424,12 +423,113 @@ A confirmed deletion with filesystem cleanup still pending returns
 Startup resumes ready cleanup even with retention off; enabled sweeps also retry
 it. A ready receipt with a live project row requires inspection.
 
+## Upgrade Iris
+
+1. Enter maintenance mode and wait for work to drain using the
+   [backup procedure](#backup-and-restore).
+2. Stop Iris cleanly, then take a coordinated database/filesystem backup. Retain
+   the matching source revision and configuration.
+3. Install the new source and locked dependencies, or rebuild the container
+   image from that source. Retain your configuration and storage volumes.
+4. Start one Iris process against the existing database and storage. Startup
+   applies supported database migrations in one transaction and preserves project
+   identities, memberships, revision history and stored output.
+5. Check startup logs and `/api/health`. Remove the
+   [maintenance marker](#maintenance-and-the-drain), then sign in, open an
+   existing project and compile it.
+
+If startup reports `IRIS_SCHEMA_INCOMPATIBLE`, stop and check that the selected
+database and source belong together. Do not edit the schema marker or drop
+tables to bypass validation. Developers should follow the
+[migration contract](development.md#persistence-contract).
+
+Existing projects keep their ordinary compiler workflow. Opening, saving or
+importing Lua files does not enable execution. An owner approves the exact source
+bundle and runtime identities through the [author controls](lua-pipelines.md).
+Upgrading trusted implementations or tool executables can invalidate approval;
+inspect the changed source/policy and approve again before executing it.
+
+### Disable a Lua pipeline
+
+To disable a project's pipeline, choose **Disable and revoke approval** under
+Settings → Compilation. Revocation cancels affected work, preserves retained
+outputs and diagnostics, and returns Compile to the ordinary workflow. Removing
+Lua from PATH only makes execution unavailable; it does not revoke authority.
+
+### Return to an earlier installation
+
+An older binary may reject the upgraded database. Restore the coordinated
+pre-upgrade database and filesystem backup into a separate installation with
+its matching source and configuration. Preserve post-upgrade work before
+switching users back. Do not downgrade by editing schema markers or deleting
+tables.
+
+### Lua runtime recovery
+
+The Lua runtime keeps JSON receipts beside its private workspace
+directories in `DATA_DIR/.pipeline-runtime`. Each receipt identifies the
+installation, coordinator, run, step and deadline. Before serving requests, Iris
+removes valid prior `preparing` or `idle` workspaces. A `running` receipt,
+malformed receipt or failed cleanup prevents startup and reports
+`PIPELINE_WORKER_RECOVERY_REQUIRED`. Missing optional Lua/compiler executables
+do not prevent this recovery check or ordinary startup.
+
+Descriptor inspections and pipeline runs keep source snapshots and transfer files
+in `DATA_DIR/.pipeline-staging`. Failed disposal retains evidence, reports
+`PIPELINE_WORKER_RECOVERY_REQUIRED` and prevents further inspections or runs.
+The same recovery rule covers native pipeline-navigation queries. The running
+server keeps health `pendingWrites` above zero and refuses a successful shutdown
+after a cleanup failure. An inspection has no build-history record; asynchronous runs
+retain their states, steps and diagnostics in build history. Revocation, loss of
+compile permission, project deletion and shutdown stop affected active work.
+
+Pipeline publication writes a private `.iris-pipeline-publication.jsonl` receipt
+before renaming the complete output directory. If database finalization fails
+after rename, Iris retains both output and staging evidence. Restart reconciliation
+compares the receipt with the recorded publication hash and checks each artifact's
+bytes. Matching or absent publications permit an interrupted run record; uncertain
+or mismatching publications remain unresolved. Recovery does not delete renamed
+output to make the database transition succeed. Build-file downloads and ZIPs
+exclude the private receipt and source-navigation sidecars.
+
+An unresolved startup reconciliation keeps health `pendingWrites` above zero,
+blocks new pipeline inspections/runs and causes shutdown to report failure.
+Cancelling a run or revoking approval does not discharge a prepared publication's
+recovery obligation; another restart still checks its retained evidence.
+Matching completed publication bytes permit an `interrupted` record; they do not
+prove that the original database finalization committed successfully.
+
+Stop the owning Iris process before investigating. Preserve the receipt and
+workspace, inspect the matching run and establish whether any of its native
+processes remain. A persisted PID can refer to a different process after a
+restart; the runtime never signals it during recovery. After confirming that
+the execution has ended and preserving needed evidence, remove only that
+workspace and its matching receipt. Inspect retained staging snapshots under
+the same stopped-process conditions before removing them, then restart.
+Keep `installation.json`.
+Do not clear uncertain receipts merely to make startup succeed.
+
 ## Compiler trust and instance boundaries
 
 Iris spawns allowlisted tools without a shell, forces LaTeX `-no-shell-escape`,
 controls output paths and supplies a reduced compiler environment without its
 database/session secrets. These controls do not sandbox a native compiler.
 LilyPond executes Guile, and both toolchains can process complex source input.
-Run the qualified native model with trusted source authors and an appropriately
+Run native tools with trusted source authors and an appropriately
 restricted operating-system account. Iris does not provide isolated remote
 compiler workers or a multi-tenant execution sandbox.
+
+Lua plugins use the same native trust model. The author API provides approved
+project-local modules and checked file access. Exact-bundle approval includes
+all project `.lua` files, registry identity, runtime policy and trusted
+implementation identities. Changes require a matching approval before execution.
+These controls do not turn the Lua interpreter into an operating-system sandbox.
+
+Normal cancellation stops the owned POSIX process group and waits for it to
+drain. A coordinator SIGKILL, machine failure or a descendant that leaves that
+group can require operator cleanup. Iris does not enforce aggregate native
+memory, PID or scratch-filesystem quotas. Its
+[runtime limits](configuration.md#lua-pipeline-runtime-limits) bound admitted
+work, metadata, logs and retained outputs. Docker/Podman Compose runs tools in
+the Iris service with its existing mounts and account; Iris does not launch
+nested containers or depend on systemd or Bubblewrap.

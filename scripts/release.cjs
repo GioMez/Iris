@@ -8,7 +8,7 @@ const { gzipSync } = require("node:zlib");
 const { parseArgs } = require("node:util");
 
 const help = `Usage:
-  node scripts/release.cjs --ref R1.1.0 --output .drafts/release-1.1.0
+  node scripts/release.cjs --ref R1.2.0 --output .drafts/release-1.2.0
   node scripts/release.cjs --candidate DIR --manifest FILE --output DIR
 
 --ref REF        Read only Git objects at an explicit commit, tag or tree.
@@ -28,7 +28,7 @@ dependencies, drafts, planning documents and temporary artifacts are excluded.
 Review the explicit candidate manifest; only a reviewed final ref is a release.
 `;
 const rootFiles = new Set(["package.json", "package-lock.json", "LICENSE", "THIRD_PARTY_NOTICES.md", "README.md", "TRANSLATING.md", ".npmrc", ".gitignore", ".dockerignore", ".env.example", "Dockerfile", "docker-compose.yml"]);
-const required = ["package.json", "package-lock.json", "LICENSE", "THIRD_PARTY_NOTICES.md", "README.md", ".npmrc", ".env.example", ".dockerignore", "Dockerfile", "docker-compose.yml", "db/schema.sql", "db/init/01-create-iris-user.sh", "src/server.js", "public/Iris.html", "public/templates/.metadata.json", "scripts/test.cjs", "scripts/smoke.cjs"];
+const required = ["package.json", "package-lock.json", "LICENSE", "THIRD_PARTY_NOTICES.md", "README.md", ".npmrc", ".env.example", ".dockerignore", "Dockerfile", "docker-compose.yml", "db/schema.sql", "db/migrations/003-pipelines.sql", "db/migrations/004-primary-preview.sql", "db/init/01-create-iris-user.sh", "src/server.js", "public/Iris.html", "public/templates/.metadata.json", "scripts/test.cjs", "scripts/smoke.cjs"];
 function safePath(name) {
   if (typeof name !== "string" || !name || /[\\\x00-\x1f\x7f:]/.test(name) || name.split("/").some((part) => !part || part === "." || part === "..")) throw new Error(`Unsafe archive path: ${JSON.stringify(name)}`);
   return name;
@@ -41,6 +41,9 @@ function included(name) {
   const parts = name.split("/");
   if (parts.some((part) => part.startsWith(".") || /^(node_modules|data|storage|coverage|tmp|temp|dist|build|artifacts)$/i.test(part)) && name !== "public/templates/.metadata.json") return false;
   if (name.endsWith(".grammar")) return /^(public\/languages|test\/fixtures\/languages)\//.test(name);
+  if (name.endsWith(".lua")) return ["src/pipeline/lua-bootstrap.lua", "src/pipeline/lua-process.lua", "src/pipeline/vendor/dkjson.lua"].includes(name)
+    || name.startsWith("test/fixtures/pipelines/");
+  if (name.endsWith(".eps")) return name.startsWith("test/fixtures/pipelines/");
   return /\.(?:js|cjs|mjs|json|html|css|sql|sh|md|svg|png|jpg|jpeg|webp|tex|ly|ily|woff2?)$/.test(name);
 }
 async function candidateFiles(root, manifest) {

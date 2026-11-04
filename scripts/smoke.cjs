@@ -5,7 +5,7 @@ const { randomBytes } = require("node:crypto");
 const assert = require("node:assert/strict");
 const { parseArgs } = require("node:util");
 const { run, launch, workspace, postgres, freePort, until } = require("./lib/disposable.cjs");
-const { journey, filesystemProbe } = require("./lib/smoke-journey.cjs");
+const { journey, filesystemProbe, luaRuntimeProbe } = require("./lib/smoke-journey.cjs");
 const root = path.resolve(__dirname, "..");
 const image = `localhost/iris:${require("../package.json").version}`;
 const help = `Usage:
@@ -14,7 +14,7 @@ const help = `Usage:
   node scripts/smoke.cjs --engine podman [--connection NAME] [--compose-provider PATH]
 
 --native                  Two disposable native installations and PG18+ cluster;
-                          requires npm ci, pdflatex, lilypond and gs on PATH.
+                          requires npm ci, lua, pdflatex, lilypond and gs on PATH.
 --browser                 Paint both native PDFs in installed Chrome.
 --browser-executable PATH  Enable native PDF browser smoke in this Chromium.
 --pg-bin DIR              PostgreSQL tools (default pg_config --bindir).
@@ -115,12 +115,12 @@ async function containerInstances(work, values) {
   const removeProbe = ownContainer(probeName);
   try {
     await cli(["run", "--rm", "--name", probeName, "--network", "none", "--entrypoint", "sh", image, "-c",
-      "test -r /app/LICENSE && test -r /app/THIRD_PARTY_NOTICES.md && test -r /app/db/schema.sql && ! command -v pdflatex && ! command -v lilypond && test $(id -u) -eq 1000"]);
+      "test -r /app/LICENSE && test -r /app/THIRD_PARTY_NOTICES.md && test -r /app/db/schema.sql && test -r /app/db/migrations/003-pipelines.sql && test -r /app/db/migrations/004-primary-preview.sql && lua -E -e 'assert(_VERSION == \"Lua 5.4\" or _VERSION == \"Lua 5.5\")' && ! command -v pdflatex && ! command -v lilypond && test $(id -u) -eq 1000"]);
   } finally { await removeProbe(); }
   const instances = [];
   for (const name of ["source", "restore"]) {
     const project = `iris-smoke-${name}-${randomBytes(5).toString("hex")}`, port = await freePort();
-    const composeEnv = { ...env, IRIS_PORT: String(port), IRIS_BIND_ADDRESS: "127.0.0.1", IRIS_SECRET: randomBytes(32).toString("hex"), DB_PASSWORD: randomBytes(24).toString("hex"), POSTGRES_ADMIN_PASSWORD: randomBytes(24).toString("hex") };
+    const composeEnv = { ...env, LUA_BIN_PATH: "/usr/local/bin", IRIS_PORT: String(port), IRIS_BIND_ADDRESS: "127.0.0.1", IRIS_SECRET: randomBytes(32).toString("hex"), DB_PASSWORD: randomBytes(24).toString("hex"), POSTGRES_ADMIN_PASSWORD: randomBytes(24).toString("hex") };
     const compose = (args, options = {}) => cli(["compose", "--env-file", nullEnv, "-f", path.join(root, "docker-compose.yml"), "-p", project, ...args], { env: composeEnv, ...options });
     const id = async (service) => {
       const found = (await cli(["ps", "-a", "-q", "--filter", `label=com.docker.compose.project=${project}`, "--filter", `label=com.docker.compose.service=${service}`])).stdout.toString().trim().split(/\s+/).filter(Boolean);
@@ -164,6 +164,8 @@ async function containerInstances(work, values) {
           return (data.State.Health?.Status || data.State.Healthcheck?.Status) === "healthy";
         }, `${engine} app health`, 120000);
         await cli(["exec", webId, "node", "-e", `const fs=require('fs');if(process.getuid()!==1000)throw Error('uid');try{fs.writeFileSync('/app/forbidden','x');throw Error('root writable')}catch(e){if(e.code!=='EROFS')throw e}fs.writeFileSync('/tmp/owned-probe','ok');fs.unlinkSync('/tmp/owned-probe');fs.writeFileSync('/app/data/owned-probe','ok');fs.unlinkSync('/app/data/owned-probe')`]);
+        await cli(["exec", webId, "node", "-e", `(${luaRuntimeProbe.toString()})().catch(e=>{console.error(e);process.exitCode=1})`]);
+        console.log(`PASS ${engine} ${name}: configured installed-Lua generation, binary fidelity and process-group cancellation`);
       },
       async stop() { await compose(["stop", "webapp"]); const state = JSON.parse((await cli(["inspect", await id("webapp")])).stdout)[0].State; assert.equal(state.ExitCode, 0, "graceful app shutdown"); },
       async restart() {

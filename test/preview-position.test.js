@@ -96,7 +96,7 @@ function harness() {
       return { outputFormat: "pdf", artifacts: [{ name: "main.pdf", bytes: new Uint8Array([1]), mimeType: "application/pdf" }] };
     },
     images(format, count) { return { outputFormat: format, artifacts: Array.from({ length: count }, (_, i) => ({
-      name: `main-${i + 1}.${format}`, bytes: new Uint8Array([1]), mimeType: `image/${format}`,
+      name: `main-${i + 1}.${format}`, bytes: new Uint8Array([1]), mimeType: format === "svg" ? "image/svg+xml" : `image/${format}`,
     })) }; },
     scroll(page, fraction = 0) {
       stage.scrollTop = state.pages[page - 1].offsetTop - 26 + fraction * state.pages[page - 1].offsetHeight;

@@ -11,6 +11,7 @@ function buildStoragePath(buildId) {
 // navigation adapter may read them, but public file and archive views omit them.
 function isPrivateBuildFile(relative) {
   return String(relative).split("/").some((name) => name.startsWith(".iris-navigation")
+    || name === ".iris-pipeline-publication.jsonl"
     || name.endsWith(".iris-map.tsv") || /\.synctex(?:\.gz)?(?:\(busy\))?$/.test(name));
 }
 
@@ -199,7 +200,8 @@ async function resolveBuildArtifact(projectStorageDir, buildId, buildPath, artif
   const expectedPrefix = `${buildPath}/`;
   if (!artifactPath.startsWith(expectedPrefix)) throw new Error(`Invalid artifact path for build ${buildId}`);
   const relative = artifactPath.slice(expectedPrefix.length);
-  if (!relative || path.posix.basename(relative) !== relative) throw new Error(`Invalid artifact path for build ${buildId}`);
+  try { normalizeBuildRelativePath(relative); }
+  catch { throw new Error(`Invalid artifact path for build ${buildId}`); }
   return resolveBuildFile(projectStorageDir, buildId, buildPath, relative);
 }
 

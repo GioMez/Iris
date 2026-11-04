@@ -32,6 +32,34 @@ test("mapping checkbox defaults on, saves/reopens false and gates viewer permiss
   assert.equal(await checkbox.isDisabled(), true);
 });
 
+for (const backend of ["latex", "lilypond"]) test(`composed ${backend} pipeline keeps the primary PDF and native source navigation together`,
+  { ...options, skip: !enabled || process.env.IRIS_TEST_LUA !== "1", timeout: 45000 }, async t => {
+    const fs = require("node:fs/promises"), { PDFDocument, rgb } = require("pdf-lib");
+    const layer = await PDFDocument.create(); layer.addPage([10, 10]).drawRectangle({ x: 0, y: 0, width: 10, height: 10, color: rgb(0, 0, 1) });
+    const pipeline = { parameters: { family: backend }, nodes: [
+      { type: "file", id: "plugin", name: "iris.lua", path: "iris.lua", content: await fs.readFile(path.join(__dirname, "fixtures/pipelines/decorate.lua"), "utf8") },
+      { type: "file", id: "layer", name: "layer.pdf", path: "layer.pdf", binary: true, data: `data:application/pdf;base64,${Buffer.from(await layer.save()).toString("base64")}` },
+    ] };
+    const source = backend === "lilypond" ? { main: '\\version "2.26.0"\n\\include "parts/theme.ily"\n\\score { \\theme }\n',
+      part: "theme = { c'4 d'4 e'4 f'4 }\n", name: "theme.ily", column: 10 } : undefined;
+    const f = await journey(t, server, browser, backend, { pipeline, source });
+    assert.equal(await f.page.locator("#pdfArtifact").inputValue(), f.build.primaryPreviewArtifactId);
+    const selected = f.build.artifacts.find(a => a.id === f.build.primaryPreviewArtifactId);
+    assert.equal(selected.producerStep, "compose");
+    await openSource(f); await sourceClick(f.page, f.source.column);
+    const forward = await f.received(1);
+    assert.equal(forward.query.artifactId, selected.id); assert.equal(forward.result.status, "ready");
+    const match = forward.result.matches.find(m => m.artifactId === selected.id);
+    assert.ok(match); await f.page.locator(".source-navigation-highlight").waitFor();
+    await openSource(f, f.mainId); await pdfClick(f, match);
+    const inverse = await f.received(2);
+    assert.equal(inverse.query.artifactId, selected.id); assert.equal(inverse.result.status, "ready");
+    assert.equal(inverse.result.matches[0].sourceFileId, f.partId);
+    await f.page.waitForFunction(id => IrisApp.serialize().activeId === id, f.partId);
+    assert.equal(await f.page.evaluate(() => IrisApp.currentBuildId()), f.build.buildId);
+    assert.equal(await f.page.evaluate(() => IrisEditor.getValue()), f.source.part);
+  });
+
 for (const backend of ["latex", "lilypond"]) test(`native ${backend}: clicked UTF-16 source → real route → rendered PDF → authoritative included source`, options, async (t) => {
   const f = await journey(t, server, browser, backend, backend === "latex" ? { platform: "Linux x86_64" } : {});
   await openSource(f);

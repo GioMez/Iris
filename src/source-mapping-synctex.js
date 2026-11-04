@@ -111,7 +111,7 @@ function parseSyncTeX(text, { sources, snapshotRoot, artifact, source, query, in
   return matches;
 }
 
-async function querySyncTeX({ directory, artifact, sources, snapshotRoot, query, binPath = "", signal, spawnChild, timeoutMs }) {
+async function querySyncTeX({ directory, artifact, sources, snapshotRoot, query, binPath = "", signal, spawnChild, timeoutMs, runQuery = runNativeQuery }) {
   const source = sources.find((s) => s.sourceFileId === query.sourceFileId);
   const input = artifact.inputs?.find((i) => i.sourceFileId === query.sourceFileId);
   if (query.direction === "forward" && (!source || !input)) return [];
@@ -120,7 +120,7 @@ async function querySyncTeX({ directory, artifact, sources, snapshotRoot, query,
     ? ["view", "-i", `${query.line}:0:${input.input}`, "-o", pdf]
     : ["edit", "-o", `${query.page}:${query.x}:${query.y}:${pdf}`];
   const command = binPath ? path.join(binPath, "synctex") : "synctex";
-  const result = await runNativeQuery(command, args, { cwd: directory, binPath, signal, spawnChild, timeoutMs });
+  const result = await runQuery(command, args, { cwd: directory, binPath, signal, spawnChild, timeoutMs });
   return parseSyncTeX(result.stdout, { sources, snapshotRoot, artifact, source, query, inputs: artifact.inputs });
 }
 

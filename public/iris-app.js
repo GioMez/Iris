@@ -93,20 +93,21 @@
     editRevision: 0,
     projectRevision: null,
     role: "owner", // project role; "viewer" makes the workspace read-only
+    loggingOut: false,
   };
 
   // The server enforces capabilities; this only shapes the UI. A viewer gets a
   // read-only workspace: no editing, saving, compiling or tree mutations.
-  function isReadOnly() { return state.role === "viewer"; }
+  function isReadOnly() { return state.role === "viewer" || state.loggingOut; }
   function isFileUnavailable(id = state.activeId) { return state.unavailableFiles.has(id) || state.unavailableFiles.has(canonicalFileId(id)); }
   function canWriteBibliography() {
     const file = findFile(state.activeId);
     return !!file && !bibliographyImagePreview && !file.sourceError && !file.generated && !file.readOnly &&
-      !isReadOnly() && !isFileUnavailable() && !window.IrisCollab.paused();
+      !isReadOnly() && !isFileUnavailable() && !window.IrisCollab.paused() && !window.IrisCollab.blocked();
   }
   function applyEditorGate() {
-    ed().setReadOnly(isReadOnly() || isFileUnavailable() || !!findFile(state.activeId)?.sourceError || window.IrisCollab.paused());
-    const locked = isReadOnly() || window.IrisCollab.paused();
+    ed().setReadOnly(isReadOnly() || isFileUnavailable() || !!findFile(state.activeId)?.sourceError || window.IrisCollab.paused() || window.IrisCollab.blocked());
+    const locked = isReadOnly() || window.IrisCollab.paused() || window.IrisCollab.blocked();
     ["completionTex", "completionLy", "completionApply"].forEach((id) => { $(id).disabled = locked; });
     bibliographyView?.refreshAvailability();
   }
@@ -141,7 +142,7 @@
     return JSON.stringify(manifest);
   }
   function hasUnsavedChanges() {
-    return state.dirtyFiles.size > 0 || !!(state.retentionPending && Object.keys(state.retentionPending).length)
+    return window.IrisCollab.pending() || state.dirtyFiles.size > 0 || !!(state.retentionPending && Object.keys(state.retentionPending).length)
       || (acknowledgedManifest !== null && persistenceManifest() !== acknowledgedManifest);
   }
   function capturePersistence() {
@@ -283,7 +284,7 @@
     document.documentElement.classList.toggle("iris-readonly", ro);
     applyEditorGate();
     $("compileSourceMapping").disabled = ro;
-    if (ro) { state.autoSave = false; clearTimeout(persistT); }
+    if (state.role === "viewer") { state.autoSave = false; clearTimeout(persistT); }
     updateAutoSaveControls();
     // Settings that can no longer be saved must not keep the project dirty.
     if (state.role !== "owner") state.retentionPending = null;
@@ -293,10 +294,9 @@
   // Every edit — typing, Tab/Enter inserts, find & replace, formatter — flows
   // through the adapter's change event; the app only owns the model side.
   //
-  // In a realtime session the server owns persistence, so an edit is not "unsaved
-  // work" the user must remember to save: the local tree is kept current for the
-  // outline and the compiler, but the file is not marked dirty and no autosave is
-  // scheduled. Without a session, the ordinary save path is unchanged.
+  // Realtime edits use the server stream rather than the ordinary dirty-file
+  // save path. Pending updates still count as unsaved work until confirmed.
+  // Keep the local tree current without scheduling redundant project autosaves.
   function wireEditorEvents() {
     ed().onSourceNavigate(navigateSource);
     ed().onSyntax((snapshot) => {
@@ -362,7 +362,7 @@
     document.addEventListener("iris:collabrole", (event) => {
       const role = event.detail.role;
       if (!["owner", "editor", "viewer"].includes(role)) return;
-      const lostWrite = role === "viewer" && !isReadOnly();
+      const lostWrite = role === "viewer" && state.role !== "viewer";
       state.role = role;
       applyRoleGate();
       if (lostWrite) toast(t("projects.writeForbidden"), "err");
@@ -427,8 +427,15 @@
     const node = findFile(state.activeId);
     // Joining loads server text; a save acknowledgement must not replace edits
     // made after its snapshot was captured.
-    if (!node || node.sourceError || node.kind === "img" || node.generated || node.readOnly || isFileUnavailable(node.id) || state.dirtyFiles.has(node.id)) {
+    if (!node || node.sourceError || node.kind === "img" || node.generated || node.readOnly || isFileUnavailable(node.id)) {
       window.IrisCollab.leave();
+      renderSyncStatus();
+      return;
+    }
+    if (state.dirtyFiles.has(node.id)) {
+      // Offline typing can mark a live OT document dirty. Keep that stream and
+      // its reconnect state; only a local-only buffer must stay out of a room.
+      if (!ed().collaborative()) window.IrisCollab.leave();
       renderSyncStatus();
       return;
     }
@@ -449,6 +456,7 @@
     offline: "collab.offline",
     revoked: "collab.revoked",
     error: "collab.error",
+    conflict: "collab.conflict",
   };
   // Called both as a status listener and directly; without a snapshot the
   // current state is read back from the transport.
@@ -472,6 +480,7 @@
     label.textContent = unconfirmed && status === "live" ? t("collab.pending") : t(key);
     chip.title = t(status === "file-unavailable" ? "collab.fileUnavailableHint" : (unconfirmed ? "collab.pendingTitle" : "collab.title"));
     if (status === "maintenance") chip.title = t("collab.maintenanceHint") + (unconfirmed ? ` ${t("collab.pendingTitle")}` : "");
+    if (window.IrisCollab.blocked()) chip.title = t("api.COLLAB_SYNC_INTERRUPTED");
   }
 
   /* ---------------- document structure ---------------- */
@@ -985,7 +994,31 @@
       else if (tab.right > strip.right) bar.scrollLeft += tab.right - strip.right;
     }
   }
+  let documentDeparture = null;
+  function cancelDocumentDeparture() {
+    documentDeparture?.abort();
+    documentDeparture = null;
+  }
+  function afterDocumentSync(action) {
+    cancelDocumentDeparture();
+    if (!window.IrisCollab.pending()) return action();
+    const controller = new AbortController();
+    documentDeparture = controller;
+    const generation = state.projectLoadGeneration, fileId = state.activeId;
+    return window.IrisCollab.synchronize({ signal: controller.signal }).then(() => {
+      if (controller.signal.aborted || generation !== state.projectLoadGeneration || fileId !== state.activeId) return false;
+      return action();
+    }).catch(error => {
+      if (!controller.signal.aborted && generation === state.projectLoadGeneration) toast(window.IrisI18n.error(error), "err");
+      return false;
+    }).finally(() => {
+      if (documentDeparture === controller) documentDeparture = null;
+    });
+  }
   function closeTab(id) {
+    return afterDocumentSync(() => closeConfirmedTab(id));
+  }
+  function closeConfirmedTab(id) {
     const i = state.openTabs.indexOf(id);
     state.openTabs.splice(i, 1);
     if (state.activeId === id) {
@@ -1002,6 +1035,21 @@
   }
 
   function openFile(id, prepared = null) {
+    if (id === state.activeId && !prepared && (window.IrisCollab.pending() || (isRealtimeFile(id) && ed().collaborative()))) {
+      cancelDocumentDeparture();
+      sourceNavigation.cancel();
+      pendingDiagnostic = null;
+      closeResponsiveSidebar();
+      bibliographyImagePreview = false;
+      setWorkspaceView("editor");
+      refreshBibliography();
+      markTree(id);
+      focusDocument();
+      return true;
+    }
+    return afterDocumentSync(() => openConfirmedFile(id, prepared));
+  }
+  function openConfirmedFile(id, prepared = null) {
     if (!prepared) sourceNavigation.cancel();
     pendingDiagnostic = null;
     const f = findFile(id);
@@ -1028,6 +1076,7 @@
     // local content stands in until the server answers.
     if (!prepared) syncRealtimeSession();
     focusDocument();
+    return true;
   }
 
   /* ---------------- file tree ---------------- */
@@ -1354,6 +1403,13 @@
     treeAction = null;
   }
   function confirmTreeDelete() {
+    const target = treeAction;
+    return afterDocumentSync(() => {
+      if (treeAction !== target) return false;
+      return deleteConfirmedTreeNode();
+    });
+  }
+  function deleteConfirmedTreeNode() {
     if (!treeAction) return;
     const node = treeAction.node;
     const deletedIds = new Set();
@@ -2131,6 +2187,7 @@
   }
   async function compile() {
     if (isReadOnly()) { toast(t("projects.readOnlyNotice")); return; }
+    if (window.IrisPipelines && await window.IrisPipelines.compile()) return;
     if (state.compiling) return;
     if (state.dirtyFiles.size) {
       toast(t("editor.saveBeforeCompile"), "err");
@@ -2162,40 +2219,23 @@
         compileProfile: state.compileProfile,
       }));
       if (generation !== state.compileGeneration) return;
-      const outputGeneration = ++state.outputGeneration;
-      state.previewBuildId = res.buildId || null;
+      ++state.outputGeneration;
       clearNewerBuild();
       const ms = ((res.durationMs || (performance.now() - t0)) / 1000).toFixed(1);
       buildLog(f, res, ms);
       updateCompileStatus(res, ms);
-      if (res.success && Array.isArray(res.artifacts) && res.artifacts.length) await renderCompiledOutput(res);
-      else if (res.pdfBase64) await renderPdf(res);
-      else {
-        const loadGeneration = ++state.pdfLoadGeneration;
-        await releasePdfDocument();
-        if (outputGeneration !== state.outputGeneration || loadGeneration !== state.pdfLoadGeneration) return;
-        rememberPreviewPosition();
-        state.previewPagesReady = false;
-        clearCompiledArtifacts();
-        state.previewKind = "empty";
-        updateZoomLabel();
-        $("pvEmpty").hidden = false;
-        $("pvPages").innerHTML = "";
-        state.pages = [];
-        $("pgTot").textContent = "–";
-        $("pgCur").textContent = "–";
+      if (res.success && Array.isArray(res.artifacts) && res.artifacts.length) {
+        state.previewBuildId = res.buildId || null;
+        await renderCompiledOutput(res);
+      } else if (res.success && res.pdfBase64) {
+        state.previewBuildId = res.buildId || null;
+        await renderPdf(res);
+      } else {
         setView("diagnostics");
       }
     } catch (err) {
       if (generation !== state.compileGeneration) return;
-      const outputGeneration = ++state.outputGeneration;
-      const loadGeneration = ++state.pdfLoadGeneration;
-      await releasePdfDocument();
-      if (generation !== state.compileGeneration || outputGeneration !== state.outputGeneration || loadGeneration !== state.pdfLoadGeneration) return;
-      rememberPreviewPosition();
-      state.previewPagesReady = false;
-      clearCompiledArtifacts();
-      state.previewBuildId = null;
+      ++state.outputGeneration;
       const ms = ((performance.now() - t0) / 1000).toFixed(1);
       const message = window.IrisI18n.error(err, "editor.compileFailed");
       const errorMessage = err.message || t("editor.compileError");
@@ -2224,6 +2264,7 @@
   // Called by the projects layer whenever the open project goes away (closed,
   // deleted, left, or replaced), which is also when the realtime session must go.
   function cancelPendingProjectLoad() {
+    cancelDocumentDeparture();
     sourceNavigation.cancel();
     clearNavigationHighlight();
     state.projectLoadGeneration += 1;
@@ -2263,7 +2304,7 @@
   }
 
   function diagnosticSource(item) {
-    if (!item.file || !item.line || /^(?:[A-Za-z]:|\/)|(?:^|\/)\.\.(?:\/|$)/.test(item.file)) return null;
+    if (item.generatedSource || !item.file || !item.line || /^(?:[A-Za-z]:|\/)|(?:^|\/)\.\.(?:\/|$)/.test(item.file)) return null;
     let source = null;
     walk(project.nodes, (file) => {
       if (file.path === item.file && file.kind !== "img" && !file.generated && !file.readOnly && !isFileUnavailable(file.id)) source = file;
@@ -2278,6 +2319,9 @@
   let diagnosticDocuments = new Map();
   let pendingDiagnostic = null;
   function activateDiagnostic(item) {
+    return afterDocumentSync(() => activateConfirmedDiagnostic(item));
+  }
+  function activateConfirmedDiagnostic(item) {
     const source = diagnosticSource(item);
     if (!source) return;
     const awaitAuthoritative = source.id !== state.activeId && !!canonicalFileId(source.id) && !state.dirtyFiles.has(source.id);
@@ -2309,7 +2353,7 @@
   }
   function applyDiagnosticsToEditor() {
     const file = findFile(state.activeId);
-    const items = file && !isFileUnavailable(file.id) ? state.diagnostics.filter((item) => item.file === file.path) : [];
+    const items = file && !isFileUnavailable(file.id) ? state.diagnostics.filter((item) => !item.generatedSource && item.file === file.path) : [];
     if (!items.length) { ed().setDiagnostics([]); return; }
     const versioned = items.find((item) => item.sourceFileId && item.sourceRevisionId);
     if (versioned) {
@@ -2374,7 +2418,7 @@
     if (!file) return;
     const mapped = new Map(ed().diagnostics().map((d) => [d.id, d.line]));
     state.diagnostics.forEach((item) => {
-      if (item.file === file.path && item.line && !item.loading) item.line = mapped.get(item.id) ?? null;
+      if (!item.generatedSource && item.file === file.path && item.line && !item.loading) item.line = mapped.get(item.id) ?? null;
     });
     diagnosticDocuments.set(file.path, ed().getValue());
     renderDiagnostics();
@@ -2434,7 +2478,7 @@
         blobUrl: URL.createObjectURL(blob),
       };
     });
-    const pdfs = state.compiledArtifacts.filter((artifact) => artifact.mimeType === "application/pdf" || /\.pdf$/i.test(artifact.fileName));
+    const pdfs = state.compiledArtifacts.filter((artifact) => artifact.mimeType === "application/pdf");
     $("pdfArtifactControl").hidden = pdfs.length < 2;
     $("pdfArtifact").innerHTML = pdfs.map((artifact) => `<option value="${esc(artifact.id)}">${esc(artifact.fileName)}</option>`).join("");
     const format = String(res.outputFormat || "output").toUpperCase();
@@ -2451,12 +2495,14 @@
     rememberPreviewPosition();
     state.previewPagesReady = false;
     const artifacts = prepareCompiledArtifacts(res);
-    state.previewKind = (format === "png" || format === "svg") ? "image" : "static";
+    const image = ["png", "jpeg", "gif", "webp", "svg"].includes(format);
+    state.previewKind = image ? "image" : "static";
     state.pages = [];
     $("pvPages").innerHTML = "";
-    if (format === "png" || format === "svg") {
+    if (image) {
       const imageLoads = [];
-      artifacts.forEach((artifact) => {
+      const mimeType = format === "svg" ? "image/svg+xml" : `image/${format}`;
+      artifacts.filter(artifact => artifact.mimeType === mimeType).forEach((artifact) => {
         const page = document.createElement("div");
         page.className = "image-preview";
         const img = document.createElement("img");
@@ -2496,7 +2542,7 @@
     const artifacts = Array.isArray(res.artifacts) && res.artifacts.length
       ? prepareCompiledArtifacts(res)
       : prepareCompiledArtifacts({ outputFormat: "pdf", artifacts: [{ name: res.pdfName || "output.pdf", base64: res.pdfBase64, size: res.pdfSize, mimeType: "application/pdf" }] });
-    const primary = artifacts[0];
+    const primary = artifacts.find(artifact => artifact.id === res.primaryPreviewArtifactId) || artifacts[0];
     state.pdfArtifactId = primary.id || null;
     $("pdfArtifact").value = state.pdfArtifactId || "";
     state.previewKind = "pdf";
@@ -2671,6 +2717,7 @@
   }
 
   function openSettings() {
+    void window.IrisPipelines?.refresh();
     $("settingsTheme").value = window.IrisTheme?.preference() || "system";
     renderFontList();
     updateTexPathControl();
@@ -2981,7 +3028,9 @@
     const build = payload && payload.build;
     if (!build) return false;
     const artifacts = Array.isArray(payload.artifacts) ? payload.artifacts : [];
-    const succeeded = build.status === "succeeded" && artifacts.length > 0;
+    const succeeded = build.status === "succeeded";
+    const primary = artifacts.find(artifact => artifact.id === payload.primaryPreviewArtifactId) || artifacts[0];
+    const hasPreview = succeeded && !!primary;
     const sourceName = String(build.mainPath || t("toolbar.output")).split("/").pop();
     const source = { name: sourceName, path: build.mainPath || sourceName };
     const seconds = ((Number(build.durationMs) || 0) / 1000).toFixed(1);
@@ -2989,8 +3038,9 @@
     const res = {
       success: succeeded,
       buildId: build.id,
-      outputFormat: build.format,
-      outputName: artifacts[0] ? artifacts[0].name : build.displayName,
+      outputFormat: build.kind === "pipeline" ? primary?.mimeType?.split("/")[1] : build.format,
+      outputName: primary ? primary.name : build.displayName,
+      primaryPreviewArtifactId: payload.primaryPreviewArtifactId,
       artifacts,
       durationMs: build.durationMs,
       exitCode: build.exitCode,
@@ -3002,7 +3052,6 @@
       diagnostics: build.diagnostics,
     };
     const outputGeneration = ++state.outputGeneration;
-    state.previewBuildId = build.id;
     // Whatever brought this build on screen — our own compilation, the notice's
     // refresh, or the history dialog — the preview is no longer behind.
     clearNewerBuild();
@@ -3010,24 +3059,17 @@
     setCompileDiagnostics(res);
     buildLog(source, res, seconds, false);
     updateCompileStatus(res, seconds, compiledAt);
-    if (succeeded) {
+    if (hasPreview) {
+      state.previewBuildId = build.id;
       await renderCompiledOutput(res);
+      if (outputGeneration !== state.outputGeneration) return false;
+      setView("preview");
     } else {
-      const loadGeneration = ++state.pdfLoadGeneration;
-      await releasePdfDocument();
-      if (outputGeneration !== state.outputGeneration || loadGeneration !== state.pdfLoadGeneration) return false;
-      rememberPreviewPosition();
-      state.previewPagesReady = false;
-      clearCompiledArtifacts();
-      state.previewKind = "empty";
-      state.pages = [];
-      $("pvPages").innerHTML = "";
-      $("pvEmpty").innerHTML = `<div class="big">${ti("terminal-2")}</div><span>${esc(t("builds.noArtifacts"))}</span>`;
-      $("pvEmpty").hidden = false;
-      $("pgTot").textContent = "–";
-      $("pgCur").textContent = "–";
+      if (!state.compiledArtifacts.length) {
+        $("pvEmpty").innerHTML = `<div class="big">${ti("terminal-2")}</div><span>${esc(t("builds.noArtifacts"))}</span>`;
+        $("pvEmpty").hidden = false;
+      }
       setView("diagnostics");
-      updateZoomLabel();
     }
     if (outputGeneration !== state.outputGeneration) return false;
     if (options.activateWorkspace !== false) setWorkspaceView("preview");
@@ -4089,8 +4131,12 @@
   }
 
   window.IrisApp = {
+    setLoggingOut(active) { state.loggingOut = !!active; applyRoleGate(); },
+    previewVersion: () => state.outputGeneration,
+    openPipelineControls() { openSettings(); activateSettingsSection("compile"); },
     // Load a project's data into the editor and render everything.
     async load(data, { isCurrent = () => true } = {}) {
+      if (window.IrisCollab.pending()) return false;
       const previous = capturePersistence();
       const generation = ++state.projectLoadGeneration;
       data = data || {};
@@ -4107,6 +4153,8 @@
         toast(t("tree.refreshChanged"), "err");
         return false;
       }
+      cancelDocumentDeparture();
+      window.IrisCollab.disconnect();
       // Accepted replacement retires the old source even when the destination
       // is an image/generated surface that bypasses openFile's source load.
       syntaxDocument = null;

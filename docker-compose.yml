@@ -1,6 +1,6 @@
 services:
   webapp:
-    image: localhost/iris:1.1.0
+    image: localhost/iris:1.2.0
     build: .
     restart: unless-stopped
     init: true
@@ -30,6 +30,8 @@ services:
       TEX_PATH_LOCKED: "${TEX_PATH_LOCKED:-false}"
       LILYPOND_BIN_PATH: "${LILYPOND_BIN_PATH:-}"
       LILYPOND_PATH_LOCKED: "${LILYPOND_PATH_LOCKED:-false}"
+      # The stock image includes Lua; empty selects its lua executable on PATH.
+      LUA_BIN_PATH: "${LUA_BIN_PATH:-}"
       COMPILE_TIMEOUT_MS: "${COMPILE_TIMEOUT_MS:-30000}"
       COOKIE_SECURE: "${COOKIE_SECURE:-false}"
       # Enable only when the proxy overwrites/strips X-Forwarded-For,

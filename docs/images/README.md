@@ -1,51 +1,55 @@
-# Demonstration images
+# Documentation screenshots
 
-These screenshots show Iris running with synthetic accounts and projects.
-The music, document text and bibliography entries come from
+These images show Iris with synthetic accounts and projects from
 [`scripts/fixtures/docs-demo.cjs`](../../scripts/fixtures/docs-demo.cjs).
-The references and observations are invented demonstration material.
+The music, garden observations and bibliography entries are invented examples.
 
-- [LilyPond workspace](lilypond-workspace.png): Morning study, a two-staff duet,
-  compiled to PDF and displayed beside the source in the dark theme.
-- [LaTeX workspace](latex-workspace.png): Garden field notes, with an equation
-  and table, compiled to PDF in the light theme.
-- [Bibliography](bibliography.png): the same project's reference table.
-- [Administration](administration.png): synthetic local users and server roles.
+| Image | Workflow |
+| --- | --- |
+| [Project dashboard](project-dashboard.png) | Choose or create a project. |
+| [LilyPond workspace](lilypond-workspace.png) | Edit Morning study beside its compiled score in the dark theme. |
+| [LaTeX workspace](latex-workspace.png) | Edit Garden field notes beside its PDF in the light theme. |
+| [Compilation settings](compilation-settings.png) | Choose a main file and enable PDF/source mapping. |
+| [Compilation workflow](compilation-workflow.png) | Choose a compiler preset and its steps. |
+| [Lua pipeline](lua-pipeline.png) | Set a parameter, inspect targets and run an approved plugin. |
+| [Lua run](lua-run.png) | Read the target result, step states and log. |
+| [Compilation history](compilation-history.png) | Inspect retained builds and download output. |
+| [Diagnostics](diagnostics.png) | Locate a compiler error in source. |
+| [Sharing](project-sharing.png) | Manage project owners, editors and viewers. |
+| [File history](file-history.png) | Read a saved revision and restore its text. |
+| [Bibliography](bibliography.png) | Edit references in a table. |
+| [Administration](administration.png) | Manage accounts and server roles. |
 
 ## Reproduce the captures
 
 Install the [development prerequisites](../development.md#run-the-tests),
-pdfLaTeX with the `geometry` and `booktabs` packages, LilyPond 2.26.0, and Chrome.
-From the source root:
+pdfLaTeX with `geometry` and `booktabs`, LilyPond 2.26.0, Lua 5.4 or 5.5, and
+Chrome. From the source root:
 
 ```sh
 npm ci
 node scripts/capture-docs.cjs --output docs/images
 ```
 
-Use `--pg-bin DIR` for PostgreSQL tools outside the discoverable bindir, or
-`--browser-executable PATH` for another installed Chromium. `--help` lists these
-options without starting services.
+Use `--pg-bin DIR` to select PostgreSQL tools or `--browser-executable PATH` for
+another installed Chromium. Run `--help` to see the options.
 
-The script creates a disposable loopback PostgreSQL cluster, restricted database
-role, random credentials and empty application storage. It creates demo projects
-through the real API, opens the shipped UI and clicks Compile for native builds.
-It uses the real bibliography and administration controllers. It removes the
-browser, server, cluster and storage on completion, leaving only the four named
-PNGs and [capture metadata](capture.json) in the output directory.
+To keep compiler/browser versions, font availability and image hashes, choose
+a Git-ignored report destination whose parent directory exists:
 
-The disposable runtime handles SIGINT, SIGTERM and SIGHUP. It closes the browser
-to interrupt pending page work and confirms the Chrome process group has exited
-before removing storage. A cancelled launch cannot enter browser work. The
-runtime also cleans the app and PostgreSQL. Playwright launch has a ten-second
-timeout; its browser-close path has a thirty-second force-kill fallback. Browser
-profiles and driver artifacts stay inside the owned temporary root, including
-on launch failure. The runtime tracks Chrome during startup too, so cancellation
-can terminate it even before Playwright returns a browser handle.
+```sh
+mkdir -p docs/superpowers
+node scripts/capture-docs.cjs --output docs/images \
+  --report docs/superpowers/documentation-capture.json
+```
 
-The images use a 1600×1000 viewport at DPR 1 and reduced motion. The script
-does not replace API responses, alter the DOM or restyle the application.
-Font requests use the page's normal external stylesheets; metadata records
-font availability and failed external requests. Browser/font versions, current
-timestamps and native rendering can change pixels across runs. Capture metadata
-records versions and SHA-256 hashes rather than promising byte-identical images.
+The script starts a disposable PostgreSQL cluster and Iris server, creates demo
+accounts and projects through the API, and drives the shipped controls. It
+compiles native PDFs, runs the Lua plugin and captures a deliberate LaTeX error.
+On completion or interruption, it closes the browser and removes its server,
+cluster and temporary storage. The output directory receives only the named PNGs.
+
+Captures use a 1600×1000 viewport at DPR 1, reduced motion and the shipped local
+fonts. Dialog images crop to the dialog. The script uses the real API responses
+and UI styling. Timestamps and browser/compiler rendering can change pixels
+between runs.

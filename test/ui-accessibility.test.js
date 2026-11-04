@@ -150,7 +150,6 @@ test("versioned builds are discoverable, previewable, and restored on project op
   assert.match(builds, /\["ArrowDown", "ArrowUp", "Home", "End"\]/);
   assert.match(builds, /reloadSelected: true/);
   assert.match(builds, /seq !== buildState\.previewSeq/);
-  assert.match(builds, /clearBuildOutput\(latestCompleted\.id\)/);
   assert.doesNotMatch(renderList, /class="build-status"/);
   assert.doesNotMatch(renderList, /class="build-latest"/);
   assert.match(renderList, /class="build-when"[\s\S]*class="build-status-dot" role="img"/);

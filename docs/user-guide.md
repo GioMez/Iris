@@ -4,6 +4,16 @@ You need an account on an Iris instance. Ask its administrator for a local
 account or use the configured SSO button. To run your own instance, follow
 [Installation](installation.md).
 
+- [Sign in and create a project](#sign-in-and-choose-your-workspace)
+- [Files and editing](#files-and-editing)
+- [Save and snapshot](#save-and-snapshot)
+- [Compile a document or score](#compile-a-document-or-score)
+- [Preview and build history](#preview-and-build-history)
+- [Bibliographies](#bibliographies)
+- [Sharing and live editing](#sharing-and-live-editing)
+- [Restore or transfer a project](#history-retention-and-portable-projects)
+- [Common interruptions](#common-interruptions)
+
 ## Sign in and choose your workspace
 
 Sign in with your username or email and password. Iris asks you to replace an
@@ -16,6 +26,8 @@ else owns. Create a **LaTeX** or **LilyPond** project, give it a name and select
 a template. Iris copies the template into `main.tex` or `main.ly`; later template
 changes do not change your project. An external account can work on shared
 projects but cannot create or import projects.
+
+![Project dashboard with LaTeX and LilyPond projects and the New project control.](images/project-dashboard.png)
 
 Choose English or Italian on the sign-in screen or in Settings. Under
 **Settings → Editor → Theme**, choose **System**, **Light** or **Dark**.
@@ -44,28 +56,17 @@ and `#{ … #}` blocks, using your auto-indent preference. Comments, literal tex
 and uncertain syntax do not create extra structures. `.sty` and `.cls` files
 start with TeX's internal command-name profile, including `@`.
 
-The outline, collaboration regions and completion share the current syntax
-summary. The outline shows an analysis status while it catches up after an edit.
-Sources above 1,048,576 UTF-16 units remain editable with neutral highlighting
-and an explicit unavailable-syntax message. Changing the interface language
-translates generated labels without changing LilyPond's note convention.
+The outline shows an analysis status while it catches up after an edit. Large
+sources remain editable when syntax analysis is unavailable. Changing the
+interface language translates labels without changing LilyPond's note convention.
 
 **Format** changes leading structural indentation in one undoable operation.
 It preserves literal/string bodies, blank lines, trailing spaces and line
-endings. It can decline uncertain syntax; its current synchronous limit is
-65,536 UTF-16 units. Finish an active input-method composition before formatting.
+endings. It can decline uncertain syntax or a large document. Finish an active
+input-method composition before formatting.
 Included `.sty`, `.cls` and `.ily` sources use the same outline and formatting
 support as their language. See [Editor language support](editor-languages.md) for the
-supported syntax and work limits.
-
-Large supported files show a parsed visible prefix while a local Worker builds
-full syntax. The current synthetic Windows qualification meets the 1 MiB edit,
-first-viewport and post-edit summary targets; first full analysis/reloads can
-still take several seconds. Single 100 KiB lines remain editable. The size limit
-is an analysis policy, not a responsiveness guarantee for every source/browser.
-[Language qualification](language-qualification.md) records the passing final
-feature profiles and Linux gates, source/platform scope, cold-throughput limits
-and the remaining user-source/visual acceptance follow-up.
+supported syntax and size limits.
 
 ### Completion
 
@@ -98,6 +99,10 @@ autosave is optional and starts off; configure it under **Settings → Editor**.
 Live text editing has its own server persistence: Iris writes accepted edits
 after a pause and during sustained typing even with project autosave off.
 Check the collaboration status for edits that the server has not confirmed.
+Save, Snapshot, Compile and Lua runs wait for those edits before using the current
+source. Switching files or closing the project also waits for confirmation.
+Signing out pauses editing while Iris saves and ends the session. A failed Save
+keeps the project open.
 
 **Snapshot** saves the project first, then records a manual history revision for
 each changed, versionable text file. The database stores the text of those
@@ -113,11 +118,26 @@ Save a new file before expecting it to have history or join a live editing sessi
 
 A conflicting whole-project save keeps your local work and reports the conflict.
 Copy any work you need before choosing to discard changes or reopen the project.
-A browser tab with unconfirmed edits needs attention before you close it.
+If the server does not confirm edits within ten seconds, Iris stops the action
+and keeps your work in the tab. Check the connection and try again. If a server
+reload or access change prevents synchronization, the editor keeps the text
+read-only for copying. Copy the work you need before choosing **Discard and exit**
+and reopening the project. Cancelling the discard prompt keeps the project open.
+A browser tab with unconfirmed edits warns before you close or reload it.
 
 ## Compile a document or score
 
-Open **Settings → Compilation**. Choose a main source or leave it on **Automatic**.
+1. Open **Settings → Compilation**.
+2. Choose the main source or leave it on **Automatic**.
+3. Choose the LaTeX pipeline or LilyPond output format, then apply settings.
+4. Press **Compile** and open **Builds** if you need the log or output files.
+
+![Compilation settings with the main source and PDF/source mapping controls.](images/compilation-settings.png)
+
+Scroll down to choose the compilation pipeline and its steps.
+
+![Compilation workflow with its preset and ordered compiler steps.](images/compilation-workflow.png)
+
 Automatic selection prefers the open source if it contains `\documentclass`
 (LaTeX) or `\score` (LilyPond), then looks through project sources. A fixed main
 file stays the entry point while you edit an include. After renaming or deleting
@@ -127,6 +147,12 @@ the stale choice visible.
 Press **Compile**. Iris saves the project, copies the effective source into a
 build workspace and runs the selected tools. You can continue editing during
 compilation, but the output represents that saved copy.
+
+For a project `iris.lua` plugin, use **Settings → Compilation → Lua pipeline**
+to approve source, inspect options
+and targets, and run or cancel work. When enabled, **Compile** uses the selected
+Lua target. See [Lua pipelines](lua-pipelines.md) for source generation, actual
+layout, PDF composition, permissions and retained previews.
 
 ### LaTeX
 
@@ -183,11 +209,15 @@ log, diagnostics and files. Download an individual output or a ZIP of the build.
 Members with read access can inspect and download builds; owners can delete them.
 Failed builds retain their diagnostics but do not publish partial output files.
 
+![Compilation history with a selected build, output files and actions to open or download the result.](images/compilation-history.png)
+
 Select a warning or error with a source location to open that line. Some compiler
 messages have no location, so Iris displays them without a source jump. Multipass
 logs contain the complete captured trace; the diagnostic list reflects the final
 relevant passes and retained errors, so a resolved first-pass warning can remain
 in the log without appearing as an active warning.
+
+![Compiler diagnostics with a source-linked error and the corresponding source file.](images/diagnostics.png)
 
 ### Move between PDF and source
 
@@ -210,10 +240,8 @@ missing sources, blank PDF areas or mismatches leave your current view in place.
 Non-PDF formats offer preview/download without source mapping.
 
 LaTeX navigation needs `synctex` beside the TeX tools or on the server's PATH.
-Native verification covers **pdfLaTeX from TeX Live 2026** and **LilyPond 2.26.0
-with Guile 3.0 and its standard PS backend**, on macOS arm64. The verified SyncTeX
-engine gives source rows; LilyPond can give character positions. Other engines
-and LilyPond versions may compile but do not have the same navigation qualification.
+SyncTeX gives source rows; LilyPond's mapping adapter can give character positions
+and requires the standard PS backend's final-page mapping functions.
 See [Source navigation](source-navigation.md#native-adapters) for details.
 
 ## Bibliographies
@@ -256,6 +284,8 @@ and assign a project role. Ask an administrator to create an account if the
 person has none. Sharing uses accounts on the instance; there are no public
 access links or invitations awaiting an unregistered person.
 
+![Sharing dialog showing project owners, editors and viewers, with account search and role controls.](images/project-sharing.png)
+
 | Project role | Read/download | Edit/compile/restore | Manage sharing and retention | Delete project/builds |
 | --- | :---: | :---: | :---: | :---: |
 | Owner | Yes | Yes | Yes | Yes |
@@ -289,6 +319,8 @@ File deletion keeps its recorded history in storage, subject to retention, but
 the file-history restore action requires a file that still exists in the project.
 Project deletion removes the project's history and outputs.
 
+![File history with a selected revision, its source and the restore action.](images/file-history.png)
+
 Under **Settings → Storage**, an owner can set the number and age of retained
 builds and file revisions. Leave a field empty to follow the server default.
 Iris prunes an entry only if it is **both** outside the newest retained count
@@ -309,7 +341,9 @@ instance recovery, use the [administrator's backup procedure](administration.md#
 | Message or symptom | Next step |
 | --- | --- |
 | Compiler missing / failed to start | Ask the operator to check the executable in Iris's runtime. The stock container has no compilers. |
-| PDF navigation unavailable or source changed | Check mapping is enabled, recompile, and check the qualified toolchain above. |
+| PDF navigation unavailable or source changed | Enable PDF/source mapping, recompile, and check that the server has the required navigation tools. |
+| Lua options or targets unavailable | Save `iris.lua`, obtain owner approval, then inspect options and targets under Settings → Compilation. |
+| Lua parameters changed | Choose **Inspect targets** again before running. |
 | Maintenance | Keep the tab open. Iris pauses writes while the operator drains work; reads and presence continue. |
 | Too many requests / server busy | Wait and retry. The server bounds login and compile work. |
 | Project save conflict | Preserve your local work before reopening or discarding. |

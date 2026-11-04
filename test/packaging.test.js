@@ -9,7 +9,7 @@ const { pathToFileURL } = require("node:url");
 
 const release = path.resolve(__dirname, "../scripts/release.cjs");
 const required = ["LICENSE", "THIRD_PARTY_NOTICES.md", "README.md", ".npmrc", ".env.example",
-  ".dockerignore", "Dockerfile", "docker-compose.yml", "db/schema.sql", "db/init/01-create-iris-user.sh",
+  ".dockerignore", "Dockerfile", "docker-compose.yml", "db/schema.sql", "db/migrations/003-pipelines.sql", "db/migrations/004-primary-preview.sql", "db/init/01-create-iris-user.sh",
   "src/server.js", "public/Iris.html", "public/templates/.metadata.json", "scripts/test.cjs", "scripts/smoke.cjs"];
 async function fixture(t) {
   const root = await fs.mkdtemp(path.resolve(__dirname, "../.iris-package-test-"));
@@ -147,6 +147,42 @@ test("grammar packaging is restricted to intended language source and fixture tr
   for (const name of ["public/unrelated.grammar", "src/private.grammar", "test/unrelated.grammar", "public/languages/.private/x.grammar", "public/languages/tmp/x.grammar", "docs/superpowers/x.grammar"]) assert.equal(included(name), false, name);
 });
 
+test("an extracted source archive runs installed Lua with its trusted bootstrap and codec", { skip: process.env.IRIS_TEST_LUA !== "1" }, async t => {
+  const f = await fixture(t), repo = path.resolve(__dirname, "..");
+  for (const name of ["src/pipeline/lua-vm.js", "src/pipeline/lua-bootstrap.lua", "src/pipeline/lua-process.lua", "src/pipeline/vendor/dkjson.lua", "src/pipeline/contracts.js",
+    "test/fixtures/pipelines/generate.lua", "package.json", "package-lock.json"]) {
+    await fs.mkdir(path.dirname(path.join(f.source, name)), { recursive: true });
+    f.files[name] = await fs.readFile(path.join(repo, name));
+    await fs.writeFile(path.join(f.source, name), f.files[name]);
+  }
+  await fs.writeFile(f.manifest, JSON.stringify(Object.keys(f.files)));
+  const built = f.run();
+  assert.equal(built.status, 0, built.stderr);
+  const version = JSON.parse(f.files["package.json"]).version, extracted = path.join(f.root, "extracted");
+  await fs.mkdir(extracted);
+  const tar = spawnSync("tar", ["-xzf", path.join(f.output, `iris-${version}.tar.gz`), "-C", extracted], { encoding: "utf8" });
+  assert.equal(tar.status, 0, tar.stderr);
+  // Like the grammar archive check, this verifies runtime input inclusion with
+  // locked ancestor dependencies; Task 9 owns fresh production-only installs.
+  const executed = spawnSync(process.execPath, ["-e", `require('./src/pipeline/lua-vm').executeLua({mode:'plan',script:'iris.lua',
+    modules:{'iris.lua':'return {plan=function() return {answer=42} end}'}}).then(v=>console.log(JSON.stringify(v)))`], {
+    cwd: path.join(extracted, `iris-${version}`), encoding: "utf8", timeout: 10000,
+  });
+  assert.equal(executed.status, 0, executed.stderr);
+  assert.deepEqual(JSON.parse(executed.stdout), { answer: 42 });
+  const generated = spawnSync(process.execPath, ["-e", `const fs=require('node:fs');
+    require('./src/pipeline/lua-vm').executeLua({mode:'transform',script:'iris.lua',entrypoint:'generate',
+      modules:{'iris.lua':fs.readFileSync('test/fixtures/pipelines/generate.lua')},
+      context:{options:{parameters:{family:'lilypond',count:2,broken:false},step:{}}},
+      host:{write:(port,path,bytes)=>console.log(JSON.stringify({port,path,bytes:bytes.toString('utf8')}))}})`], {
+    cwd: path.join(extracted, `iris-${version}`), encoding: "utf8", timeout: 10000,
+  });
+  assert.equal(generated.status, 0, generated.stderr);
+  assert.deepEqual(JSON.parse(generated.stdout), { port: "include", path: "generated/include.ily", bytes: "generatedMusic = { c'4 c'4 }\n" });
+  const { included } = require(release);
+  for (const name of ["src/private.lua", "public/plugin.lua", "docs/superpowers/plugin.lua"]) assert.equal(included(name), false);
+});
+
 test("release rejects mismatched metadata, incomplete manifests, implicit checkout and existing output", async (t) => {
   const f = await fixture(t);
   let result = spawnSync(process.execPath, [release, "--output", f.output], { encoding: "utf8" });
@@ -157,10 +193,31 @@ test("release rejects mismatched metadata, incomplete manifests, implicit checko
   await fs.writeFile(path.join(f.source, "package-lock.json"), f.files["package-lock.json"]);
   await fs.writeFile(f.manifest, JSON.stringify(Object.keys(f.files).filter((name) => name !== "db/schema.sql")));
   assert.match(f.run().stderr, /missing.*db\/schema.sql/i);
+  await fs.writeFile(f.manifest, JSON.stringify(Object.keys(f.files).filter((name) => name !== "db/migrations/003-pipelines.sql")));
+  assert.match(f.run().stderr, /missing.*db\/migrations\/003-pipelines.sql/i);
+  await fs.writeFile(f.manifest, JSON.stringify(Object.keys(f.files).filter((name) => name !== "db/migrations/004-primary-preview.sql")));
+  assert.match(f.run().stderr, /missing.*db\/migrations\/004-primary-preview.sql/i);
   await fs.writeFile(f.manifest, JSON.stringify(Object.keys(f.files)));
   result = f.run();
   assert.equal(result.status, 0, result.stderr);
   assert.equal(f.run().status, 1, "never replace an existing release directory");
+});
+
+test("source archives preserve the EPS input needed by native layout qualification", async t => {
+  const f = await fixture(t), name = "test/fixtures/pipelines/layout-image.eps";
+  const bytes = await fs.readFile(path.join(__dirname, "fixtures/pipelines/layout-image.eps"));
+  await fs.mkdir(path.dirname(path.join(f.source, name)), { recursive: true });
+  await fs.writeFile(path.join(f.source, name), bytes);
+  await fs.writeFile(f.manifest, JSON.stringify([...Object.keys(f.files), name]));
+  const built = f.run();
+  assert.equal(built.status, 0, built.stderr);
+  const extracted = path.join(f.root, "extracted"); await fs.mkdir(extracted);
+  const tar = spawnSync("tar", ["-xzf", path.join(f.output, "iris-1.0.0.tar.gz"), "-C", extracted], { encoding: "utf8" });
+  assert.equal(tar.status, 0, tar.stderr);
+  assert.deepEqual(await fs.readFile(path.join(extracted, "iris-1.0.0", name)), bytes);
+  const { included } = require(release);
+  assert.equal(included("src/private.eps"), false);
+  assert.equal(included("test/unrelated.eps"), false);
 });
 
 test("archive preserves actual offline font CSS, binaries, pinned inventory and full licenses", async t => {

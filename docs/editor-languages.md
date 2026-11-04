@@ -1,24 +1,27 @@
 # Editor language support
 
-**Qualification (21 September 2026):** the final gate-v2 matrix and selected strict
-5/8 ms profiles pass. All 300 normal 1 MiB edit publications, including warmups,
-meet 500 ms (maximum 407.3 ms). Linux full Node, covering, browser, native and
-navigation gates have run with their recorded source scopes; the final query-only
-optimization has separate 208/208 coverage. User-source/subjective acceptance
-remains a follow-up. See [qualification](language-qualification.md) for hashes,
-platform versions, invocation counts and historical results.
+Use this reference when changing syntax support, completion, outline or automatic
+editing. For editor controls, see [Files and editing](user-guide.md#files-and-editing).
+For generation commands, see [Build editor-language sources](development.md#build-editor-language-sources).
 
-## LaTeX support (TX01–TX09)
+- [LaTeX support](#latex-support)
+- [Shared language API](#shared-language-api)
+- [Editor API and lifetime](#editor-api-and-lifetime)
+- [Completion](#completion-and-project-summaries)
+- [Safe edits and bounds](#safe-edits-and-bounds)
+- [LilyPond support](#lilypond-support)
 
-| Cases | Editorial support |
+## LaTeX support
+
+| Syntax | Editorial support |
 | --- | --- |
-| TX01 | Control words/symbols, escapes, comments, nested groups and optional arguments |
-| TX02–03 | Inline/display math and catalogued math environments; internal commands, numbers/operators, comments and nested text/math |
-| TX04 | `verb` and catalogued verbatim/listing/comment/filecontents bodies, with construct-specific boundaries |
-| TX05–06 | Seven heading levels, nested/multiline titles, custom literal environment names and recovery |
-| TX07 | Classic/xparse/primitive definitions, with deferred bodies excluded from document structure |
-| TX08 | Signature-based labels/references/citations/paths and literal includes |
-| TX09 | Standard, internal `.sty/.cls`, `makeatletter` and expl3 lexical profiles |
+| Commands and groups | Control words/symbols, escapes, comments, nested groups and optional arguments |
+| Math | Inline/display math and catalogued environments; internal commands, numbers/operators, comments and nested text/math |
+| Literal bodies | `verb` and catalogued verbatim/listing/comment/filecontents bodies, with construct-specific boundaries |
+| Structure | Seven heading levels, nested/multiline titles, custom literal environment names and recovery |
+| Definitions | Classic/xparse/primitive definitions, with deferred bodies excluded from document structure |
+| Arguments | Signature-based labels/references/citations/paths and literal includes |
+| Lexical profiles | Standard, internal `.sty/.cls`, `makeatletter` and expl3 profiles |
 
 Arbitrary catcodes, macro expansion, dynamic names and executed conditional
 branches are not inferred. Unknown commands remain editable generic commands;
@@ -26,7 +29,36 @@ unsupported or incomplete contexts are conservative rather than compiler errors.
 Both adapters supply structural bracket metadata, including musical/Scheme
 delimiters, to CodeMirror's existing matching decoration.
 
-## Shared editor consumers: HP07
+## Shared language API
+
+`iris-language-service.mjs` exports `loadLanguage`, `analyze`, `runCooperatively`,
+`analysisPolicy` and `MAX_ANALYSIS_LENGTH`. Use `tex` or `ly` as the language kind.
+Both language adapters expose a shared grammar/tree service; BibTeX and RIS use
+separate stream languages and bibliography policies.
+
+`analysisPolicy(length)` accepts a nonnegative safe-integer UTF-16 length and
+returns frozen `{mode, length, maxLength, reason}`. Up to 1,048,576 units, mode
+is `full` and reason is null. Larger sources use `limited` and
+`source-too-large`. Apply this policy before parsing, Worker submission or
+automatic editing. Direct `adapter.language.parser` access bypasses the guard.
+
+`analyze` returns `{tree, doc, data, status, parsedTo, limitReason}`. Full coverage
+uses `ready`; oversized input returns `Tree.empty`, empty frozen summaries,
+`unavailable`, coverage zero and `source-too-large`. It does not read source bytes
+or claim a successful empty parse. Direct summary calls reject oversized input
+with `IRIS_ANALYSIS_LIMIT`; context queries return unknown.
+
+Keep coordinates as raw UTF-16 offsets and preserve CRLF. Headless CodeMirror
+tests should set `EditorState.lineSeparator.of("\n")` when retaining raw CRLF.
+Contexts use half-open ownership: a region to the right owns its start position.
+The default `bias: -1` guides text-leaf fallback without overriding semantic
+ownership. Closed literals/comments end at their source boundary; unfinished
+EOF contexts retain their open endpoint.
+
+Recovery-safe fragment views exclude uncertain scopes while retaining healthy
+subtree identities. Do not replace maintained trees with a second scanner.
+
+## Shared editor consumers
 
 The editor installs one `createLanguageState` owner for its current TeX or
 LilyPond document. Highlighting, outline, region presence, completion and edit
@@ -76,6 +108,22 @@ Node/headless owners retain cooperative parsing. Full publication triggers a
 parse-only view update and a fresh summary. The normal 1,048,576-unit support
 limit remains unchanged.
 
+Worker requests carry protocol version, bundle build, owner, request sequence,
+document generation/revision and normalized language/options identity, plus the
+exact UTF-16 source. Responses must match the complete request identity. The
+client admits at most two Workers and sixteen waiting owners. Each owner has one
+current request, a default fifteen-second deadline and three completed transfer
+registries. Replacement and disposal settle old requests; generation changes
+clear retained history.
+
+The Worker compares exact content against retained versions to validate edit
+ranges and reuse trees, including exact undo. It sends trees in pull-controlled
+chunks of at most 256 records. Tree records carry type, length, child IDs,
+relative positions and supported `contextHash`/`lookAhead` properties. TreeBuffer
+records retain compact Uint16 quads; transfer detaches copies. The decoder uses
+the local styled NodeSet and public Lezer Tree/TreeBuffer objects. Unknown dynamic
+properties and mounted trees are unsupported by this protocol.
+
 Revision/generation replacement, disposal and the size guard cancel work. Worker
 asset/load/protocol failures or deadlines yield explicit unavailable syntax
 (`limitReason: "worker-unavailable"`), while editing remains available. Source
@@ -90,9 +138,8 @@ turns continue real prefix parsing while full Worker work is pending; viewport
 growth can request coverage up to the existing 3000-unit main-prefix bound.
 EOF/replacement/disposal retires pending prefix work. Beyond that bound, far or
 long-line viewports wait for Worker coverage rather than starting a full UI parse.
-The 5 ms parsing/query and 8 ms application budgets have passing final strict
-diagnostics. Earlier overruns remain historical evidence; finite measurements
-are not a hard real-time guarantee for arbitrary input or browser GC.
+Parsing/query work uses a 5 ms budget and application work uses an 8 ms budget.
+Keep work cooperative and cancel it when its document owner changes.
 
 The outline uses full semantic levels and caps visual indent at four levels.
 `IrisStructure.fromRegions(regions, length)` preserves names, certainty and
@@ -159,10 +206,9 @@ deletion and project closure abort obsolete work. Completion symbol collection
 also yields in 8 ms turns. Cache refresh visits at most 4,096 project nodes and
 skips sources above the shared analysis limit.
 
-`iris-completion.js` now contains only the CommonJS/browser custom-command
-normalizer. Server callers require no CodeMirror imports. The obsolete
-`iris-latex.js` and `iris-lilypond.js` scanners and their HTML script entries
-have been removed; callers use the service rather than compatibility parsers.
+`iris-completion.js` provides the CommonJS/browser custom-command normalizer.
+Server callers require no CodeMirror imports. Use the shared language service
+for syntax-dependent completion.
 
 ### Safe edits and bounds
 
@@ -199,12 +245,7 @@ Internal unsafe-tree, line/node-cap and deadline declines return an empty plan
 and therefore `unchanged` / “No safe indentation changes.” Outer size, coverage
 and IME checks return `unavailable`. Neither path applies a partial format plan.
 
-These are functional/work bounds, not hard elapsed-time guarantees. HP08's
-synthetic native subset and mounted heap/lifecycle checks are recorded in the
-[qualification report](language-qualification.md), with passing latest gates,
-their exact source scopes and the remaining user-acceptance follow-up.
-
-## LilyPond parser delivery: HP06
+## LilyPond support
 
 The language service supports `loadLanguage("ly", options)` and
 `analyze("ly", source, options)` for music, text, configuration and embedded
@@ -213,7 +254,7 @@ owner. `iris-lilypond-highlighting.mjs` also offers a standalone guarded factory
 The guard runs before LR startup and permits
 neutral editing above 1,048,576 UTF-16 units; shrinking restores highlighting.
 
-The HP05 subset covers LY01–LY07: strings and LilyPond comments; pitches, rests,
+The parser recognizes strings and LilyPond comments; pitches, rests,
 durations, chords and simultaneous music; expressive events; structural blocks,
 assignments and context bodies; input modes and wrappers; local note-language
 directives; properties and basic Scheme scalar values. Offsets are raw UTF-16
@@ -260,12 +301,12 @@ Membership is adapted from LilyPond's versioned
 [`scm/define-note-names.scm`](https://github.com/lilypond/lilypond/blob/v2.26.0/scm/define-note-names.scm).
 Copyright and GPL-3.0-or-later attribution are in `THIRD_PARTY_NOTICES.md`.
 
-| Convention | Spellings | Examples and exceptions |
-| --- | ---: | --- |
-| `nederlands` | 67 | `cis`, `bes`, `ceseh`, `cisih`; `es/ees`, `eses/eeses`, `as/aes`, `ases/aeses` |
-| `italiano` | 63 | `fad`, `sib`, `dobsb`, `dodsd`; no French `ré` or `dox` alias |
-| `english` | 105 | `cs`, `bf`, `ctqf`, `ctqs`, `cx/css`, `c-flat`, `c-natural`, `c-sharpsharp` |
-| `deutsch` | 67 | `h`, `b`, `asas/ases`, `asah/aseh`; retained compatibility `aeh`, `eeh` |
+| Convention | Examples and exceptions |
+| --- | --- |
+| `nederlands` | `cis`, `bes`, `ceseh`, `cisih`; `es/ees`, `eses/eeses`, `as/aes`, `ases/aeses` |
+| `italiano` | `fad`, `sib`, `dobsb`, `dodsd`; no French `ré` or `dox` alias |
+| `english` | `cs`, `bf`, `ctqf`, `ctqs`, `cx/css`, `c-flat`, `c-natural`, `c-sharpsharp` |
+| `deutsch` | `h`, `b`, `asas/ases`, `asah/aseh`; compatibility `aeh`, `eeh` |
 
 All four include natural, sharp/flat, double and quarter-tone spellings present
 in that reference. Language-name aliases from other catalogs are not silently
@@ -285,7 +326,7 @@ Block comments follow the
 `%{` inside a block comment does not nest; the first `%}` closes it. Music-mode
 comments do not inherit Scheme's comment rules.
 
-### Scheme reader and embedded music (LY08)
+### Scheme reader and embedded music
 
 `scheme-tokens.mjs` supplies bounded tokens to the same grammar and context
 tracker as music. It never evaluates Guile. `#`, `$`, `#@` and `$@` introduce
@@ -293,7 +334,7 @@ exactly one datum after reader trivia. `#(define ...)` is a LilyPond introducer
 plus a Scheme list; `##t` is an introducer plus a Scheme boolean. `#red` retains
 the Scheme role and `#12.5` retains the number role, including their introducers.
 
-Qualified forms:
+Recognized forms:
 
 - Parenthesized lists and dotted pairs; vectors `#(...)` inside Scheme.
 - Bare delimiter-separated symbols, `#t`/`#f` (also uppercase), quote, quasiquote,
@@ -317,7 +358,7 @@ Qualified forms:
   `(#; #; a b c)` contains only `c`. `%` is a Scheme symbol character.
 
 `MusicLiteral(MusicLiteralOpen, …, MusicLiteralClose)` represents actual
-`#{…#}` music, including ordinary HP05 roles, nested Scheme and nested literals.
+`#{…#}` music, including ordinary music roles, nested Scheme and nested literals.
 The closer is **two units, `#}`**, not `}`. LilyPond strings/comments protect it.
 Recovery from a damaged inner music group can end at the actual `#}` while
 retaining recovered certainty for that group/literal.
@@ -325,8 +366,7 @@ retaining recovered certainty for that group/literal.
 A literal inherits the entry note convention and known invocations, starts in
 music mode, and restores its caller's mode, note convention and invocation
 environment on exit. Local `\language` and include uncertainty affect its body
-only. This note-language scope was checked with native LilyPond 2.26.0 / Guile
-3.0.11. Discarded datums still have syntactic children for correct boundaries,
+only. Discarded datums still have syntactic children for correct boundaries,
 but their entire contents get the comment role and contribute no outline,
 regions, symbols, references, includes or language-history effects.
 
@@ -340,7 +380,7 @@ dispatch such as `#'`, other custom `#` dispatch, unrecognized character names,
 and **numeric-prefixed reader atoms longer than 256 units**. The latter may
 start like a number and later turn into an unsupported dispatch; no suffix is
 released into outer music. Guile square-bracket lists and bar-led/escaped symbol
-reader conventions are also outside this qualification and stay unknown.
+reader conventions also stay unknown.
 Malformed dotted tails use the same conservative fallback where no safe datum
 boundary can be established.
 
@@ -349,7 +389,7 @@ ordinary atom remains Scheme text. Reader-option changes, arbitrary Guile reader
 extensions, evaluation, interpolation semantics and cross-file effects are not
 inferred. Unknown means unsupported editorial knowledge, not a compiler error.
 
-### Queries, limits and next steps
+### Queries and limits
 
 The adapter exposes `language`, `options`, `summarize`, `summarySteps`,
 `contextAt`, `blockAtEnter` and `formatChanges`. Batch and scheduled summaries
@@ -390,7 +430,7 @@ directive completes. Timeline events follow source-end order, including literal
 restoration before a containing directive at the same offset. An enclosing
 datum discard owns the comment context even when its child is unknown markup.
 
-#### HP07 editing/consumer contract
+#### Editing and consumer contract
 
 - `SchemeExpression` contains its one/two-unit introducer, reader trivia, a datum,
   and a zero-width `SchemeFinish`. That finish is a parser handoff, **not a source
@@ -404,7 +444,7 @@ datum discard owns the comment context even when its child is unknown markup.
 - Contexts use half-open ownership: the right-adjacent region wins, including
   immediately after `#}`. Open EOF lists, strings, block comments and literals
   retain context and conservative certainty. A closed scalar at EOF is complete.
-  Exact means a qualified syntactic boundary, not successful Guile evaluation or
+  Exact means a known syntactic boundary, not successful Guile evaluation or
   LilyPond compilation. Recovery in unrelated siblings does not downgrade a
   healthy literal/group. Cold queries can return unknown when their budget ends.
 - Comments and discarded datums override all descendant contexts and records.
@@ -417,8 +457,6 @@ datum discard owns the comment context even when its child is unknown markup.
   contexts. Frozen summaries belong to the supplied tree/document, not to a file
   path or a previous editor revision.
 
-HP07 implements summary/completion/Enter migration and the editing methods
-described above. Standalone highlighting factories install a reusable guarded
-language without a summary owner or timer. Scoped mounted lifecycle/contrast
-tests cover both languages and embedded music. HP08 records final passing gates
-and preserves earlier failures as history; subjective user acceptance remains external.
+Standalone highlighting factories install a reusable guarded language without a
+summary owner or timer. Use the editor owner for outline, completion and editing
+that depend on maintained summaries.

@@ -17,12 +17,25 @@ const { recordAuditEvent } = require("./audit");
 const { normalizeProjectPath, collectProjectFiles, reconcileProjectFiles, remapImportedFileIds } = require("./project-files");
 const { createProjectMutations } = require("./project-mutations");
 const { createProjectDeletions } = require("./project-deletions");
+const pipelineRuns = require("./pipeline/runs");
+const PipelineContracts = require("./pipeline/contracts");
+const { createRegistry } = require("./pipeline/registry");
+const { createNativeRuntime } = require("./pipeline/runtime");
+const { createLuaTools, createLuaAdapter, createLuaCoordinator } = require("./pipeline/lua");
+const { createCompilerTools, createCompilerAdapters } = require("./pipeline/compilers");
+const { createPdfTool, createPdfAdapter } = require("./pipeline/pdf-runner");
+const { createRunWorkspace, disposeRunWorkspace, openCheckedFile, copyFile: copyPipelineFile } = require("./pipeline/workspaces");
+const { executePlan } = require("./pipeline/executor");
+const { writePublicationReceipt, inspectPublication } = require("./pipeline/publication");
+const { createRunMappingCollector, createNavigationTools, navigatePublishedPipeline } = require("./pipeline/navigation");
 const { hashContent, isVersionableText, contentChanged } = require("./versions");
 const { CollabRooms, CollabError, peerColor, normalizePresence } = require("./collab");
 const { isSystemRole, isUserStatus, isAccountStatus, leavesNoActiveAdmin, normalizeSearch, userDeletionBlock } = require("./admin");
 const {
   isProjectRole,
   roleHasCapability,
+  authorizeProjectRecord,
+  PROJECT_OWNER_LOCK,
   canCreateProjects,
   canHoldProjectRole,
   leavesNoOwner,
@@ -205,6 +218,24 @@ let shuttingDown = false;
 let inFlight = 0;
 let inFlightMutations = 0;
 const activeBuilds = new Set();
+const activePipelineRuns = new Map();
+const activePipelineInspections = new Set();
+let pipelineExecution;
+let pipelineNavigationFailure;
+let pipelineReconciliation, pipelineRecoveryFailure;
+const pipelineCoordinatorId = uuidv7();
+const pipelineRunStore = {
+  get pool() { return db; },
+  coordinatorId: pipelineCoordinatorId,
+  mutations: projectMutations, requestError,
+  emit: collabNotifyRun,
+  stop: async id => { await activePipelineRuns.get(id)?.stop(); },
+  inspectPublication: async row => {
+    const { rows } = await db.query("SELECT storage_path FROM projects WHERE id=$1", [row.project_id]);
+    if (!rows.length) return { state: "unavailable" };
+    return inspectPublication(resolveProjectStorageDir(DATA_DIR, rows[0].storage_path), row, pipelineRunStore);
+  },
+};
 const backgroundPending = new Set();
 const activeChildren = new Set();
 let shutdownPromise = null;
@@ -804,6 +835,7 @@ async function initDb() {
     connectTimeout: DB_CONNECT_TIMEOUT,
   });
   await fs.mkdir(DATA_DIR, { recursive: true });
+  await getPipelineExecution();
   await initializeProjectTemplates(TEMPLATE_DIR, path.join(PUBLIC_DIR, "templates"));
   await seedUsers();
 }
@@ -1571,17 +1603,7 @@ function projectRetention(row) {
 // requester's role. A permission change takes effect at once because this runs on
 // every request, exactly like the per-request account check in requireUser.
 async function authorizeProject(id, user, capability, queryable = db) {
-  const { rows } = await queryable.query(
-    `SELECT p.id, p.name, p.storage_path, p.created_at, p.updated_at, p.revision,
-            p.build_keep, p.build_days, p.version_keep, p.version_days, m.role
-     FROM projects p JOIN project_members m ON m.project_id = p.id
-     WHERE p.id = $1 AND m.user_id = $2`,
-    [id, user.sub]
-  );
-  if (!rows.length) throw requestError("PROJECT_NOT_FOUND", 404);
-  const row = rows[0];
-  if (!roleHasCapability(row.role, capability)) throw requestError("PROJECT_FORBIDDEN", 403);
-  return { ...withStorageDir(row), role: row.role };
+  return withStorageDir(await authorizeProjectRecord(queryable, id, user, capability, requestError));
 }
 
 function authorizedProjectGate(id, user, capability, action) {
@@ -1635,10 +1657,6 @@ async function getProjectTemplate(req, res, type, encodedFileName) {
     "x-content-type-options": "nosniff",
   });
 }
-
-// Serializes owner-invariant changes per project, so concurrent role changes on
-// the same project cannot race past the last-owner check.
-const PROJECT_OWNER_LOCK = 4952;
 
 // Account conversion locks users before owned projects. Sharing must use the
 // same order, including INSERT's target and invited_by foreign-key references.
@@ -2520,29 +2538,33 @@ function collabPersist(room, { revision = false } = {}) {
 
 async function collabPersistNow(room, revision) {
   if (!room.storageDir) return;
-  return projectMutations.gate(room.projectId, async () => {
-    if (collabRooms.get(room.fileId) !== room) return;
-    const { rows } = await db.query(
-      "SELECT f.path, f.kind, p.storage_path FROM project_files f JOIN projects p ON p.id = f.project_id WHERE f.id = $1 AND f.project_id = $2 AND f.deleted_at IS NULL",
-      [room.fileId, room.projectId]
-    );
-    if (!rows.length) return;
-    room.path = rows[0].path;
-    room.kind = rows[0].kind;
-    room.storageDir = resolveProjectStorageDir(DATA_DIR, rows[0].storage_path);
-    if (room.needsPersist()) {
-      const version = room.version;
-      const text = room.text();
-      const abs = path.join(room.storageDir, room.path);
-      await fs.mkdir(path.dirname(abs), { recursive: true });
-      await fs.writeFile(abs, text, "utf8");
-      room.markPersisted(version);
-      room.flushDeadline = 0;
-      // File identity is rechecked above; timestamp writes alone are coalesced.
-      collabScheduleTouch(room.projectId);
-    }
-    if (revision) await collabCaptureRevisions(room.projectId, [room]);
-  });
+  return projectMutations.gate(room.projectId, () => collabPersistLocked(room, { revision }));
+}
+
+// Caller owns the project gate, including when a pipeline flushes room text
+// before copying its immutable snapshot. This does not adopt a client manifest.
+async function collabPersistLocked(room, { revision = false, force = false } = {}) {
+  if (collabRooms.get(room.fileId) !== room) return;
+  const { rows } = await db.query(
+    "SELECT f.path, f.kind, p.storage_path FROM project_files f JOIN projects p ON p.id = f.project_id WHERE f.id = $1 AND f.project_id = $2 AND f.deleted_at IS NULL",
+    [room.fileId, room.projectId]
+  );
+  if (!rows.length) return;
+  room.path = rows[0].path;
+  room.kind = rows[0].kind;
+  room.storageDir = resolveProjectStorageDir(DATA_DIR, rows[0].storage_path);
+  if (force || room.needsPersist()) {
+    const version = room.version;
+    const text = room.text();
+    const abs = path.join(room.storageDir, room.path);
+    await fs.mkdir(path.dirname(abs), { recursive: true });
+    await fs.writeFile(abs, text, "utf8");
+    room.markPersisted(version);
+    room.flushDeadline = 0;
+    // File identity is rechecked above; timestamp writes alone are coalesced.
+    collabScheduleTouch(room.projectId);
+  }
+  if (revision) await collabCaptureRevisions(room.projectId, [room]);
 }
 
 // Marks the project modified at most once per COLLAB_TOUCH_MS, however many of
@@ -2793,6 +2815,23 @@ function collabNotifyBuild({ projectId, buildId, status, user }) {
   });
 }
 
+async function collabNotifyRun(event) {
+  // HTTP resync owns the full record. Recheck membership even when a revocation
+  // is still waiting for its collaboration recheck.
+  for (const session of collabSessions) {
+    if (session.projectId !== event.projectId || !collabActive(session)) continue;
+    let project, generation;
+    do {
+      generation = collabAccessGeneration;
+      if (!await collabAuthenticate(session)) break;
+      project = await collabMembership(event.projectId, session.user.sub);
+    } while (generation !== collabAccessGeneration && collabActive(session));
+    if (project && collabActive(session) && session.projectId === event.projectId) {
+      collabSend(session.socket, { t: "run", ...event });
+    }
+  }
+}
+
 async function collabHandleMessage(session, raw) {
   if (!await collabAuthenticate(session) || !collabActive(session)) return;
   let message;
@@ -2809,6 +2848,7 @@ async function collabHandleMessage(session, raw) {
     collabSend(session.socket, {
       t: "opened",
       fileId,
+      streamId: entry.room.streamId,
       version: entry.room.version,
       doc: entry.room.text(),
       role: entry.role,
@@ -2910,6 +2950,8 @@ function collabCloseSession(session, code = 1000, reason = "") {
 // sessions already in progress.
 async function collabRecheckProject(projectId) {
   collabAccessGeneration++;
+  await pipelineRuns.recheckRunPermissions(pipelineRunStore, { projectId });
+  await stopPipelineInspections({ projectId, recheck: true });
   const sessions = Array.from(collabSessions).filter((session) =>
     session.projectId === projectId
     || Array.from(session.rooms.values()).some((entry) => entry.projectId === projectId));
@@ -3341,6 +3383,10 @@ async function deleteProject(req, res, user, id, admin = false) {
       onCommitted: (row, current) => {
         committed = { row, current };
         collabReconcileProject(id);
+        for (const operation of [...activePipelineInspections, ...activePipelineRuns.values()]) if (operation.projectId === id) {
+          operation.projectDeleted = true;
+          operation.controller.abort(requestError("PROJECT_NOT_FOUND", 404));
+        }
       },
     });
   } finally {
@@ -3348,10 +3394,17 @@ async function deleteProject(req, res, user, id, admin = false) {
     // the project queue and delay retired-room persistence or cleanup retries.
     if (committed) {
       const { row, current } = committed;
-      await audit({
-        ...sessionActor(req, current), action: "project.deleted", targetType: "project", targetId: id,
-        metadata: { name: row.name, ...(admin ? { via: "admin" } : {}) },
-      });
+      try {
+        await audit({
+          ...sessionActor(req, current), action: "project.deleted", targetType: "project", targetId: id,
+          metadata: { name: row.name, ...(admin ? { via: "admin" } : {}) },
+        });
+      } finally {
+        const drained = await Promise.allSettled([stopPipelineInspections({ projectId: id }),
+          ...[...activePipelineRuns.values()].filter(operation => operation.projectId === id).map(operation => operation.stop())]);
+        const failure = drained.find(result => result.status === "rejected");
+        if (failure) throw failure.reason;
+      }
     }
   }
   json(res, 200, result);
@@ -3895,6 +3948,7 @@ function runCompileStep({ step, binPath, cwd, fontDir, texmfVar }) {
     const projectSearchPath = kpathseaSearchPath(cwd, outputDir);
     const startedAt = Date.now();
     let log = "";
+    let logBytes = 0;
     let timedOut = false;
     let truncated = false;
     let done = false;
@@ -3919,9 +3973,15 @@ function runCompileStep({ step, binPath, cwd, fontDir, texmfVar }) {
     });
     const append = (chunk) => {
       const text = chunk.toString("utf8");
-      const remaining = Math.max(0, COMPILE_LOG_LIMIT - log.length);
-      if (text.length > remaining) truncated = true;
-      log += text.slice(0, remaining);
+      const size = Buffer.byteLength(text), remaining = Math.max(0, COMPILE_LOG_LIMIT - logBytes);
+      if (size <= remaining) { log += text; logBytes += size; return; }
+      truncated = true;
+      if (!remaining) return;
+      const bytes = Buffer.from(text);
+      let end = remaining;
+      while (end > 0 && (bytes[end] & 0xc0) === 0x80) end--;
+      log += bytes.subarray(0, end).toString("utf8");
+      logBytes += end;
     };
     append(`$ ${command} ${args.join(" ")}\n`);
     const timer = setTimeout(() => {
@@ -3929,8 +3989,8 @@ function runCompileStep({ step, binPath, cwd, fontDir, texmfVar }) {
       child.kill("SIGTERM");
       setTimeout(() => { if (!done) child.kill("SIGKILL"); }, 1500);
     }, COMPILE_TIMEOUT_MS);
-    child.stdout.on("data", append);
-    child.stderr.on("data", append);
+    child.stdout.setEncoding("utf8").on("data", append);
+    child.stderr.setEncoding("utf8").on("data", append);
     child.on("error", (err) => append(`\nIris: unable to start ${command}: ${err.message}\n`));
     child.on("close", (code, signal) => {
       done = true;
@@ -3944,22 +4004,42 @@ function runCompileStep({ step, binPath, cwd, fontDir, texmfVar }) {
   });
 }
 
-async function runCompilePipeline({ profile, binPath, cwd, fontDir, texmfVar, preLog }) {
+async function runCompilePipeline({ profile, binPath, cwd, fontDir, texmfVar, preLog, runStep = runCompileStep, signal: abortSignal }) {
   const startedAt = Date.now();
-  let log = preLog || "";
+  let log = "", logBytes = 0, truncated = false;
+  const append = text => {
+    const size = Buffer.byteLength(text);
+    if (logBytes + size <= COMPILE_LOG_LIMIT) { log += text; logBytes += size; return; }
+    const bytes = Buffer.from(log + text);
+    truncated = true;
+    const marker = Buffer.from("\nIris: compile trace truncated.\n").subarray(0, COMPILE_LOG_LIMIT);
+    const room = COMPILE_LOG_LIMIT - marker.length;
+    let head = Math.floor(room / 2), tail = bytes.length - (room - head);
+    // Keep the initial command context and most recent pass without splitting
+    // a UTF-8 scalar at either retained boundary.
+    while (head > 0 && (bytes[head] & 0xc0) === 0x80) head--;
+    while (tail < bytes.length && (bytes[tail] & 0xc0) === 0x80) tail++;
+    log = Buffer.concat([bytes.subarray(0, head), marker, bytes.subarray(tail)]).toString("utf8");
+    logBytes = Buffer.byteLength(log);
+  };
+  append(preLog || "");
   let exitCode = 0;
   let signal = null;
   let timedOut = false;
   const steps = [];
   for (let i = 0; i < profile.steps.length; i++) {
+    abortSignal?.throwIfAborted();
     const step = profile.steps[i];
-    log += `\n===== Iris step ${i + 1}/${profile.steps.length}: ${step.tool} =====\n`;
-    const res = await runCompileStep({ step, binPath, cwd, fontDir, texmfVar });
+    append(`\n===== Iris step ${i + 1}/${profile.steps.length}: ${step.tool} =====\n`);
+    const res = await runStep({ step, binPath, cwd, fontDir, texmfVar, signal: abortSignal });
+    abortSignal?.throwIfAborted();
     // Arguments are the complete normalized execution profile, including source
     // and options. Do not infer comparability from only the main file or tool.
     const comparisonKey = LATEX_ENGINES.has(step.tool) ? JSON.stringify([step.tool, step.args]) : null;
-    steps.push({ ...step, comparisonKey, ...res });
-    log += res.log;
+    steps.push({ tool: step.tool, comparisonKey, code: res.code, signal: res.signal, timedOut: res.timedOut, truncated: res.truncated,
+      diagnostics: res.diagnostics ?? parseCompileLog(res.log, { cwd, bounded: false }).diagnostics });
+    append(res.log);
+    truncated ||= res.truncated === true;
     exitCode = res.code;
     signal = res.signal;
     timedOut = res.timedOut;
@@ -3970,6 +4050,7 @@ async function runCompilePipeline({ profile, binPath, cwd, fontDir, texmfVar, pr
     code: exitCode,
     signal,
     timedOut,
+    truncated,
     durationMs: Date.now() - startedAt,
     log,
     ...parsed,
@@ -4017,7 +4098,7 @@ const BUILD_OUTPUT_FIELDS = `
   id, project_id, source_file_id, source_revision_id, source_content_hash, created_by, created_by_label,
   created_at, completed_at, status, project_type, compiler, format, main_path,
   display_name, storage_path, size, content_hash, artifact_count, duration_ms,
-  exit_code, signal, timed_out`;
+  exit_code, signal, timed_out, kind, target, request_order, primary_preview`;
 
 function buildOutputView(row, diagnostics = false) {
   return {
@@ -4031,6 +4112,10 @@ function buildOutputView(row, diagnostics = false) {
     createdAt: toMillis(row.created_at),
     completedAt: row.completed_at ? toMillis(row.completed_at) : null,
     status: row.status,
+    kind: row.kind,
+    target: row.target,
+    requestOrder: row.request_order,
+    primaryPreview: row.primary_preview,
     projectType: row.project_type,
     compiler: row.compiler,
     format: row.format,
@@ -4046,7 +4131,9 @@ function buildOutputView(row, diagnostics = false) {
     timedOut: row.timed_out,
     ...(diagnostics ? {
       log: row.log || "",
-      ...compileDiagnosticsView(row),
+      // Pipeline steps share a persisted run budget and retain distinct step
+      // identities; the compiler-only deduplication/cap would hide those entries.
+      ...compileDiagnosticsView(row, { bounded: row.kind !== "pipeline" }),
     } : {}),
   };
 }
@@ -4060,6 +4147,9 @@ function buildArtifactView(row, projectId, buildId) {
     mimeType: row.mime_type,
     size: Number(row.size),
     contentHash: row.content_hash,
+    producerStep: row.producer_step,
+    outputPort: row.output_port,
+    logicalPath: row.logical_path,
     url,
     downloadUrl: `${url}?download=1`,
   };
@@ -4142,6 +4232,9 @@ async function finalizeBuildOutput({ id, status, storagePath, artifacts, result 
 
 async function listBuildOutputs(req, res, user, projectId, url) {
   await authorizeProject(projectId, user, "read");
+  const kind = url.searchParams.get("kind"), target = url.searchParams.get("target");
+  if ((kind !== null && !["compiler", "pipeline"].includes(kind))
+    || (target !== null && !/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/.test(target))) throw requestError("PIPELINE_REQUEST_INVALID", 400);
   const requestedLimit = Number(url.searchParams.get("limit"));
   const requestedOffset = Number(url.searchParams.get("offset"));
   const limit = Number.isSafeInteger(requestedLimit) && requestedLimit > 0 ? Math.min(requestedLimit, 200) : 50;
@@ -4151,14 +4244,16 @@ async function listBuildOutputs(req, res, user, projectId, url) {
   const [{ rows }, latest] = await Promise.all([
     db.query(
       `SELECT ${BUILD_OUTPUT_FIELDS} FROM build_outputs
-       WHERE project_id = $1 ORDER BY created_at DESC, id DESC LIMIT $2 OFFSET $3`,
-      [projectId, limit + 1, offset]
+       WHERE project_id = $1 AND ($4::text IS NULL OR kind=$4) AND ($5::text IS NULL OR target=$5)
+       ORDER BY request_order DESC LIMIT $2 OFFSET $3`,
+      [projectId, limit + 1, offset, kind, target]
     ),
     db.query(
       `SELECT id FROM build_outputs
-       WHERE project_id = $1 AND status = 'succeeded'
-       ORDER BY created_at DESC, id DESC LIMIT 1`,
-      [projectId]
+        WHERE project_id = $1 AND status = 'succeeded'
+          AND ($2::text IS NULL OR kind=$2) AND ($3::text IS NULL OR target=$3)
+        ORDER BY request_order DESC LIMIT 1`,
+      [projectId, kind, target]
     ),
   ]);
   const hasMore = rows.length > limit;
@@ -4189,16 +4284,20 @@ async function getBuildOutput(req, res, user, projectId, buildId) {
       throw error;
     })
     : Promise.resolve([]);
-  const [{ rows: artifacts }, files] = await Promise.all([
+  const [{ rows: artifacts }, files, steps] = await Promise.all([
     db.query(
-      `SELECT id, name, storage_path, mime_type, size, content_hash
-       FROM build_artifacts WHERE build_id = $1 ORDER BY name`,
+      `SELECT id, name, storage_path, mime_type, size, content_hash, producer_step, output_port, logical_path
+       FROM build_artifacts WHERE build_id = $1 ORDER BY name, storage_path`,
       [buildId]
     ),
     filesPromise,
+    build.kind === "pipeline" ? db.query("SELECT step_id,diagnostics FROM pipeline_steps WHERE build_id=$1 ORDER BY step_id", [buildId]) : null,
   ]);
+  if (steps) build.diagnostics = steps.rows.flatMap(step => step.diagnostics.map(item => ({ ...item, stepId: step.step_id })));
   json(res, 200, {
     build: buildOutputView(build, true),
+    primaryPreviewArtifactId: build.primary_preview ? artifacts.find(a => a.producer_step === build.primary_preview.step
+      && a.output_port === build.primary_preview.port && PipelineContracts.isPreviewMediaType(a.mime_type))?.id || null : null,
     artifacts: artifacts.map((artifact) => buildArtifactView(artifact, projectId, buildId)),
     files: files.map((file) => buildFileView(file, projectId, buildId)),
     directorySize: files.reduce((total, file) => total + Number(file.size), 0),
@@ -4234,7 +4333,7 @@ async function downloadBuildArtifact(req, res, user, projectId, buildId, artifac
   if (req.aborted || res.destroyed) return;
   const { rows } = await db.query(
     `SELECT a.name, a.storage_path, a.mime_type, a.size,
-            b.storage_path AS build_storage_path
+            b.storage_path AS build_storage_path, b.kind AS build_kind
      FROM build_artifacts a JOIN build_outputs b ON b.id = a.build_id
      WHERE a.id = $1 AND a.build_id = $2 AND b.project_id = $3 AND b.status = 'succeeded'`,
     [artifactId, buildId, projectId]
@@ -4248,12 +4347,15 @@ async function downloadBuildArtifact(req, res, user, projectId, buildId, artifac
   if (!file) throw requestError("BUILD_ARTIFACT_NOT_FOUND", 404);
   await streamBuildDownload(req, res, file, () => {
     const fallbackName = artifact.name.replace(/[^A-Za-z0-9._-]/g, "_") || "download";
-    const disposition = url.searchParams.get("download") === "1" ? "attachment" : "inline";
+    const pipeline = artifact.build_kind === "pipeline";
+    const inline = !pipeline || PipelineContracts.isPreviewMediaType(artifact.mime_type);
+    const disposition = url.searchParams.get("download") === "1" || !inline ? "attachment" : "inline";
     return {
       "content-type": artifact.mime_type,
       "content-length": file.size,
       "content-disposition": `${disposition}; filename="${fallbackName}"; filename*=UTF-8''${encodeDispositionValue(artifact.name)}`,
       "cache-control": "private, no-store",
+      ...(pipeline ? { "x-content-type-options": "nosniff", "content-security-policy": "sandbox; default-src 'none'" } : {}),
     };
   });
 }
@@ -4281,7 +4383,7 @@ async function navigateBuildOutput(req, res, user, projectId, buildId) {
     checkCancelled();
     const inspect = async (project) => {
       checkCancelled();
-      const { rows } = await db.query("SELECT id, status, format, storage_path FROM build_outputs WHERE id = $1 AND project_id = $2", [buildId, projectId]);
+      const { rows } = await db.query("SELECT id, kind, status, format, storage_path FROM build_outputs WHERE id = $1 AND project_id = $2", [buildId, projectId]);
       checkCancelled();
       if (!rows.length) throw requestError("BUILD_NOT_FOUND", 404);
       const build = rows[0];
@@ -4296,8 +4398,15 @@ async function navigateBuildOutput(req, res, user, projectId, buildId) {
       const data = await readProjectManifest(project.storageDir);
       checkCancelled();
       if (!data.sourceMapping) return { state: "disabled" };
-      if (build.format !== "pdf") return { state: "unsupported" };
+      if (build.kind !== "pipeline" && build.format !== "pdf") return { state: "unsupported" };
       if (build.status !== "succeeded") return { state: "missing" };
+      if (build.kind === "pipeline") {
+        const pdfs = artifacts.filter(artifact => artifact.mime_type === "application/pdf");
+        if (!pdfs.length || (query.artifactId && !pdfs.some(artifact => artifact.id === query.artifactId))) return { state: "unsupported" };
+        if (pdfs.some(artifact => !artifact.storage_path.startsWith(`${build.storage_path}/`))) return { state: "unavailable" };
+        return { pipeline: true, projectStorageDir: project.storageDir, projectId, buildId, storagePath: build.storage_path,
+          artifacts: pdfs.map(artifact => ({ id: artifact.id, fileName: artifact.storage_path.slice(build.storage_path.length + 1), size: Number(artifact.size), contentHash: artifact.content_hash })) };
+      }
       if (artifacts.some((a) => a.storage_path !== `${build.storage_path}/${a.name}` || a.mime_type !== "application/pdf")) return { state: "unavailable" };
       return { projectStorageDir: project.storageDir, projectId, buildId, storagePath: build.storage_path,
         artifacts: artifacts.map((a) => ({ id: a.id, fileName: a.name, size: Number(a.size), contentHash: a.content_hash })) };
@@ -4305,8 +4414,11 @@ async function navigateBuildOutput(req, res, user, projectId, buildId) {
     const initial = await authorizedProjectGate(projectId, user, "read", inspect);
     checkCancelled();
     if (initial.state) return json(res, 200, SourceMapping.envelope(initial.state));
-    const result = await SourceMapping.navigateBuild({ ...initial, enabled: true, query, signal: controller.signal,
-      binPath: TEX_PATH_LOCKED ? TEX_BIN_PATH : undefined, spawnChild: trackedSpawn });
+    if (initial.pipeline && pipelineNavigationFailure) throw pipelineNavigationFailure;
+    const result = initial.pipeline
+      ? await navigatePublishedPipeline({ ...initial, query, signal: controller.signal, runtime: (await getPipelineExecution()).runtime })
+      : await SourceMapping.navigateBuild({ ...initial, enabled: true, query, signal: controller.signal,
+        binPath: TEX_PATH_LOCKED ? TEX_BIN_PATH : undefined, spawnChild: trackedSpawn });
     checkCancelled();
     const actor = await requireUser(req);
     checkCancelled();
@@ -4336,6 +4448,10 @@ async function navigateBuildOutput(req, res, user, projectId, buildId) {
       json(res, 200, result);
     });
   } catch (error) {
+    if (error.code === "PIPELINE_WORKER_RECOVERY_REQUIRED") {
+      pipelineNavigationFailure = pipelineFailure(error);
+      if (!controller.signal.aborted) throw pipelineNavigationFailure;
+    }
     if (!controller.signal.aborted) throw error;
   } finally {
     req.removeListener("aborted", cancel);
@@ -4424,13 +4540,15 @@ async function deleteBuildOutput(req, res, user, projectId, buildId) {
   try {
     await client.query("BEGIN");
     const { rows } = await client.query(
-      `SELECT id, status, format, storage_path FROM build_outputs
+      `SELECT id, kind, status, format, storage_path, publication_state FROM build_outputs
        WHERE id = $1 AND project_id = $2 FOR UPDATE`,
       [buildId, projectId]
     );
     if (!rows.length) throw requestError("BUILD_NOT_FOUND", 404);
     build = rows[0];
     if (build.status === "running" && activeBuilds.has(buildId)) throw requestError("BUILD_IN_PROGRESS", 409);
+    if (build.kind === "pipeline" && ["queued", "planning", "running"].includes(build.status)) throw requestError("BUILD_IN_PROGRESS", 409);
+    if (build.publication_state === "prepared") throw requestError("PROJECT_RECOVERY_REQUIRED", 409);
     originalDirectory = await resolveBuildDirectory(
       project.storageDir, buildId, build.storage_path || buildStoragePath(buildId)
     );
@@ -4461,6 +4579,335 @@ async function deleteBuildOutput(req, res, user, projectId, buildId) {
     metadata: { projectId, status: build.status, format: build.format },
   });
   json(res, 200, { ok: true });
+}
+
+async function getPipelineExecution() {
+  return pipelineExecution ||= (async () => {
+    const runtime = await createNativeRuntime({ root: path.join(DATA_DIR, ".pipeline-runtime"), coordinatorId: pipelineCoordinatorId,
+      policy: { concurrency: COMPILE_CONCURRENCY, queueLimit: COMPILE_QUEUE },
+      tools: [...createLuaTools({ luaBinPath: process.env.LUA_BIN_PATH || "" }),
+        createPdfTool(COMPILE_TIMEOUT_MS),
+        ...createNavigationTools({ texBinPath: TEX_BIN_PATH }),
+        ...createCompilerTools({ texBinPath: TEX_BIN_PATH, lilypondBinPath: LILYPOND_BIN_PATH, timeoutMs: COMPILE_TIMEOUT_MS })] });
+    const registry = createRegistry([createLuaAdapter({ execute() { throw requestError("PIPELINE_RUN_UNAVAILABLE", 503); } }), createPdfAdapter({ runtime }),
+      ...createCompilerAdapters({ runtime, normalizeCompileProfile, runCompilePipeline, parseCompileArguments, kpathseaSearchPath })]);
+    return { runtime, registry };
+  })();
+}
+
+function pipelineFailure(error) {
+  if (error.errorCode) return error;
+  if (!/^PIPELINE_[A-Z0-9_]+$/.test(error.code || "")) return error;
+  const status = /UNAVAILABLE|RECOVERY_REQUIRED|STOPPING|BUSY/.test(error.code) ? 503
+    : /APPROVAL_REQUIRED|CHANGED/.test(error.code) ? 409 : 400;
+  return requestError(error.code, status);
+}
+
+function pipelineCoordinator(execution, workspace) {
+  const coordinator = createLuaCoordinator({ ...execution, workspace, runId: uuidv7() });
+  pipelineRunStore.policyHash = coordinator.identity.policyHash;
+  pipelineRunStore.registryHash = coordinator.identity.registryHash;
+  return coordinator;
+}
+
+// Read only registered executable source. Hash bytes incrementally; the options
+// reader must neither hydrate binary assets nor execute project Lua.
+async function pipelineCandidate(id, user, capability = "read") {
+  return authorizedProjectGate(id, user, capability, async project => {
+    const { rows } = await db.query("SELECT id,path FROM project_files WHERE project_id=$1 AND deleted_at IS NULL AND path ~* '\\.lua$' ORDER BY path", [id]);
+    if (!rows.some(file => file.path === "iris.lua")) return null;
+    const files = [];
+    for (const file of rows) {
+      const room = collabRooms.get(file.id);
+      if (room && room.projectId === id) {
+        const bytes = Buffer.from(room.text(), "utf8");
+        files.push({ path: file.path, size: bytes.length, contentHash: hashContent(bytes) });
+      } else {
+        const { input: handle, before } = await openCheckedFile(project.storageDir, file.path);
+        try {
+          const hash = crypto.createHash("sha256");
+          let size = 0;
+          for await (const bytes of handle.createReadStream({ autoClose: false })) { size += bytes.length; hash.update(bytes); }
+          const after = await handle.stat();
+          if (before.size !== size || after.size !== size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) {
+            throw requestError("PIPELINE_BUNDLE_CHANGED", 409);
+          }
+          files.push({ path: file.path, size, contentHash: hash.digest("hex") });
+        } finally { await handle.close(); }
+      }
+    }
+    return pipelineCoordinator(await getPipelineExecution(), { snapshot: { files } }).identity;
+  });
+}
+
+async function getProjectPipeline(req, res, user, id) {
+  try {
+    const pipeline = await pipelineRuns.getPipeline(pipelineRunStore, id, user);
+    const candidate = await pipelineCandidate(id, user);
+    return json(res, 200, { pipeline: { ...pipeline, candidate } });
+  } catch (error) { throw pipelineFailure(error); }
+}
+
+async function stopPipelineInspections({ projectId, userId, approvalId, recheck = false } = {}) {
+  const stopped = [];
+  for (const operation of activePipelineInspections) {
+    if ((projectId && operation.projectId !== projectId) || (userId && operation.user.sub !== userId)
+      || (approvalId && operation.approvalId !== approvalId)) continue;
+    if (recheck) {
+      try { await authorizeProject(operation.projectId, operation.user, "compile"); continue; }
+      catch (error) { if (![403, 404].includes(error.status)) throw error; }
+    }
+    operation.controller.abort(requestError("PIPELINE_APPROVAL_REQUIRED", 409));
+    stopped.push(operation.done);
+  }
+  const failures = (await Promise.all(stopped)).filter(Boolean);
+  if (failures.length) throw failures[0];
+}
+
+async function approveProjectPipeline(req, res, user, id) {
+  await authorizeProject(id, user, "approvePipeline");
+  const body = await readBody(req);
+  try {
+    PipelineContracts.record(body, ["identity"], "PIPELINE_REQUEST_INVALID", "approval request");
+    PipelineContracts.record(body.identity, ["bundleHash", "policyHash", "registryHash"], "PIPELINE_REQUEST_INVALID", "approval identity");
+    const candidate = await pipelineCandidate(id, user, "approvePipeline");
+    if (!candidate || PipelineContracts.canonical(candidate) !== PipelineContracts.canonical(body.identity)) throw requestError("PIPELINE_BUNDLE_CHANGED", 409);
+    const approval = await pipelineRuns.approveBundle(pipelineRunStore, id, user, candidate);
+    return json(res, 201, { approval });
+  } catch (error) { throw pipelineFailure(error); }
+}
+
+function pipelineSnapshotSource(root, data, files) {
+  const directories = [];
+  const walk = (nodes, parent = "") => {
+    for (const node of nodes) if (node.type === "folder" && !node.generated) {
+      const relative = path.posix.join(parent, node.name);
+      directories.push(relative); walk(node.children || [], relative);
+    }
+  };
+  walk(data.project.nodes);
+  const settings = Object.fromEntries(["projectType", "engine", "compileProfile", "lilypondArgs", "lilypondFormat", "sourceMapping", "mainPath"]
+    .filter(key => data[key] !== undefined).map(key => [key, data[key]]));
+  return { root, files, directories, settings };
+}
+
+async function inspectProjectPipeline(req, res, user, id) {
+  await authorizeProject(id, user, "compile");
+  const body = await readBody(req);
+  let release, workspace, operation, complete, failure, descriptor, approval, plan;
+  try {
+    PipelineContracts.record(body, ["parameters", "descriptorHash"], "PIPELINE_REQUEST_INVALID", "inspection request");
+    const inspectTargets = Object.hasOwn(body, "parameters") || Object.hasOwn(body, "descriptorHash");
+    await pipelineReconciliation;
+    if (pipelineRecoveryFailure || pipelineNavigationFailure || [...activePipelineInspections, ...activePipelineRuns.values()].some(operation => operation.failure)) throw requestError("PIPELINE_WORKER_RECOVERY_REQUIRED", 503);
+    const state = await pipelineRuns.getPipeline(pipelineRunStore, id, user);
+    const candidate = await pipelineCandidate(id, user, "compile");
+    approval = state.approval;
+    if (!state.enabled || !approval || approval.revokedAt || !candidate
+      || ["bundleHash", "policyHash", "registryHash"].some(key => candidate[key] !== approval[key])) throw requestError("PIPELINE_APPROVAL_REQUIRED", 409);
+    let parameters;
+    if (inspectTargets) {
+      descriptor = state.descriptor;
+      if (!descriptor || descriptor.descriptorHash !== body.descriptorHash) throw requestError("PIPELINE_DESCRIPTOR_CHANGED", 409);
+      parameters = PipelineContracts.validateParameters(descriptor.parameterSchema, Object.hasOwn(body, "parameters") ? body.parameters : {});
+    }
+    if (shuttingDown) throw requestError("PIPELINE_RUNTIME_STOPPING", 503);
+    enforceRateLimit(compileLimiter, `compile:${user.sub}:${id}`, "COMPILE_RATE_LIMITED");
+    const controller = new AbortController(), signal = controller.signal;
+    operation = { projectId: id, approvalId: approval.id, user, controller, done: new Promise(resolve => { complete = resolve; }) };
+    activePipelineInspections.add(operation);
+    try { release = await compileGate.acquire({ signal }); }
+    catch (error) { if (error instanceof GateRejectedError) throw requestError("COMPILE_SERVER_BUSY", 503); throw error; }
+    signal.throwIfAborted();
+    const current = await pipelineRuns.getPipeline(pipelineRunStore, id, user);
+    if (!current.enabled || current.approval?.id !== approval.id || current.approval.revokedAt) throw requestError("PIPELINE_APPROVAL_REQUIRED", 409);
+    const execution = await getPipelineExecution();
+    workspace = await authorizedProjectGate(id, user, "compile", async project => {
+      signal.throwIfAborted();
+      for (const room of collabRooms.forProject(id)) await collabPersistLocked(room, { force: true });
+      const data = await readProjectFile(project.storageDir, { strictRead: true });
+      const files = collectProjectFiles(data.project.nodes).filter(file => inspectTargets || /\.lua$/i.test(file.path))
+        .map(file => ({ id: file.node.id, path: file.path, kind: file.kind, binary: fileIsBinaryNode(file.node) }));
+      const source = inspectTargets ? pipelineSnapshotSource(project.storageDir, data, files)
+        : { root: project.storageDir, files, directories: [], settings: {} };
+      return createRunWorkspace(source, { root: path.join(DATA_DIR, ".pipeline-staging") }, { signal });
+    });
+    const coordinator = pipelineCoordinator(execution, workspace);
+    if (inspectTargets) {
+      const planned = await coordinator.planLua({ approval, descriptor, parameters, signal });
+      plan = { descriptorHash: descriptor.descriptorHash, snapshotHash: workspace.snapshotHash,
+        planHash: planned.planHash, parameters: planned.parameters, targets: Object.keys(planned.targets).sort() };
+    } else descriptor = await coordinator.inspectLua({ approval, signal });
+  } catch (error) { failure = pipelineFailure(error); }
+  finally {
+    try {
+      if (workspace && failure?.errorCode !== "PIPELINE_WORKER_RECOVERY_REQUIRED") await disposeRunWorkspace(workspace);
+    } catch { failure = requestError("PIPELINE_WORKER_RECOVERY_REQUIRED", 503); }
+    finally {
+      release?.();
+      if (operation && failure?.errorCode === "PIPELINE_WORKER_RECOVERY_REQUIRED") operation.failure = failure;
+      else activePipelineInspections.delete(operation);
+      complete?.(operation?.failure);
+    }
+  }
+  if (failure) throw failure;
+  await pipelineRuns.cacheDescriptor(pipelineRunStore, id, approval.id, user, descriptor);
+  return json(res, 200, { descriptor, ...(plan ? { plan } : {}) });
+}
+
+async function executeProjectPipeline(operation, execution, workspace, approval, descriptor, accepted, project) {
+  const { controller, id } = operation, signal = controller.signal;
+  // Internal transitions may cancel the run. Their output callbacks cannot wait
+  // for their own completion; external cancel/revoke callers use the draining store.
+  const store = { ...pipelineRunStore, stop: async () => controller.abort(),
+    publish: async (_row, manifest) => {
+      const output = path.join(workspace.root, "publish");
+      await writePublicationReceipt(output, id, manifest);
+      await publishCompileOutput(output, project.storageDir, id);
+      operation.published = true;
+    } };
+  let state = "queued", coordinator, plan;
+  const compiled = new Map(), composed = new Map(), mapping = createRunMappingCollector({ projectId: accepted.projectId, runId: id });
+  const emit = async event => {
+    const row = event.state
+      ? await pipelineRuns.transitionStep(store, id, event.stepId, stepStates.get(event.stepId) || "pending", event.state, { diagnostics: event.diagnostics })
+      : await pipelineRuns.recordProgress(store, id, event);
+    if (event.state) stepStates.set(event.stepId, event.state);
+    if (row.state !== "running") controller.abort();
+  };
+  const stepStates = new Map();
+  const registry = createRegistry([createLuaAdapter({ execute: context => coordinator.transformLua({ approval, plan, context, emit }) }),
+    createPdfAdapter({ runtime: execution.runtime, runId: id, deadlineAt: operation.deadlineAt,
+      onComposed: (context, relation) => composed.set(context.step.id, relation) }),
+    ...createCompilerAdapters({ runtime: execution.runtime, runId: id, deadlineAt: operation.deadlineAt,
+      normalizeCompileProfile, runCompilePipeline, parseCompileArguments, kpathseaSearchPath,
+      onCompiled: (context, result) => compiled.set(context.step.id, result),
+      onOutput: (context, chunk) => emit({ stepId: context.step.id, level: "info", message: chunk.toString("utf8") }) })]);
+  coordinator = createLuaCoordinator({ runtime: execution.runtime, registry, workspace, runId: id, deadlineAt: operation.deadlineAt });
+  const timer = setTimeout(() => controller.abort(requestError("PIPELINE_RUN_DEADLINE", 408)), Math.max(0, operation.deadlineAt - Date.now()));
+  try {
+    const planning = await pipelineRuns.transitionRun(store, id, state, "planning");
+    state = planning.state;
+    if (state !== "planning") return;
+    plan = await coordinator.planLua({ approval, descriptor, parameters: accepted.parameters, signal });
+    const running = await pipelineRuns.transitionRun(store, id, state, "running", { plan });
+    state = running.state;
+    if (state !== "running") return;
+    const result = await executePlan({ plan, target: accepted.target, workspace, registry, signal,
+      gate: new ConcurrencyGate({ limit: 1 }), emit,
+      onArtifacts: async (context, products) => {
+        if (compiled.has(context.step.id)) await mapping.collect({ context, products, compiled: compiled.get(context.step.id) });
+        if (composed.has(context.step.id)) mapping.collectComposition({ context, products, relation: composed.get(context.step.id) });
+      } });
+    if (result.state !== "succeeded") {
+      const failureCode = result.steps.find(step => step.state === "failed")?.errorCode;
+      await pipelineRuns.transitionRun(store, id, state, result.state, { reason: result.state === "cancelled" ? "execution-cancelled"
+        : failureCode ? failureCode.toLowerCase().replaceAll("_", "-") : "execution-failed" });
+      return;
+    }
+    const artifacts = [], output = path.join(workspace.root, "publish");
+    if (result.artifacts.some(product => product.files.length)) await fs.mkdir(output);
+    for (const product of result.artifacts) for (const file of product.files) {
+      const relative = `${product.producerStep}/${product.outputPort}/${file.path}`;
+      await copyPipelineFile(product.root, file.path, path.join(output, relative), file.size, file, signal);
+      artifacts.push({ id: file.id, name: path.posix.basename(file.path), storagePath: `output/${id}/${relative}`,
+        logicalPath: file.path, producerStep: product.producerStep, outputPort: product.outputPort,
+        mimeType: product.kind === "collection" ? MIME[path.extname(file.path).toLowerCase()] || "application/octet-stream" : product.mediaType,
+        size: file.size, contentHash: file.contentHash });
+    }
+    if (artifacts.some(artifact => artifact.mimeType === "application/pdf")) {
+      const navigation = mapping.assemble(result.artifacts);
+      await fs.writeFile(path.join(output, SourceMapping.MANIFEST_NAME), JSON.stringify(navigation.manifest), { flag: "wx", mode: 0o400 });
+      for (const file of navigation.nativeFiles) await copyPipelineFile(file.root, file.path, path.join(output, file.name), file.size, file, signal);
+    }
+    await pipelineRuns.publishRun(store, id, artifacts);
+  } catch (error) {
+    const code = error.errorCode || error.code;
+    if (operation.projectDeleted && ["PROJECT_NOT_FOUND", "PIPELINE_RUN_NOT_FOUND"].includes(code)) return;
+    if (operation.published || ["PROJECT_RECOVERY_REQUIRED", "PIPELINE_WORKER_RECOVERY_REQUIRED"].includes(code)) {
+      operation.failure = operation.published ? requestError("PIPELINE_WORKER_RECOVERY_REQUIRED", 503) : pipelineFailure(error);
+      throw operation.failure;
+    }
+    await pipelineRuns.transitionRun(store, id, state, signal.aborted ? "cancelled" : "failed", {
+      reason: /^[A-Z][A-Z0-9_]{0,63}$/.test(code || "") ? code.toLowerCase().replaceAll("_", "-") : "execution-failed",
+    });
+  } finally { clearTimeout(timer); }
+}
+
+async function createProjectPipelineRun(req, res, user, projectId) {
+  await authorizeProject(projectId, user, "compile");
+  const body = await readBody(req);
+  let release, workspace, operation, complete, failure, accepted = false;
+  try {
+    PipelineContracts.record(body, ["target", "parameters", "descriptorHash"], "PIPELINE_REQUEST_INVALID", "run request");
+    PipelineContracts.name(body.target);
+    const pipeline = await pipelineRuns.getPipeline(pipelineRunStore, projectId, user);
+    const candidate = await pipelineCandidate(projectId, user, "compile"), approval = pipeline.approval;
+    if (!pipeline.enabled || !approval || approval.revokedAt || !candidate
+      || ["bundleHash", "policyHash", "registryHash"].some(key => candidate[key] !== approval[key])) throw requestError("PIPELINE_APPROVAL_REQUIRED", 409);
+    const descriptor = pipeline.descriptor;
+    if (!descriptor || descriptor.descriptorHash !== body.descriptorHash) throw requestError("PIPELINE_DESCRIPTOR_CHANGED", 409);
+    const parameters = PipelineContracts.validateParameters(descriptor.parameterSchema, Object.hasOwn(body, "parameters") ? body.parameters : {});
+    if (shuttingDown) throw requestError("PIPELINE_RUNTIME_STOPPING", 503);
+    await pipelineReconciliation;
+    if (pipelineRecoveryFailure || pipelineNavigationFailure || [...activePipelineInspections, ...activePipelineRuns.values()].some(operation => operation.failure)) throw requestError("PIPELINE_WORKER_RECOVERY_REQUIRED", 503);
+    enforceRateLimit(compileLimiter, `compile:${user.sub}:${projectId}`, "COMPILE_RATE_LIMITED");
+    const controller = new AbortController(), signal = controller.signal, id = uuidv7();
+    operation = { id, projectId, user, controller, done: new Promise(resolve => { complete = resolve; }),
+      async stop() { controller.abort(); const failure = await operation.done; if (failure) throw failure; } };
+    activePipelineRuns.set(id, operation);
+    try { release = await compileGate.acquire({ signal }); }
+    catch (error) { if (error instanceof GateRejectedError) throw requestError("COMPILE_SERVER_BUSY", 503); throw error; }
+    signal.throwIfAborted();
+    const execution = await getPipelineExecution();
+    operation.deadlineAt = Date.now() + execution.runtime.manifest().policy.runTimeoutMs;
+    const { project, data } = await authorizedProjectGate(projectId, user, "compile", async project => {
+      for (const room of collabRooms.forProject(projectId)) await collabPersistLocked(room, { force: true });
+      const { data, files } = await projectMutations.transaction({ id: projectId, storageDir: project.storageDir }, async client => {
+        signal.throwIfAborted();
+        const row = await authorizeProject(projectId, user, "compile", client);
+        const data = await readProjectFile(row.storageDir, { strictRead: true });
+        const files = collectProjectFiles(data.project.nodes).map(file => ({ id: file.node.id, path: file.path, kind: file.kind, binary: fileIsBinaryNode(file.node) }));
+        const checkpoint = await captureProjectCheckpoint({ projectId, storageDir: row.storageDir, user, reason: "compile", files, strictRead: true }, client);
+        return { data, files: files.map(file => ({ ...file, sourceRevisionId: checkpoint.versions.get(file.id) || null })) };
+      });
+      workspace = await createRunWorkspace(pipelineSnapshotSource(project.storageDir, data, files), { root: path.join(DATA_DIR, ".pipeline-staging") }, { signal });
+      return { project, data };
+    });
+    const identity = pipelineCoordinator(execution, workspace).identity;
+    if (["bundleHash", "policyHash", "registryHash"].some(key => identity[key] !== approval[key])) throw requestError("PIPELINE_APPROVAL_REQUIRED", 409);
+    signal.throwIfAborted();
+    const run = await pipelineRuns.createRun(pipelineRunStore, { id, projectId, principal: user, coordinatorId: pipelineCoordinatorId,
+      approvalId: approval.id, ...identity, saveRevision: data.revision, snapshotHash: workspace.snapshotHash,
+      target: body.target, parameters, deadlineAt: operation.deadlineAt });
+    accepted = true;
+    // Already accepted work remains accounted for when maintenance starts.
+    const pending = executeProjectPipeline(operation, execution, workspace, approval, descriptor, run, project)
+      .catch(error => { operation.failure = pipelineFailure(error); console.error("Pipeline execution requires recovery", operation.failure); })
+      .finally(async () => {
+        try { if (!operation.failure) await disposeRunWorkspace(workspace); }
+        catch { operation.failure = requestError("PIPELINE_WORKER_RECOVERY_REQUIRED", 503); }
+        finally {
+          release(); backgroundPending.delete(pending);
+          if (!operation.failure) activePipelineRuns.delete(id);
+          complete(operation.failure);
+        }
+      });
+    backgroundPending.add(pending);
+    return json(res, 202, { run, revision: data.revision });
+  } catch (error) { failure = pipelineFailure(error); throw failure; }
+  finally {
+    if (!accepted) {
+      try { if (workspace && failure?.errorCode !== "PIPELINE_WORKER_RECOVERY_REQUIRED") await disposeRunWorkspace(workspace); }
+      catch { failure = requestError("PIPELINE_WORKER_RECOVERY_REQUIRED", 503); throw failure; }
+      finally {
+        release?.();
+        if (operation && failure?.errorCode === "PIPELINE_WORKER_RECOVERY_REQUIRED") operation.failure = failure;
+        else if (operation) activePipelineRuns.delete(operation.id);
+        complete?.(operation?.failure);
+      }
+    }
+  }
 }
 
 async function compileProject(req, res, user, id) {
@@ -4504,6 +4951,8 @@ async function compileProject(req, res, user, id) {
     const { row, data, projectType, engine, binPath, main, mainPath, storedLilypondArgs, outputFormat, compileProfile, buildFiles } = await authorizedProjectGate(id, user, "compile", async (project) => {
       const setup = await projectMutations.transaction({ id, storageDir: project.storageDir }, async (client, protect) => {
         const row = await authorizeProject(id, user, "compile", client);
+        const pipeline = await client.query("SELECT enabled FROM project_pipelines WHERE project_id=$1", [id]);
+        if (pipeline.rows[0]?.enabled) throw requestError("PIPELINE_TARGET_REQUIRED", 409);
         if (body.data && typeof body.data === "object") requireProjectRevision(body, row);
         const name = body.name == null ? row.name : cleanName(body.name);
         const data = body.data && typeof body.data === "object" ? body.data : await readProjectFile(row.storageDir, { strictRead: true });
@@ -4746,7 +5195,7 @@ async function reconcileStalledBuildsNow() {
        status = 'failed', completed_at = CURRENT_TIMESTAMP,
        log = CASE WHEN log = '' THEN $2 ELSE log || E'\\n' || $2 END,
        errors = errors || $3::jsonb
-     WHERE status = 'running' AND created_at < $1
+     WHERE kind = 'compiler' AND status = 'running' AND created_at < $1
      RETURNING id, project_id`,
     [
       cutoff,
@@ -4787,24 +5236,20 @@ async function pruneProjectVersions(projectId, policy, now) {
   return rowCount || 0;
 }
 
-// The same double condition for builds, with one addition: the most recent
-// successful build is never pruned whatever its age. It is what the editor
-// restores when the project is reopened, and a project whose last good output
-// aged out would open showing nothing at all — which reads as data loss even
-// though the sources are intact. Builds still running are excluded outright:
-// their directory is being written to.
+// Keep the latest accepted success for each kind/target, regardless of completion
+// order or age. Active runs and prepared publication evidence cannot be pruned.
 async function pruneProjectBuilds(projectId, storageDir, policy, now) {
   const { rows } = await db.query(
     `WITH ranked AS (
        SELECT id, created_at,
               ROW_NUMBER() OVER (ORDER BY created_at DESC, id DESC) AS position
        FROM build_outputs
-       WHERE project_id = $1 AND status <> 'running'
+       WHERE project_id = $1 AND status NOT IN ('queued','planning','running') AND publication_state <> 'prepared'
      ),
      protected_build AS (
-       SELECT id FROM build_outputs
+       SELECT DISTINCT ON (kind, target) id FROM build_outputs
        WHERE project_id = $1 AND status = 'succeeded'
-       ORDER BY created_at DESC, id DESC LIMIT 1
+       ORDER BY kind, target, request_order DESC
      )
      DELETE FROM build_outputs b
      USING ranked
@@ -4980,6 +5425,15 @@ function resumeProjectDeletions() {
 function startRetentionSweep() {
   // Confirmed deletions are resumed even when history retention is disabled.
   resumeProjectDeletions().catch((err) => console.error("Project deletion startup cleanup failed", err));
+  pipelineReconciliation = startBackgroundWrite(async () => {
+    try {
+      const result = await pipelineRuns.reconcileRuns(pipelineRunStore, new Set([pipelineCoordinatorId]));
+      pipelineRecoveryFailure = result.unresolved.length ? requestError("PIPELINE_WORKER_RECOVERY_REQUIRED", 503) : null;
+    } catch (error) {
+      pipelineRecoveryFailure = requestError("PIPELINE_WORKER_RECOVERY_REQUIRED", 503);
+      console.error("Pipeline startup reconciliation failed", error.message || error);
+    }
+  });
   if (!RETENTION_ENABLED) {
     console.log("Retention sweep disabled (RETENTION_ENABLED=false)");
     return null;
@@ -5003,6 +5457,13 @@ function startRetentionSweep() {
 const PROJECT_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})$`);
 const PROJECT_TEMPLATE_FILE_ROUTE = /^\/api\/project-templates\/(latex|lilypond)\/([^/]+)$/;
 const PROJECT_COMPILE_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/compile$`);
+const PROJECT_PIPELINE_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/pipeline$`);
+const PROJECT_PIPELINE_APPROVE_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/pipeline/approval$`);
+const PROJECT_PIPELINE_INSPECT_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/pipeline/inspect$`);
+const PROJECT_PIPELINE_APPROVAL_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/pipeline/approval/(${UUID_PATTERN})$`);
+const PROJECT_RUN_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/runs/(${UUID_PATTERN})$`);
+const PROJECT_RUN_CREATE_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/runs$`);
+const PROJECT_RUN_CANCEL_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/runs/(${UUID_PATTERN})/cancel$`);
 const PROJECT_BUILDS_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/builds$`);
 const PROJECT_BUILD_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/builds/(${UUID_PATTERN})$`);
 const PROJECT_BUILD_NAVIGATION_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/builds/(${UUID_PATTERN})/navigation$`);
@@ -5235,7 +5696,11 @@ async function adminUpdateUser(req, res, actor, targetId) {
     client.release();
   }
 
-  if (wantsStatus && nextStatus === "disabled") collabRevokeUser(targetId);
+  if (wantsStatus && nextStatus === "disabled") {
+    collabRevokeUser(targetId);
+    await pipelineRuns.recheckRunPermissions(pipelineRunStore, { userId: targetId });
+    await stopPipelineInspections({ userId: targetId, recheck: true });
+  }
   if (nextUsername && nextUsername !== before.username) {
     await audit({ ...sessionActor(req, actor), action: "user.username_changed", targetType: "user", targetId, metadata: { from: before.username, to: nextUsername } });
   }
@@ -5939,6 +6404,29 @@ async function handleApi(req, res, url) {
   const compileMatch = url.pathname.match(PROJECT_COMPILE_ROUTE);
   if (compileMatch && req.method === "POST") return compileProject(req, res, user, compileMatch[1]);
 
+  const pipelineMatch = url.pathname.match(PROJECT_PIPELINE_ROUTE);
+  if (pipelineMatch && req.method === "GET") return getProjectPipeline(req, res, user, pipelineMatch[1]);
+  const approvePipelineMatch = url.pathname.match(PROJECT_PIPELINE_APPROVE_ROUTE);
+  if (approvePipelineMatch && req.method === "POST") return approveProjectPipeline(req, res, user, approvePipelineMatch[1]);
+  const inspectPipelineMatch = url.pathname.match(PROJECT_PIPELINE_INSPECT_ROUTE);
+  if (inspectPipelineMatch && req.method === "POST") return inspectProjectPipeline(req, res, user, inspectPipelineMatch[1]);
+  const approvalMatch = url.pathname.match(PROJECT_PIPELINE_APPROVAL_ROUTE);
+  if (approvalMatch && req.method === "DELETE") {
+    const result = await pipelineRuns.revokeApproval(pipelineRunStore, approvalMatch[1], approvalMatch[2], user);
+    await stopPipelineInspections({ projectId: approvalMatch[1], approvalId: approvalMatch[2] });
+    return json(res, 200, result);
+  }
+  const runMatch = url.pathname.match(PROJECT_RUN_ROUTE);
+  const createRunMatch = url.pathname.match(PROJECT_RUN_CREATE_ROUTE);
+  if (createRunMatch && req.method === "POST") return createProjectPipelineRun(req, res, user, createRunMatch[1]);
+  if (runMatch && req.method === "GET") {
+    return json(res, 200, { run: await pipelineRuns.getRun(pipelineRunStore, runMatch[2], user, runMatch[1]) });
+  }
+  const cancelRunMatch = url.pathname.match(PROJECT_RUN_CANCEL_ROUTE);
+  if (cancelRunMatch && req.method === "POST") {
+    return json(res, 200, { run: await pipelineRuns.cancelRun(pipelineRunStore, cancelRunMatch[2], user, cancelRunMatch[1]) });
+  }
+
   const buildArtifactMatch = url.pathname.match(PROJECT_BUILD_ARTIFACT_ROUTE);
   if (buildArtifactMatch && req.method === "GET") {
     return downloadBuildArtifact(
@@ -6047,7 +6535,9 @@ function healthPayload() {
   return {
     status: healthStatus({ shuttingDown, maintenance: active }),
     maintenance: active,
-    pendingWrites: inFlightMutations + backgroundPending.size + collabPendingWrites() + (collabDrainPromise ? 1 : 0),
+    pendingWrites: inFlightMutations + backgroundPending.size + collabPendingWrites() + (collabDrainPromise ? 1 : 0)
+      + [...activePipelineInspections, ...activePipelineRuns.values()].filter(operation => operation.failure).length
+      + Number(Boolean(pipelineNavigationFailure)) + Number(Boolean(pipelineRecoveryFailure)),
   };
 }
 
@@ -6138,13 +6628,21 @@ function startGracefulShutdown(signal, server) {
     timer = setTimeout(() => reject(new Error("Shutdown deadline exceeded")), SHUTDOWN_TIMEOUT_MS);
   });
   const drain = async () => {
+    const results = await Promise.allSettled([stopPipelineInspections(), ...[...activePipelineRuns.values()].map(operation => operation.stop())]);
+    const failure = results.find(result => result.status === "rejected");
+    if (failure) throw failure.reason;
     await collabShutdown();
     while (inFlight > 0 || backgroundPending.size || collabPendingWrites() || activeChildren.size) {
       if (shutdownForced) return;
       await new Promise((resolve) => setTimeout(resolve, 25));
       await drainCollabWrites();
     }
-    if (!shutdownForced) await db.end();
+    if (pipelineNavigationFailure) throw pipelineNavigationFailure;
+    if (pipelineRecoveryFailure) throw pipelineRecoveryFailure;
+    if (!shutdownForced) {
+      if (pipelineExecution) await (await pipelineExecution).runtime.close();
+      await db.end();
+    }
   };
   shutdownPromise = Promise.race([drain(), timeout]).then(() => {
     console.log("Shutdown complete");
@@ -6223,6 +6721,7 @@ module.exports = {
   resolveProjectFile,
   readCompileArtifacts,
   runCompilePipeline,
+  kpathseaSearchPath,
   parseCompileLog,
   buildOutputView,
 };

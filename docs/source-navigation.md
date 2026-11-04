@@ -3,6 +3,12 @@
 This is the developer contract. For gestures, settings and troubleshooting, see
 [Move between PDF and source](user-guide.md#move-between-pdf-and-source).
 
+- [Editor and preview behavior](#using-the-editor-and-preview)
+- [HTTP API](#http-api)
+- [Native adapters](#native-adapters)
+- [Storage and budgets](#storage-and-budgets)
+- [Run navigation tests](#verification-commands)
+
 Iris creates source maps for PDF builds of LaTeX and LilyPond projects. The
 project setting `sourceMapping` defaults to `true`. An explicit `false` survives
 creation, import, saves and compilation. A sparse save that omits the setting
@@ -98,6 +104,23 @@ artifact discards its geometry; reopening a historical build reads its original
 bytes again. The parser does no work while mapping is off. A parser failure
 leaves navigation unavailable and the PDF usable.
 
+### Pipeline and composed outputs
+
+Pipeline publication binds navigation sidecars to exact artifact IDs and hashes.
+Verified page-preserving PDF composition carries the base PDF's source map into
+the composed artifact. Forward and inverse queries use its unchanged base-page
+coordinates and the same source-identity checks as ordinary builds. Imported
+layer content has no additional editable-source mapping. A missing or unsupported
+base map leaves the PDF usable.
+Generated files retain producer/port/path provenance and do not acquire editable
+project identity from a matching filename.
+
+A target's checked primary-preview reference selects its PDF or raster output.
+The browser keeps displayed output and navigation identity together across target
+changes, history selection, failed/cancelled runs and reconnects. Target history
+uses accepted request order. A manually selected historical preview survives a
+reconnect instead of yielding to a later completion notice.
+
 ## HTTP API
 
 Use the existing session cookie, same-origin rules and JSON transport:
@@ -139,16 +162,14 @@ Columns start at 0 and count UTF-16 code units. Both navigation directions use
 the native unrotated page's **MediaBox top-left**, with x increasing right and y
 increasing down. For MediaBox `[left, bottom, right, top]`, a native point `(x,y)`
 corresponds to PDF default user-space `(left+x, top-y)`. Width and height are
-unrotated extents. These units are 1/72 inch for the qualified native compilers;
+unrotated extents. The native adapters use PDF points (1/72 inch);
 the viewer applies PDF.js's UserUnit/rotation/scale transform for display.
 A CropBox changes the visible area, not the API origin. A printed page number
 does not change the physical page index.
 
-This contract assumes the compiler's native mapping page agrees with the
-original PDF MediaBox. Runtime qualification covers zero-origin MediaBoxes from
-pdfLaTeX and LilyPond, including a pdfLaTeX-authored nonzero CropBox. Controlled
-fixtures also verify translated MediaBoxes. They do not qualify external tools
-that relocate or resize a compiler PDF without updating its native map.
+The compiler's native mapping page must agree with the PDF MediaBox. A tool that
+relocates or resizes a compiler PDF must also update its map; unchanged native
+coordinates cannot describe transformed pages.
 
 Response:
 
@@ -237,11 +258,9 @@ from the CLI can only match recorded snapshot sources. Path normalization
 handles dot segments and macOS `/var` versus `/private/var` aliases. Iris does
 not open source paths returned by the compiler.
 
-Native qualification on macOS arm64: pdfTeX 1.40.29, TeX Live 2026/Homebrew, SyncTeX CLI utility
-1.5 (help also identifies command-line client 1.21). The tested engine emits row
-precision. XeLaTeX, LuaLaTeX and XeTeX use the same managed option/query adapter;
-the native suite qualifies pdfLaTeX. An engine that supplies no
-SyncTeX file yields `missing`.
+pdfLaTeX, XeLaTeX, LuaLaTeX and XeTeX use the same managed option/query adapter.
+SyncTeX results identify source rows. An engine that supplies no SyncTeX file
+yields `missing`.
 
 ### LilyPond
 
@@ -259,16 +278,7 @@ PDF coordinates. The adapter converts LilyPond Unicode-character offsets to UTF-
 the saved normalized source text. Each PDF, including independently named book
 outputs, receives its own artifact identity.
 
-Native qualification on macOS arm64: LilyPond 2.26.0 with Guile 3.0, standard PS backend.
-The suite measures real rendered PDF geometry for spaced/Unicode include paths,
-reused music, chords/rests, physical pages with printed numbering starting at 7,
-multiple books/PDFs, landscape pages and scaled/rotated/translated final stencils. It also checks
-user settings includes, collector I/O errors and the transform-depth budget.
-Ghostscript 10.08.0 supplies the test rasters; production Lily mapping queries
-do not spawn Ghostscript.
-
-Other LilyPond versions/backends have no native qualification for this release.
-Missing final-page mapping output yields `unsupported`. An exception or invalid
+Missing final-page mapping functions or output yield `unsupported`. An exception or invalid
 sidecar yields `unavailable` while the compiler's valid PDF remains usable.
 
 ## Storage and budgets
@@ -309,7 +319,6 @@ history. Compile the imported project to create its own builds/maps.
 | Collector work | Five seconds of aggregate collection, 2,000,000 stencil callbacks, 200,000 records, 16 MiB text output and bounded transform nesting. |
 | Column index | At most 200,000 source-line/astral-character index entries per parser invocation. |
 
-These values bound resource use; they are not latency or throughput promises.
 Mapping budget failures do not change a successful PDF build to failed.
 
 Artifact and sibling build-file downloads own their resolved file handles
@@ -333,23 +342,3 @@ PostgreSQL and storage and removes its fixtures. The native suite skips without
 `--native`; an enabled gate fails if a required compiler, SyncTeX CLI or
 rasterizer is missing. The browser gate requires native pdfLaTeX, SyncTeX and
 LilyPond plus installed Chrome through Playwright Core.
-
-Browser journeys compile fixtures through real HTTP, open retained output in
-PDF.js, and drive editor/PDF mouse events and the keyboard action. Qualification
-uses Chromium 152.0.7977.83, PDF.js 6.3.289 and CodeMirror View 6.43.7. Ctrl-click
-also runs with a controlled Linux platform identity on the macOS host;
-Cmd-click uses the host identity.
-
-Controlled viewer fixtures cover nonzero crop origins, rotations 0/90/180/270,
-zoom and DPR 1/2, with rendered-pixel containment checks. A real pdfLaTeX cropped
-PDF regression follows the native HTTP route into the viewer and checks marker
-containment of rendered first-line pixels at DPR 2, plus inverse source-row
-selection on that ink. It compares compile, retained-download and viewer
-download bytes. Parser tests cover inherited indirect MediaBoxes in compressed
-objects; browser tests cover lazy acquisition, off/re-enable, cancellation,
-per-artifact reuse, parse failure and worker timeout. Native browser journeys
-cover included sources, physical pages, multiple LilyPond PDFs, dirty text,
-authoritative inactive rooms, rename/delete, delayed responses, compact Italian
-light-theme layouts, readers, and preview reopen/cache behavior. UI, bibliography
-and request-security browser gates accompany this suite; see the
-[combined command](development.md#browser-and-native-gates).

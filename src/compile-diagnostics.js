@@ -98,8 +98,8 @@ function parseCompileLog(log, { cwd = "", bounded = true } = {}) {
 
 // Pipeline results and persisted JSONB entries carry authoritative structured
 // diagnostics. The raw trace may include resolved multipass observations.
-function compileDiagnosticsView(result) {
-  if (Array.isArray(result.diagnostics)) return diagnosticResult(result.diagnostics);
+function compileDiagnosticsView(result, { bounded = true } = {}) {
+  if (Array.isArray(result.diagnostics)) return diagnosticResult(result.diagnostics, bounded);
   const warnings = Array.isArray(result.warnings) ? result.warnings : [];
   const errors = Array.isArray(result.errors) ? result.errors : [];
   return diagnosticResult([...warnings, ...errors]);

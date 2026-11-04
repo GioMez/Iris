@@ -1,5 +1,9 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs/promises");
+const path = require("node:path");
+const { uuidv7 } = require("../src/ids");
+const { connectionString, serverFixture } = require("./helpers/server-fixture.cjs");
 
 const {
   RETENTION_BOUNDS,
@@ -14,6 +18,62 @@ const {
 } = require("../src/retention");
 
 const caps = retentionCaps({});
+
+async function storedBuilds(t) {
+  const f = await serverFixture(t), projectId = uuidv7(), fileId = uuidv7();
+  const storageDir = path.join(f.dataDir, "projects", projectId), hash = "a".repeat(64);
+  await fs.mkdir(storageDir, { recursive: true });
+  await f.pool.query("INSERT INTO projects (id,name,storage_path) VALUES ($1,'Retention',$2)", [projectId, `projects/${projectId}`]);
+  await f.pool.query("INSERT INTO project_files (id,project_id,path) VALUES ($1,$2,'main.tex')", [fileId, projectId]);
+  async function add(status, ageMs) {
+    const id = uuidv7(), createdAt = new Date(Date.now() - ageMs), succeeded = status === "succeeded";
+    await f.pool.query(`INSERT INTO build_outputs (id,project_id,source_file_id,source_content_hash,created_by_label,created_at,
+      status,completed_at,project_type,compiler,format,main_path,display_name,storage_path,size,content_hash,artifact_count)
+      VALUES ($1,$2,$3,$4,'Owner',$5,$6,$7,'latex','pdflatex','pdf','main.tex','main.pdf',$8,$9,$10,$11)`,
+    [id, projectId, fileId, hash, createdAt, status, status === "running" ? null : createdAt,
+      succeeded ? `output/${id}` : null, succeeded ? 3 : 0, succeeded ? hash : null, succeeded ? 1 : 0]);
+    if (succeeded) {
+      await fs.mkdir(path.join(storageDir, "output", id), { recursive: true });
+      await fs.writeFile(path.join(storageDir, "output", id, "main.pdf"), "pdf");
+      await f.pool.query(`INSERT INTO build_artifacts (id,build_id,name,storage_path,mime_type,size,content_hash)
+        VALUES ($1,$2,'main.pdf',$3,'application/pdf',3,$4)`, [uuidv7(), id, `output/${id}/main.pdf`, hash]);
+    }
+    return id;
+  }
+  return { ...f, projectId, fileId, storageDir, hash, add };
+}
+
+test("retention preserves recent history, the last compiler success and active compiler rows", { skip: !connectionString }, async t => {
+  const f = await storedBuilds(t), day = 86400000;
+  const oldSuccess = await f.add("succeeded", 92 * day), latestSuccess = await f.add("succeeded", 91 * day);
+  await f.add("failed", 90 * day);
+  const running = await f.add("running", 90 * day), recent = await f.add("failed", 1000);
+  const versions = [];
+  for (let i = 0; i < 12; i++) {
+    const id = uuidv7(); versions.push(id);
+    await f.pool.query(`INSERT INTO document_versions (id,file_id,author_label,reason,content_hash,content,size,created_at)
+      VALUES ($1,$2,'Owner','manual',$3,$4,1,$5)`, [id, f.fileId, f.hash, String(i), new Date(Date.now() - (100 - i) * day)]);
+  }
+  assert.equal(await f.app.pruneProjectVersions(f.projectId, { versionKeep: 10, versionDays: 7 }, Date.now()), 2);
+  assert.deepEqual((await f.pool.query("SELECT id FROM document_versions ORDER BY created_at")).rows.map(row => row.id), versions.slice(2));
+  assert.equal(await f.app.pruneProjectBuilds(f.projectId, f.storageDir, { buildKeep: 0, buildDays: 1 }, Date.now()), 2);
+  assert.deepEqual(new Set((await f.pool.query("SELECT id FROM build_outputs")).rows.map(row => row.id)), new Set([latestSuccess, running, recent]));
+  await assert.rejects(fs.stat(path.join(f.storageDir, "output", oldSuccess)), { code: "ENOENT" });
+  assert.equal(await fs.readFile(path.join(f.storageDir, "output", latestSuccess, "main.pdf"), "utf8"), "pdf");
+});
+
+test("compiler reconciliation closes only running builds beyond its grace period", { skip: !connectionString }, async t => {
+  const f = await storedBuilds(t);
+  const old = await f.add("running", 86400000), recent = await f.add("running", 1000), succeeded = await f.add("succeeded", 86400000);
+  assert.equal(await f.app.reconcileStalledBuilds(), 1);
+  const rows = new Map((await f.pool.query("SELECT id,status,completed_at,errors FROM build_outputs")).rows.map(row => [row.id, row]));
+  assert.equal(rows.get(old).status, "failed");
+  assert.ok(rows.get(old).completed_at instanceof Date);
+  assert.equal(rows.get(old).errors[0].severity, "error");
+  assert.equal(rows.get(recent).status, "running");
+  assert.equal(rows.get(recent).completed_at, null);
+  assert.equal(rows.get(succeeded).status, "succeeded");
+});
 
 test("an unconfigured project follows the instance default on every axis", () => {
   const resolved = clampRetention({}, caps);

@@ -8,8 +8,8 @@ them or install fonts on the host.
 ## Inventory and provenance
 
 [`manifest.json`](manifest.json) records every original download URL, byte size,
-SHA-256, family, style, weight, subset and license. Retrieved 2026-09-19 from the
-two stylesheets previously declared by `Iris.html` (URLs also in the manifest).
+SHA-256, family, style, weight, subset and license, including the upstream
+stylesheet URLs used to select the files.
 
 | Family | Declared faces | Distribution |
 | --- | --- | --- |
@@ -27,8 +27,8 @@ URLs, whose paths do not encode their version.
 
 The Google Latin, Latin Extended, Cyrillic, Cyrillic Extended and Vietnamese
 subsets are retained; Sans also retains Greek. Original Unicode ranges permit
-lazy loading. Sans's six variable binaries are reused at the three originally
-declared weights rather than converted into static fonts. CMU regular/italic
+lazy loading. Sans's six variable binaries serve the three declared weights.
+CMU regular/italic
 remain at the source stylesheet's **500**, even though the embedded regular
 face is named Roman. IBM retains `font-display: swap`; CMU retains its default
 display behavior. The existing application font tokens/fallbacks are used.
@@ -44,8 +44,7 @@ from Iris's software license. Full copyright notices and license texts ship in:
   notice, reserved family name **Computer Modern Unicode fonts**. Full text
   from the pinned CMU webfont distribution mirror in the manifest. The upstream
   project explicitly identifies 0.7.0 as OFL, and all four downloaded WOFF
-  name tables independently identify version 0.7.0 and OFL 1.1. Earlier CMU
-  releases had different licenses; those are not the binaries shipped here.
+   name tables identify version 0.7.0 and OFL 1.1.
 
 The license copies retain the complete wording; line endings/trailing
 whitespace are normalized for this repository and `.md` preserves them under

@@ -9,190 +9,91 @@
 
 Iris is a self-hosted web editor for **LaTeX documents and LilyPond scores**.
 Write source, manage files and fonts, compile on your server, and read the
-result beside your code. You can work alone or share a project with other
-accounts on your instance.
+result beside your code. Share projects and edit together in the browser.
 
-**Version 1.1.0** · [Installation](docs/installation.md) ·
-[User guide](docs/user-guide.md) · [All documentation](docs/README.md)
+[Install Iris](docs/installation.md) · [User guide](docs/user-guide.md) ·
+[Lua plugins](docs/lua-pipelines.md) · [All documentation](docs/README.md)
 
-![A synthetic LilyPond project in Iris: score source on the left and the compiled two-staff Morning study in the PDF preview on the right.](docs/images/lilypond-workspace.png)
-
-<div align="center">
-<a href="https://www.buymeacoffee.com/giogiomez" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me a Coffee" style="height: 60px !important;width: 217px !important;" ></a>
-</div>
-
-## Why I built it
-
-I started with LilyPond. I couldn't find an online editor that brought together
-the pieces I needed: editing, compilation, font management and preview, with
-the option to host it myself. I wanted an editor shaped around the way I work
-on scores, with the source and the engraved result on the same page.
-
-LaTeX came next. There are already good LaTeX editors, but it is the other tool
-I use frequently. I was already building an editor around my own needs, so why
-not add it? Having both in Iris lets me keep the toolchains on my server and
-work from a browser without installing them on every machine.
-
-## What you can do
-
-### Write documents and music
-
-Create LaTeX or LilyPond projects from templates, organize sources into folders,
-and upload images, attachments and fonts. Open several files in tabs and use
-the outline to move through a document or score.
-
-The CodeMirror editor provides syntax highlighting, search and replace,
-formatting, indentation and completion. LaTeX suggestions include your project's
-labels and citation keys; LilyPond suggestions include its variables. You can
-toggle word wrapping and configure project autosave.
-
-For bibliographies, switch between a reference table and the original BibTeX,
-BibLaTeX or RIS text. Add and edit references in a form, including custom fields,
-or open their source when you need to work with an expression.
-
-### Compile and inspect the result
-
-Use pdfLaTeX, XeLaTeX or LuaLaTeX with quick, bibliography or index pipelines.
-LilyPond projects can produce PDF, PNG, SVG, PS or EPS. Iris previews PDFs and
-images, shows compiler diagnostics, and keeps the files from each build in
-**Compilation history** for download.
-
-Use **Open preview** or **Close preview** in the footer to open or close the
-side panel. The file-tree toggle is at the bottom left beside Ready. On compact
-screens, opening the preview switches from the editor to the preview workspace.
-
-Move between a PDF and its source with Ctrl-click or Cmd-click. Navigation
-requires a matching build and a supported native toolchain; the
-[user guide](docs/user-guide.md#move-between-pdf-and-source) explains the controls
-and the [technical guide](docs/source-navigation.md#native-adapters) records the
-qualified compiler versions.
-
-![A synthetic LaTeX field-notes document open in Iris's light theme, with its source and compiled PDF side by side.](docs/images/latex-workspace.png)
-
-### Share work and recover revisions
-
-As an owner, give another account an owner, editor or viewer role. Owners and
-editors can edit the same text file together and see each other's cursors and
-selections. Presence markers in the file tree and outline show where others are
-working; overlap notices flag shared sections or music blocks. A newer-build
-notice lets you choose when to replace your preview with a collaborator's result.
-
-Inspect a file's history or restore a previous revision. Builds have their own
-history. Owners can adjust retention within the server's limits. Members of all
-three roles can export a project as a ZIP; accounts with project-creation rights
-can import it into another instance.
-
-### Save your work and choose recovery points
-
-**Save** updates the project's current working copy on the server: files,
-folder structure and settings. Accepted live edits also reach the server through
-collaboration, and optional project autosave handles project saves for you.
-
-**Snapshot** saves first, then records a manual history revision for each changed
-text file. Those revisions include the text itself and can be opened or restored
-from file history. Unchanged files do not get duplicate revisions.
-
-The two actions serve different purposes: Save keeps your current work, while
-Snapshot lets you choose a recovery point before a substantial rewrite or a new
-arrangement. Compilation and idle collaborative editing also record text
-revisions automatically. Snapshots cover text-file history; use a full backup
-to preserve the entire installation, including assets and settings.
-
-### Use your own instance
-
-Sign in with a local account or OpenID Connect. Administrators manage accounts,
-project memberships and the instance's template catalog from the browser.
-The interface includes English and Italian, plus system-following light and
-dark themes.
+![LilyPond source and its compiled two-staff score in the Iris workspace.](docs/images/lilypond-workspace.png)
 
 ## Get started
 
-For a complete editing-and-compilation setup, install **Node.js 24+**,
-**PostgreSQL 18+**, and the LaTeX and/or LilyPond tools you intend to use on the
-machine running Iris. Follow the [native installation guide](docs/installation.md#native-installation)
-to obtain the `R1.1.0` sources, install locked dependencies and create your first
-administrator.
+To run an instance, install **Node.js 24+**, **PostgreSQL 18+** and the LaTeX
+and/or LilyPond tools you need. Install **Lua 5.4 or 5.5** to run project plugins.
+Follow [native installation](docs/installation.md#native-installation), or
+[build the container image](docs/installation.md#local-container-build) with
+Docker or Podman. The container includes Lua; add TeX or LilyPond inside its
+runtime for document or score compilation.
 
-You can also [build Iris with Docker or Podman](docs/installation.md#local-container-build).
-Both use one Dockerfile and the same Compose file, with an official PostgreSQL
-service. **The lightweight Iris image contains no TeX or LilyPond.** It runs the
-editor and storage service, but compilation needs executables in Iris's own
-runtime. Use the native setup for the documented, qualified compiler workflow.
+To use an existing instance:
 
-Once your administrator gives you access:
+1. Sign in with the account your administrator provides.
+2. Create a LaTeX or LilyPond project and choose a template.
+3. Edit `main.tex` or `main.ly`. Use **Settings → Compilation** to choose the
+   main file, compiler workflow or output format.
+4. Press **Compile** and read the preview. Open **Builds** for diagnostics and
+   downloads.
 
-1. Sign in and change a temporary local password if Iris asks.
-2. Create a LaTeX or LilyPond project and choose a template. An external account
-   opens a project shared with it instead.
-3. Edit `main.tex` or `main.ly`. Choose a LaTeX engine in the editor footer and
-   use **Settings → Compilation** for the main file, pipeline or output format.
-4. Press **Compile**, read the preview, and open **Builds** for diagnostics or
-   downloads. Use **Save** for project changes and **Snapshot** for a history
-   checkpoint.
+Use **Save** for project changes and **Snapshot** to record a recovery point.
+The [user guide](docs/user-guide.md) explains editing, compilation and sharing.
 
-The [user guide](docs/user-guide.md) covers fonts, bibliography forms,
-collaboration and recovery in more detail.
+## Edit documents and scores
 
-## How it works
+- Syntax highlighting, outline, completion, search, replacement and indentation.
+- Project folders, attachments, included sources and uploaded fonts.
+- BibTeX, BibLaTeX and RIS reference tables with source-preserving forms.
+- English and Italian interfaces, with light, dark and system themes.
 
-```text
-Browser: editor, project dashboard, PDF/image viewer
-   │  same-origin HTTP API + authenticated WebSocket
-   ▼
-Iris: one Node.js server
-   ├── PostgreSQL: accounts, memberships, file history, build records, audit
-   ├── Filesystem: sources, assets, fonts, templates, published build files
-   └── Native tools: TeX, BibTeX/Biber, MakeIndex, LilyPond
-```
+![LaTeX source and the compiled Garden field notes document in the light theme.](docs/images/latex-workspace.png)
 
-The server orders collaborative edits and writes project content to disk.
-Iris uses the filesystem and PostgreSQL for different parts of that persistence:
+## Compile and inspect output
 
-| Storage | What it contains |
+Use pdfLaTeX, XeLaTeX or LuaLaTeX with bibliography and index workflows.
+LilyPond produces PDF, PNG, SVG, PS or EPS, plus MIDI when requested by the score.
+Preview PDFs and images, inspect compiler diagnostics and download build files.
+
+Ctrl-click or Cmd-click moves between a PDF and its source. See
+[PDF/source navigation](docs/user-guide.md#move-between-pdf-and-source) for the
+controls and required tools.
+
+Project-local [Lua plugins](docs/lua-pipelines.md) can generate source, inspect
+compiled layout, compose PDFs and run explicit multi-pass workflows. Configure
+their parameters and targets under **Settings → Compilation → Lua pipeline**.
+
+## Collaborate and recover work
+
+Share a project with owners, editors or viewers. Live editing shows collaborators'
+cursors and selections, with presence in the file tree and outline. Inspect file
+revisions, restore earlier text and select retained compilation results.
+
+Export a project as a ZIP or import it into another Iris instance. Full instance
+backups include both PostgreSQL and filesystem storage; use the
+[backup and restore procedure](docs/administration.md#backup-and-restore).
+
+## Run and maintain an instance
+
+Iris uses one Node.js process per database/storage installation. Current source
+and assets live in the filesystem; PostgreSQL stores accounts, permissions,
+revision history, build records and audit entries. Native tools compile separate
+source snapshots so editing can continue during a build.
+
+| Task | Guide |
 | --- | --- |
-| **Filesystem** | Current source files, images, attachments, fonts, templates, project state/settings and generated PDFs or other build files. Working sources remain ordinary files. |
-| **PostgreSQL** | Accounts, permissions, project/file identities, **historical text contents** for revision history and restore, build metadata/logs/diagnostics, and the audit trail. |
+| Install or start Iris | [Installation](docs/installation.md) |
+| Configure environment variables | [Configuration](docs/configuration.md) |
+| Manage accounts, SSO and projects | [Administration](docs/administration.md) |
+| Upgrade an installation | [Upgrade Iris](docs/administration.md#upgrade-iris) |
+| Work on the code and run tests | [Development](docs/development.md) |
+| Add a translation | [Translating Iris](TRANSLATING.md) |
+| Manage project templates | [Template reference](public/templates/README.md) |
 
-For a build, it saves the project and copies its sources into a separate working
-directory. Later edits can continue while the compiler runs against that copy.
-Successful builds keep their own output directories.
-
-Run one Iris process against an installation's database and storage. The
-collaboration state, write coordination and work limits belong to that process.
-A complete backup needs PostgreSQL **and** the filesystem at the same point in
-time; the [administration guide](docs/administration.md#backup-and-restore)
-provides the procedure.
-
-## How I developed it
-
-I chose agentic coding, or *vibe coding*, as a way to work from requirements
-through an implementation I could try and revise. I define the workflows I
-need and the behavior they should have; coding agents implement them and
-iterate on the code. I decide what belongs in Iris and judge the result by
-using it, then turn what I find into the next set of changes.
-
-I review the code, cross-check it across more than one model, and test it.
-I also use Iris myself. Development includes tests for persistence and concurrent
-editing, browser checks against the shipped interface, and builds with real
-LaTeX and LilyPond tools. The [development guide](docs/development.md) gives the
-commands and distinguishes controlled fixtures from native verification.
-
-## Guides and contributions
-
-- [User guide](docs/user-guide.md): work on projects, compile, share and restore.
-- [Installation](docs/installation.md): native setup and local Docker/Podman builds.
-- [Administration](docs/administration.md): accounts, SSO, retention and backups.
-- [Configuration](docs/configuration.md): environment variables and limits.
-- [Development](docs/development.md): repository layout, tests and runtime contracts.
-- [Translating Iris](TRANSLATING.md): language catalogs and contributor checks.
-- [Project templates](public/templates/README.md): template source and placeholders.
-
-For a bug report, include the Iris version, browser, deployment type and a small
-source example that reproduces it. For code changes, run the relevant checks
-in the development guide and describe the behavior you exercised.
+For a bug report, include the Iris version or source revision, browser, deployment
+type, reproduction steps and a small source example.
 
 ## License
 
-Iris uses **GPL-3.0-or-later**. Read [LICENSE](LICENSE) for the terms and
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for component attributions.
-The screenshots use [synthetic demonstration projects](docs/images/README.md).
+Iris uses **GPL-3.0-or-later**. See [LICENSE](LICENSE) and
+[third-party notices](THIRD_PARTY_NOTICES.md). Screenshots use
+[synthetic demonstration projects](docs/images/README.md).
+
+<a href="https://www.buymeacoffee.com/giogiomez" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me a Coffee" style="height: 60px !important;width: 217px !important;"></a>

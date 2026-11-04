@@ -12,14 +12,12 @@ explicit directions.
   [documentation index](docs/README.md), and the relevant sections of the
   [development guide](docs/development.md). Read the affected subsystem's
   contract and any applicable approved specification or plan before editing.
-- For editor-language work, read [editor-languages.md](docs/editor-languages.md)
-  and the [qualification record](docs/language-qualification.md). Preserve the
-  source and platform scope of measured latency, memory and native/compiler/UI
-  evidence. Distinguish passed technical gates from user-source and subjective
-  acceptance follow-ups; functional parser tests alone do not establish them.
-- Treat [custom highlighting](docs/highlighting-customization.md) as a proposal
-  requiring agreed scope. Do not infer a new assignment from a follow-up idea
-  or an old planning record.
+- For editor-language work, read [editor-languages.md](docs/editor-languages.md).
+  Keep measurements and verification evidence in Git-ignored working records,
+  preserving source and platform scope. Functional parser tests alone do not
+  establish native/compiler/UI behavior or user acceptance.
+- Treat proposals in working records as requiring agreed scope. Do not infer a
+  new assignment from a follow-up idea or an old planning record.
 
 ## Product direction
 
@@ -47,7 +45,7 @@ explicit directions.
   transport or UI abstraction.
 - Build custom software when concrete requirements justify it. Record the
   alternatives evaluated, their limitations and the reason for the choice in
-  the owning design document. Speculative future needs do not justify duplication.
+  a Git-ignored design record. Speculative future needs do not justify duplication.
 - Use locked dependencies and review license compatibility. Keep `package.json`
   and `package-lock.json` consistent; update
   [third-party notices](THIRD_PARTY_NOTICES.md) when attribution changes.
@@ -217,8 +215,18 @@ documents created, used or superseded by the work, within the agreed scope.
 - Keep one owner for each fact. Use [docs/README.md](docs/README.md) to find the
   appropriate user, installation, administration or subsystem guide. Link to
   that owner instead of copying its contract into plans and reports.
-- Consolidate useful decisions, rationale, verification evidence, open issues
-  and next actions into existing owner documents. Preserve evidence provenance.
+- Published documentation describes current behavior and how to use, install,
+  administer and develop Iris. Use task-oriented headings, direct instructions
+  and screenshots of the shipped UI. Keep migration procedures actionable.
+- Keep measurements, qualification reports, test-result summaries, review history,
+  opinions, implementation chronology and future plans out of published guides.
+  Preserve useful development material and its provenance in Git-ignored folders
+  under `docs/superpowers/`. The pre-revision documentation archive lives in
+  `docs/superpowers/archive/documentation-before-revision/` in this worktree.
+- Keep current requirements, configuration defaults, enforced limits, API values
+  and UI tokens where readers need them. Link to their owner instead of copying
+  them across guides. Test commands are contributor instructions; test results
+  belong in internal records and task reports.
 - After preserving useful information, remove superseded working notes and
   redundant handoffs. Repair links and remove empty documentation directories.
   Investigate unfamiliar records before deleting them.

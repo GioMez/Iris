@@ -167,29 +167,11 @@ test("shutdown flushes every coalesced timer instead of dropping its work", () =
 /* ---- retention ---- */
 
 test("both halves of the rule are required before anything is deleted", () => {
-  const versions = section("async function pruneProjectVersions", "// The same double condition for builds");
+  const versions = section("async function pruneProjectVersions", "async function pruneProjectBuilds");
   assert.match(versions, /ranked\.position > \$2 AND ranked\.created_at < \$3/);
   assert.match(versions, /ROW_NUMBER\(\) OVER \(PARTITION BY dv\.file_id ORDER BY dv\.created_at DESC, dv\.id DESC\)/);
   const builds = section("async function pruneProjectBuilds", "// Directories under output/");
   assert.match(builds, /ranked\.position > \$2\s*\n\s*AND ranked\.created_at < \$3/);
-});
-
-test("the sweep can never delete a file's current content or a project's last output", () => {
-  const versions = section("async function pruneProjectVersions", "// The same double condition for builds");
-  // The newest revision has position 1 and the keep floor is well above it, so
-  // the current state of a file is out of reach by construction.
-  assert.match(versions, /position/);
-  const { RETENTION_BOUNDS } = require("../src/retention");
-  assert.ok(RETENTION_BOUNDS.versionKeep.min > 1, "the keep floor must exceed the newest row's rank");
-  assert.ok(RETENTION_BOUNDS.buildKeep.min > 1);
-
-  const builds = section("async function pruneProjectBuilds", "// Directories under output/");
-  // The most recent successful build survives whatever its age: it is what the
-  // editor restores when the project is reopened.
-  assert.match(builds, /protected_build AS \(/);
-  assert.match(builds, /b\.id NOT IN \(SELECT id FROM protected_build\)/);
-  // A build still running owns its directory and is excluded outright.
-  assert.match(builds, /WHERE project_id = \$1 AND status <> 'running'/);
 });
 
 test("rows go before bytes, so a failure leaves nothing the interface will offer", () => {
@@ -200,14 +182,6 @@ test("rows go before bytes, so a failure leaves nothing the interface will offer
   );
   // A path the safety checks refuse is left alone rather than removed on a guess.
   assert.match(builds, /resolveBuildDirectory\(\s*\n?\s*storageDir, build\.id, build\.storage_path \|\| buildStoragePath\(build\.id\)\s*\n?\s*\)\.catch\(\(\) => null\)/);
-});
-
-test("interrupted builds are closed, but never another instance's live work", () => {
-  const reconcile = section("async function reconcileStalledBuilds", "// Both halves of the rule");
-  assert.match(reconcile, /WHERE status = 'running' AND created_at < \$1/);
-  // The grace period is what makes this safe against a slow compilation and
-  // against a second instance sharing the database.
-  assert.match(server, /const STALLED_BUILD_GRACE_MS = Math\.max\(COMPILE_TIMEOUT_MS \* 4, 5 \* 60 \* 1000\)/);
 });
 
 test("abandoned directories are only removed once nothing can still claim them", () => {

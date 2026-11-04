@@ -1,4 +1,4 @@
-# Interface measurement tokens
+# Interface sizes and spacing
 
 Color primitives, semantic roles, transparency strengths and document/brand
 exceptions are documented in [Interface color contract](ui-colors.md). Keep
@@ -87,8 +87,7 @@ sharing/account controls remain pinned, and an active tree row places its
 actions below the filename. Preview controls and file-tab close buttons also
 provide 44 px targets. The file-tab strip scrolls instead of shrinking tabs until
 their close buttons overlap. Outline rows, notices, menus and bibliography
-navigation/disclosures use the same minimum target. Touch checks use browser
-emulation and measure hit targets as well as rectangle sizes.
+navigation/disclosures use the same minimum target.
 
 Card content and actions share horizontal insets. Status/retry rows reserve
 ordinary layout space and wrap text, without negative-margin compensation.
@@ -191,19 +190,7 @@ an offscreen tab can scroll the strip; it must not scroll `.pane.edpane` or move
 the editor host/gutter. Opening a file from the tree reveals its active tab
 within the strip. Keep CodeMirror's own source scrolling independent.
 
-Browser checks cover mouse selection, Tab/Enter activation, tree opening,
-sidebar/viewport resize, caret preservation and both themes.
-
 ## Verification
-
-`test/ui-visibility.browser.test.js` exercises token propagation with non-default
-values and checks that editor metrics remain independent. It also covers
-login, project home, administration and settings at desktop, tablet and compact
-sizes in English and Italian, plus a half-size CSS viewport at double pixel
-density to model 200% zoom reflow. The bibliography browser suite covers its
-table/card layout, scrolling, multiline messages and dialogs.
-Boundary-width checks cover the pinned toolbar controls; rendered PNG/SVG build
-checks compare the image's dimensions with its 100% and 110% zoom labels.
 
 Run the current geometry checks with the [disposable runner](development.md#run-the-tests):
 

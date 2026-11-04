@@ -72,6 +72,30 @@ test("Lily map retains physical pages and artifact identity, supports repeats an
   for (const bad of ["garbage", raw.replace("100\t200", "NaN\t200"), raw.replace("P\t1", "P\t0"), raw + "E\tbudget\n"]) assert.throws(() => parseLilyMap(bad, { sources: [source], snapshotRoot: "/tmp/build", artifact }));
 });
 
+test("mapping collection binds native data to supplied artifact identities without publishing files", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "iris-map-collect-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const raw = "IRIS-LILYPOND\t1\nP\t1\t595.276\t841.89\nG\t1\tparts%2F%C3%A9%20air.ly\t1\t3\t5\t100\t200\t10\t8\n";
+  await fs.writeFile(path.join(root, "native.tsv"), raw);
+  const manifest = await mapping.collectSourceMapping({ snapshotRoot: "/input", sources: [source], projectId, buildId,
+    artifacts: [{ ...artifact, fileName: `${artifactId}.pdf` }], backend: "lilypond",
+    readMap: async (name, limit) => {
+      assert.equal(name, `${artifactId}.iris-map.tsv`);
+      const bytes = await fs.readFile(path.join(root, "native.tsv"));
+      assert.ok(bytes.length <= limit);
+      return bytes;
+    },
+  });
+  assert.equal(manifest.status, "ready");
+  assert.equal(manifest.entries[0].artifactId, artifactId);
+  assert.equal(manifest.entries[0].column, 4);
+  assert.deepEqual(await fs.readdir(root), ["native.tsv"]);
+  const failed = await mapping.collectSourceMapping({ snapshotRoot: "/input", sources: [source], projectId, buildId,
+    artifacts: [artifact], backend: "lilypond", readMap: async () => Buffer.from("IRIS-LILYPOND\t1\nE\tbudget\n") });
+  assert.equal(failed.status, "unavailable");
+  assert.equal(failed.reason, "map-limit");
+});
+
 test("SyncTeX parsing rejects external input and malformed geometry and preserves row precision", () => {
   const input = "SyncTeX Version:1\nInput:1:/etc/article.cls\nInput:2:./parts/é air.ly\nContent:\n";
   const inputs = readSyncTeXInputs(Buffer.from(input), { sources: [source], snapshotRoot: "/tmp/build" });
@@ -210,12 +234,75 @@ test("a PDF changed during an asynchronous SyncTeX query cannot yield ready matc
   assert.equal(result.reason, "stale-artifact");
 });
 
+test("host navigation storage reuses integrity checks and an injected query runner", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "iris-map-storage-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  await fs.writeFile(path.join(root, "main.pdf"), "pdf");
+  await fs.writeFile(path.join(root, "main.synctex"), "SyncTeX Version:1\nInput:1:parts/é air.ly\nContent:\n");
+  await mapping.publishSourceMapping({ outputDir: root, snapshotRoot: "/input", sources: [source], projectId, buildId,
+    artifacts: [artifact], backend: "latex", enabled: true, format: "pdf" });
+  const storage = {
+    readManifest: () => fs.readFile(path.join(root, mapping.MANIFEST_NAME)),
+    async read(name) {
+      const handle = await fs.open(path.join(root, name), "r");
+      return { handle, size: (await handle.stat()).size };
+    },
+    directory: async () => "/input",
+    exists: async name => { try { await fs.lstat(path.join(root, name)); return true; } catch (error) { if (error.code === "ENOENT") return false; throw error; } },
+  };
+  const options = { storage, projectId, buildId, artifacts: [artifact], enabled: true, binPath: "/no-host-synctex",
+    query: { direction: "forward", sourceFileId, line: 1, column: 0 },
+    runQuery: async (command, args, queryOptions) => {
+      assert.equal(command, "/no-host-synctex/synctex");
+      assert.deepEqual(args, ["view", "-i", "1:0:parts/é air.ly", "-o", "/input/main.pdf"]);
+      return runNativeQuery(process.execPath, ["-e", `process.stdout.write(${JSON.stringify(syncRecords([1]))})`], { ...queryOptions, cwd: root });
+    },
+  };
+  const result = await mapping.navigateSourceMapping(options);
+  assert.equal(result.status, "ready", JSON.stringify(result));
+  assert.equal(result.matches[0].artifactId, artifactId);
+  const changed = await mapping.navigateSourceMapping({ ...options, runQuery: async (...args) => {
+    const result = await options.runQuery(...args);
+    await fs.writeFile(path.join(root, "main.pdf"), "BAD");
+    return result;
+  } });
+  assert.equal(changed.reason, "stale-artifact");
+});
+
+test("ordinary and host-storage navigation share admission before reading manifests", async t => {
+  let release, entered = 0;
+  const held = new Promise(resolve => { release = resolve; });
+  t.after(() => release());
+  const storage = { readManifest: async () => { entered++; await held; return null; } };
+  const first = mapping.navigateSourceMapping({ enabled: true, storage });
+  const second = mapping.navigateSourceMapping({ enabled: true, storage });
+  assert.equal(entered, 2);
+  assert.deepEqual(await mapping.navigateBuild({ enabled: true }), { status: "unavailable", reason: "busy", matches: [] });
+  release();
+  assert.deepEqual(await Promise.all([first, second]), [{ status: "missing", matches: [] }, { status: "missing", matches: [] }]);
+});
+
+test("host-storage cleanup holds navigation admission until its worker drain finishes", async t => {
+  let release, started, closes = 0;
+  const held = new Promise(resolve => { release = resolve; });
+  const entered = new Promise(resolve => { started = resolve; });
+  t.after(() => release());
+  const storage = { readManifest: async () => null, close: async () => { if (++closes === 2) started(); await held; } };
+  const first = mapping.navigateSourceMapping({ enabled: true, storage });
+  const second = mapping.navigateSourceMapping({ enabled: true, storage });
+  await Promise.race([entered, Promise.all([first, second])]);
+  assert.equal(closes, 2);
+  assert.equal((await mapping.navigateBuild({ enabled: true })).reason, "busy");
+  release(); await Promise.all([first, second]);
+  assert.equal((await mapping.navigateSourceMapping({ enabled: true, storage: { readManifest: async () => null } })).status, "missing");
+});
+
 test("unknown map/native format versions report unsupported and invalid native source rows yield no match", async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "iris-map-version-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const directory = path.join(root, "output", buildId);
   await fs.mkdir(directory, { recursive: true });
-  await fs.writeFile(path.join(directory, mapping.MANIFEST_NAME), JSON.stringify({ version: 2, projectId, buildId, status: "ready" }));
+  await fs.writeFile(path.join(directory, mapping.MANIFEST_NAME), JSON.stringify({ version: 3, projectId, buildId, status: "ready" }));
   const result = await mapping.navigateBuild({ projectStorageDir: root, projectId, buildId, storagePath: `output/${buildId}`, enabled: true, artifacts: [artifact] });
   assert.equal(result.status, "unsupported");
   assert.throws(() => readSyncTeXInputs(Buffer.from("SyncTeX Version:2\nContent:\n"), { sources: [source], snapshotRoot: "/tmp/build" }), { reason: "unsupported" });
@@ -264,5 +351,13 @@ test("review I2: an already-aborted map call does not begin sidecar resolution",
   const result = await mapping.navigateBuild({ enabled: true, signal: AbortSignal.abort(),
     get projectStorageDir() { reads++; throw new Error("unexpected map resolution"); } });
   assert.deepEqual(result, { status: "unavailable", matches: [], reason: "cancelled" });
+  assert.equal(reads, 0);
+});
+
+test("host-storage navigation checks cancellation and disablement before resolving its provider", async () => {
+  let reads = 0;
+  const storage = { get storage() { reads++; throw new Error("unexpected provider resolution"); } };
+  assert.equal((await mapping.navigateSourceMapping(Object.assign(Object.create(storage), { enabled: false }))).status, "disabled");
+  assert.equal((await mapping.navigateSourceMapping(Object.assign(Object.create(storage), { enabled: true, signal: AbortSignal.abort() }))).reason, "cancelled");
   assert.equal(reads, 0);
 });

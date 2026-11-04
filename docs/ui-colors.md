@@ -11,25 +11,6 @@ For user controls, see [theme selection](user-guide.md#sign-in-and-choose-your-w
 
 ## Role families
 
-HP08 measures every one of the 23 syntax roles on real parser-emitted source
-spans, including selection and peer/search overlays: 2120 samples per theme,
-minimum 4.582:1 dark and 4.708:1 light on Chrome 153/Windows. Matching/nonmatching
-brackets and historical BibTeX/RIS paint also pass their mounted checks. These
-results preserve the **4.5:1** contract; CSS swatches alone are not recognition
-evidence. See [scope, raw results and outstanding gates](language-qualification.md).
-
-The local-font continuation repeats the mounted role/reflow/theme checks with
-Chrome 153.0.8010.53: 42 selected UI cases pass, with the same contrast minima.
-The performance report now distinguishes actual syntax publication from later
-paint observation; color qualification does not certify the separate 5/8 ms
-feature-work budgets.
-
-The final Linux nine-file browser aggregate passes 300/300, including UI
-visibility 124/124. The peer audit now resolves the selector and samples its
-connected node/styles atomically; absent pigments fail explicitly. It preserves
-the 4.5:1 text/3:1 indicator assertions and palette. Earlier detached-node audit
-failures remain historical, as detailed in the qualification report.
-
 | Roles | Use |
 | --- | --- |
 | `--bg`, `--editor-bg`, `--panel`, `--panel-2`, `--topbar` | Main surfaces. |
@@ -135,7 +116,7 @@ System mode. Manual overrides take precedence. If browser storage fails, the
 controller keeps the current page's choice in memory. The settings field updates
 on change, settings entry and language refresh, outside project persistence.
 
-## Source syntax roles (HP02)
+## Source syntax roles
 
 `public/iris-syntax-style.mjs` exports one shared set of CodeMirror tags. Import
 this module and CodeMirror through the same native-ESM graph. Node tests must
@@ -154,7 +135,7 @@ when they consume these tags; mixing CommonJS and ESM duplicates identities.
 
 The editor imports the module from the local server and installs the extension
 with the appropriate stream table. Plain source text inherits `--syntax-text`
-from `.cm-content`; it needs no tag. LilyPond quoted strings now emit `string`,
+from `.cm-content`; it needs no tag. LilyPond quoted strings emit `string`,
 including escapes, multiline content and incomplete input.
 
 Semantic consumers pass `roleHighlighter` to Lezer's `highlightTree()` and use
@@ -166,42 +147,27 @@ tags. Untagged text produces no semantic callback; callers can keep their plain
 text default. Semantic consumers need no CSS-prefix stripping or compatibility
 class decoding.
 
-### Initial palette
+### Syntax palette
 
 Each role has a `--syntax-<role>` variable and a `.t-<role>` class. The table
-groups roles that share an initial primitive. Ratios show the lowest WCAG
-contrast against the editor background, active selection and idle selection,
-computed from the checked-in CSS. These Node measurements do not qualify
-browser compositing or future parser output.
+groups roles that share a color primitive.
 
-| Roles | Dark | Light | Min dark | Min light |
-| --- | --- | --- | ---: | ---: |
-| command, structure | `#8fbdff` | `#1557a0` | 6.335 | 5.832 |
-| environment, context, rest, property | `#c7adff` | `#65358e` | 6.312 | 6.901 |
-| definition, variable, reference, citation, path, scheme | `#7dcfff` | `#006079` | 7.121 | 5.740 |
-| string, literal, lyric, operator, articulation | `#e0af68` | `#694500` | 6.109 | 6.904 |
-| math, pitch | `#9ece6a` | `#245629` | 6.684 | 6.943 |
-| number, duration | `#ff9e64` | `#843a16` | 6.007 | 6.516 |
-| comment | `#b3b6bf` | `#59616c` | 6.027 | 5.052 |
-| delimiter | `#d0d3da` | `#343e4b` | 8.151 | 8.741 |
-| text (inherited) | `#c8cee8` | `#242c40` | 7.824 | 11.216 |
+| Roles | Dark | Light |
+| --- | --- | --- |
+| command, structure | `#8fbdff` | `#1557a0` |
+| environment, context, rest, property | `#c7adff` | `#65358e` |
+| definition, variable, reference, citation, path, scheme | `#7dcfff` | `#006079` |
+| string, literal, lyric, operator, articulation | `#e0af68` | `#694500` |
+| math, pitch | `#9ece6a` | `#245629` |
+| number, duration | `#ff9e64` | `#843a16` |
+| comment | `#b3b6bf` | `#59616c` |
+| delimiter | `#d0d3da` | `#343e4b` |
+| text (inherited) | `#c8cee8` | `#242c40` |
 
 Structure and definition use weight 600; other roles use 400. Syntax rules add
 no text opacity or underline. Neutral delimiters are more prominent than
 comments. Syntax-only blue, purple, cyan, comment and delimiter primitives let source
 colors change without recoloring action/status controls or document paper/ink.
-Node checks also composite the existing 9% peer caret line over active and idle
-selection, using the fixed peer palette, fallback and white stress case. The
-lowest ratio across those combinations is **4.582:1 dark / 4.711:1 light**.
-The mounted qualification above confirms the corresponding emitted-token paint.
-
-HP02 originally prequalified the full vocabulary with **palette-only** swatches
-while the streams emitted a smaller role set. The implemented language adapters
-now emit all 23 syntax roles, and HP08 checks their real mounted spans. Swatches
-remain separate evidence for weights, role propagation and composed backgrounds,
-including the eight peer colors, fallback and white stress case. User-source
-corpus and subjective visual acceptance remain follow-ups.
-
 ### Bibliography compatibility
 
 BibTeX/RIS keep their existing meanings and initial paint through explicit
@@ -238,14 +204,9 @@ hex literals and interpolated fallbacks. A filesystem regression checks nested
 `.mjs` traversal, and ESM regressions apply the JS paint rules to `.mjs` files.
 The scanner keeps its Windows/POSIX artwork and peer exceptions local.
 
-Browser checks measure current role propagation, focus, selected metadata,
-syntax and layered peer/search/bracket colors. They exercise head initialization,
-blocked storage, OS changes, reload persistence, EN/IT controls, editor identity
-and PDF reading position in both themes. No check needs historical Git objects.
-
 Thresholds are 4.5:1 for ordinary text/syntax and 3:1 for required UI/focus
 indicators. Disabled controls, grid dots, scrims and shadows are exceptions for
-inactive/decorative paint. Peer checks cover the fixed server palette, fallback
-and a white-peer stress case. They do not qualify arbitrary externally supplied
-identity colors. See [Development](development.md#browser-and-native-gates) for
-browser scope and [measurement tokens](ui-measurements.md) for layout rules.
+inactive/decorative paint. Check syntax with peer/search/bracket overlays in both
+themes, using the server palette and fallback colors.
+See [Development](development.md#browser-and-native-gates) for
+browser prerequisites and [size and spacing tokens](ui-measurements.md) for layout rules.

@@ -140,21 +140,44 @@ CREATE TABLE project_members (
 
 CREATE INDEX idx_project_members_user ON project_members (user_id, created_at DESC);
 
+CREATE TABLE pipeline_approvals (
+  id UUID PRIMARY KEY,
+  project_id UUID NOT NULL REFERENCES projects (id) ON DELETE CASCADE,
+  bundle_hash CHAR(64) NOT NULL CHECK (bundle_hash ~ '^[a-f0-9]{64}$'),
+  policy_hash CHAR(64) NOT NULL CHECK (policy_hash ~ '^[a-f0-9]{64}$'),
+  registry_hash CHAR(64) NOT NULL CHECK (registry_hash ~ '^[a-f0-9]{64}$'),
+  approved_by UUID REFERENCES users (id) ON DELETE SET NULL,
+  approved_by_label VARCHAR(190) NOT NULL CHECK (approved_by_label <> ''),
+  approved_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  revoked_at TIMESTAMPTZ CHECK (revoked_at >= approved_at),
+  descriptor JSONB CHECK (descriptor IS NULL OR
+    (jsonb_typeof(descriptor) = 'object' AND octet_length(descriptor::text) <= 2097152)),
+  UNIQUE (id, project_id)
+);
+
+CREATE TABLE project_pipelines (
+  project_id UUID PRIMARY KEY REFERENCES projects (id) ON DELETE CASCADE,
+  enabled BOOLEAN NOT NULL DEFAULT FALSE,
+  approval_id UUID,
+  CHECK (NOT enabled OR approval_id IS NOT NULL),
+  FOREIGN KEY (approval_id, project_id) REFERENCES pipeline_approvals (id, project_id)
+);
+
 CREATE TABLE build_outputs (
   id UUID PRIMARY KEY,
   project_id UUID NOT NULL REFERENCES projects (id) ON DELETE CASCADE,
-  source_file_id UUID NOT NULL,
+  source_file_id UUID,
   source_revision_id UUID,
-  source_content_hash CHAR(64) NOT NULL,
+  source_content_hash CHAR(64),
   created_by UUID REFERENCES users (id) ON DELETE SET NULL,
   created_by_label VARCHAR(190) NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
   completed_at TIMESTAMPTZ,
   status VARCHAR(16) NOT NULL DEFAULT 'running',
-  project_type VARCHAR(16) NOT NULL,
-  compiler VARCHAR(32) NOT NULL,
-  format VARCHAR(16) NOT NULL,
-  main_path TEXT NOT NULL,
+  project_type VARCHAR(16),
+  compiler VARCHAR(32),
+  format VARCHAR(16),
+  main_path TEXT,
   display_name VARCHAR(255) NOT NULL,
   storage_path TEXT,
   size BIGINT NOT NULL DEFAULT 0,
@@ -167,7 +190,55 @@ CREATE TABLE build_outputs (
   log TEXT NOT NULL DEFAULT '',
   warnings JSONB NOT NULL DEFAULT '[]'::jsonb,
   errors JSONB NOT NULL DEFAULT '[]'::jsonb,
-  CONSTRAINT build_outputs_status_check CHECK (status IN ('running', 'succeeded', 'failed')),
+  kind TEXT NOT NULL DEFAULT 'compiler',
+  target TEXT NOT NULL DEFAULT 'default',
+  request_order BIGINT GENERATED ALWAYS AS IDENTITY,
+  snapshot_hash CHAR(64),
+  bundle_hash CHAR(64),
+  policy_hash CHAR(64),
+  registry_hash CHAR(64),
+  plan_hash CHAR(64),
+  primary_preview JSONB,
+  approval_id UUID,
+  save_revision INTEGER,
+  parameters JSONB NOT NULL DEFAULT '{}'::jsonb,
+  event_sequence BIGINT NOT NULL DEFAULT 0,
+  coordinator_id UUID,
+  deadline_at TIMESTAMPTZ,
+  terminal_reason TEXT,
+  publication_state TEXT NOT NULL DEFAULT 'none',
+  publication_hash CHAR(64),
+  publication_path TEXT,
+  CONSTRAINT build_outputs_kind_check CHECK (kind IN ('compiler', 'pipeline')),
+  CONSTRAINT build_outputs_target_check CHECK (target ~ '^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$'),
+  CONSTRAINT build_outputs_primary_preview_check CHECK (
+    primary_preview IS NULL OR (kind = 'pipeline' AND plan_hash IS NOT NULL
+      AND jsonb_typeof(primary_preview) = 'object'
+      AND primary_preview - 'step' - 'port' = '{}'::jsonb
+      AND jsonb_typeof(primary_preview->'step') = 'string'
+      AND jsonb_typeof(primary_preview->'port') = 'string'
+      AND primary_preview->>'step' ~ '^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$'
+      AND primary_preview->>'port' ~ '^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$') IS TRUE
+  ),
+  CONSTRAINT build_outputs_request_order_key UNIQUE (request_order),
+  CONSTRAINT build_outputs_save_revision_check CHECK (save_revision >= 0),
+  CONSTRAINT build_outputs_event_sequence_check CHECK (event_sequence >= 0),
+  CONSTRAINT build_outputs_parameters_check CHECK (jsonb_typeof(parameters) = 'object' AND octet_length(parameters::text) <= 2097152),
+  CONSTRAINT build_outputs_hashes_check CHECK (
+    snapshot_hash ~ '^[a-f0-9]{64}$' AND bundle_hash ~ '^[a-f0-9]{64}$' AND policy_hash ~ '^[a-f0-9]{64}$'
+    AND registry_hash ~ '^[a-f0-9]{64}$' AND plan_hash ~ '^[a-f0-9]{64}$' AND publication_hash ~ '^[a-f0-9]{64}$'
+  ),
+  CONSTRAINT build_outputs_approval_project_fkey FOREIGN KEY (approval_id, project_id) REFERENCES pipeline_approvals (id, project_id),
+  CONSTRAINT build_outputs_status_check CHECK (status IN ('queued', 'planning', 'running', 'succeeded', 'failed', 'cancelled', 'interrupted')),
+  CONSTRAINT build_outputs_context_check CHECK (
+    (kind = 'compiler' AND source_file_id IS NOT NULL AND source_content_hash IS NOT NULL
+      AND project_type IS NOT NULL AND compiler IS NOT NULL AND format IS NOT NULL AND main_path IS NOT NULL
+      AND status IN ('running', 'succeeded', 'failed') AND target = 'default' AND approval_id IS NULL)
+    OR (kind = 'pipeline' AND source_file_id IS NULL AND source_revision_id IS NULL AND source_content_hash IS NULL
+      AND project_type IS NULL AND compiler IS NULL AND format IS NULL AND main_path IS NULL
+      AND snapshot_hash IS NOT NULL AND bundle_hash IS NOT NULL AND policy_hash IS NOT NULL AND registry_hash IS NOT NULL
+      AND approval_id IS NOT NULL AND save_revision IS NOT NULL AND coordinator_id IS NOT NULL AND deadline_at IS NOT NULL)
+  ),
   CONSTRAINT build_outputs_project_type_check CHECK (project_type IN ('latex', 'lilypond')),
   CONSTRAINT build_outputs_format_check CHECK (format IN ('pdf', 'png', 'svg', 'ps', 'eps')),
   CONSTRAINT build_outputs_creator_label_check CHECK (created_by_label <> ''),
@@ -184,11 +255,41 @@ CREATE TABLE build_outputs (
   CONSTRAINT build_outputs_source_revision_fkey FOREIGN KEY (source_revision_id, source_file_id)
     REFERENCES document_versions (id, file_id) ON DELETE SET NULL (source_revision_id),
   CONSTRAINT build_outputs_lifecycle_check CHECK (
-    (status = 'running' AND completed_at IS NULL AND storage_path IS NULL AND artifact_count = 0 AND size = 0 AND content_hash IS NULL)
-    OR
-    (status = 'succeeded' AND completed_at IS NOT NULL AND storage_path = 'output/' || id::text AND artifact_count > 0 AND content_hash IS NOT NULL)
-    OR
-    (status = 'failed' AND completed_at IS NOT NULL AND storage_path IS NULL AND artifact_count = 0 AND size = 0 AND content_hash IS NULL)
+    (status IN ('queued', 'planning', 'running') AND completed_at IS NULL AND storage_path IS NULL
+      AND artifact_count = 0 AND size = 0 AND content_hash IS NULL AND terminal_reason IS NULL)
+    OR (status = 'succeeded' AND completed_at IS NOT NULL
+      AND (kind = 'compiler' OR (plan_hash IS NOT NULL AND publication_state = 'committed'))
+      AND ((artifact_count > 0 AND storage_path IS NOT NULL AND storage_path = 'output/' || id::text AND content_hash IS NOT NULL)
+        OR (kind = 'pipeline' AND artifact_count = 0 AND storage_path IS NULL AND size = 0 AND content_hash IS NULL)))
+    OR (status IN ('failed', 'cancelled', 'interrupted') AND completed_at IS NOT NULL
+      AND storage_path IS NULL AND artifact_count = 0 AND size = 0 AND content_hash IS NULL
+      AND (kind = 'compiler' OR terminal_reason IS NOT NULL))
+  ),
+  CONSTRAINT build_outputs_publication_check CHECK (
+    (publication_state = 'none' AND publication_hash IS NULL AND publication_path IS NULL)
+    OR (kind = 'pipeline' AND publication_hash IS NOT NULL
+      AND (publication_path IS NULL OR publication_path = 'output/' || id::text)
+      AND ((publication_state = 'prepared' AND status <> 'succeeded')
+        OR (publication_state = 'committed' AND status = 'succeeded' AND publication_path IS NOT DISTINCT FROM storage_path)))
+  )
+);
+
+CREATE TABLE pipeline_steps (
+  build_id UUID NOT NULL REFERENCES build_outputs (id) ON DELETE CASCADE,
+  step_id TEXT NOT NULL CHECK (step_id ~ '^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$'),
+  adapter_id TEXT NOT NULL CHECK (adapter_id ~ '^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$'),
+  adapter_version TEXT NOT NULL CHECK (adapter_version ~ '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'),
+  implementation_hash CHAR(64) NOT NULL CHECK (implementation_hash ~ '^[a-f0-9]{64}$'),
+  state TEXT NOT NULL CHECK (state IN ('pending', 'running', 'succeeded', 'failed', 'cancelled', 'blocked')),
+  started_at TIMESTAMPTZ,
+  completed_at TIMESTAMPTZ,
+  diagnostics JSONB NOT NULL DEFAULT '[]'::jsonb CHECK (jsonb_typeof(diagnostics) = 'array' AND octet_length(diagnostics::text) <= 2097152),
+  PRIMARY KEY (build_id, step_id),
+  CONSTRAINT pipeline_steps_lifecycle_check CHECK (
+    (state = 'pending' AND started_at IS NULL AND completed_at IS NULL)
+    OR (state = 'running' AND started_at IS NOT NULL AND completed_at IS NULL)
+    OR (state IN ('succeeded', 'failed') AND started_at IS NOT NULL AND completed_at IS NOT NULL)
+    OR (state IN ('cancelled', 'blocked') AND completed_at IS NOT NULL)
   )
 );
 
@@ -201,21 +302,36 @@ CREATE TABLE build_artifacts (
   size BIGINT NOT NULL,
   content_hash CHAR(64) NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  producer_step TEXT,
+  output_port TEXT,
+  logical_path TEXT,
+  CONSTRAINT build_artifacts_producer_fkey FOREIGN KEY (build_id, producer_step) REFERENCES pipeline_steps (build_id, step_id),
+  CONSTRAINT build_artifacts_provenance_check CHECK (
+    (producer_step IS NULL AND output_port IS NULL AND logical_path IS NULL)
+    OR (producer_step IS NOT NULL AND output_port IS NOT NULL AND logical_path IS NOT NULL
+      AND output_port ~ '^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$'
+      AND logical_path <> '' AND logical_path !~ '(^/|(^|/)\.{1,2}(/|$)|//|/$|[\\[:cntrl:]:])')
+  ),
   CONSTRAINT build_artifacts_name_check CHECK (name <> '' AND name NOT IN ('.', '..') AND name !~ '[/\\]'),
   CONSTRAINT build_artifacts_path_check CHECK (
     storage_path <> '' AND storage_path !~ '(^/|(^|/)\.\.(/|$)|\\)'
   ),
   CONSTRAINT build_artifacts_mime_check CHECK (mime_type <> ''),
   CONSTRAINT build_artifacts_size_check CHECK (size >= 0),
-  UNIQUE (build_id, name),
   UNIQUE (build_id, storage_path)
 );
 
+CREATE UNIQUE INDEX uq_build_artifacts_legacy_name ON build_artifacts (build_id, name) WHERE producer_step IS NULL;
+CREATE UNIQUE INDEX uq_build_artifacts_port_path ON build_artifacts (build_id, producer_step, output_port, logical_path) WHERE producer_step IS NOT NULL;
+CREATE INDEX idx_build_outputs_target_success ON build_outputs (project_id, kind, target, request_order DESC) WHERE status = 'succeeded';
+CREATE INDEX idx_build_outputs_request ON build_outputs (project_id, request_order DESC);
+CREATE INDEX idx_build_outputs_target_request ON build_outputs (project_id, kind, target, request_order DESC);
+CREATE INDEX idx_build_outputs_active ON build_outputs (coordinator_id) WHERE status IN ('queued', 'planning', 'running');
 CREATE INDEX idx_build_outputs_project ON build_outputs (project_id, created_at DESC, id DESC);
 CREATE INDEX idx_build_outputs_source_revision ON build_outputs (source_revision_id) WHERE source_revision_id IS NOT NULL;
 CREATE INDEX idx_build_outputs_creator ON build_outputs (created_by, created_at DESC) WHERE created_by IS NOT NULL;
 CREATE INDEX idx_build_artifacts_build ON build_artifacts (build_id, name);
-CREATE INDEX idx_build_outputs_prunable ON build_outputs (created_at) WHERE status <> 'running';
+CREATE INDEX idx_build_outputs_prunable ON build_outputs (created_at) WHERE status NOT IN ('queued', 'planning', 'running') AND publication_state <> 'prepared';
 CREATE INDEX idx_build_outputs_running ON build_outputs (created_at) WHERE status = 'running';
 
 -- No foreign keys: retry authority must outlive both the project and its owners.

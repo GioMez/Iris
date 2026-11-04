@@ -17,6 +17,7 @@
 // and persistence stay under server control — the reason OT was chosen over a
 // CRDT (see .drafts/NEXT_STEPS.md).
 const { ChangeSet, Text } = require("@codemirror/state");
+const { randomUUID } = require("node:crypto");
 
 // How many accepted updates a room keeps so a reconnecting client can catch up
 // by replaying them. A client that asks for anything older is told to resync
@@ -38,6 +39,7 @@ class CollabError extends Error {
 // resets, and is what clients synchronise against.
 class CollabDocument {
   constructor({ fileId, projectId, path: filePath, content = "", historyLimit = DEFAULT_HISTORY_LIMIT }) {
+    this.streamId = randomUUID();
     this.fileId = fileId;
     this.projectId = projectId;
     this.path = filePath;

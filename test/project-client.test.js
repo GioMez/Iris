@@ -121,7 +121,7 @@ function harness(language = "en", realtime = false) {
     load(value) { this.value = value; this.revision++; load(); }, getValue() { return this.value; },
     snapshot() { return { text: this.value, revision: this.revision }; }, setLanguage() {}, requestMeasure() {},
     onChange(fn) { change = fn; }, onCursor() {}, onPeers() {}, onSourceNavigate() {}, onSyntax() {}, syntaxSnapshot() { return null; },
-    setReadOnly() {}, setWordWrap() {}, setSharedRegion() {}, setDiagnostics() {}, setCompletionContext() {}, onLoad(fn) { load = fn; }, focus() {},
+    setReadOnly() {}, setWordWrap() {}, setSharedRegion() {}, setDiagnostics() {}, setCompletionContext() {}, onLoad(fn) { load = fn; }, focus() {}, collaborative: () => false,
   };
   const sockets = [];
   const workers = [];
@@ -191,11 +191,12 @@ function harness(language = "en", realtime = false) {
           const opened = node.classList.contains("on"); node.classList.remove("on"); return opened;
         },
         openProject() {}, closeProject: async () => {}, resetProject() {},
+        async closeAllDialogs() { for (const node of nodes.values()) node.classList.remove("on"); },
       },
       IrisCollab: {
         active: () => false, status: () => "offline", leave() {}, join() {}, disconnect() {},
         watchProject() {}, onStatus() {}, onBuild() {}, onFilePeers() {},
-        filePeers: () => [], pending: () => false, paused: () => false,
+        filePeers: () => [], pending: () => false, paused: () => false, blocked: () => false, synchronize: async () => {},
       },
     },
   });
@@ -314,7 +315,7 @@ function harness(language = "en", realtime = false) {
     editor.carets = () => view.state.selection.ranges.map((range) => range.from);
     run("iris-collab.js");
   }
-  run("iris-app.js", "window.appTest = { state, findFile, wire, wireEditorEvents, openFile, navigationSource, syncRealtimeSession, canonicalFileId, refreshFileTree, saveProject, openFileHistory, snapshotProject, confirmRestore, verState, openTreeRename, confirmTreeRename, folderNodeByPath, docFileForCompile, pickAttach, doUpload, openNewItem, confirmNewItem, findOpen, findSelect, activateDiagnostic, compile, skipArtifactRendering() { renderCompiledOutput = async () => {}; }, get bibliography() { return bibliographyView; } };\n");
+  run("iris-app.js", "window.appTest = { state, findFile, wire, wireEditorEvents, openFile, closeTab, navigationSource, syncRealtimeSession, canonicalFileId, refreshFileTree, saveProject, openFileHistory, snapshotProject, confirmRestore, verState, openTreeRename, confirmTreeRename, openTreeDelete, confirmTreeDelete, folderNodeByPath, docFileForCompile, pickAttach, doUpload, openNewItem, confirmNewItem, findOpen, findSelect, activateDiagnostic, compile, skipArtifactRendering() { renderCompiledOutput = async () => {}; }, get bibliography() { return bibliographyView; } };\n");
   run("iris-projects.js", "window.projectsTest = { renameProject, cache, metaOf, finishDiscardDecision };\n");
   context.window.appTest.wireEditorEvents();
   return {
@@ -323,6 +324,10 @@ function harness(language = "en", realtime = false) {
     a: context.window.appTest, p: context.window.projectsTest,
     editor, requests, events, get, timers, windowEvents, document, inputs, workers, surface: () => surface, t,
     socket: () => sockets.at(-1),
+    loadAuth() {
+      run("iris-auth.js", "window.authTest = { doLogout };\n");
+      return context.window.authTest;
+    },
     edit(value) {
       if (realtime) editor.applyText(value);
       else { editor.value = value; editor.revision++; change(); }
@@ -357,6 +362,109 @@ function diagnosticBuild(diagnostics, overrides = {}) {
 }
 
 function diagnosticRows(h) { return h.get("diagnosticsList").children; }
+
+test("generated diagnostics cannot attach to an editable file with the same path", options, async () => {
+  const h = harness("en", true); await h.open();
+  await h.app.showBuildOutput(diagnosticBuild([{ severity: "error", file: "main.tex", line: 1, column: 0, message: "Generated failure",
+    generatedSource: { artifactId: "generated-1", producerStep: "generate", outputPort: "source", path: "main.tex", contentHash: "a".repeat(64) } }]));
+  assert.equal(diagnosticRows(h)[0].children[0].disabled, true);
+  assert.equal(h.editor.diagnostics().length, 0);
+  assert.equal(h.a.state.diagnostics[0].line, 1);
+  h.editor.replaceRange(0, 0, "new\n");
+  assert.equal(h.a.state.diagnostics[0].line, 1, "editing the project must not move a generated location");
+  assert.match(diagnosticRows(h)[0].children[0].children[1].children[3].textContent, /generate.*source/);
+});
+
+test("build output loading rejects a response from a replaced same-project session", options, async () => {
+  const h = harness(); await h.open();
+  const loading = h.projects.loadBuildOutput("build-1"), request = h.requests.at(-1);
+  const rejected = assert.rejects(loading, error => error.stale === true);
+  await h.open();
+  request.reply({ build: { id: "build-1", status: "succeeded", kind: "pipeline" }, artifacts: [], primaryPreviewArtifactId: null });
+  await rejected;
+});
+
+test("pipeline run submission saves through the mutation queue and freezes only the run request fields", options, async () => {
+  const h = harness(); await h.open(); h.edit("saved for pipeline");
+  const values = { target: "main", descriptorHash: "a".repeat(64), parameters: { count: 2 } };
+  const started = h.projects.createPipelineRun(values);
+  values.parameters.count = 99;
+  await tick();
+  const saved = h.requests.at(-1);
+  assert.equal(saved.url, "/api/projects/p1"); assert.equal(saved.method, "PUT");
+  assert.equal(saved.body.data.project.nodes[0].content, "saved for pipeline");
+  h.ack(saved, 5); await tick();
+  const request = h.requests.at(-1);
+  assert.equal(request.url, "/api/projects/p1/runs");
+  assert.deepEqual(request.body, { target: "main", descriptorHash: "a".repeat(64), parameters: { count: 2 } });
+  request.reply({ run: { id: "run-1", state: "queued" } });
+  assert.equal((await started).run.id, "run-1");
+  assert.equal(h.app.hasUnsavedChanges(), false);
+});
+
+test("pipeline save conflicts prevent run admission and preserve local edits", options, async () => {
+  const h = harness(); await h.open(); h.edit("local pipeline edit");
+  const started = h.projects.createPipelineRun({ target: "main", parameters: {}, descriptorHash: "a".repeat(64) });
+  const rejected = assert.rejects(started, error => error.status === 409);
+  await tick(); h.requests.at(-1).reply({ errorCode: "PROJECT_REVISION_CONFLICT" }, 409);
+  await rejected;
+  assert.equal(h.requests.some(request => request.url.endsWith("/runs")), false);
+  assert.equal(h.app.hasUnsavedChanges(), true);
+  assert.equal(h.editor.getValue(), "local pipeline edit");
+});
+
+test("a queued project replacement cannot receive the previous project's pipeline run", options, async () => {
+  const h = harness(); await h.open();
+  const started = h.projects.createPipelineRun({ target: "main", parameters: {}, descriptorHash: "a".repeat(64) });
+  const rejected = assert.rejects(started, error => error.stale === true);
+  await tick(); const saving = h.requests.at(-1);
+  const opening = h.projects.openProject("p2");
+  h.ack(saving, 5); await tick();
+  h.requests.at(-1).reply({ ...projectData(), id: "p2" });
+  await opening; await rejected;
+  assert.equal(h.requests.some(request => request.url.endsWith("/runs")), false);
+});
+
+test("run cancellation and approval revocation bypass a pending target inspection", options, async () => {
+  const h = harness(); await h.open();
+  const inspection = h.projects.inspectPipeline({ descriptorHash: "a".repeat(64), parameters: { count: 2 } });
+  await tick(); const inspecting = h.requests.at(-1);
+  assert.equal(inspecting.url, "/api/projects/p1/pipeline/inspect");
+  assert.deepEqual(inspecting.body, { descriptorHash: "a".repeat(64), parameters: { count: 2 } });
+  const cancelled = h.projects.cancelPipelineRun("run-1");
+  const revoked = h.projects.revokePipelineApproval("approval-1");
+  await tick();
+  const cancelRequest = h.requests.find(request => request.url.endsWith("/runs/run-1/cancel"));
+  const revokeRequest = h.requests.find(request => request.url.endsWith("/pipeline/approval/approval-1"));
+  assert.ok(cancelRequest); assert.ok(revokeRequest);
+  assert.equal(cancelRequest.method, "POST"); assert.equal(revokeRequest.method, "DELETE");
+  cancelRequest.reply({ run: { id: "run-1", state: "cancelled" } }); revokeRequest.reply({ revoked: true });
+  await cancelled; await revoked;
+  inspecting.reply({ errorCode: "PIPELINE_APPROVAL_REQUIRED" }, 409);
+  await assert.rejects(inspection, error => error.code === "PIPELINE_APPROVAL_REQUIRED");
+});
+
+for (const method of ["getPipeline", "getPipelineRun"]) test(`${method} rejects metadata after reopening the same project`, options, async () => {
+  const h = harness(); await h.open();
+  const reading = h.projects[method]("run-1"), request = h.requests.at(-1);
+  const rejected = assert.rejects(reading, error => error.stale === true);
+  await h.open(); request.reply({ pipeline: { enabled: false }, run: { id: "run-1", state: "running" } });
+  await rejected;
+});
+
+test("pipeline approval submits the displayed exact identity and build reads retain target filters", options, async () => {
+  const h = harness(); await h.open();
+  const identity = { bundleHash: "a".repeat(64), policyHash: "b".repeat(64), registryHash: "c".repeat(64) };
+  const approving = h.projects.approvePipeline(identity); identity.bundleHash = "d".repeat(64); await tick();
+  const approval = h.requests.at(-1); assert.equal(approval.url, "/api/projects/p1/pipeline/approval");
+  assert.equal(approval.body.identity.bundleHash, "a".repeat(64));
+  approval.reply({ approval: { id: "approval-1" } }); await approving;
+  const listing = h.projects.listBuildOutputs({ kind: "pipeline", target: "proof", limit: 10, offset: 2 });
+  const query = new URL(h.requests.at(-1).url, "http://fixture").searchParams;
+  assert.equal(query.get("kind"), "pipeline"); assert.equal(query.get("target"), "proof");
+  assert.equal(query.get("limit"), "10"); assert.equal(query.get("offset"), "2");
+  h.requests.at(-1).reply({ builds: [], latestSuccessfulId: null }); await listing;
+});
 
 function bibliographyData(text = "@book{a,title={A},xcustom={hidden needle}}", kind = "bib") {
   const data = projectData();
@@ -936,21 +1044,27 @@ test("bibliography keeps exclusions across canonical assignment, rename and same
   const put = h.requests.at(-1), reconciled = clone(put.body.data);
   reconciled.project.nodes[0].id = mainFileId; reconciled.revision = 5;
   put.reply({ project: { id: "p1", revision: 5 }, data: reconciled, revision: 5 }); await saving;
+  h.socket().fire("open");
+  h.socket().deliver({ t: "opened", fileId: mainFileId, version: 0, doc: "@book{a,title={Saved},custom={Fresh}}", role: "owner" });
   assert.equal(h.a.canonicalFileId(local.id), mainFileId);
-  // Rekey may invalidate an in-flight parse but never reloads the editor itself.
-  if (!h.a.bibliography.context()) parseBibliography(h);
+  // The authoritative room load schedules a fresh parse for the canonical key.
+  if (!h.a.bibliography.context()) flushBibliography(h);
   const canonicalKey = h.a.bibliography.context().documentKey;
   assert.notEqual(canonicalKey, originalKey);
   assert.equal(bibColumns(h).find((node) => node.dataset.columnId === "bib:title").checked, false);
   h.a.openTreeRename(local, h.a.folderNodeByPath("").nodes, "");
   h.get("treeRenameInput").value = "renamed.bib"; h.a.confirmTreeRename(); await tick();
   const rename = h.requests.at(-1); h.ack(rename, 6); await tick();
-  h.a.openFile(local.id); flushBibliography(h);
+  h.a.openFile(local.id);
+  if (!h.a.bibliography.context()) flushBibliography(h);
   assert.equal(h.a.bibliography.context().documentKey, canonicalKey);
   assert.equal(bibColumns(h).find((node) => node.dataset.columnId === "bib:title").checked, false);
   const accepted = bibliographyData(); accepted.project.nodes[0].id = mainFileId;
   accepted.activeId = mainFileId; accepted.openTabs = [mainFileId]; accepted.revision = 7;
   await h.open(accepted); parseBibliography(h);
+  h.socket().fire("open");
+  h.socket().deliver({ t: "opened", fileId: mainFileId, version: 0, doc: accepted.project.nodes[0].content, role: "owner" });
+  if (!h.a.bibliography.context()) flushBibliography(h);
   assert.equal(bibColumns(h).find((node) => node.dataset.columnId === "bib:title").checked, false);
   const other = bibliographyData(); other.id = "p2";
   await h.open(other); parseBibliography(h);
@@ -1024,7 +1138,11 @@ for (const format of ["bib", "ris"]) for (const transition of ["file", "reload",
     const id = "019f9910-0000-7000-8000-000000000009";
     data.project.nodes[0].id = id; data.activeId = id; data.openTabs = [id];
     data.project.nodes.push({ type: "file", id: "other", kind: "tex", path: "other.tex", name: "other.tex", content: "Plain text" });
-    await h.open(data); parseBibliography(h); h.edit(retained); flushBibliography(h);
+    await h.open(data); parseBibliography(h);
+    h.socket().fire("open");
+    h.socket().deliver({ t: "opened", fileId: id, role: "owner", streamId: "bib-stream", version: 0, doc: source });
+    flushBibliography(h);
+    h.edit(retained); flushBibliography(h); h.window.IrisCollab.flush(); confirmPush(h);
     assert.equal(h.editor.getValue(), retained);
     h.app.acknowledgePersistence(h.app.capturePersistence(), 5);
     const refreshed = clone(data); refreshed.revision = 5; refreshed.project.nodes[0].content = retained;
@@ -1034,7 +1152,6 @@ for (const format of ["bib", "ris"]) for (const transition of ["file", "reload",
     } else {
       h.a.openFile("other"); h.a.openFile(id);
       if (transition === "rejoin") {
-        h.socket().fire("open");
         h.socket().deliver({ t: "opened", fileId: id, role: "owner", version: 7, doc: retained });
         assert.equal(h.editor.collabVersion(), 7);
       }
@@ -2910,8 +3027,212 @@ function sharedProject() {
 async function openShared(h) {
   await h.open(sharedProject());
   h.socket().fire("open");
-  h.socket().deliver({ t: "opened", fileId: mainFileId, version: 0, doc: "original", role: "owner" });
+  h.socket().deliver({ t: "opened", fileId: mainFileId, streamId: "shared-stream", version: 0, doc: "original", role: "owner" });
 }
+
+function confirmPush(h) {
+  const push = h.socket().of("push").at(-1);
+  assert.ok(push, "an explicit action must send the queued edits");
+  const version = push.version + push.updates.length;
+  h.socket().deliver({ t: "updates", fileId: push.fileId, version, updates: push.updates });
+  h.socket().deliver({ t: "pushed", fileId: push.fileId, version, accepted: true });
+}
+
+for (const action of ["save", "compile", "snapshot", "lua"]) test(`${action} waits for local edit confirmation before HTTP capture`, options, async () => {
+  const h = harness("en", true); await openShared(h);
+  h.edit("original first");
+  const start = h.requests.length;
+  const pending = action === "save" ? h.app.persistChanges() : action === "compile" ? h.projects.compileCurrent({})
+    : action === "snapshot" ? h.a.snapshotProject() : h.projects.createPipelineRun({ target: "main", descriptorHash: "a".repeat(64) });
+  await tick();
+  assert.equal(h.requests.length, start, "no HTTP capture while edits are unconfirmed");
+  h.edit("original first second");
+  confirmPush(h); await tick();
+  assert.equal(h.requests.length, start, "typing during the wait belongs to the capture too");
+  confirmPush(h); await tick();
+  const request = h.requests.at(-1);
+  assert.equal(request.body.data.project.nodes[0].content, "original first second");
+  h.ack(request, 5); await tick();
+  if (action === "snapshot" || action === "lua") {
+    const next = h.requests.at(-1);
+    assert.equal(next.url, `/api/projects/p1/${action === "lua" ? "runs" : "checkpoint"}`);
+    next.reply(action === "lua" ? { run: { id: "run-1" } } : { created: 1 });
+  }
+  await pending;
+  assert.equal(h.editor.getValue(), "original first second");
+  assert.equal(h.window.IrisCollab.pending(), false);
+});
+
+test("pending realtime edits protect browser unload and closing waits for confirmation", options, async () => {
+  const h = harness("en", true); await openShared(h); h.a.wire(); h.edit("original!");
+  let prevented = false;
+  h.windowEvents.dispatchEvent({ type: "beforeunload", preventDefault() { prevented = true; } });
+  assert.equal(prevented, true);
+  const closing = h.projects.closeCurrent(); await tick();
+  assert.equal(h.projects.currentProjectId(), "p1");
+  assert.equal(h.get("projUnsavedModal").classList.contains("on"), false, "try confirmation before offering discard");
+  confirmPush(h); await tick();
+  assert.equal(h.projects.currentProjectId(), null);
+  h.requests.at(-1).reply({ projects: [] });
+  assert.equal(await closing, true);
+});
+
+for (const departure of ["switch", "tab-close"]) test(`pending edits survive ${departure} until the server confirms them`, options, async () => {
+  const h = harness("en", true); await openShared(h); h.edit("original!");
+  const leaving = departure === "switch" ? h.a.openFile(otherFileId) : h.a.closeTab(mainFileId);
+  assert.equal(h.a.state.activeId, mainFileId);
+  assert.equal(h.editor.getValue(), "original!");
+  confirmPush(h); await leaving;
+  assert.equal(h.a.findFile(mainFileId).content, "original!");
+  assert.equal(h.a.state.activeId, departure === "switch" ? otherFileId : null);
+});
+
+test("later file intent cancels a pending switch without losing local edits", options, async () => {
+  const h = harness("en", true); await openShared(h); h.edit("original!");
+  const first = h.a.openFile(otherFileId);
+  h.a.openFile(mainFileId);
+  confirmPush(h); await first;
+  assert.equal(h.a.state.activeId, mainFileId);
+  assert.equal(h.editor.getValue(), "original!");
+});
+
+test("reselecting the confirmed active file keeps subsequent edits in the shared stream", options, async () => {
+  const h = harness("en", true); await openShared(h);
+  h.a.openFile(mainFileId);
+  h.edit("original!"); h.window.IrisCollab.flush();
+  assert.equal(h.socket().of("push").length, 1);
+  assert.equal(h.window.IrisCollab.pending(), true);
+  confirmPush(h);
+  assert.equal(h.editor.getValue(), "original!");
+});
+
+test("explicit logout refuses to leave when saving cannot confirm pending edits", options, async () => {
+  const h = harness("en", true); await openShared(h);
+  const auth = h.loadAuth(); h.edit("original!");
+  const logout = auth.doLogout(); await tick();
+  h.socket().deliver({ t: "resync", fileId: mainFileId, version: 4, doc: "replacement" });
+  await tick();
+  assert.equal(h.requests.some(request => request.url === "/api/auth/logout"), false);
+  assert.equal(await logout, false);
+  assert.equal(h.editor.getValue(), "original!");
+  assert.equal(h.projects.currentProjectId(), "p1");
+  assert.equal(h.editor.isReadOnly(), true, "the synchronization conflict still locks retained source");
+});
+
+for (const confirmedFirst of [false, true]) test(`Save response preserves the offline OT session (${confirmedFirst ? "confirmed" : "pending"} later edit)`, options, async () => {
+  const h = harness("en", true); await openShared(h); h.edit("original first");
+  const saving = h.app.persistChanges(); await tick(); confirmPush(h); await tick();
+  const request = h.requests.at(-1);
+  h.socket().fire("close", { code: 1006 }); h.edit("original first offline");
+  const reconnect = () => {
+    const timer = h.timers.findLast(timer => timer.delay >= 700 && timer.delay < 1100 && !timer.cleared && !timer.ran);
+    assert.ok(timer); timer.ran = true; timer.fn(); h.socket().fire("open");
+    h.socket().deliver({ t: "opened", fileId: mainFileId, streamId: "shared-stream", version: 1, doc: "original first", role: "owner" });
+  };
+  if (confirmedFirst) { reconnect(); confirmPush(h); }
+  h.ack(request, 5); assert.equal(await saving, true);
+  assert.equal(h.editor.getValue(), "original first offline");
+  if (!confirmedFirst) assert.equal(h.window.IrisCollab.pending(), true, "HTTP acknowledgement must retain offline updates");
+  h.edit("original first offline next");
+  const start = h.requests.length, next = h.app.persistChanges(); await tick();
+  assert.equal(h.requests.length, start, "later Save must still wait for the OT stream");
+  if (!confirmedFirst) reconnect();
+  confirmPush(h); await tick();
+  assert.equal(h.requests.at(-1).body.data.project.nodes[0].content, "original first offline next");
+  h.ack(h.requests.at(-1), 6); assert.equal(await next, true);
+});
+
+test("logout locks typing during both the final Save and logout response", options, async () => {
+  const h = harness("en", true); await openShared(h); const auth = h.loadAuth();
+  h.edit("original!"); const logout = auth.doLogout(); await tick(); confirmPush(h); await tick();
+  assert.equal(h.requests.at(-1).method, "PUT");
+  h.editor.typeText("during Save");
+  assert.equal(h.editor.getValue(), "original!", "logout must not accept text its final Save cannot include");
+  h.ack(h.requests.at(-1), 5); await tick();
+  assert.equal(h.requests.at(-1).url, "/api/auth/logout");
+  h.editor.typeText("during logout");
+  assert.equal(h.editor.getValue(), "original!");
+  h.requests.at(-1).reply({}); await logout;
+  assert.equal(h.projects.currentProjectId(), null);
+});
+
+test("failed logout Save restores editing without dropping the project", options, async () => {
+  const h = harness("en", true); await openShared(h); const auth = h.loadAuth();
+  h.a.state.autoSave = true;
+  const logout = auth.doLogout(); await tick();
+  h.requests.at(-1).reply({ errorCode: "PROJECT_SAVE_FAILED" }, 500);
+  assert.equal(await logout, false);
+  assert.equal(h.editor.isReadOnly(), false);
+  assert.equal(h.a.state.autoSave, true, "the transient logout lock must not change autosave settings");
+  assert.equal(h.projects.currentProjectId(), "p1");
+  assert.equal(h.requests.some(request => request.url === "/api/auth/logout"), false);
+});
+
+test("reselecting the live source exits image preview without replacing its OT document", options, async () => {
+  const h = harness("en", true), data = sharedProject();
+  data.project.nodes.push({ type: "file", id: "image", kind: "img", name: "image.png", path: "image.png" });
+  await h.open(data); h.socket().fire("open");
+  h.socket().deliver({ t: "opened", fileId: mainFileId, streamId: "shared-stream", version: 0, doc: "original", role: "owner" });
+  const snapshot = h.editor.snapshot();
+  h.a.openFile("image"); assert.equal(h.get(".body").classList.contains("workspace-preview"), true);
+  h.editor.view().focusRequests.length = 0; h.a.openFile(mainFileId);
+  assert.equal(h.get(".body").classList.contains("workspace-preview"), false);
+  assert.equal(h.editor.view().focusRequests.length, 1);
+  assert.deepEqual(h.editor.snapshot(), snapshot);
+  h.edit("original!"); h.window.IrisCollab.flush(); confirmPush(h);
+  assert.equal(h.editor.getValue(), "original!");
+});
+
+test("resync while saving retains readable source and rejects the queued action", options, async () => {
+  const h = harness("en", true); await openShared(h); h.edit("original!");
+  const saving = h.app.persistChanges(); await tick();
+  assert.equal(h.requests.length, 1, "save must wait before HTTP submission");
+  h.socket().deliver({ t: "resync", fileId: mainFileId, version: 4, doc: "restored" });
+  assert.equal(await saving, false);
+  assert.equal(h.requests.length, 1);
+  assert.equal(h.editor.getValue(), "original!");
+  assert.equal(h.editor.isReadOnly(), true, "retained work remains selectable without sending edits to a replaced stream");
+  assert.equal(h.app.hasUnsavedChanges(), true);
+});
+
+test("typing before the first room response is retained rather than replaced by authority", options, async () => {
+  const h = harness("en", true); await h.open(sharedProject());
+  h.edit("original before joining"); h.socket().fire("open");
+  h.socket().deliver({ t: "opened", fileId: mainFileId, streamId: "stream-1", version: 0, doc: "original", role: "owner" });
+  assert.equal(h.editor.getValue(), "original before joining");
+  assert.equal(h.window.IrisCollab.blocked(), true);
+  assert.equal(h.app.hasUnsavedChanges(), true);
+  assert.equal(await h.app.persistChanges(), false);
+  assert.equal(h.requests.length, 1);
+});
+
+test("direct project replacement refuses an unconfirmed local buffer", options, async () => {
+  const h = harness("en", true); await openShared(h); h.edit("original!");
+  assert.equal(await h.app.load(sharedProject()), false);
+  assert.equal(h.editor.getValue(), "original!");
+  assert.equal(h.window.IrisCollab.pending(), true);
+});
+
+test("diagnostic navigation reveals its target after confirming the departing file", options, async () => {
+  const h = harness("en", true); await openShared(h); h.edit("original!");
+  const navigation = h.a.activateDiagnostic({ file: "other.tex", line: 1, message: "diagnostic" });
+  assert.equal(h.a.state.activeId, mainFileId);
+  confirmPush(h); await navigation; await tick();
+  h.socket().deliver({ t: "opened", fileId: otherFileId, streamId: "other-stream", version: 0, doc: "other", role: "owner" });
+  assert.equal(h.editor.selection().text, "other");
+});
+
+test("deleting the active file confirms its last edits before removing its local buffer", options, async () => {
+  const h = harness("en", true); await openShared(h); h.edit("original!");
+  h.a.openTreeDelete(h.a.findFile(mainFileId), h.a.folderNodeByPath("").nodes, "");
+  const deleting = h.a.confirmTreeDelete();
+  assert.ok(h.a.findFile(mainFileId), "keep the edited file until authority has its final text");
+  assert.equal(h.editor.getValue(), "original!");
+  confirmPush(h); await deleting; await tick();
+  assert.equal(h.a.findFile(mainFileId), null);
+  h.socket().deliver({ t: "opened", fileId: otherFileId, streamId: "other-stream", version: 0, doc: "other", role: "owner" });
+  await tick(); h.ack(h.requests.at(-1), 5); await h.app.waitForPersistence();
+});
 
 test("navigation refuses the active cached text until the authoritative room is live", options, async () => {
   const h = harness("en", true); await h.open(sharedProject());
@@ -3150,6 +3471,7 @@ test("maintenance resume retains a missing-file lock but other files remain writ
   assert.equal(h.editor.isReadOnly(), false);
   h.edit("other edited"); h.window.IrisCollab.flush();
   assert.equal(socket.of("push").at(-1).fileId, otherFileId);
+  confirmPush(h);
   h.a.openFile(mainFileId);
   assert.equal(h.editor.isReadOnly(), true);
 });
@@ -3178,7 +3500,8 @@ for (const language of ["en", "it"]) {
     const h = harness(language, true); await openShared(h);
     h.edit("original with unconfirmed work");
     h.window.IrisCollab.flush();
-    assert.equal(h.app.hasUnsavedChanges(), false, "live OT text is not on the ordinary save path");
+    assert.equal(h.app.hasUnsavedChanges(), true, "unconfirmed OT text is unsaved work");
+    assert.equal(h.a.state.dirtyFiles.size, 0, "live OT text still uses the collaboration authority");
     const socket = h.socket();
     socket.deliver({ t: "file-closed", fileId: mainFileId });
     assert.equal(h.editor.isReadOnly(), true);
@@ -3212,6 +3535,7 @@ for (const language of ["en", "it"]) {
     const snapshot = h.app.capturePersistence();
     h.app.acknowledgePersistence(snapshot, 5);
     assert.equal(h.app.hasUnsavedChanges(), true, "a normal save cannot acknowledge excluded missing-file text");
+    confirmPush(h);
     h.a.openFile(mainFileId);
     assert.equal(h.editor.value, "original with unconfirmed work");
     assert.equal(h.editor.isReadOnly(), true);
@@ -3268,13 +3592,9 @@ for (const [renamed, closeFirst] of [["file", true], ["ancestor", true], ["file"
     h.get("treeRenameInput").value = renamed === "file" ? "renamed.tex" : "renamed";
     h.a.confirmTreeRename(); await tick();
     assert.equal(h.a.findFile(local.id).path, renamed === "file" ? "chapter/renamed.tex" : "renamed/main.tex");
-    assert.equal(h.requests.length, closeFirst ? 2 : 3, "only a rename started before closure can issue its PUT");
+    assert.equal(h.requests.length, 2, "rename must not issue its PUT before pending edits are confirmed");
     if (!closeFirst) {
-      const renameRequest = h.requests.at(-1);
-      assert.equal(renameRequest.method, "PUT");
-      assert.equal(renameRequest.body.baseRevision, 5);
       h.socket().deliver({ t: "file-closed", fileId: mainFileId });
-      renameRequest.reply({ errorCode: "PROJECT_REVISION_CONFLICT" }, 409);
       await h.app.waitForPersistence();
     }
     assert.equal(h.editor.isReadOnly(), true, "closure must find the local node even after its path changed");
@@ -3296,6 +3616,7 @@ for (const [renamed, closeFirst] of [["file", true], ["ancestor", true], ["file"
     h.socket().deliver({ t: "opened", fileId: otherFileId, version: 0, doc: "other", role: "owner" });
     h.edit("other edited");
     const otherSave = h.app.persistChanges(); await tick();
+    confirmPush(h); await tick();
     const next = h.requests.at(-1);
     assert.equal(next.method, "PUT");
     assert.equal(next.body.baseRevision, 5);
