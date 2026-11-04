@@ -132,6 +132,54 @@ test("explicit Lua inspection requires current approval and caches its descripto
   assert.deepEqual((await f.metadata()).descriptor, descriptor);
 });
 
+test("explicit target inspection plans with normalized parameters and the full live source manifest without running steps", nativeLua, async t => {
+  const source = generatingScript.replace("plan=function(ctx) return", `plan=function(ctx)
+    assert(ctx.snapshot.settings.projectType == 'lilypond')
+    local found = false
+    for _, file in ipairs(ctx.snapshot.files) do
+      if file.path == 'main.ly' then assert(file.size == 13 and #file.contentHash == 64); found = true end
+    end
+    assert(found, 'missing non-Lua source')
+    local target = ctx.parameters.count == 1 and 'single' or 'multiple'
+    return`).replace("targets={main=", "targets={[target]=");
+  const f = await fixture(t, source), descriptor = await inspect(f);
+  const file = f.project.data.project.nodes.find(file => file.path === "main.ly");
+  f.app.collabRooms.open({ projectId: f.id, fileId: file.id, path: file.path, content: "live source\r\n" }).storageDir = f.dir;
+  for (const [parameters, target] of [[{ count: 1 }, "single"], [{}, "multiple"]]) {
+    const response = await f.request(`${f.base}/pipeline/inspect`, { method: "POST", body: { parameters, descriptorHash: descriptor.descriptorHash } }, "editor");
+    assert.equal(response.status, 200, await response.clone().text());
+    const result = await response.json();
+    assert.deepEqual(result.descriptor, descriptor);
+    assert.deepEqual(result.plan.targets, [target]);
+    assert.deepEqual(result.plan.parameters, { count: target === "single" ? 1 : 2, loop: false });
+    assert.equal(result.plan.descriptorHash, descriptor.descriptorHash);
+    assert.match(result.plan.snapshotHash, /^[a-f0-9]{64}$/); assert.match(result.plan.planHash, /^[a-f0-9]{64}$/);
+    assert.equal(JSON.stringify(result).includes(f.dataDir), false);
+  }
+  assert.equal((await f.pool.query("SELECT count(*) FROM build_outputs")).rows[0].count, "0");
+  assert.equal((await f.pool.query("SELECT count(*) FROM document_versions")).rows[0].count, "0");
+  assert.deepEqual(await fs.readdir(path.join(f.dataDir, ".pipeline-staging")), []);
+  assert.deepEqual(await fs.readdir(path.join(f.dataDir, ".pipeline-runtime")), ["installation.json"]);
+  assert.deepEqual((await f.metadata()).descriptor, descriptor, "target planning cannot replace the approved descriptor");
+});
+
+test("target inspection rejects stale descriptors and invalid parameters before snapshot work", nativeLua, async t => {
+  const f = await fixture(t, generatingScript), descriptor = await inspect(f);
+  const before = (await f.pool.query("SELECT revision FROM projects WHERE id=$1", [f.id])).rows[0].revision;
+  for (const [body, code, status] of [
+    [{ parameters: {} }, "PIPELINE_DESCRIPTOR_CHANGED", 409],
+    [{ parameters: {}, descriptorHash: "0".repeat(64) }, "PIPELINE_DESCRIPTOR_CHANGED", 409],
+    [{ parameters: { count: 0 }, descriptorHash: descriptor.descriptorHash }, "PIPELINE_PARAMETERS_INVALID", 400],
+  ]) {
+    const response = await f.request(`${f.base}/pipeline/inspect`, { method: "POST", body });
+    assert.equal(response.status, status); assert.equal((await response.json()).errorCode, code);
+  }
+  for (const [role, status] of [["viewer", 403], ["outsider", 404]]) {
+    assert.equal((await f.request(`${f.base}/pipeline/inspect`, { method: "POST", body: { parameters: {}, descriptorHash: descriptor.descriptorHash } }, role)).status, status);
+  }
+  assert.equal((await f.pool.query("SELECT revision FROM projects WHERE id=$1", [f.id])).rows[0].revision, before);
+});
+
 test("configured missing Lua permits metadata and approval but fails explicit inspection", options, async t => {
   const f = await fixture(t, script, { LUA_BIN_PATH: "/iris-missing-interpreter" });
   const initial = await f.metadata(); assert.equal((await f.approve(initial.candidate)).status, 201);
@@ -141,10 +189,12 @@ test("configured missing Lua permits metadata and approval but fails explicit in
   assert.equal((await f.metadata()).descriptor, null);
 });
 
-for (const change of ["approval", "permission", "shutdown"]) test(`${change} revocation cancels an executing descriptor inspection before its deadline`, nativeLua, async t => {
-  const f = await fixture(t, "while true do end");
+for (const mode of ["descriptor", "targets"]) for (const change of ["approval", "permission", "shutdown"]) test(`${change} revocation cancels an executing ${mode} inspection before its deadline`, nativeLua, async t => {
+  const f = await fixture(t, mode === "descriptor" ? "while true do end" : generatingScript.replace("plan=function(ctx)", "plan=function(ctx) while true do end"));
   const approved = await f.approve((await f.metadata()).candidate), approval = (await approved.json()).approval;
-  const inspecting = f.request(`${f.base}/pipeline/inspect`, { method: "POST", body: {} }, "editor");
+  const descriptor = mode === "targets" ? (await (await f.request(`${f.base}/pipeline/inspect`, { method: "POST", body: {} })).json()).descriptor : null;
+  const body = descriptor ? { parameters: {}, descriptorHash: descriptor.descriptorHash } : {};
+  const inspecting = f.request(`${f.base}/pipeline/inspect`, { method: "POST", body }, "editor");
   const root = path.join(f.dataDir, ".pipeline-runtime"), deadline = Date.now() + 4000;
   for (;;) {
     const files = (await fs.readdir(root)).filter(file => file.endsWith(".json") && file !== "installation.json");
@@ -165,7 +215,7 @@ for (const change of ["approval", "permission", "shutdown"]) test(`${change} rev
   assert.deepEqual(await fs.readdir(root), ["installation.json"]);
   assert.deepEqual(await fs.readdir(path.join(f.dataDir, ".pipeline-staging")), []);
   if (change === "shutdown") assert.deepEqual(f.exits, [0]);
-  else assert.equal((await f.metadata()).descriptor, null);
+  else assert.deepEqual((await f.metadata()).descriptor, descriptor);
 });
 
 for (const location of [".pipeline-runtime", ".pipeline-staging"]) test(`inspection retains evidence and refuses a clean drain after ${location} disposal fails`, nativeLua, async t => {
@@ -209,12 +259,13 @@ test("shutdown during inspection authorization prevents a late interpreter launc
   assert.equal(await fs.stat(path.join(f.dataDir, ".pipeline-staging")).catch(() => null), null);
 });
 
-for (const change of ["approval", "replacement", "source"]) test(`queued inspection rechecks ${change} before executing approved source`, nativeLua, async t => {
-  const f = await fixture(t, script, { COMPILE_CONCURRENCY: "1" });
+for (const mode of ["descriptor", "targets"]) for (const change of ["approval", "replacement", "source"]) test(`queued ${mode} inspection rechecks ${change} before executing approved source`, nativeLua, async t => {
+  const f = await fixture(t, generatingScript, { COMPILE_CONCURRENCY: "1" });
   const initial = await f.metadata(), approval = (await (await f.approve(initial.candidate)).json()).approval;
+  const descriptor = mode === "targets" ? (await (await f.request(`${f.base}/pipeline/inspect`, { method: "POST", body: {} })).json()).descriptor : null;
   const release = await f.app.compileGate.acquire();
   t.after(release);
-  const inspecting = f.request(`${f.base}/pipeline/inspect`, { method: "POST", body: {} });
+  const inspecting = f.request(`${f.base}/pipeline/inspect`, { method: "POST", body: descriptor ? { parameters: {}, descriptorHash: descriptor.descriptorHash } : {} });
   await until(() => f.app.compileGate.queued === 1, "queued inspection", 4000);
   if (change === "approval") {
     assert.equal((await f.request(`${f.base}/pipeline/approval/${approval.id}`, { method: "DELETE" })).status, 200);
@@ -228,7 +279,7 @@ for (const change of ["approval", "replacement", "source"]) test(`queued inspect
   const response = await inspecting;
   assert.equal(response.status, 409);
   assert.equal((await response.json()).errorCode, "PIPELINE_APPROVAL_REQUIRED");
-  assert.equal((await f.metadata()).descriptor, null);
+  assert.deepEqual((await f.metadata()).descriptor, change === "replacement" ? null : descriptor);
   assert.deepEqual(await fs.readdir(path.join(f.dataDir, ".pipeline-runtime")), ["installation.json"]);
 });
 

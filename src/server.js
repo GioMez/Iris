@@ -4667,18 +4667,39 @@ async function approveProjectPipeline(req, res, user, id) {
   } catch (error) { throw pipelineFailure(error); }
 }
 
+function pipelineSnapshotSource(root, data, files) {
+  const directories = [];
+  const walk = (nodes, parent = "") => {
+    for (const node of nodes) if (node.type === "folder" && !node.generated) {
+      const relative = path.posix.join(parent, node.name);
+      directories.push(relative); walk(node.children || [], relative);
+    }
+  };
+  walk(data.project.nodes);
+  const settings = Object.fromEntries(["projectType", "engine", "compileProfile", "lilypondArgs", "lilypondFormat", "sourceMapping", "mainPath"]
+    .filter(key => data[key] !== undefined).map(key => [key, data[key]]));
+  return { root, files, directories, settings };
+}
+
 async function inspectProjectPipeline(req, res, user, id) {
   await authorizeProject(id, user, "compile");
   const body = await readBody(req);
-  let release, workspace, operation, complete, failure, descriptor, approval;
+  let release, workspace, operation, complete, failure, descriptor, approval, plan;
   try {
-    PipelineContracts.record(body, [], "PIPELINE_REQUEST_INVALID", "inspection request");
+    PipelineContracts.record(body, ["parameters", "descriptorHash"], "PIPELINE_REQUEST_INVALID", "inspection request");
+    const inspectTargets = Object.hasOwn(body, "parameters") || Object.hasOwn(body, "descriptorHash");
     if (pipelineNavigationFailure || [...activePipelineInspections, ...activePipelineRuns.values()].some(operation => operation.failure)) throw requestError("PIPELINE_WORKER_RECOVERY_REQUIRED", 503);
     const state = await pipelineRuns.getPipeline(pipelineRunStore, id, user);
     const candidate = await pipelineCandidate(id, user, "compile");
     approval = state.approval;
     if (!state.enabled || !approval || approval.revokedAt || !candidate
       || ["bundleHash", "policyHash", "registryHash"].some(key => candidate[key] !== approval[key])) throw requestError("PIPELINE_APPROVAL_REQUIRED", 409);
+    let parameters;
+    if (inspectTargets) {
+      descriptor = state.descriptor;
+      if (!descriptor || descriptor.descriptorHash !== body.descriptorHash) throw requestError("PIPELINE_DESCRIPTOR_CHANGED", 409);
+      parameters = PipelineContracts.validateParameters(descriptor.parameterSchema, Object.hasOwn(body, "parameters") ? body.parameters : {});
+    }
     if (shuttingDown) throw requestError("PIPELINE_RUNTIME_STOPPING", 503);
     enforceRateLimit(compileLimiter, `compile:${user.sub}:${id}`, "COMPILE_RATE_LIMITED");
     const controller = new AbortController(), signal = controller.signal;
@@ -4699,12 +4720,18 @@ async function inspectProjectPipeline(req, res, user, id) {
         return data;
       });
       collabReconcileProject(id, data);
-      const files = collectProjectFiles(data.project.nodes).filter(file => /\.lua$/i.test(file.path))
-        .map(file => ({ id: file.node.id, path: file.path, kind: file.kind }));
-      return createRunWorkspace({ root: project.storageDir, files, directories: [], settings: {} }, { root: path.join(DATA_DIR, ".pipeline-staging") }, { signal });
+      const files = collectProjectFiles(data.project.nodes).filter(file => inspectTargets || /\.lua$/i.test(file.path))
+        .map(file => ({ id: file.node.id, path: file.path, kind: file.kind, binary: fileIsBinaryNode(file.node) }));
+      const source = inspectTargets ? pipelineSnapshotSource(project.storageDir, data, files)
+        : { root: project.storageDir, files, directories: [], settings: {} };
+      return createRunWorkspace(source, { root: path.join(DATA_DIR, ".pipeline-staging") }, { signal });
     });
     const coordinator = pipelineCoordinator(execution, workspace);
-    descriptor = await coordinator.inspectLua({ approval, signal });
+    if (inspectTargets) {
+      const planned = await coordinator.planLua({ approval, descriptor, parameters, signal });
+      plan = { descriptorHash: descriptor.descriptorHash, snapshotHash: workspace.snapshotHash,
+        planHash: planned.planHash, parameters: planned.parameters, targets: Object.keys(planned.targets).sort() };
+    } else descriptor = await coordinator.inspectLua({ approval, signal });
   } catch (error) { failure = pipelineFailure(error); }
   finally {
     try {
@@ -4719,7 +4746,7 @@ async function inspectProjectPipeline(req, res, user, id) {
   }
   if (failure) throw failure;
   await pipelineRuns.cacheDescriptor(pipelineRunStore, id, approval.id, user, descriptor);
-  return json(res, 200, { descriptor });
+  return json(res, 200, { descriptor, ...(plan ? { plan } : {}) });
 }
 
 async function executeProjectPipeline(operation, execution, workspace, approval, descriptor, accepted, project) {
@@ -4836,17 +4863,7 @@ async function createProjectPipelineRun(req, res, user, projectId) {
         return { data, files: files.map(file => ({ ...file, sourceRevisionId: checkpoint.versions.get(file.id) || null })) };
       });
       collabReconcileProject(projectId, data);
-      const directories = [];
-      const walk = (nodes, parent = "") => {
-        for (const node of nodes) if (node.type === "folder" && !node.generated) {
-          const relative = path.posix.join(parent, node.name);
-          directories.push(relative); walk(node.children || [], relative);
-        }
-      };
-      walk(data.project.nodes);
-      const settings = Object.fromEntries(["projectType", "engine", "compileProfile", "lilypondArgs", "lilypondFormat", "sourceMapping", "mainPath"]
-        .filter(key => data[key] !== undefined).map(key => [key, data[key]]));
-      workspace = await createRunWorkspace({ root: project.storageDir, files, directories, settings }, { root: path.join(DATA_DIR, ".pipeline-staging") }, { signal });
+      workspace = await createRunWorkspace(pipelineSnapshotSource(project.storageDir, data, files), { root: path.join(DATA_DIR, ".pipeline-staging") }, { signal });
       return { project, data };
     });
     const identity = pipelineCoordinator(execution, workspace).identity;
