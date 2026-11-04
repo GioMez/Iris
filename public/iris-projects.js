@@ -308,6 +308,20 @@
     decision.resolve(!!discard);
   }
 
+  async function prepareDeparture(isCurrent = () => true) {
+    if (!currentId) return true;
+    try {
+      await window.IrisCollab.synchronize();
+    } catch (error) {
+      if (!isCurrent()) return false;
+      document.dispatchEvent(new CustomEvent("iris:projecterror", { detail: error }));
+    }
+    if (!isCurrent()) return false;
+    if (!window.IrisApp.hasUnsavedChanges()) return true;
+    if (!await confirmDiscardChanges() || !isCurrent()) return false;
+    return true;
+  }
+
   async function openProject(id) {
     const requestGeneration = ++openRequestGeneration;
     const sessionGeneration = openGeneration;
@@ -315,7 +329,7 @@
     // without invalidating earlier saves while this request waits its turn.
     return enqueueMutation(async () => {
       if (requestGeneration !== openRequestGeneration || sessionGeneration !== openGeneration) return false;
-      if (currentId && window.IrisApp.hasUnsavedChanges() && !(await confirmDiscardChanges())) return false;
+      if (currentId && !await prepareDeparture(() => requestGeneration === openRequestGeneration && sessionGeneration === openGeneration)) return false;
       if (requestGeneration !== openRequestGeneration || sessionGeneration !== openGeneration) return false;
       const generation = ++openGeneration;
       const isCurrent = () => requestGeneration === openRequestGeneration && generation === openGeneration;
@@ -373,6 +387,8 @@
     return enqueueMutation(async () => {
       const isCurrent = () => currentId === projectId && openGeneration === sessionGeneration;
       if (!projectId || !isCurrent()) throw staleSession();
+      await window.IrisCollab.synchronize();
+      if (!isCurrent()) throw staleSession();
       // Capture only when this operation owns the queue, paired with its base.
       const snapshot = withData ? window.IrisApp.capturePersistence() : null;
       const body = typeof options === "function" ? options() : (options || {});
@@ -1101,10 +1117,11 @@
 
   /* ---------------- public API ---------------- */
   async function showPicker() {
+    const projectId = currentId, generation = openGeneration;
+    const isCurrent = () => currentId === projectId && openGeneration === generation;
     await waitForPersistence();
-    const dirty = !!(currentId && window.IrisApp && window.IrisApp.hasUnsavedChanges && window.IrisApp.hasUnsavedChanges());
-    if (dirty && !(await confirmDiscardChanges())) return false;
-    if (dirty) cache.delete(currentId);
+    if (!isCurrent() || !await prepareDeparture(isCurrent) || !isCurrent()) return false;
+    if (currentId && window.IrisApp.hasUnsavedChanges()) cache.delete(currentId);
     const hadProject = !!currentId;
     window.IrisMotion.setActiveSurface("picker");
     openGeneration += 1;

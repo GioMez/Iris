@@ -269,6 +269,21 @@ rename preserves its stream. Permission changes recheck access and can make an
 editor read-only or close membership access. Run one Iris process per
 database/storage installation; the room state and gates are process-local.
 
+The browser waits for its pending edits to return through the ordered update
+stream before submitting source-dependent HTTP mutations or replacing the active
+document. A push acknowledgement alone does not confirm the text. The wait drains
+later local edits too, retains the typing debounce outside explicit actions, and
+fails after ten seconds without confirmation. Cancellation, identity replacement
+and permission loss cannot acknowledge pending work.
+
+Each `opened` frame includes an ephemeral `streamId` for the room lifetime.
+Reconnect can pull and rebase unconfirmed edits against that same stream. A new
+stream or full resync cannot replace a pending local buffer: the browser retains
+it for copying, blocks further writes and requires explicit discard/reopen for
+recovery. Text entered before the initial room response receives the same
+protection. Older clients can ignore the additive field; a client with no retained
+stream identity refuses to replay pending edits after reconnect.
+
 Presence is ephemeral and scoped to readable projects/files. Positions follow
 text updates. Structure-based overlap notices advise collaborators without
 locking the source. Build notices identify completed output; clients retrieve it

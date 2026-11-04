@@ -16,6 +16,7 @@
 (function () {
   const RECONNECT_BASE_MS = 700;
   const RECONNECT_MAX_MS = 15000;
+  const SYNC_TIMEOUT_MS = 10000;
   // Server-side revocation and shutdown; reconnecting on these is pointless.
   const CLOSE_REVOKED = 4403;
   // Pacing, overridden by /api/config. Typing stays instant locally whatever
@@ -33,6 +34,7 @@
   // A preflight room shares the transport but cannot replace the editor until
   // navigation has checked its authoritative text and the current UI context.
   let preparedSource = null;
+  const syncWaiters = new Set();
   const state = {
     socket: null,
     // The project this tab has open. Watched independently of any document, so
@@ -45,7 +47,7 @@
     desired: null,       // { fileId, kind, metadata }
     joined: null,        // fileId confirmed open by the server
     opening: [],         // desired rooms awaiting a reply, in socket request order
-    status: "off",       // off | connecting | live | offline | readonly | file-unavailable | revoked | error
+    status: "off",       // off | connecting | live | offline | readonly | conflict | file-unavailable | revoked | error
     role: null,
     attempt: 0,
     reconnectTimer: 0,
@@ -61,9 +63,54 @@
     filePeers: [],
     // True while this tab holds edits the server has not ordered yet.
     pending: false,
+    syncError: null,      // retained local work that cannot rebase onto authority
   };
 
   const ed = () => window.IrisEditor;
+  function syncError(code = "COLLAB_SYNC_INTERRUPTED") {
+    return Object.assign(new Error(code), { code });
+  }
+  function rejectSync() {
+    for (const waiter of syncWaiters) waiter.finish(syncError());
+  }
+  function checkSync() {
+    for (const waiter of syncWaiters) {
+      if (state.syncError || waiter.desired !== state.desired || ["revoked", "error", "file-unavailable"].includes(state.status)) {
+        waiter.finish(syncError());
+      } else if (!state.desired || (state.joined && !state.pending && ed().collabVersion() >= state.neededVersion)) {
+        waiter.finish();
+      }
+    }
+  }
+  function retainWork(beforeOpen = false) {
+    if (!beforeOpen && !ed().collabPending()?.updates.length) return false;
+    state.syncError = "COLLAB_SYNC_INTERRUPTED";
+    clearTimeout(state.pushTimer);
+    state.pushTimer = 0;
+    state.pending = true;
+    setStatus("conflict");
+    rejectSync();
+    return true;
+  }
+  function synchronize({ signal } = {}) {
+    if (signal?.aborted) return Promise.reject(Object.assign(syncError(), { name: "AbortError" }));
+    if (state.syncError) return Promise.reject(syncError());
+    return new Promise((resolve, reject) => {
+      const abort = () => finish(Object.assign(syncError(), { name: "AbortError" }));
+      const waiter = { desired: state.desired, finish };
+      const timer = setTimeout(() => finish(syncError("COLLAB_SYNC_TIMEOUT")), SYNC_TIMEOUT_MS);
+      function finish(error) {
+        if (!syncWaiters.delete(waiter)) return;
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", abort);
+        if (error) reject(error); else resolve();
+      }
+      syncWaiters.add(waiter);
+      signal?.addEventListener("abort", abort, { once: true });
+      pushPending();
+      refreshPending();
+    });
+  }
   function emit() {
     const snapshot = { status: state.status, role: state.role, fileId: state.joined, pending: state.pending, paused: state.paused };
     listeners.forEach((fn) => {
@@ -92,6 +139,7 @@
   function setStatus(status) {
     if (state.status === status) return;
     state.status = status;
+    checkSync();
     emit();
   }
 
@@ -118,16 +166,20 @@
   function hasPendingWork() {
     // `desired`, not `joined`: a dropped link does not settle what this tab is
     // still holding, and the edits go out again as soon as the room reopens.
+    if (state.syncError) return true;
     if (!state.desired || state.role === "viewer") return false;
+    if (state.desired.localBeforeOpen) return true;
     if (state.pushing) return true;
     const pending = ed().collabPending();
     return !!(pending && pending.updates.length);
   }
   function refreshPending() {
     const pending = hasPendingWork();
-    if (pending === state.pending) return;
-    state.pending = pending;
-    emit();
+    if (pending !== state.pending) {
+      state.pending = pending;
+      emit();
+    }
+    checkSync();
   }
 
   function send(message, opening = state.desired) {
@@ -193,6 +245,7 @@
       // so the flag is recomputed rather than cleared.
       refreshPending();
       if (event.code === CLOSE_REVOKED) {
+        retainWork();
         setStatus("revoked");
         return;
       }
@@ -256,14 +309,24 @@
       // Even A -> B -> A must wait for the last open. Earlier rooms already
       // have a close queued; adopting their replies could reset newer edits.
       if (desired !== state.desired) return;
+      if (state.syncError) return;
+      if (desired.localBeforeOpen) { retainWork(true); return; }
+      const resume = desired.opened && !!ed().collabPending()?.updates.length;
+      if (resume && (!desired.streamId || desired.streamId !== message.streamId || message.version < ed().collabVersion())) {
+        retainWork();
+        return;
+      }
       state.joined = message.fileId;
       state.role = message.role;
       state.neededVersion = message.version;
       state.pulling = null;
-      ed().loadCollab(message.doc, state.desired.kind, { ...state.desired.metadata, version: message.version });
+      desired.opened = true;
+      desired.streamId = message.streamId;
+      if (resume && message.role === "viewer") retainWork();
+      if (!resume) ed().loadCollab(message.doc, state.desired.kind, { ...state.desired.metadata, version: message.version });
       setStatus(message.role === "viewer" ? "readonly" : "live");
       document.dispatchEvent(new CustomEvent("iris:collabrole", { detail: { role: message.role } }));
-      // Anything typed before the room opened is now sendable.
+      // A resumed stream must catch up before retrying its retained updates.
       pushPending();
       refreshPending();
       sendPresence();
@@ -308,6 +371,7 @@
     }
 
     if (message.t === "updates") {
+      if (state.syncError) return;
       if (!isCurrent(message.fileId) || state.joined !== message.fileId) return;
       if (!Number.isInteger(message.version) || !Array.isArray(message.updates)) return;
       const start = message.version - message.updates.length;
@@ -335,17 +399,17 @@
     if (message.t === "resync") {
       if (!isCurrent(message.fileId) || state.joined !== message.fileId) return;
       if (!Number.isInteger(message.version) || message.version <= ed().collabVersion()) return;
-      // The server replaced the document (rollback) or our version fell out of
-      // its log: local pending edits cannot be rebased and are dropped, which is
-      // why only the server may ask for this.
+      rejectSync();
+      if (retainWork()) return;
+      // Adopt the server's replacement only when no local edits need recovery.
       state.pulling = null;
       state.neededVersion = Math.max(state.neededVersion, message.version);
-      // Keep an outstanding push gated until its ack, even though its old local
-      // edits are discarded. That ack must not unlock a later push instead.
+      // An echoed push can still await its ack. Keep that request gated so its
+      // late ack cannot unlock a later push instead.
       ed().loadCollab(message.doc, state.desired.kind, { ...state.desired.metadata, version: message.version });
       setStatus(state.role === "viewer" ? "readonly" : "live");
       pushPending();
-      // Recompute after dropping old edits without releasing an in-flight push.
+      // Recompute after loading authority without releasing an in-flight push.
       refreshPending();
       sendPresence();
       return;
@@ -364,6 +428,7 @@
 
     if (message.t === "role") {
       if (!isCurrent(message.fileId)) return;
+      if (message.role === "viewer") retainWork();
       state.role = message.role;
       setStatus(message.role === "viewer" ? "readonly" : "live");
       refreshPending();
@@ -378,6 +443,8 @@
 
     if (message.t === "revoked") {
       if (!isCurrent(message.fileId)) return;
+      rejectSync();
+      retainWork();
       state.desired = null;
       state.joined = null;
       setStatus("revoked");
@@ -425,6 +492,7 @@
         return;
       }
       if (message.code === "COLLAB_READ_ONLY") {
+        retainWork();
         setStatus("readonly");
         return;
       }
@@ -444,7 +512,7 @@
   function pushPending() {
     clearTimeout(state.pushTimer);
     state.pushTimer = 0;
-    if (!state.joined) return;
+    if (!state.joined || state.syncError) return;
     if (ed().collabVersion() < state.neededVersion) return pullNow();
     if (state.paused || state.pushing || state.role === "viewer") return;
     const pending = ed().collabPending();
@@ -460,7 +528,7 @@
     // The edit is unconfirmed from the moment it is typed, not from the moment
     // the debounce lets it leave, so the flag is raised before the early return.
     refreshPending();
-    if (state.paused || state.pushTimer || state.pushing || !state.joined || state.role === "viewer") return;
+    if (state.syncError || state.paused || state.pushTimer || state.pushing || !state.joined || state.role === "viewer") return;
     state.pushTimer = setTimeout(pushPending, pacing.push);
   }
 
@@ -565,6 +633,8 @@
       }
     },
     leave() {
+      rejectSync();
+      state.syncError = null;
       const fileId = state.joined || (state.desired && state.desired.fileId);
       if (fileId) send({ t: "close", fileId });
       state.desired = null;
@@ -599,6 +669,8 @@
     },
     // Sends everything still pending straight away, skipping the debounce.
     flush: pushPending,
+    synchronize,
+    blocked() { return !!state.syncError; },
     configure: applyPacing,
     pacing() { return { ...pacing }; },
     active() { return !!state.joined; },
@@ -627,4 +699,9 @@
   // ephemeral presence.
   ed().onSync(schedulePush);
   ed().onCursor(schedulePresence);
+  ed().onChange(() => {
+    if (!state.desired || state.desired.opened) return;
+    state.desired.localBeforeOpen = true;
+    refreshPending();
+  });
 })();

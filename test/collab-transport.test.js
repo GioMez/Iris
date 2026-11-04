@@ -36,6 +36,7 @@ function browser(clientID, live = null) {
     selection: () => ({ from: 0, to: 0 }),
     setPeers() {},
     onSync(fn) { sync = fn; },
+    onChange() {},
     onCursor() {},
   };
   class Socket {
@@ -218,7 +219,7 @@ test("many gap broadcasts coalesce a pull and its short reply requests the missi
   converged(r, b);
 });
 
-test("resync retires old ranges but waits for the old push ack before sending new typing", () => {
+test("resync preserves unconfirmed source despite a late accepted echo until explicit reopen", () => {
   const r = room();
   const b = browser("local"); b.join(r);
   b.type({ from: 4, insert: " old" }); b.api.flush();
@@ -226,10 +227,16 @@ test("resync retires old ranges but waits for the old push ack before sending ne
   const oldUpdates = batch(r, 0);
   r.reset("restored");
   b.socket().deliver({ t: "resync", fileId: r.fileId, version: r.version, doc: r.text() });
-  b.type({ from: 8, insert: " new" }); b.api.flush();
+  assert.equal(b.doc(), "abcd old");
+  assert.equal(b.api.blocked(), true);
+  b.api.flush();
   assert.equal(b.socket().of("push").length, 1);
   b.socket().deliver(oldUpdates);
   b.socket().deliver(oldAck);
+  assert.equal(b.doc(), "abcd old");
+  assert.equal(b.socket().of("push").length, 1);
+  b.api.leave(); b.join(r);
+  b.type({ from: 8, insert: " new" }); b.api.flush();
   assert.equal(b.socket().of("push").length, 2);
   const ack = accept(r, b);
   b.socket().deliver(batch(r, 2)); b.socket().deliver(ack);
@@ -237,18 +244,24 @@ test("resync retires old ranges but waits for the old push ack before sending ne
   converged(r, b);
 });
 
-test("restore rejects a queued old-version push and its ack releases new typing only once", () => {
+test("restore rejection cannot release retained edits into a replacement document", () => {
   const r = room();
   const b = browser("local"); b.join(r);
   b.type({ from: 4, insert: " old" }); b.api.flush();
   const oldPush = b.socket().last("push");
   r.reset("restored");
   b.socket().deliver({ t: "resync", fileId: r.fileId, version: r.version, doc: r.text() });
-  b.type({ from: 8, insert: " new" }); b.tick(); b.api.flush();
+  assert.equal(b.doc(), "abcd old");
+  b.tick(); b.api.flush();
   assert.equal(b.socket().of("push").length, 1);
   const rejected = r.receive(oldPush.version, oldPush.updates);
   assert.equal(rejected.accepted, false);
   b.socket().deliver({ t: "pushed", fileId: r.fileId, ...rejected });
+  assert.equal(b.doc(), "abcd old");
+  assert.equal(b.api.blocked(), true);
+  assert.equal(b.socket().of("push").length, 1);
+  b.api.leave(); b.join(r);
+  b.type({ from: 8, insert: " new" }); b.api.flush();
   assert.equal(b.socket().of("push").length, 2);
   const ack = accept(r, b);
   b.socket().deliver(batch(r, 1)); b.socket().deliver(ack);

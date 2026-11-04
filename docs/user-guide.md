@@ -99,6 +99,10 @@ autosave is optional and starts off; configure it under **Settings → Editor**.
 Live text editing has its own server persistence: Iris writes accepted edits
 after a pause and during sustained typing even with project autosave off.
 Check the collaboration status for edits that the server has not confirmed.
+Save, Snapshot, Compile and Lua runs wait for those edits before using the current
+source. Switching files or closing the project also waits for confirmation.
+Signing out pauses editing while Iris saves and ends the session. A failed Save
+keeps the project open.
 
 **Snapshot** saves the project first, then records a manual history revision for
 each changed, versionable text file. The database stores the text of those
@@ -114,7 +118,12 @@ Save a new file before expecting it to have history or join a live editing sessi
 
 A conflicting whole-project save keeps your local work and reports the conflict.
 Copy any work you need before choosing to discard changes or reopen the project.
-A browser tab with unconfirmed edits needs attention before you close it.
+If the server does not confirm edits within ten seconds, Iris stops the action
+and keeps your work in the tab. Check the connection and try again. If a server
+reload or access change prevents synchronization, the editor keeps the text
+read-only for copying. Copy the work you need before choosing **Discard and exit**
+and reopening the project. Cancelling the discard prompt keeps the project open.
+A browser tab with unconfirmed edits warns before you close or reload it.
 
 ## Compile a document or score
 

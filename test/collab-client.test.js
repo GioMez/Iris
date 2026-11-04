@@ -39,6 +39,7 @@ function harness() {
     selection() { return editor.cursor; },
     setPeers(peers) { editor.peerSets.push(peers); },
     onSync(fn) { editor.syncHandlers.push(fn); },
+    onChange() {},
     onCursor(fn) { editor.cursorHandlers.push(fn); },
   };
 
@@ -73,6 +74,7 @@ function harness() {
     JSON,
     Math,
     Date,
+    AbortController,
     CustomEvent: class {
       constructor(type, init) { this.type = type; this.detail = init && init.detail; }
     },
@@ -130,11 +132,11 @@ function harness() {
 }
 
 // Opens a live session on one file, as the app does when a document is opened.
-function joined(h, { role = "owner", version = 3, doc = "hello" } = {}) {
+function joined(h, { role = "owner", version = 3, doc = "hello", streamId = "stream-1" } = {}) {
   h.collab.join("file-1", "tex");
   h.socket().fire("open");
   h.socket().deliver({ t: "ready", clientId: "server-side" });
-  h.socket().deliver({ t: "opened", fileId: "file-1", version, doc, role });
+  h.socket().deliver({ t: "opened", fileId: "file-1", version, doc, role, streamId });
   return h.socket();
 }
 
@@ -228,6 +230,101 @@ test("flushing sends everything pending without waiting for the debounce", () =>
   h.collab.flush();
   assert.equal(socket.messagesOfType("push").length, 1);
   assert.equal(socket.lastOfType("push").version, 4);
+});
+
+test("synchronization waits for the ordered echo and drains further local edits", async () => {
+  const h = harness(), socket = joined(h, { version: 4 });
+  h.typeLocally([{ changes: [1], clientID: "me" }]);
+  let done = false;
+  const wait = h.collab.synchronize().then(() => { done = true; });
+  assert.equal(socket.messagesOfType("push").length, 1);
+  socket.deliver({ t: "pushed", fileId: "file-1", version: 5, accepted: true });
+  await Promise.resolve(); assert.equal(done, false, "acceptance alone is not confirmation");
+  h.editor.pending = { version: 5, updates: [{ changes: [2], clientID: "me" }] };
+  socket.deliver({ t: "updates", fileId: "file-1", version: 5, updates: [{ changes: [1], clientID: "me" }] });
+  await Promise.resolve(); assert.equal(done, false, "newer typing must drain too");
+  assert.equal(socket.messagesOfType("push").length, 2);
+  h.editor.pending = null;
+  socket.deliver({ t: "updates", fileId: "file-1", version: 6, updates: [{ changes: [2], clientID: "me" }] });
+  socket.deliver({ t: "pushed", fileId: "file-1", version: 6, accepted: true });
+  await wait;
+  assert.equal(done, true);
+  assert.deepEqual(h.scheduledDelays(), []);
+});
+
+test("synchronization abort and timeout retain unconfirmed edits and release wait resources", async () => {
+  const h = harness(); joined(h);
+  h.typeLocally([{ changes: [1], clientID: "me" }]);
+  const controller = new AbortController(), original = h.editor.pending;
+  const aborted = assert.rejects(h.collab.synchronize({ signal: controller.signal }), error => error.name === "AbortError");
+  controller.abort(); await aborted;
+  assert.equal(h.editor.pending, original);
+  assert.deepEqual(h.scheduledDelays(), []);
+  const timedOut = assert.rejects(h.collab.synchronize(), error => error.code === "COLLAB_SYNC_TIMEOUT");
+  h.runTimers(); await timedOut;
+  assert.equal(h.collab.pending(), true);
+  assert.equal(h.editor.pending, original);
+  assert.deepEqual(h.scheduledDelays(), []);
+});
+
+for (const event of ["leave", "revoked", "role", "resync"]) test(`synchronization refuses ${event} rather than confirming dropped work`, async () => {
+  const h = harness(), socket = joined(h);
+  h.typeLocally([{ changes: [1], clientID: "me" }]);
+  const original = h.editor.pending;
+  const refused = assert.rejects(h.collab.synchronize(), error => error.code === "COLLAB_SYNC_INTERRUPTED");
+  if (event === "leave") h.collab.leave();
+  else socket.deliver({ t: event, fileId: "file-1", role: "viewer", version: 8, doc: "replacement" });
+  await refused;
+  assert.equal(h.editor.pending, original);
+  assert.equal(h.editor.loaded.length, 1, "keep the local document for recovery");
+  if (event !== "leave") {
+    assert.equal(h.collab.pending(), true);
+    assert.equal(h.collab.blocked(), true);
+  }
+});
+
+test("maintenance holds synchronization until writes resume and edits return", async () => {
+  const h = harness(), socket = joined(h);
+  h.typeLocally([{ changes: [1], clientID: "me" }]);
+  socket.deliver({ t: "maintenance", active: true });
+  let done = false;
+  const wait = h.collab.synchronize().then(() => { done = true; });
+  assert.equal(socket.messagesOfType("push").length, 0);
+  await Promise.resolve(); assert.equal(done, false);
+  socket.deliver({ t: "maintenance", active: false });
+  assert.equal(socket.messagesOfType("push").length, 1);
+  h.editor.pending = null;
+  socket.deliver({ t: "updates", fileId: "file-1", version: 4, updates: [{ changes: [1], clientID: "me" }] });
+  socket.deliver({ t: "pushed", fileId: "file-1", version: 4, accepted: true });
+  await wait;
+});
+
+test("same-stream reconnect preserves pending edits and catches up before retrying", () => {
+  const h = harness(), first = joined(h);
+  h.typeLocally([{ changes: [1], clientID: "me" }]);
+  const original = h.editor.pending;
+  first.fire("close", { code: 1006 }); h.runTimers();
+  const socket = h.socket(); socket.fire("open");
+  socket.deliver({ t: "opened", fileId: "file-1", streamId: "stream-1", version: 4, doc: "remote edit", role: "owner" });
+  assert.equal(h.editor.pending, original);
+  assert.equal(h.editor.loaded.length, 1);
+  assert.equal(socket.lastOfType("pull").version, 3);
+  assert.equal(socket.messagesOfType("push").length, 0);
+  socket.deliver({ t: "updates", fileId: "file-1", version: 4, updates: [{ changes: [1], clientID: "other" }] });
+  assert.equal(socket.messagesOfType("push").length, 1);
+});
+
+test("a replacement stream after reconnect retains local edits for explicit recovery", () => {
+  const h = harness(), first = joined(h);
+  h.typeLocally([{ changes: [1], clientID: "me" }]);
+  const original = h.editor.pending;
+  first.fire("close", { code: 1006 }); h.runTimers(); h.socket().fire("open");
+  h.socket().deliver({ t: "opened", fileId: "file-1", streamId: "stream-new", version: 0, doc: "disk text", role: "owner" });
+  assert.equal(h.editor.pending, original);
+  assert.equal(h.editor.loaded.length, 1);
+  assert.equal(h.collab.pending(), true);
+  assert.equal(h.collab.blocked(), true);
+  h.collab.flush(); assert.equal(h.socket().messagesOfType("push").length, 0);
 });
 
 test("an ack arriving before its own confirmation recovers by pull", () => {

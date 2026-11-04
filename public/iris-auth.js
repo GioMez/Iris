@@ -8,6 +8,7 @@
   const closeDialog = (id, options) => window.IrisMotion.closeDialog(id, options);
   let ssoEnabled = false;
   let currentUser = null;
+  let loggingOut = false;
   // While a forced first-login password change is pending the modal is mandatory:
   // it cannot be dismissed and the app stays behind it until the change succeeds.
   let passwordForced = false;
@@ -207,10 +208,22 @@
   }
 
   async function doLogout() {
-    if (window.IrisApp && window.IrisApp.waitForPersistence) await window.IrisApp.waitForPersistence();
-    if (window.IrisProjects) await window.IrisProjects.persistCurrent();
-    try { await api("/api/auth/logout", { method: "POST", body: "{}" }); } catch (e) {}
-    showLogin();
+    if (loggingOut) return false;
+    loggingOut = true;
+    window.IrisApp?.setLoggingOut(true);
+    try {
+      if (window.IrisApp && window.IrisApp.waitForPersistence) await window.IrisApp.waitForPersistence();
+      if (window.IrisProjects?.currentProjectId()) {
+        if (window.IrisProjects.currentRole() !== "viewer") {
+          if (!await window.IrisProjects.persistCurrent()) return false;
+        } else if (window.IrisApp.hasUnsavedChanges() && !await window.IrisProjects.closeCurrent()) return false;
+      }
+      try { await api("/api/auth/logout", { method: "POST", body: "{}" }); } catch (e) {}
+      showLogin();
+    } finally {
+      loggingOut = false;
+      window.IrisApp?.setLoggingOut(false);
+    }
   }
 
   async function changePassword() {

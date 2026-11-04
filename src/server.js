@@ -2848,6 +2848,7 @@ async function collabHandleMessage(session, raw) {
     collabSend(session.socket, {
       t: "opened",
       fileId,
+      streamId: entry.room.streamId,
       version: entry.room.version,
       doc: entry.room.text(),
       role: entry.role,

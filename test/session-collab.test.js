@@ -101,6 +101,18 @@ function push(client, fileId, version, text, insert) {
   }] });
 }
 
+test("room opens identify the shared stream and distinguish a recreated room", options, async t => {
+  const f = await seed(t), one = await ready(t, f), two = await ready(t, f);
+  const first = await open(one, f), second = await open(two, f);
+  assert.equal(typeof first.streamId, "string");
+  assert.ok(first.streamId.length > 0);
+  assert.equal(second.streamId, first.streamId);
+  one.send({ t: "close", fileId: f.fileId }); two.send({ t: "close", fileId: f.fileId });
+  await until(() => !f.app.collabRooms.get(f.fileId), "room retirement");
+  const reopened = await open(one, f);
+  assert.notEqual(reopened.streamId, first.streamId, "a new version-zero stream must not accept old pending edits");
+});
+
 test("forced-password-change accounts cannot upgrade to realtime", options, async (t) => {
   const fixture = await seed(t);
   await fixture.pool.query("UPDATE users SET password_change_required = TRUE WHERE id = $1", [fixture.user.id]);
