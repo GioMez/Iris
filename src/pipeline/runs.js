@@ -74,10 +74,10 @@ function notification(record) {
 // Use the same gate, project row lock and uncertain-commit handling as saves.
 // Release the project gate before draining workers: their pending output events
 // may need that same gate to finish persistence.
-async function transaction(store, projectId, principal, capability, action, actorId = principal?.sub) {
+async function transaction(store, projectId, principal, capability, action, actorId = principal?.sub, afterCommit = null) {
   const notices = [], stopped = new Set();
   const result = await store.mutations.gate(projectId, async () => {
-    return store.mutations.transaction({ id: projectId,
+    const value = await store.mutations.transaction({ id: projectId,
       beforeLock: async client => {
         if (actorId) {
           const user = await client.query("SELECT status FROM users WHERE id=$1 FOR SHARE", [actorId]);
@@ -87,6 +87,8 @@ async function transaction(store, projectId, principal, capability, action, acto
       },
       authorize: principal ? client => authorize(store, client, projectId, principal, capability) : null,
     }, client => action(client, notices, stopped));
+    afterCommit?.();
+    return value;
   }, principal ? () => authorize(store, store.pool, projectId, principal, capability) : null);
   for (const id of stopped) await store.stop(id);
   for (const record of notices) await store.emit(notification(record));
@@ -127,12 +129,13 @@ async function withRun(store, id, principal, capability, action, projectId = nul
   }, principal?.sub || initial.created_by);
 }
 
-async function approveBundle(store, projectId, principal, hashes) {
+async function approveBundle(store, projectId, principal, hashes, { validate, afterCommit } = {}) {
   principal = { sub: principal.sub };
   hashes = { bundleHash: hashes.bundleHash, policyHash: hashes.policyHash, registryHash: hashes.registryHash };
   identity(store, hashes);
   if (hashes.policyHash !== store.policyHash || hashes.registryHash !== store.registryHash) invalid(store, "PIPELINE_POLICY_CHANGED", 409);
   return transaction(store, projectId, principal, "approvePipeline", async client => {
+    if (validate) await validate(client);
     const { rows } = await client.query(`INSERT INTO pipeline_approvals
       (id,project_id,bundle_hash,policy_hash,registry_hash,approved_by,approved_by_label)
       SELECT $1,$2,$3,$4,$5,u.id,u.display_name FROM users u WHERE u.id=$6
@@ -140,6 +143,13 @@ async function approveBundle(store, projectId, principal, hashes) {
     await client.query(`INSERT INTO project_pipelines (project_id,enabled,approval_id) VALUES ($1,true,$2)
       ON CONFLICT (project_id) DO UPDATE SET enabled=true,approval_id=EXCLUDED.approval_id`, [projectId, rows[0].id]);
     return { id: rows[0].id, ...hashes, approvedAt: rows[0].approved_at };
+  }, principal.sub, afterCommit);
+}
+async function setAutoApproval(store, projectId, principal, enabled) {
+  return transaction(store, projectId, principal, "approvePipeline", async client => {
+    if (enabled) await client.query("INSERT INTO pipeline_auto_approvals (project_id,user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING", [projectId, principal.sub]);
+    else await client.query("DELETE FROM pipeline_auto_approvals WHERE project_id=$1 AND user_id=$2", [projectId, principal.sub]);
+    return { enabled };
   });
 }
 async function revokeApproval(store, projectId, approvalId, principal) {
@@ -468,4 +478,4 @@ async function recheckRunPermissions(store, { projectId = null, userId = null } 
   }
 }
 
-module.exports = { approveBundle, revokeApproval, createRun, getRun, getPipeline, cacheDescriptor, cancelRun, transitionRun, transitionStep, recordProgress, publishRun, reconcileRuns, recheckRunPermissions, validatePublication: publication };
+module.exports = { approveBundle, setAutoApproval, revokeApproval, createRun, getRun, getPipeline, cacheDescriptor, cancelRun, transitionRun, transitionStep, recordProgress, publishRun, reconcileRuns, recheckRunPermissions, validatePublication: publication };

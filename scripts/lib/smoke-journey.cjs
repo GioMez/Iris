@@ -3,7 +3,7 @@ const { createHash, randomBytes } = require("node:crypto");
 const { until, operationSignal } = require("./disposable.cjs");
 const { withBrowser } = require("./browser.cjs");
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
-const tables = ["iris_schema", "users", "projects", "project_members", "project_files", "document_versions", "build_outputs", "build_artifacts", "audit_events", "project_deletions", "pipeline_approvals", "project_pipelines", "pipeline_steps"];
+const tables = ["iris_schema", "users", "projects", "project_members", "project_files", "document_versions", "build_outputs", "build_artifacts", "audit_events", "project_deletions", "pipeline_approvals", "pipeline_auto_approvals", "project_pipelines", "pipeline_steps"];
 const snapshotSQL = `SELECT jsonb_build_object(${tables.map((name) => `'${name}', (SELECT COALESCE(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text), '[]'::jsonb) FROM ${name} t)`).join(",")});`;
 // Runs inside either runtime to compare every file and its mode at the frozen point.
 const filesystemProbe = `const fs=require('node:fs/promises'),path=require('node:path'),crypto=require('node:crypto');
@@ -60,11 +60,16 @@ async function verifyPipeline(api, record) {
     assert.equal((await api.request(`${base}/files/download?path=${file}`, { binary: true })).toString(), text);
   }
   const { pipeline } = await api.request(`${base}/pipeline`);
+  assert.equal(pipeline.source.entrypoint, "iris.lua");
+  assert.ok(pipeline.source.changedAt > 0);
+  assert.equal(pipeline.autoApproval.enabled, !!record.pipelineRun);
+  assert.equal(pipeline.autoApproval.eligible, false);
   if (!record.pipelineRun) {
     assert.equal(pipeline.enabled, false); assert.equal(pipeline.approval, null);
     return;
   }
   // This smoke revokes before export/restart: historical bytes survive disablement.
+  assert.equal(pipeline.source.changedAt, record.luaChangedAt);
   assert.equal(pipeline.enabled, false); assert.ok(pipeline.approval.revokedAt);
   const { run } = await api.request(`${base}/runs/${record.pipelineRun}`);
   assert.equal(run.state, "succeeded");
@@ -155,8 +160,12 @@ async function journey(source, target, { native = false, browser = false, browse
     if (native) record.pdfHash = hash(Buffer.from(record.build.artifacts[0].base64, "base64"));
     else assert.match(record.build.log, /ENOENT|not found|spawn/i, "stock image reports an unavailable compiler");
     const metadata = (await api.request(`${base}/pipeline`)).pipeline;
+    record.luaChangedAt = metadata.source.changedAt;
     assert.equal(metadata.enabled, false); assert.equal(metadata.approval, null);
     const { approval } = await api.request(`${base}/pipeline/approval`, { method: "POST", status: 201, body: { identity: metadata.candidate } });
+    await api.request(`${base}/pipeline/auto-approval`, { method: "PUT", body: { enabled: true } });
+    const unchanged = await api.request(base);
+    await api.request(base, { method: "PUT", body: { data: unchanged, baseRevision: unchanged.revision } });
     const { descriptor } = await api.request(`${base}/pipeline/inspect`, { method: "POST", body: {} });
     const accepted = await api.request(`${base}/runs`, { method: "POST", status: 202, body: { target: "main", parameters: {}, descriptorHash: descriptor.descriptorHash } });
     record.pipelineRun = accepted.run.id;
@@ -174,6 +183,7 @@ async function journey(source, target, { native = false, browser = false, browse
   }
   console.log(`PASS create, source bytes/settings, viewer permissions, export/import; ${native ? "LaTeX + LilyPond compile, PDF bytes and forward/inverse navigation" : "compiler-free image returns honest failed build records"}`);
   console.log("PASS installed Lua HTTP approval, project modules, binary publication, diagnostics, disablement and authority-free import");
+  console.log("PASS Lua source timestamp survives unchanged saves; personal preference stays out of project imports");
   if (browser) await preview(work, source, api, records, browserExecutable);
   else console.log("SKIP browser PDF painting (enable --browser on the native smoke)");
   await source.restart(); await ready(source);
@@ -183,7 +193,7 @@ async function journey(source, target, { native = false, browser = false, browse
   await drain(source, api);
   await source.stop(); // A stopped, drained writer also prevents a later client from changing either layer.
   const beforeDB = JSON.parse(await source.sql(snapshotSQL)), beforeFS = await source.files();
-  assert.equal(beforeDB.iris_schema[0].version, 4);
+  assert.equal(beforeDB.iris_schema[0].version, 5);
   assert.equal(beforeDB.projects.length, 4);
   assert.equal(beforeDB.build_outputs.length, 4);
   const backup = await source.backup();

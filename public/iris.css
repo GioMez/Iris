@@ -1933,6 +1933,12 @@ html.iris-inadmin[data-role="admin"] .admin-screen{display:block}
 .pipeline-parameters .field{min-width:0;margin:0}
 .pipeline-parameters textarea{width:100%;min-height:6em;resize:vertical}
 .pipeline-include{display:flex;align-items:center;gap:var(--space-4);margin-bottom:var(--space-2)}
+#pipelineSourceSummary{margin-block:var(--space-5)}
+#pipelineSourceSummary p{margin-block:var(--space-2)}
+#pipelineTechnicalDetails summary{cursor:pointer;color:var(--txt-dim)}
+#pipelineAutoApproval{margin-block:var(--space-5)}
+#pipelineAutoApproval .pipeline-include{align-items:flex-start}
+#pipelineAutoApprove{flex-shrink:0}
 #pipelineIdentity,#pipelineSteps,#pipelineNotice{overflow-wrap:anywhere}
 #pipelineNotice{color:var(--semantic-danger)}
 #pipelineSteps{padding-inline-start:var(--space-7)}

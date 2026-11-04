@@ -443,11 +443,15 @@ database and source belong together. Do not edit the schema marker or drop
 tables to bypass validation. Developers should follow the
 [migration contract](development.md#persistence-contract).
 
-Existing projects keep their ordinary compiler workflow. Opening, saving or
-importing Lua files does not enable execution. An owner approves the exact source
-bundle and runtime identities through the [author controls](lua-pipelines.md).
-Upgrading trusted implementations or tool executables can invalidate approval;
-inspect the changed source/policy and approve again before executing it.
+Iris 1.2.0 uses database schema 5 and migrates supported schema 2, 3 and 4 installations on startup.
+The migration adds Lua source-change tracking and per-owner automatic-approval preferences.
+Existing projects show **Not recorded** until Iris records a Lua source change; migration does not infer historical edit times from project saves or filesystem timestamps.
+Automatic approval starts disabled for each owner and project.
+
+Existing projects keep their ordinary compiler workflow until an owner approves the exact source bundle and runtime identities through the [author controls](lua-pipelines.md#approve-inspect-and-run).
+Opening or importing Lua files grants no execution approval.
+Owners can opt into approval of their own subsequent edits as described in that guide.
+Upgrading trusted implementations or tool executables can invalidate approval; inspect the changed source/policy and approve again before executing it.
 
 ### Disable a Lua pipeline
 

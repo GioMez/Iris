@@ -465,7 +465,18 @@
           <h4 data-i18n="pipelines.title">Lua pipeline</h4>
           <p class="hint" data-i18n="pipelines.description">Use the project's iris.lua plugin to generate sources and process compiled outputs.</p>
           <p id="pipelineStatus" role="status" aria-live="polite"></p>
-          <code class="binpath" id="pipelineIdentity"></code>
+          <div id="pipelineSourceSummary" hidden>
+            <p id="pipelineSource"></p>
+            <p class="hint" id="pipelineSourceChanged"></p>
+            <details id="pipelineTechnicalDetails">
+              <summary data-i18n="pipelines.technicalDetails">Technical details</summary>
+              <code class="binpath" id="pipelineIdentity"></code>
+            </details>
+          </div>
+          <div id="pipelineAutoApproval" hidden>
+            <label class="pipeline-include"><input type="checkbox" id="pipelineAutoApprove" aria-describedby="pipelineAutoApproveHint"><span data-i18n="pipelines.autoApprove">Automatically approve my Lua edits</span></label>
+            <p class="hint" id="pipelineAutoApproveHint" data-i18n="pipelines.autoApproveHint">For this project only, after an initial manual approval. Collaborator edits and runtime-policy changes still need manual approval.</p>
+          </div>
           <div class="pipeline-actions">
             <button class="btn sm" type="button" id="pipelineRefresh" data-i18n="pipelines.refresh">Refresh</button>
             <button class="btn sm" type="button" id="pipelineApprove" data-i18n="pipelines.approve">Approve this source</button>

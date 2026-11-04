@@ -41,7 +41,7 @@ test("createDatabase bootstraps with a restricted owner, reopens and refuses an 
   await admin.query(`CREATE DATABASE ${database} OWNER ${database}`);
   pool = await createDatabase(options);
   assert.deepEqual((await pool.query("SELECT rolsuper, rolcreatedb, rolcreaterole FROM pg_roles WHERE rolname = current_user")).rows, [{ rolsuper: false, rolcreatedb: false, rolcreaterole: false }]);
-  assert.deepEqual((await pool.query("SELECT * FROM iris_schema")).rows, [{ singleton: true, version: 4 }]);
+  assert.deepEqual((await pool.query("SELECT * FROM iris_schema")).rows, [{ singleton: true, version: 5 }]);
   await pool.query("INSERT INTO audit_events (action, actor_label, target_type) VALUES ('startup.test', 'operator', 'system')");
   await pool.end();
   pool = null;
@@ -55,6 +55,18 @@ test("createDatabase bootstraps with a restricted owner, reopens and refuses an 
 });
 
 const dbOptions = { skip: !connectionString, timeout: 20000 };
+test("schema-4 upgrade preserves projects without inventing Lua edit times or owner preferences", dbOptions, async t => {
+  const { pool, before, project } = await legacyFixture(t);
+  for (const name of ["003-pipelines.sql", "004-primary-preview.sql"]) await pool.query(await fs.readFile(path.join(__dirname, "../db/migrations", name), "utf8"));
+  await pool.query("UPDATE iris_schema SET version=4");
+  await Promise.all([initializeSchema(pool), initializeSchema(pool)]);
+  assert.equal((await pool.query("SELECT version FROM iris_schema")).rows[0].version, 5);
+  await assertHistoricalRows(pool, before);
+  assert.deepEqual((await pool.query("SELECT lua_sources_changed_at,lua_sources_hash,lua_sources_pending,lua_sources_author_id,lua_sources_approval_session FROM projects WHERE id=$1", [project])).rows[0], {
+    lua_sources_changed_at: null, lua_sources_hash: null, lua_sources_pending: false, lua_sources_author_id: null, lua_sources_approval_session: null,
+  });
+  assert.equal((await pool.query("SELECT count(*)::int AS n FROM pipeline_auto_approvals")).rows[0].n, 0);
+});
 const historicalTables = ["users", "projects", "project_members", "project_files", "document_versions", "build_outputs", "build_artifacts", "audit_events", "project_deletions"];
 async function legacyFixture(t) {
   const pool = await isolatedSchema(t);
@@ -95,7 +107,7 @@ test("schema-3 preview upgrade preserves history and enforces checked preview re
   await pool.query("UPDATE iris_schema SET version=3");
   const oldShape = await schemaShape(pool);
   await Promise.all([initializeSchema(pool), initializeSchema(pool)]);
-  assert.equal((await pool.query("SELECT version FROM iris_schema")).rows[0].version, 4);
+  assert.equal((await pool.query("SELECT version FROM iris_schema")).rows[0].version, 5);
   await assertHistoricalRows(pool, before);
   assert.equal((await pool.query("SELECT primary_preview FROM build_outputs WHERE id=$1", [build])).rows[0].primary_preview, null);
   await assert.rejects(pool.query("UPDATE build_outputs SET primary_preview=$2::jsonb WHERE id=$1", [build, JSON.stringify({ step: "validate", port: "report" })]), { code: "23514" });
@@ -128,7 +140,7 @@ test("failed schema-3 preview migration rolls back without changing retained bui
 test("schema-2 upgrade preserves original rows and stored paths and never imports plugin authority", dbOptions, async (t) => {
   const { pool, before, build } = await legacyFixture(t);
   await initializeSchema(pool);
-  assert.equal((await pool.query("SELECT version FROM iris_schema")).rows[0].version, 4);
+  assert.equal((await pool.query("SELECT version FROM iris_schema")).rows[0].version, 5);
   await assertHistoricalRows(pool, before);
   assert.deepEqual((await pool.query("SELECT kind,target,request_order FROM build_outputs WHERE id=$1", [build])).rows[0], { kind: "compiler", target: "default", request_order: "2" });
   assert.equal((await pool.query("SELECT count(*)::int AS n FROM pipeline_approvals")).rows[0].n, 0);
@@ -157,7 +169,7 @@ test("a migration failure rolls back DDL and the version marker without losing h
   assert.equal((await pool.query("SELECT to_regclass('pipeline_approvals') AS approvals")).rows[0].approvals, null);
   await assertHistoricalRows(pool, before);
   await initializeSchema(pool);
-  assert.equal((await pool.query("SELECT version FROM iris_schema")).rows[0].version, 4);
+  assert.equal((await pool.query("SELECT version FROM iris_schema")).rows[0].version, 5);
 });
 
 async function schemaShape(pool) {
@@ -177,14 +189,14 @@ test("fresh and upgraded schemas enforce identical column and relational contrac
   const legacy = await legacyFixture(t), fresh = await isolatedSchema(t);
   await initializeSchema(fresh);
   await initializeSchema(legacy.pool);
-  assert.equal((await fresh.query("SELECT version FROM iris_schema")).rows[0].version, 4);
+  assert.equal((await fresh.query("SELECT version FROM iris_schema")).rows[0].version, 5);
   assert.deepEqual(await schemaShape(legacy.pool), await schemaShape(fresh));
 });
 
 test("concurrent schema-2 initializers upgrade once and retain the historical request order", dbOptions, async (t) => {
   const { pool, before } = await legacyFixture(t);
   await Promise.all([initializeSchema(pool), initializeSchema(pool)]);
-  assert.equal((await pool.query("SELECT version FROM iris_schema")).rows[0].version, 4);
+  assert.equal((await pool.query("SELECT version FROM iris_schema")).rows[0].version, 5);
   await assertHistoricalRows(pool, before);
   const columns = (await pool.query("SELECT identity_generation FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='build_outputs' AND column_name='request_order'")).rows;
   assert.deepEqual(columns, [{ identity_generation: "ALWAYS" }]);

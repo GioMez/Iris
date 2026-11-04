@@ -10,7 +10,7 @@ const { pathToFileURL } = require("node:url");
 const release = path.resolve(__dirname, "../scripts/release.cjs");
 const required = ["LICENSE", "THIRD_PARTY_NOTICES.md", "README.md", ".npmrc", ".env.example",
   ".dockerignore", "Dockerfile", "docker-compose.yml", "db/schema.sql", "db/migrations/003-pipelines.sql", "db/migrations/004-primary-preview.sql", "db/init/01-create-iris-user.sh",
-  "src/server.js", "public/Iris.html", "public/templates/.metadata.json", "scripts/test.cjs", "scripts/smoke.cjs"];
+  "src/server.js", "public/Iris.html", "public/templates/.metadata.json", "scripts/test.cjs", "scripts/smoke.cjs", "db/migrations/005-lua-source-state.sql"];
 async function fixture(t) {
   const root = await fs.mkdtemp(path.resolve(__dirname, "../.iris-package-test-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -207,6 +207,8 @@ test("release rejects mismatched metadata, incomplete manifests, implicit checko
   assert.match(f.run().stderr, /missing.*db\/migrations\/003-pipelines.sql/i);
   await fs.writeFile(f.manifest, JSON.stringify(Object.keys(f.files).filter((name) => name !== "db/migrations/004-primary-preview.sql")));
   assert.match(f.run().stderr, /missing.*db\/migrations\/004-primary-preview.sql/i);
+  await fs.writeFile(f.manifest, JSON.stringify(Object.keys(f.files).filter((name) => name !== "db/migrations/005-lua-source-state.sql")));
+  assert.match(f.run().stderr, /missing.*db\/migrations\/005-lua-source-state.sql/i);
   await fs.writeFile(f.manifest, JSON.stringify(Object.keys(f.files)));
   result = f.run();
   assert.equal(result.status, 0, result.stderr);

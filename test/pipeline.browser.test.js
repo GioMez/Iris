@@ -287,7 +287,20 @@ test("parameter changes require target reinspection and a cancelled run retains 
 
 for (const [language, theme, width] of [["en", "dark", 1440], ["it", "light", 1440], ["en", "light", 390], ["it", "dark", 390]]) test(`pipeline controls stay reachable with keyboard focus: ${language}/${theme}/${width}`, options, async t => {
   const f = await fixture(t, { language, theme, viewport: { width, height: 850 } });
+  const changedAt = Date.UTC(2026, 10, 4, 14, 35, 22);
+  await server.pool.query("UPDATE projects SET lua_sources_changed_at=$2 WHERE id=$1", [f.id, new Date(changedAt)]);
   await f.approve(); await f.open(); await controls(f);
+  assert.equal(await f.page.locator("#pipelineSource").textContent(), `${language === "it" ? "Sorgente" : "Source"}: iris.lua`);
+  const formatted = await f.page.evaluate(at => IrisI18n.formatDate(at, { dateStyle: "medium", timeStyle: "medium" }), changedAt);
+  assert.equal(await f.page.locator("#pipelineSourceChanged").textContent(), `${language === "it" ? "Ultima modifica dei sorgenti Lua" : "Lua sources last changed"}: ${formatted}`);
+  assert.equal(await f.page.locator("#pipelineIdentity").isVisible(), false);
+  const details = f.page.locator("#pipelineTechnicalDetails summary");
+  await details.focus(); await details.press("Enter");
+  assert.equal(await f.page.locator("#pipelineIdentity").isVisible(), true);
+  assert.match(await f.page.locator("#pipelineIdentity").textContent(), /^[a-f0-9]{64}$/);
+  await f.page.locator("#pipelineAutoApprove").focus(); await f.page.locator("#pipelineAutoApprove").press("Space");
+  await f.page.waitForFunction(() => !document.getElementById("pipelineAutoApprove").disabled);
+  assert.equal((await (await f.request(`${f.base}/pipeline`)).json()).pipeline.autoApproval.enabled, true);
   const inspector = f.page.locator("#pipelineTargetsInspect"); await inspector.focus(); await inspector.press("Enter");
   await f.page.locator("#pipelineTarget").selectOption("main");
   await f.page.locator("#pipelineRun").focus();
@@ -298,10 +311,49 @@ for (const [language, theme, width] of [["en", "dark", 1440], ["it", "light", 14
   assert.equal(await f.page.evaluate(() => document.documentElement.dataset.theme), theme);
 });
 
+test("Lua source controls show unknown legacy history without inventing a date", options, async t => {
+  const f = await fixture(t);
+  await server.pool.query("UPDATE projects SET lua_sources_changed_at=NULL,lua_sources_hash=NULL WHERE id=$1", [f.id]);
+  await f.open(); await controls(f);
+  assert.equal(await f.page.locator("#pipelineSourceChanged").textContent(), "Lua sources last changed: Not recorded");
+});
+
+test("owner checkbox approves own saved Lua edits and leaves collaborator changes for manual approval", options, async t => {
+  const f = await fixture(t); await f.approve(); await f.open(); await controls(f);
+  await f.page.locator("#pipelineAutoApprove").check();
+  await f.page.waitForFunction(() => !document.getElementById("pipelineAutoApprove").disabled);
+  const edit = async (comment, cookie) => {
+    const data = await (await f.request(f.base)).json();
+    data.project.nodes.find(node => node.path === "iris.lua").content += `\n-- ${comment}`;
+    const response = cookie ? await server.request(f.base, { cookie, method: "PUT", body: { data, baseRevision: data.revision } })
+      : await f.request(f.base, { method: "PUT", body: { data, baseRevision: data.revision } });
+    assert.equal(response.status, 200);
+  };
+  await edit("own edit");
+  await f.page.locator("#pipelineRefresh").click();
+  await f.page.waitForFunction(() => document.getElementById("pipelineStatus").textContent.startsWith("This source is approved"));
+  await until(async () => {
+    const m = (await (await f.request(`${f.base}/pipeline`)).json()).pipeline;
+    return m.approval.bundleHash === m.candidate.bundleHash;
+  }, "automatic source approval");
+  const collaborator = (await server.pool.query("INSERT INTO users (id,username,email,display_name) VALUES ($1,$2,$3,'Collaborator') RETURNING *",
+    [uuidv7(), `collaborator-${uuidv7()}`, `${uuidv7()}@example.test`])).rows[0];
+  await server.pool.query("INSERT INTO project_members (project_id,user_id,role) VALUES ($1,$2,'editor')", [f.id, collaborator.id]);
+  await edit("collaborator edit", server.cookieFor(collaborator));
+  await f.page.evaluate(() => IrisPipelines.refresh());
+  assert.equal(await f.page.locator("#pipelineApprove").isEnabled(), true);
+  const m = (await (await f.request(`${f.base}/pipeline`)).json()).pipeline;
+  assert.notEqual(m.approval.bundleHash, m.candidate.bundleHash);
+  await f.page.locator("#pipelineAutoApprove").uncheck();
+  await f.page.waitForFunction(() => !document.getElementById("pipelineAutoApprove").disabled);
+  assert.equal((await (await f.request(`${f.base}/pipeline`)).json()).pipeline.autoApproval.enabled, false);
+});
+
 test("viewers inspect retained run details but cannot approve, inspect Lua, run or cancel", options, async t => {
   const f = await fixture(t, { role: "viewer" }); await f.approve(); const run = await f.run(); await f.open(); await f.painted(run.id); await controls(f);
   assert.equal(await f.page.locator("#pipelineApprove").isVisible(), false);
   assert.equal(await f.page.locator("#pipelineRevoke").isVisible(), false);
+  assert.equal(await f.page.locator("#pipelineAutoApprove").isVisible(), false);
   for (const id of ["pipelineInspect", "pipelineTargetsInspect", "pipelineRun", "pipelineCancel"]) assert.equal(await f.page.locator(`#${id}`).isDisabled(), true);
   await runState(f, "succeeded");
   assert.match(await f.page.locator("#pipelineSteps").textContent(), /generate/);
@@ -410,6 +462,7 @@ for (const target of ["main", "alternate"]) test(`two clients retain accepted-or
 test("editors can run and cancel their own work while owner revocation disables further execution", options, async t => {
   const f = await fixture(t, { role: "editor" }); await f.approve(); await f.open(); await controls(f);
   assert.equal(await f.page.locator("#pipelineApprove").isVisible(), false);
+  assert.equal(await f.page.locator("#pipelineAutoApprove").isVisible(), false);
   await f.page.locator('[data-pipeline-param="loop"]').check();
   await f.page.locator("#pipelineTargetsInspect").click(); await f.page.locator("#pipelineTarget").selectOption("main");
   await f.page.locator("#pipelineRun").click(); await runState(f, "running");

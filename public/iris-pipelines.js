@@ -5,7 +5,7 @@
   const projects = () => window.IrisProjects;
   const active = run => run && ["queued", "planning", "running"].includes(run.state);
   const fresh = () => ({ projectId: null, metadata: null, descriptor: null, plan: null, target: "", run: null,
-    fields: [], busy: false, refreshSeq: 0, viewSeq: 0, wanted: null, fetching: false, previewVersion: null, terminal: null });
+    fields: [], busy: false, autoPreference: null, autoApproving: null, refreshSeq: 0, viewSeq: 0, wanted: null, fetching: false, previewVersion: null, terminal: null });
   let state = fresh();
   const current = owner => owner === state && owner.projectId === projects().currentProjectId();
   const role = () => state.role || projects().currentRole();
@@ -21,7 +21,13 @@
     const m = state.metadata, owner = role() === "owner", allowed = approved();
     $("pipelineStatus").textContent = t(!m ? "loading" : !m.candidate ? "missing" : allowed ? "approved" : "approvalRequired");
     $("pipelineIdentity").textContent = m?.candidate?.bundleHash || "";
-    $("pipelineIdentity").hidden = !m?.candidate;
+    $("pipelineSourceSummary").hidden = !m?.source;
+    $("pipelineSource").textContent = m?.source ? t("source", { file: m.source.entrypoint }) : "";
+    $("pipelineSourceChanged").textContent = m?.source ? t("sourceChanged", { time: m.source.changedAt == null
+      ? t("notRecorded") : window.IrisI18n.formatDate(m.source.changedAt, { dateStyle: "medium", timeStyle: "medium" }) }) : "";
+    $("pipelineAutoApproval").hidden = !owner || !m?.candidate;
+    $("pipelineAutoApprove").checked = state.autoPreference ?? !!m?.autoApproval?.enabled;
+    $("pipelineAutoApprove").disabled = state.busy || !!state.autoApproving || !m;
     $("pipelineApprove").hidden = !owner;
     $("pipelineApprove").disabled = state.busy || !m?.candidate || allowed;
     $("pipelineRevoke").hidden = !owner;
@@ -125,8 +131,21 @@
     if (!current(owner) || !owner.projectId) return;
     const seq = ++owner.refreshSeq;
     try {
-      const result = await projects().getPipeline();
+      if (editable()) await window.IrisCollab.synchronize();
       if (!current(owner) || seq !== owner.refreshSeq) return;
+      let result = await projects().getPipeline();
+      if (!current(owner) || seq !== owner.refreshSeq) return;
+      if (owner.autoApproving || (role() === "owner" && result.pipeline.autoApproval?.eligible)) {
+        if (!owner.autoApproving) owner.autoApproving = projects().approvePipeline(result.pipeline.candidate, { automatic: true });
+        const pending = owner.autoApproving;
+        render();
+        try { await pending; }
+        catch (error) { if (current(owner) && seq === owner.refreshSeq) errorNotice(error); }
+        finally { if (owner.autoApproving === pending) owner.autoApproving = null; }
+        if (!current(owner) || seq !== owner.refreshSeq) return;
+        result = await projects().getPipeline();
+        if (!current(owner) || seq !== owner.refreshSeq) return;
+      }
       owner.metadata = result.pipeline;
       const descriptor = approved(owner) ? result.pipeline.descriptor : null;
       if (descriptor?.descriptorHash !== owner.descriptor?.descriptorHash) {
@@ -215,7 +234,7 @@
       if (listed.builds[0]) { owner.target = listed.builds[0].target; targets([owner.target]); await selectTarget({ preview: false }); }
     } catch (error) { if (current(owner)) errorNotice(error); }
   }
-  function reset() { state = fresh(); $("pipelineParameters").replaceChildren(); targets([]); notice(); render(); }
+  function reset() { state = fresh(); $("pipelineTechnicalDetails").open = false; $("pipelineParameters").replaceChildren(); targets([]); notice(); render(); }
   async function run() {
     if (!state.plan || !approved()) { window.IrisApp.openPipelineControls(); notice(t("inspectFirst")); return; }
     await action(async owner => {
@@ -235,6 +254,16 @@
   function wire() {
     $("pipelineParameters").addEventListener("submit", event => event.preventDefault());
     $("pipelineRefresh").addEventListener("click", () => { void refresh(); });
+    $("pipelineAutoApprove").addEventListener("change", async () => {
+      const owner = state;
+      const enabled = $("pipelineAutoApprove").checked;
+      owner.autoPreference = enabled;
+      await action(async owner => {
+        await projects().setPipelineAutoApproval(enabled);
+        if (current(owner)) await refresh();
+      });
+      if (current(owner)) { owner.autoPreference = null; render(); }
+    });
     $("pipelineApprove").addEventListener("click", () => { void action(async owner => {
       await projects().approvePipeline(owner.metadata.candidate); if (current(owner)) await refresh();
     }); });

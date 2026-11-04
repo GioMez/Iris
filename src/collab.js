@@ -53,6 +53,8 @@ class CollabDocument {
     // Persistence bookkeeping, read by the owner of the room in server.js.
     this.persistedVersion = 0;
     this.revisionVersion = 0;
+    this.luaChange = null;
+    this.luaApprovalVersion = null;
   }
 
   text() {
@@ -94,6 +96,12 @@ class CollabDocument {
       parsed.push({ changes, clientID: String(update.clientID || ""), userId: meta.userId || null });
     }
 
+    if (/\.lua$/i.test(this.path) && !this.doc.eq(doc)) {
+      const authorId = meta.userId || null;
+      this.luaChange = { at: Date.now(), authorId: !this.luaChange || this.luaChange.authorId === authorId ? authorId : null };
+    } else if (this.luaApprovalVersion === this.version) {
+      this.luaApprovalVersion += parsed.length;
+    }
     this.doc = doc;
     this.version += parsed.length;
     this.log.push(...parsed);

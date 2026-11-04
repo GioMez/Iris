@@ -4,9 +4,10 @@ const { Pool } = require("pg");
 
 const SCHEMA_FILE = path.resolve(__dirname, "../db/schema.sql");
 // Bump for incompatible current-schema changes; SQL comments are not versions.
-const CURRENT_SCHEMA_VERSION = 4;
+const CURRENT_SCHEMA_VERSION = 5;
 const PIPELINE_MIGRATION = path.resolve(__dirname, "../db/migrations/003-pipelines.sql");
 const PREVIEW_MIGRATION = path.resolve(__dirname, "../db/migrations/004-primary-preview.sql");
+const LUA_SOURCE_MIGRATION = path.resolve(__dirname, "../db/migrations/005-lua-source-state.sql");
 const MINIMUM_POSTGRES_MAJOR = 18;
 
 // A minimum, not an exact match: a newer major is allowed until one is proven
@@ -61,7 +62,7 @@ async function initializeSchema(pool) {
       // Do not filter or LIMIT: extra rows must never be hidden by validation.
       const { rows } = await client.query(`SELECT singleton, version FROM ${qualifiedMarker}`);
       if (rows.length !== 1 || rows[0].singleton !== true) throw incompatibleSchema("expected one iris_schema marker row");
-      if (![2, 3, CURRENT_SCHEMA_VERSION].includes(rows[0].version)) throw incompatibleSchema(`expected schema version ${CURRENT_SCHEMA_VERSION}, found ${rows[0].version}`);
+      if (![2, 3, 4, CURRENT_SCHEMA_VERSION].includes(rows[0].version)) throw incompatibleSchema(`expected schema version ${CURRENT_SCHEMA_VERSION}, found ${rows[0].version}`);
       const constraints = await client.query(`
         SELECT
           EXISTS (SELECT FROM pg_constraint c JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attname = 'singleton'
@@ -77,6 +78,9 @@ async function initializeSchema(pool) {
       }
       if (rows[0].version < 4) {
         await client.query(await fs.readFile(PREVIEW_MIGRATION, "utf8"));
+      }
+      if (rows[0].version < 5) {
+        await client.query(await fs.readFile(LUA_SOURCE_MIGRATION, "utf8"));
         await client.query(`UPDATE ${qualifiedMarker} SET version = $1 WHERE singleton`, [CURRENT_SCHEMA_VERSION]);
       }
     } else {

@@ -22,9 +22,9 @@ the engine does not expand the graph or iterate until convergence.
 
 1. Add `iris.lua` and any Lua modules to the project, then save.
 2. Open **Settings → Compilation → Lua pipeline**.
-3. As a project owner, choose **Approve this source**. Approval binds all project
-   Lua files, the adapter implementations and the execution policy. Changes to
-   those identities require approval again.
+3. As a project owner, choose **Approve this source**.
+   Approval binds all project Lua files, the adapter implementations and the execution policy.
+   Changes to those identities require approval again.
 4. Choose **Inspect options** to execute the module and read its parameter schema.
 5. Set parameters and choose **Inspect targets**. This invokes the planner on an
    authoritative source snapshot without running graph steps. Reinspect after
@@ -34,6 +34,20 @@ the engine does not expand the graph or iterate until convergence.
    its ordinary project mutation queue before submitting the run.
 
 ![Lua pipeline controls showing owner approval, a parameter field, target selection and Run target.](images/lua-pipeline.png)
+
+The source summary shows **Source: iris.lua** and **Lua sources last changed** in your local date and time format.
+The time covers edits, additions, renames and removals across all project Lua files, including live collaborative edits.
+Saving unchanged source preserves the time.
+**Not recorded** means Iris has no reliable edit time, including legacy projects and changes made outside Iris.
+Expand **Technical details** to see the source bundle hash.
+
+Owners can select **Automatically approve my Lua edits** for their own account in this project.
+After the first manual approval, Iris can approve changes attributable only to that owner when saving, refreshing the controls or choosing Compile.
+Edits by collaborators, mixed or unknown authorship, and changed runtime policy or adapter identities require manual approval.
+Disabling or revoking the pipeline also requires a manual approval before automatic approval can resume.
+If Iris restarts before it persists approved live edits, review the surviving source and approve it manually.
+The preference grants no additional permissions and does not transfer with project ZIPs.
+Inspect options and targets again after source changes before running the revised plugin.
 
 Opening a project or reading pipeline metadata does not execute Lua. Inspection
 does execute module-level code, so approval precedes inspection. Run admission

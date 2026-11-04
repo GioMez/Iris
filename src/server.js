@@ -18,13 +18,14 @@ const { normalizeProjectPath, collectProjectFiles, reconcileProjectFiles, remapI
 const { createProjectMutations } = require("./project-mutations");
 const { createProjectDeletions } = require("./project-deletions");
 const pipelineRuns = require("./pipeline/runs");
+const luaSources = require("./pipeline/source-state");
 const PipelineContracts = require("./pipeline/contracts");
 const { createRegistry } = require("./pipeline/registry");
 const { createNativeRuntime } = require("./pipeline/runtime");
 const { createLuaTools, createLuaAdapter, createLuaCoordinator } = require("./pipeline/lua");
 const { createCompilerTools, createCompilerAdapters } = require("./pipeline/compilers");
 const { createPdfTool, createPdfAdapter } = require("./pipeline/pdf-runner");
-const { createRunWorkspace, disposeRunWorkspace, openCheckedFile, copyFile: copyPipelineFile } = require("./pipeline/workspaces");
+const { createRunWorkspace, disposeRunWorkspace, copyFile: copyPipelineFile } = require("./pipeline/workspaces");
 const { executePlan } = require("./pipeline/executor");
 const { writePublicationReceipt, inspectPublication } = require("./pipeline/publication");
 const { createRunMappingCollector, createNavigationTools, navigatePublishedPipeline } = require("./pipeline/navigation");
@@ -2036,9 +2037,15 @@ async function saveProjectTree(id, row, body, data, client, protect, { manifestO
     await protect();
     await writeProjectManifest(row.storageDir, data);
   } else {
+    const before = await luaSources.capture(client, id, row.storageDir, collectProjectFiles(data.project.nodes).map(file => file.path));
+    const rooms = collabRooms.forProject(id);
     const { renames } = await syncProjectFiles(id, data, client, row.storageDir, protect, user);
     applyCollabAuthority(id, data);
     await writeProjectFile(row.storageDir, data, renames);
+    await luaSources.persist(client, id, row.storageDir, before, {
+      authorId: user?.sub, edits: luaSources.live(rooms), approvedFiles: luaSources.approvedFiles(rooms),
+      sessionId: pipelineCoordinatorId, settlesApproval: true,
+    });
   }
   const result = await client.query(
     "UPDATE projects SET name = $1, updated_at = CURRENT_TIMESTAMP, revision = revision + 1 WHERE id = $2 AND revision = $3 RETURNING revision",
@@ -2227,6 +2234,10 @@ async function restoreFileVersion(req, res, user, projectId, fileId, versionId) 
       );
       if (!rows.length) throw requestError("VERSION_NOT_FOUND", 404);
       const target = rows[0];
+      const luaBefore = luaSources.isLua(file.path) ? await luaSources.capture(client, projectId, project.storageDir) : null;
+      const room = collabRooms.get(fileId);
+      const sourceChanged = luaBefore && (room ? room.text() !== target.content
+        : luaBefore.files.find(source => source.id === fileId).hash !== hashContent(target.content));
       await protect();
 
       // Capture the current state before overwriting it, then append the rollback
@@ -2236,6 +2247,11 @@ async function restoreFileVersion(req, res, user, projectId, fileId, versionId) 
       const abs = path.join(project.storageDir, file.path);
       await fs.mkdir(path.dirname(abs), { recursive: true });
       await fs.writeFile(abs, target.content, "utf8");
+      if (luaBefore) await luaSources.persist(client, projectId, project.storageDir, luaBefore, {
+        edits: luaSources.live(room ? [room] : []), approvedFiles: new Set([fileId]),
+        changes: sourceChanged ? [{ at: Date.now(), authorId: user.sub }] : [],
+        sessionId: pipelineCoordinatorId, settlesApproval: luaSources.approvalSettled(collabRooms.forProject(projectId), fileId),
+      });
       const previous = await latestVersion(fileId, client);
       const newVersionId = await insertVersion({
         fileId,
@@ -2553,12 +2569,20 @@ async function collabPersistLocked(room, { revision = false, force = false } = {
   room.path = rows[0].path;
   room.kind = rows[0].kind;
   room.storageDir = resolveProjectStorageDir(DATA_DIR, rows[0].storage_path);
-  if (force || room.needsPersist()) {
+  if (force || room.needsPersist() || room.luaChange) {
     const version = room.version;
     const text = room.text();
+    const luaBefore = luaSources.isLua(room.path) ? await luaSources.capture(db, room.projectId, room.storageDir) : null;
     const abs = path.join(room.storageDir, room.path);
     await fs.mkdir(path.dirname(abs), { recursive: true });
     await fs.writeFile(abs, text, "utf8");
+    if (luaBefore) {
+      await luaSources.persist(db, room.projectId, room.storageDir, luaBefore, {
+        edits: luaSources.live([room]), approvedFiles: luaSources.approvedFiles([room]),
+        sessionId: pipelineCoordinatorId, settlesApproval: luaSources.approvalSettled(collabRooms.forProject(room.projectId), room.fileId),
+      });
+      room.luaChange = null;
+    }
     room.markPersisted(version);
     room.flushDeadline = 0;
     // File identity is rechecked above; timestamp writes alone are coalesced.
@@ -3027,6 +3051,7 @@ function collabReconcileProject(projectId, data = null) {
     if (file) {
       room.path = file.path;
       room.kind = file.kind;
+      room.luaChange = null;
       continue;
     }
     clearTimeout(room.flushTimer);
@@ -3063,6 +3088,8 @@ function collabResetFile(fileId, content) {
   const room = collabRooms.get(fileId);
   if (!room) return;
   const version = room.reset(content);
+  room.luaChange = null;
+  room.luaApprovalVersion = null;
   room.markPersisted(version);
   room.markRevisioned(version);
   collabBroadcast(room, { t: "resync", fileId, version, doc: room.text() });
@@ -3286,8 +3313,10 @@ async function createProject(req, res, user) {
       "INSERT INTO project_members (project_id, user_id, role, invited_by) VALUES ($1, $2, 'owner', $2)",
       [id, user.sub]
     );
+    const luaBefore = await luaSources.capture(client, id, storagePath);
     await syncProjectFiles(id, data, client, storagePath, protect);
     await writeProjectFile(storagePath, data);
+    await luaSources.persist(client, id, storagePath, luaBefore, { authorId: user.sub, sessionId: pipelineCoordinatorId, settlesApproval: true });
   }));
   await audit({
     ...sessionActor(req, user),
@@ -3599,8 +3628,10 @@ async function importProjectArchive(req, res, user, url) {
       "INSERT INTO project_members (project_id, user_id, role, invited_by) VALUES ($1, $2, 'owner', $2)",
       [id, user.sub]
     );
+    const luaBefore = await luaSources.capture(client, id, storagePath);
     await syncProjectFiles(id, data, client, storagePath, protect);
     await writeProjectManifest(storagePath, data);
+    await luaSources.persist(client, id, storagePath, luaBefore, { authorId: user.sub, sessionId: pipelineCoordinatorId, settlesApproval: true });
   }));
 
   await audit({
@@ -4613,38 +4644,42 @@ function pipelineCoordinator(execution, workspace) {
 // Read only registered executable source. Hash bytes incrementally; the options
 // reader must neither hydrate binary assets nor execute project Lua.
 async function pipelineCandidate(id, user, capability = "read") {
-  return authorizedProjectGate(id, user, capability, async project => {
-    const { rows } = await db.query("SELECT id,path FROM project_files WHERE project_id=$1 AND deleted_at IS NULL AND path ~* '\\.lua$' ORDER BY path", [id]);
-    if (!rows.some(file => file.path === "iris.lua")) return null;
-    const files = [];
-    for (const file of rows) {
-      const room = collabRooms.get(file.id);
-      if (room && room.projectId === id) {
-        const bytes = Buffer.from(room.text(), "utf8");
-        files.push({ path: file.path, size: bytes.length, contentHash: hashContent(bytes) });
-      } else {
-        const { input: handle, before } = await openCheckedFile(project.storageDir, file.path);
-        try {
-          const hash = crypto.createHash("sha256");
-          let size = 0;
-          for await (const bytes of handle.createReadStream({ autoClose: false })) { size += bytes.length; hash.update(bytes); }
-          const after = await handle.stat();
-          if (before.size !== size || after.size !== size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) {
-            throw requestError("PIPELINE_BUNDLE_CHANGED", 409);
-          }
-          files.push({ path: file.path, size, contentHash: hash.digest("hex") });
-        } finally { await handle.close(); }
-      }
+  return authorizedProjectGate(id, user, capability, project => readPipelineCandidate(id, project));
+}
+async function readPipelineCandidate(id, project, queryable = db, disk = null) {
+  disk ||= await luaSources.capture(queryable, id, project.storageDir);
+  const available = disk.files.filter(file => !file.missing || collabRooms.get(file.id)?.projectId === id);
+  if (!available.some(file => file.path === "iris.lua")) return null;
+  const files = available.map(file => {
+    const room = collabRooms.get(file.id);
+    if (room && room.projectId === id) {
+      const bytes = Buffer.from(room.text(), "utf8");
+      return { path: file.path, size: bytes.length, contentHash: hashContent(bytes) };
     }
-    return pipelineCoordinator(await getPipelineExecution(), { snapshot: { files } }).identity;
+    return { path: file.path, size: file.size, contentHash: file.hash };
   });
+  return pipelineCoordinator(await getPipelineExecution(), { snapshot: { files } }).identity;
+}
+
+async function autoApprovalState(queryable, id, user, candidate, merged, role) {
+  const { rows } = await queryable.query(`SELECT EXISTS(SELECT 1 FROM pipeline_auto_approvals WHERE project_id=$1 AND user_id=$2) AS enabled,
+    EXISTS(SELECT 1 FROM project_pipelines p JOIN pipeline_approvals a ON a.id=p.approval_id
+      WHERE p.project_id=$1 AND p.enabled AND a.revoked_at IS NULL AND a.policy_hash=$3 AND a.registry_hash=$4) AS approved`,
+  [id, user.sub, candidate?.policyHash || null, candidate?.registryHash || null]);
+  return { enabled: rows[0].enabled, eligible: role === "owner" && rows[0].enabled && rows[0].approved && merged.dirty && merged.authorId === user.sub };
 }
 
 async function getProjectPipeline(req, res, user, id) {
   try {
     const pipeline = await pipelineRuns.getPipeline(pipelineRunStore, id, user);
-    const candidate = await pipelineCandidate(id, user);
-    return json(res, 200, { pipeline: { ...pipeline, candidate } });
+    return authorizedProjectGate(id, user, "read", async project => {
+      const disk = await luaSources.capture(db, id, project.storageDir);
+      const candidate = await readPipelineCandidate(id, project, db, disk);
+      const merged = luaSources.pending(disk.state, [...luaSources.live(collabRooms.forProject(id)), ...luaSources.external(disk, pipelineCoordinatorId)]);
+      const autoApproval = await autoApprovalState(db, id, user, candidate, merged, project.role);
+      return json(res, 200, { pipeline: { ...pipeline, candidate,
+        source: candidate ? { entrypoint: "iris.lua", changedAt: merged.changedAt } : null, autoApproval } });
+    });
   } catch (error) { throw pipelineFailure(error); }
 }
 
@@ -4668,13 +4703,39 @@ async function approveProjectPipeline(req, res, user, id) {
   await authorizeProject(id, user, "approvePipeline");
   const body = await readBody(req);
   try {
-    PipelineContracts.record(body, ["identity"], "PIPELINE_REQUEST_INVALID", "approval request");
+    PipelineContracts.record(body, ["identity", "automatic"], "PIPELINE_REQUEST_INVALID", "approval request");
+    if (Object.hasOwn(body, "automatic") && typeof body.automatic !== "boolean") throw requestError("PIPELINE_REQUEST_INVALID", 400);
     PipelineContracts.record(body.identity, ["bundleHash", "policyHash", "registryHash"], "PIPELINE_REQUEST_INVALID", "approval identity");
     const candidate = await pipelineCandidate(id, user, "approvePipeline");
     if (!candidate || PipelineContracts.canonical(candidate) !== PipelineContracts.canonical(body.identity)) throw requestError("PIPELINE_BUNDLE_CHANGED", 409);
-    const approval = await pipelineRuns.approveBundle(pipelineRunStore, id, user, candidate);
+    let approvedRooms;
+    const approval = await pipelineRuns.approveBundle(pipelineRunStore, id, user, candidate, {
+      validate: async client => {
+        const project = await authorizeProject(id, user, "approvePipeline", client);
+        const disk = await luaSources.capture(client, id, project.storageDir);
+        const latest = await readPipelineCandidate(id, project, client, disk);
+        if (PipelineContracts.canonical(latest) !== PipelineContracts.canonical(body.identity)) throw requestError("PIPELINE_BUNDLE_CHANGED", 409);
+        approvedRooms = collabRooms.forProject(id).filter(room => luaSources.isLua(room.path));
+        const merged = luaSources.pending(disk.state, [...luaSources.live(approvedRooms), ...luaSources.external(disk, pipelineCoordinatorId)]);
+        const automatic = await autoApprovalState(client, id, user, latest, merged, project.role);
+        if (body.automatic && (!automatic.eligible || disk.state.lua_sources_hash !== disk.hash)) throw requestError("PIPELINE_APPROVAL_REQUIRED", 409);
+        const unflushed = approvedRooms.some(room => disk.files.find(file => file.id === room.fileId)?.hash !== hashContent(room.text()));
+        await client.query(`UPDATE projects SET lua_sources_hash=$2,lua_sources_changed_at=$3,
+          lua_sources_pending=false,lua_sources_author_id=NULL,lua_sources_approval_session=$4 WHERE id=$1`,
+        [id, disk.hash, merged.changedAt === null ? null : new Date(merged.changedAt), unflushed ? pipelineCoordinatorId : null]);
+      },
+      afterCommit: () => { for (const room of approvedRooms) { room.luaChange = null; room.luaApprovalVersion = room.version; } },
+    });
     return json(res, 201, { approval });
   } catch (error) { throw pipelineFailure(error); }
+}
+
+async function setProjectAutoApproval(req, res, user, id) {
+  await authorizeProject(id, user, "approvePipeline");
+  const body = await readBody(req);
+  PipelineContracts.record(body, ["enabled"], "PIPELINE_REQUEST_INVALID", "auto-approval preference");
+  if (typeof body.enabled !== "boolean") throw requestError("PIPELINE_REQUEST_INVALID", 400);
+  return json(res, 200, { autoApproval: await pipelineRuns.setAutoApproval(pipelineRunStore, id, user, body.enabled) });
 }
 
 function pipelineSnapshotSource(root, data, files) {
@@ -5459,6 +5520,7 @@ const PROJECT_TEMPLATE_FILE_ROUTE = /^\/api\/project-templates\/(latex|lilypond)
 const PROJECT_COMPILE_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/compile$`);
 const PROJECT_PIPELINE_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/pipeline$`);
 const PROJECT_PIPELINE_APPROVE_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/pipeline/approval$`);
+const PROJECT_PIPELINE_AUTO_APPROVE_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/pipeline/auto-approval$`);
 const PROJECT_PIPELINE_INSPECT_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/pipeline/inspect$`);
 const PROJECT_PIPELINE_APPROVAL_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/pipeline/approval/(${UUID_PATTERN})$`);
 const PROJECT_RUN_ROUTE = new RegExp(`^/api/projects/(${UUID_PATTERN})/runs/(${UUID_PATTERN})$`);
@@ -6408,6 +6470,8 @@ async function handleApi(req, res, url) {
   if (pipelineMatch && req.method === "GET") return getProjectPipeline(req, res, user, pipelineMatch[1]);
   const approvePipelineMatch = url.pathname.match(PROJECT_PIPELINE_APPROVE_ROUTE);
   if (approvePipelineMatch && req.method === "POST") return approveProjectPipeline(req, res, user, approvePipelineMatch[1]);
+  const autoApprovePipelineMatch = url.pathname.match(PROJECT_PIPELINE_AUTO_APPROVE_ROUTE);
+  if (autoApprovePipelineMatch && req.method === "PUT") return setProjectAutoApproval(req, res, user, autoApprovePipelineMatch[1]);
   const inspectPipelineMatch = url.pathname.match(PROJECT_PIPELINE_INSPECT_ROUTE);
   if (inspectPipelineMatch && req.method === "POST") return inspectProjectPipeline(req, res, user, inspectPipelineMatch[1]);
   const approvalMatch = url.pathname.match(PROJECT_PIPELINE_APPROVAL_ROUTE);

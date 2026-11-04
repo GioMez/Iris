@@ -429,6 +429,7 @@
     if (!currentId || !window.IrisApp || currentRole() === "viewer") return false;
     try {
       await mutateCurrent("", "PUT");
+      await window.IrisPipelines?.refresh();
       return true;
     } catch (err) {
       if (!err.stale) document.dispatchEvent(new CustomEvent("iris:projecterror", { detail: err }));
@@ -509,8 +510,11 @@
 
   function getPipeline() { return pipelineRequest("/pipeline"); }
   function getPipelineRun(id) { return pipelineRequest(`/runs/${encodeURIComponent(id)}`); }
-  function approvePipeline(identity) {
-    return mutateCurrent("/pipeline/approval", "POST", { identity: clone(identity) }, false);
+  function approvePipeline(identity, { automatic = false } = {}) {
+    return mutateCurrent("/pipeline/approval", "POST", { identity: clone(identity), ...(automatic ? { automatic: true } : {}) }, false);
+  }
+  function setPipelineAutoApproval(enabled) {
+    return mutateCurrent("/pipeline/auto-approval", "PUT", { enabled }, false);
   }
   function inspectPipeline(request = {}) {
     return mutateCurrent("/pipeline/inspect", "POST", clone(request), false);
@@ -1160,7 +1164,7 @@
     downloadCurrentFile, refreshCurrent, renderPicker, onLogout, resolveFileId,
     listFileVersions, getFileVersion, restoreFileVersion, checkpointCurrent,
     currentProjectId, currentRole, listBuildOutputs, getBuildOutput, loadBuildOutput, navigateBuild,
-    getPipeline, approvePipeline, revokePipelineApproval, inspectPipeline, createPipelineRun, getPipelineRun, cancelPipelineRun,
+    getPipeline, approvePipeline, setPipelineAutoApproval, revokePipelineApproval, inspectPipeline, createPipelineRun, getPipelineRun, cancelPipelineRun,
     downloadBuildArtifact, downloadBuildFile, downloadBuildArchive, deleteBuildOutput,
   };
 

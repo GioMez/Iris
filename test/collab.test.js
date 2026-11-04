@@ -14,6 +14,19 @@ function makeRoom(content, options = {}) {
   return new CollabDocument({ fileId: "file-1", projectId: "project-1", path: "main.tex", content, ...options });
 }
 
+test("Lua live edits retain change time and mixed authors while no-op or rejected pushes do not change provenance", () => {
+  const room = makeRoom("return 1", { path: "helper.lua" });
+  const edit = (insert, userId, version = room.version) => room.receive(version, [{ changes: ChangeSet.of({ from: 7, to: 8, insert }, 8).toJSON(), clientID: userId }], { userId });
+  edit("1", "owner"); assert.equal(room.luaChange, null);
+  edit("2", "owner");
+  assert.equal(room.luaChange.authorId, "owner"); assert.ok(room.luaChange.at > 0);
+  const first = { ...room.luaChange };
+  edit("2", "editor"); assert.deepEqual(room.luaChange, first);
+  assert.equal(edit("3", "editor", 0).accepted, false); assert.deepEqual(room.luaChange, first);
+  edit("3", "editor"); assert.equal(room.luaChange.authorId, null);
+  edit("4", "owner"); assert.equal(room.luaChange.authorId, null);
+});
+
 // A client exactly as the browser runs it: an editor state with the collab
 // extension, synchronised through the room's push/pull surface.
 function makeClient(id, room) {

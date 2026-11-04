@@ -111,6 +111,268 @@ test("pipeline metadata and owner approval bind all Lua files without executing 
   assert.equal(await fs.readFile(path.join(f.dir, "unused.lua"), "utf8"), "return 1\r\n");
 });
 
+async function saveSource(f, mutate, role = "owner") {
+  const loaded = await f.request(f.base);
+  assert.equal(loaded.status, 200, JSON.stringify(f.logs));
+  const data = await loaded.json();
+  mutate(data.project.nodes);
+  const response = await f.request(f.base, { method: "PUT", body: { baseRevision: data.revision, data } }, role);
+  assert.equal(response.status, 200, await response.clone().text());
+}
+
+function luaRoom(f, name = "unused.lua") {
+  const file = f.project.data.project.nodes.find(node => node.path === name);
+  const room = f.app.collabRooms.open({ projectId: f.id, fileId: file.id, path: file.path, content: file.content });
+  room.storageDir = f.dir;
+  return room;
+}
+function editLua(f, room, content, role = "owner") {
+  const { ChangeSet } = require("@codemirror/state");
+  assert.equal(room.receive(room.version, [{ clientID: role, changes: ChangeSet.of({ from: 0, to: room.doc.length, insert: content }, room.doc.length).toJSON() }], { userId: f.users[role].id }).accepted, true);
+}
+async function enableAutoApproval(f) {
+  assert.equal((await f.approve((await f.metadata()).candidate)).status, 201);
+  assert.equal((await f.request(`${f.base}/pipeline/auto-approval`, { method: "PUT", body: { enabled: true } })).status, 200);
+}
+async function autoApprove(f, identity, role = "owner") {
+  return f.request(`${f.base}/pipeline/approval`, { method: "POST", body: { identity: identity || (await f.metadata()).candidate, automatic: true } }, role);
+}
+
+test("live Lua approval retains its timestamp across no-op pushes, flush, room reopening and unchanged saves", options, async t => {
+  const f = await fixture(t); await enableAutoApproval(f);
+  let room = luaRoom(f);
+  editLua(f, room, "return 22\r\n");
+  const changed = await f.metadata();
+  assert.equal(changed.autoApproval.eligible, true);
+  assert.equal((await autoApprove(f)).status, 201);
+  assert.equal(await fs.readFile(path.join(f.dir, room.path), "utf8"), "return 1\r\n", "approval does not save source");
+  editLua(f, room, room.text(), "editor");
+  await f.app.collabPersistNow(room, false);
+  assert.equal((await f.metadata()).source.changedAt, changed.source.changedAt);
+  assert.equal((await f.metadata()).autoApproval.eligible, false);
+  f.app.collabRooms.close(room.fileId);
+  room = f.app.collabRooms.open({ projectId: f.id, fileId: room.fileId, path: room.path, content: await fs.readFile(path.join(f.dir, room.path), "utf8") });
+  room.storageDir = f.dir;
+  await saveSource(f, () => {});
+  assert.equal((await f.metadata()).source.changedAt, changed.source.changedAt);
+  editLua(f, room, "return 33\r\n");
+  assert.equal((await f.metadata()).autoApproval.eligible, true, "an unchanged push must not create unknown authorship");
+  assert.equal((await autoApprove(f)).status, 201);
+});
+
+test("mixed live Lua authors cannot inherit automatic approval through a project save or flush", options, async t => {
+  const f = await fixture(t); await enableAutoApproval(f);
+  const room = luaRoom(f);
+  editLua(f, room, "return 2", "editor");
+  await saveSource(f, () => {});
+  editLua(f, room, "return 3");
+  await f.app.collabPersistNow(room, false);
+  assert.equal((await f.metadata()).autoApproval.eligible, false);
+  assert.equal((await autoApprove(f)).status, 409);
+  assert.equal((await f.approve((await f.metadata()).candidate)).status, 201);
+  editLua(f, room, "return 4");
+  assert.equal((await autoApprove(f)).status, 201);
+});
+
+test("Lua restore records the restoring collaborator even when disk already contains the target", options, async t => {
+  const f = await fixture(t); await enableAutoApproval(f);
+  const room = luaRoom(f);
+  assert.equal((await f.request(`${f.base}/checkpoint`, { method: "POST", body: {} })).status, 200);
+  const version = (await f.pool.query("SELECT id FROM document_versions WHERE file_id=$1", [room.fileId])).rows[0].id;
+  const restore = role => f.request(`${f.base}/files/${room.fileId}/versions/${version}/restore`, { method: "POST", body: {} }, role);
+  const initial = await f.metadata();
+  assert.equal((await restore("owner")).status, 200);
+  assert.equal((await f.metadata()).source.changedAt, initial.source.changedAt, "unchanged restore");
+  editLua(f, room, "return 2");
+  assert.equal((await autoApprove(f)).status, 201);
+  await f.pool.query("UPDATE projects SET lua_sources_changed_at='2000-01-01' WHERE id=$1", [f.id]);
+  assert.equal((await restore("editor")).status, 200);
+  assert.ok((await f.metadata()).source.changedAt > Date.UTC(2000, 0, 1), "restoring over approved live text is a source change");
+  editLua(f, room, "return 3");
+  assert.equal((await autoApprove(f)).status, 409, "owner edits cannot authorize a collaborator's restore");
+});
+
+test("failed Lua approval and save transactions preserve provenance and recover source bytes", options, async t => {
+  const f = await fixture(t); await enableAutoApproval(f);
+  const room = luaRoom(f); editLua(f, room, "return 2", "editor");
+  const before = await f.metadata();
+  f.hooks.beforeClientQuery = sql => { if (sql.startsWith("INSERT INTO pipeline_approvals")) throw new Error("Controlled approval rejection"); };
+  assert.equal((await f.approve(before.candidate)).status, 500);
+  delete f.hooks.beforeClientQuery;
+  assert.equal((await f.metadata()).approval.id, before.approval.id);
+  assert.equal((await f.metadata()).source.changedAt, before.source.changedAt);
+  editLua(f, room, "return 3");
+  assert.equal((await autoApprove(f)).status, 409);
+  const loaded = await (await f.request(f.base)).json();
+  f.hooks.beforeClientQuery = sql => { if (sql.startsWith("UPDATE projects SET name")) throw new Error("Controlled save rejection"); };
+  assert.equal((await f.request(f.base, { method: "PUT", body: { baseRevision: loaded.revision, data: loaded } })).status, 500);
+  delete f.hooks.beforeClientQuery;
+  assert.equal(await fs.readFile(path.join(f.dir, room.path), "utf8"), "return 1\r\n");
+  assert.equal((await autoApprove(f)).status, 409);
+});
+
+test("automatic approval rejects stale candidates, unknown disk edits, changed policies and lost owner permission", options, async t => {
+  const f = await fixture(t); await enableAutoApproval(f);
+  await saveSource(f, nodes => { nodes.find(n => n.path === "unused.lua").content = "return 2"; });
+  const before = await f.metadata();
+  await saveSource(f, nodes => { nodes.find(n => n.path === "unused.lua").content = "return 3"; });
+  assert.equal((await autoApprove(f, before.candidate)).status, 409);
+  await fs.writeFile(path.join(f.dir, "unused.lua"), "return 4");
+  const external = await f.metadata();
+  assert.equal(external.source.changedAt, null, "filesystem changes have no reliable Iris edit time");
+  assert.equal(external.autoApproval.eligible, false);
+  assert.equal((await autoApprove(f)).status, 409);
+  await saveSource(f, nodes => { nodes.find(n => n.path === "iris.lua").content += "\n-- owner"; });
+  assert.equal((await autoApprove(f)).status, 409, "saving must retain unknown provenance");
+  assert.equal((await f.approve((await f.metadata()).candidate)).status, 201);
+  await saveSource(f, nodes => { nodes.find(n => n.path === "unused.lua").content = "return 5"; });
+  await f.pool.query("UPDATE pipeline_approvals SET policy_hash=$1 WHERE id=$2", ["0".repeat(64), (await f.metadata()).approval.id]);
+  assert.equal((await autoApprove(f)).status, 409);
+  assert.equal((await f.approve((await f.metadata()).candidate)).status, 201);
+  await saveSource(f, nodes => { nodes.find(n => n.path === "unused.lua").content = "return 6"; });
+  const candidate = (await f.metadata()).candidate;
+  await f.pool.query("UPDATE project_members SET role='editor' WHERE project_id=$1 AND user_id=$2", [f.id, f.users.owner.id]);
+  assert.equal((await autoApprove(f, candidate)).status, 403);
+  assert.equal((await f.metadata()).autoApproval.eligible, false);
+});
+
+test("approval rechecks a queued live source change under the transaction gate", options, async t => {
+  const f = await fixture(t); await enableAutoApproval(f);
+  const room = luaRoom(f); editLua(f, room, "return 2");
+  const before = await f.metadata();
+  let queued;
+  f.hooks.afterQuery = sql => {
+    if (!queued && sql.startsWith("SELECT id,path FROM project_files")) {
+      queued = f.app.projectMutations.gate(f.id, () => editLua(f, room, "return 3", "editor"));
+    }
+  };
+  const response = await autoApprove(f, before.candidate);
+  await queued; delete f.hooks.afterQuery;
+  assert.equal(response.status, 409);
+  assert.equal((await response.json()).errorCode, "PIPELINE_BUNDLE_CHANGED");
+  assert.equal((await f.metadata()).approval.id, before.approval.id);
+  assert.equal((await autoApprove(f)).status, 409);
+});
+
+test("saving a discovered external Lua addition preserves unknown authorship and edit time", options, async t => {
+  const f = await fixture(t); await enableAutoApproval(f);
+  await fs.writeFile(path.join(f.dir, "external.lua"), "return 'unknown author'");
+  await saveSource(f, () => {});
+  const metadata = await f.metadata();
+  assert.equal(metadata.source.changedAt, null);
+  assert.equal(metadata.autoApproval.eligible, false);
+  assert.equal((await autoApprove(f)).status, 409);
+  await saveSource(f, nodes => { nodes.find(n => n.path === "iris.lua").content += "\n-- owner's later edit"; });
+  assert.equal((await autoApprove(f)).status, 409);
+});
+
+for (const operation of ["delete", "rename"]) test(`external Lua ${operation} permits save reconciliation with unknown provenance`, options, async t => {
+  const f = await fixture(t); await enableAutoApproval(f);
+  if (operation === "delete") await fs.unlink(path.join(f.dir, "unused.lua"));
+  else await fs.rename(path.join(f.dir, "unused.lua"), path.join(f.dir, "external.lua"));
+  const observed = await f.metadata();
+  assert.equal(observed.source.changedAt, null);
+  assert.equal(observed.autoApproval.eligible, false);
+  await saveSource(f, () => {});
+  assert.equal((await f.metadata()).source.changedAt, null);
+  assert.equal((await autoApprove(f)).status, 409);
+  const files = (await f.pool.query("SELECT path FROM project_files WHERE project_id=$1 AND deleted_at IS NULL", [f.id])).rows.map(row => row.path);
+  assert.equal(files.includes("unused.lua"), false);
+  assert.equal(files.includes("external.lua"), operation === "rename");
+});
+
+for (const flush of [false, true, "partial"]) test(`restart after ${flush === "partial" ? "partially flushed" : flush ? "flushed" : "unflushed"} live approval ${flush === true ? "preserves" : "refuses"} own-edit automatic approval`, options, async t => {
+  const f = await fixture(t); await enableAutoApproval(f);
+  await saveSource(f, nodes => { nodes.find(n => n.path === "unused.lua").content = "return 'collaborator'"; }, "editor");
+  const file = f.project.data.project.nodes.find(node => node.path === "unused.lua");
+  const room = f.app.collabRooms.open({ projectId: f.id, fileId: file.id, path: file.path, content: "return 'collaborator'" });
+  room.storageDir = f.dir;
+  editLua(f, room, "return 'owner-approved replacement'");
+  let second;
+  if (flush === "partial") {
+    second = luaRoom(f, "iris.lua"); editLua(f, second, `${second.text()}\n-- another approved live edit`);
+  }
+  assert.equal((await f.approve((await f.metadata()).candidate)).status, 201);
+  const approvedTime = (await f.metadata()).source.changedAt;
+  if (flush) await f.app.collabPersistNow(room, false);
+  // Discard only fixture memory to model process loss, then use a fresh server.
+  f.app.collabRooms.close(room.fileId); f.app.stopRuntimeTimers();
+  if (second) f.app.collabRooms.close(second.fileId);
+  await new Promise(resolve => f.server.close(resolve));
+  const schema = (await f.pool.query("SELECT current_schema() AS name")).rows[0].name;
+  const work = await disposableWorkspace("iris-source-restart-");
+  try {
+    const database = new URL(connectionString), root = path.resolve(__dirname, ".."), port = await freePort();
+    const app = launch(process.execPath, [path.join(root, "src/server.js")], { cwd: work.cwd, quiet: true, timeout: 20000,
+      env: { ...work.env, DATA_DIR: f.dataDir, PUBLIC_DIR: path.join(root, "public"), PORT: String(port), BIND_ADDRESS: "127.0.0.1",
+        IRIS_SECRET: "session-tests-only-secret-with-sufficient-entropy", DB_HOST: database.hostname, DB_PORT: database.port,
+        DB_USER: decodeURIComponent(database.username), DB_PASSWORD: decodeURIComponent(database.password), DB_NAME: database.pathname.slice(1),
+        PGOPTIONS: `-c search_path=${schema}`, RETENTION_ENABLED: "false", LUA_BIN_PATH: process.env.LUA_BIN_PATH || "" } });
+    work.defer(() => app.stop());
+    await until(() => /Iris listening|Unable to start Iris backend/.test(app.output()), "source restart", 10000);
+    assert.match(app.output(), /Iris listening/);
+    const request = (suffix = "", body = null) => fetch(`http://127.0.0.1:${port}${f.base}${suffix}`, {
+      method: body ? (suffix === "" ? "PUT" : "POST") : "GET", headers: { cookie: f.cookies.owner, "content-type": "application/json" },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+    const initial = (await (await request("/pipeline")).json()).pipeline;
+    assert.equal(initial.source.changedAt, flush === true ? approvedTime : null);
+    const data = await (await request()).json();
+    data.project.nodes.find(n => n.path === "unused.lua").content += "\n-- owner edit after restart";
+    assert.equal((await request("", { data, baseRevision: data.revision })).status, 200);
+    const current = (await (await request("/pipeline")).json()).pipeline;
+    assert.equal(current.autoApproval.eligible, flush === true);
+    assert.equal((await request("/pipeline/approval", { identity: current.candidate, automatic: true })).status, flush === true ? 201 : 409);
+  } finally { await work.close(); }
+});
+
+test("Lua source time survives unchanged saves and tracks helper content and membership changes", options, async t => {
+  const f = await fixture(t), initial = await f.metadata();
+  assert.equal(initial.source?.entrypoint, "iris.lua");
+  assert.ok(initial.source.changedAt > 0);
+  await saveSource(f, () => {});
+  assert.equal((await f.metadata()).source.changedAt, initial.source.changedAt);
+  await saveSource(f, nodes => { nodes.find(n => n.path === "main.ly").content += "% ordinary edit"; });
+  assert.equal((await f.metadata()).source.changedAt, initial.source.changedAt);
+  for (const mutate of [
+    nodes => { nodes.find(n => n.path === "unused.lua").content = "return 2\r\n"; },
+    nodes => { const n = nodes.find(n => n.path === "unused.lua"); n.path = n.name = "helper.lua"; },
+    nodes => { const n = nodes.find(n => n.path === "helper.lua"); n.path = n.name = "helper.txt"; },
+    nodes => { nodes.push({ id: "added", type: "file", path: "new.lua", name: "new.lua", content: "return 3" }); },
+    nodes => { nodes.splice(nodes.findIndex(n => n.path === "new.lua"), 1); },
+  ]) {
+    await f.pool.query("UPDATE projects SET lua_sources_changed_at='2000-01-01' WHERE id=$1", [f.id]);
+    await saveSource(f, mutate);
+    assert.ok((await f.metadata()).source.changedAt > Date.UTC(2000, 0, 1));
+  }
+  const before = await f.metadata();
+  assert.equal((await f.request(`${f.base}/pipeline`, {}, "outsider")).status, 404);
+  assert.deepEqual((await (await f.request(`${f.base}/pipeline`, {}, "viewer")).json()).pipeline.source, before.source);
+});
+
+test("personal auto-approval admits only an opted-in owner's own edits after an explicit approval", options, async t => {
+  const f = await fixture(t);
+  const preference = (enabled, role = "owner") => f.request(`${f.base}/pipeline/auto-approval`, { method: "PUT", body: { enabled } }, role);
+  assert.deepEqual((await f.metadata()).autoApproval, { enabled: false, eligible: false });
+  for (const [role, status] of [["editor", 403], ["viewer", 403], ["outsider", 404]]) assert.equal((await preference(true, role)).status, status);
+  assert.equal((await preference(true)).status, 200);
+  const automaticallyApprove = async () => f.request(`${f.base}/pipeline/approval`, { method: "POST", body: { identity: (await f.metadata()).candidate, automatic: true } });
+  assert.equal((await automaticallyApprove()).status, 409, "first approval is explicit");
+  assert.equal((await f.approve((await f.metadata()).candidate)).status, 201);
+  await saveSource(f, nodes => { nodes.find(n => n.path === "unused.lua").content = "return 2"; });
+  assert.deepEqual((await f.metadata()).autoApproval, { enabled: true, eligible: true });
+  assert.equal((await automaticallyApprove()).status, 201);
+  const approved = await f.metadata(); assert.equal(approved.candidate.bundleHash, approved.approval.bundleHash);
+  await saveSource(f, nodes => { nodes.find(n => n.path === "unused.lua").content = "return 3"; }, "editor");
+  await saveSource(f, nodes => { nodes.find(n => n.path === "iris.lua").content += "\n-- owner edit"; });
+  assert.equal((await f.metadata()).autoApproval.eligible, false);
+  assert.equal((await automaticallyApprove()).status, 409);
+  assert.equal((await f.approve((await f.metadata()).candidate)).status, 201);
+  assert.equal((await preference(false)).status, 200);
+  await saveSource(f, nodes => { nodes.find(n => n.path === "unused.lua").content = "return 4"; });
+  assert.equal((await automaticallyApprove()).status, 409);
+});
+
 test("ordinary compilation refuses an enabled pipeline before saving or creating a build", options, async t => {
   const f = await fixture(t);
   const before = (await f.pool.query("SELECT revision FROM projects WHERE id=$1", [f.id])).rows[0].revision;
