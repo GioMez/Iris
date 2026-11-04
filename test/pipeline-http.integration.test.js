@@ -536,6 +536,104 @@ for (const damage of ["none", "artifact", "receipt", "restart"]) test(`publicati
   else assert.equal((await fs.stat(generated)).size, before.length);
 });
 
+for (const family of ["latex", "lilypond"]) for (const mode of ["single-pass", "two-pass", "broken-include"]) test(`HTTP ${family} ${mode} layout decorator ${mode === "broken-include" ? "retains generated-source diagnostics" : "publishes interactive layers with native navigation"}`, {
+  ...nativeLua, timeout: 60000, skip: nativeLua.skip || process.env.IRIS_TEST_COMPILERS !== "1",
+}, async t => {
+  const { PDFDocument, PDFName, PDFString, rgb } = require("pdf-lib");
+  const twoPass = mode !== "single-pass";
+  const source = await fs.readFile(path.join(__dirname, `fixtures/pipelines/${twoPass ? "adjust-layout" : "decorate"}.lua`), "utf8");
+  const f = await fixture(t, source), data = f.project.data, main = family === "latex" ? "main.tex" : "main.ly";
+  const layer = await PDFDocument.create(), page = layer.addPage([10, 10]);
+  page.drawRectangle({ x: 0, y: 0, width: 10, height: 10, color: rgb(1, 0, 0) });
+  page.node.addAnnot(layer.context.register(layer.context.obj({ Type: "Annot", Subtype: "Link", Rect: [0, 0, 10, 10], Border: [0, 0, 0],
+    A: { S: "URI", URI: PDFString.of("https://example.test/decorator") } })));
+  const bytes = Buffer.from(await layer.save());
+  data.project.nodes = data.project.nodes.filter(node => node.path !== main);
+  data.project.nodes.push({ id: "native-main", type: "file", name: main, path: main, content: family === "latex"
+    ? "\\documentclass{article}\n\\begin{document}\n\\ifdefined\\irisAdjustment\\irisAdjustment\\fi Decorated source.\n\\newpage\nExcluded source.\n\\end{document}\n"
+    : '\\version "2.26.0"\n\\paper { page-count = 2 }\n\\score { \\new Staff { \\override NoteHead.extra-offset = #(cons (if (defined? \'iris-layout-offset) iris-layout-offset 0) 0)\nc\'1 d\'1 \\pageBreak e\'1 f\'1\n} }\n' });
+  if (twoPass) {
+    data.project.nodes.push({ id: "module-decorator", type: "file", name: "decorate.lua", path: "decorate.lua",
+      content: await fs.readFile(path.join(__dirname, "fixtures/pipelines/decorate.lua"), "utf8") });
+    const final = family === "latex" ? "final.tex" : "final.ly";
+    data.project.nodes.push({ id: "final-main", type: "file", name: final, path: final, content: family === "latex"
+      ? "\\input{generated/adjust.tex}\n\\input{main.tex}\n" : '\\include "generated/adjust.ily"\n\\include "main.ly"\n' });
+  }
+  data.project.nodes.push({ id: "layer", type: "file", name: "layer.pdf", path: "layer.pdf", binary: true, data: `data:application/pdf;base64,${bytes.toString("base64")}` });
+  data.projectType = family; data.sourceMapping = true;
+  assert.equal((await f.request(f.base, { method: "PUT", body: { baseRevision: data.revision, data } })).status, 200);
+  const descriptor = await inspect(f), parameters = { family, clearance: 4, offsetX: 3, offsetY: 2, excludedPages: [2] };
+  if (twoPass) parameters.broken = mode === "broken-include";
+  const response = await f.request(`${f.base}/runs`, { method: "POST", body: { target: "main", parameters, descriptorHash: descriptor.descriptorHash } });
+  assert.equal(response.status, 202, await response.clone().text());
+  const run = await terminalRun(f, (await response.json()).run.id);
+  if (mode === "broken-include") {
+    assert.equal(run.state, "failed", JSON.stringify(run));
+    const diagnostic = run.steps.find(step => step.id === "compile").diagnostics.find(item => item.generatedSource?.producerStep === "adjust");
+    assert.ok(diagnostic, JSON.stringify(run.steps));
+    assert.equal(diagnostic.sourceFileId, undefined); assert.equal(diagnostic.line, 1);
+    assert.equal(run.artifactCount, 0);
+    return;
+  }
+  assert.equal(run.state, "succeeded", JSON.stringify(run));
+  assert.deepEqual(new Set(run.steps.filter(step => step.adapter.id === `iris.${family}`).map(step => step.id)), new Set(twoPass ? ["measure", "compile"] : ["compile"]));
+  assert.equal(run.steps.length, twoPass ? 6 : 4);
+  if (twoPass) {
+    const step = id => run.steps.find(item => item.id === id);
+    for (const [before, after] of [["measure", "adjust"], ["adjust", "compile"], ["compile", "decorate"], ["decorate", "compose"]]) {
+      assert.ok(Date.parse(step(before).completedAt) <= Date.parse(step(after).startedAt));
+    }
+  }
+  const build = await (await f.request(`${f.base}/builds/${run.id}`)).json();
+  const artifact = step => build.artifacts.find(item => item.path.startsWith(`output/${run.id}/${step}/`));
+  const composed = artifact("compose"), base = build.artifacts.find(item => item.path.startsWith(`output/${run.id}/compile/`) && item.mimeType === "application/pdf");
+  const download = await f.request(composed.url), pdfBytes = Buffer.from(await download.arrayBuffer());
+  assert.match(download.headers.get("content-disposition"), /^inline;/);
+  assert.equal(download.headers.get("x-content-type-options"), "nosniff");
+  const output = await PDFDocument.load(pdfBytes), annotations = output.getPage(0).node.Annots();
+  const baseBytes = Buffer.from(await (await f.request(base.url)).arrayBuffer()), original = await PDFDocument.load(baseBytes);
+  assert.equal(output.getPageCount(), 2); assert.equal(annotations.size(), (original.getPage(0).node.Annots()?.size() || 0) + 1);
+  assert.equal(annotations.lookup(annotations.size() - 1).lookup(PDFName.of("A")).lookup(PDFName.of("URI")).decodeText(), "https://example.test/decorator");
+  const placementResponse = await f.request(artifact("decorate").url), placements = await placementResponse.json();
+  assert.match(placementResponse.headers.get("content-disposition"), /^attachment;/);
+  const layout = await (await f.request(build.artifacts.find(item => item.name === "layout.json").url)).json();
+  if (twoPass) {
+    const initial = await (await f.request(build.artifacts.find(item => item.name === "initial-layout.json").url)).json();
+    assert.notEqual(initial.artifact.id, layout.artifact.id); assert.notEqual(initial.artifact.contentHash, layout.artifact.contentHash);
+    assert.notDeepEqual(initial.pages[0].occupied, layout.pages[0].occupied, "the second pass must change measured ink");
+    const b = initial.pages[0].occupied[0].bounds, offset = Math.min(12, Math.max(1, Math.ceil((b[2] - b[0]) / 10)));
+    const generated = await (await f.request(artifact("adjust").url)).text();
+    assert.equal(generated, family === "latex" ? `\\def\\irisAdjustment{\\hspace*{${offset}bp}}\n` : `#(define iris-layout-offset ${offset})\n`);
+  }
+  assert.equal(placements.base.id, base.id); assert.equal(placements.base.contentHash, base.contentHash);
+  assert.equal(layout.artifact.id, base.id); assert.equal(placements.layers.length, 1);
+  const placed = placements.layers[0]; assert.equal(placed.page, 1);
+  const occupied = layout.pages[0].occupied;
+  assert.ok(occupied.some(({ bounds: b }) => Math.abs(placed.x - (b[2] + 7)) < 1e-7 && Math.abs(placed.y - (b[1] + 2)) < 1e-7), "author offsets follow an actual ink boundary");
+  for (const { bounds: b } of occupied) assert.ok(placed.x >= b[2] + 4 || placed.x + 10 <= b[0] - 4 || placed.y >= b[3] + 4 || placed.y + 10 <= b[1] - 4);
+  const rasterRoot = await fs.mkdtemp(path.join(require("node:os").tmpdir(), "iris-decorated-http-"));
+  t.after(() => fs.rm(rasterRoot, { recursive: true, force: true }));
+  const { redPixels } = require("./helpers/pdf-raster.cjs");
+  const raster = async (label, bytes) => {
+    const file = path.join(rasterRoot, `${label}.pdf`); await fs.writeFile(file, bytes);
+    return redPixels(file, rasterRoot, label, "rgb");
+  };
+  const [before, after] = await Promise.all([raster("base", baseBytes), raster("decorated", pdfBytes)]);
+  const index = 3 * (Math.floor(placed.y + 5) * after[0].width + Math.floor(placed.x + 5));
+  assert.deepEqual([...after[0].pixels.subarray(index, index + 3)], [255, 0, 0]);
+  assert.ok(after[1].pixels.equals(before[1].pixels), "excluded page keeps its rendered content");
+  const sourceId = (await f.pool.query("SELECT id FROM project_files WHERE project_id=$1 AND path=$2 AND deleted_at IS NULL", [f.id, main])).rows[0].id;
+  const navigation = await f.request(`${f.base}/builds/${run.id}/navigation`, { method: "POST", body: { direction: "forward", sourceFileId: sourceId, line: family === "latex" ? 3 : 4, column: 0 } });
+  const forward = await navigation.json(); assert.equal(forward.status, "ready", JSON.stringify(forward));
+  assert.deepEqual(new Set(forward.matches.map(item => item.artifactId)), new Set([base.id, composed.id]));
+  const selected = forward.matches.find(item => item.artifactId === composed.id);
+  const inverse = await (await f.request(`${f.base}/builds/${run.id}/navigation`, { method: "POST", body: { direction: "inverse", artifactId: composed.id,
+    page: selected.page, x: selected.x, y: selected.y } })).json();
+  assert.equal(inverse.status, "ready", JSON.stringify(inverse));
+  assert.ok(inverse.matches.some(item => item.sourceFileId === sourceId));
+  assert.ok(build.artifacts.every(item => !/relation|source-map|synctex/.test(item.name)));
+});
+
 for (const [family, cleanupFailure] of [["latex", false], ["lilypond", false], ["latex", "compiler"], ["lilypond", "compiler"], ["latex", "navigation"]]) test(`HTTP ${family} pipeline ${cleanupFailure ? `retains ${cleanupFailure} cleanup evidence` : "compiles generated source and retains artifact-bound navigation"}`, {
   ...nativeLua, timeout: 45000, skip: nativeLua.skip || process.env.IRIS_TEST_COMPILERS !== "1",
 }, async t => {

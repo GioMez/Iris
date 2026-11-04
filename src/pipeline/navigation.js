@@ -6,6 +6,7 @@ const mapping = require("../source-mapping");
 const { checkedPath, openCheckedFile } = require("./workspaces");
 const { logicalPath, fail } = require("./contracts");
 const { MEDIA_TYPE: LAYOUT_TYPE } = require("./layout");
+const { checkedComposition } = require("./pdf-runner");
 
 // Compiler paths are private. Each native sidecar receives an artifact-ID alias
 // so equal native filenames from different steps/ports cannot select another PDF.
@@ -71,7 +72,7 @@ const pdfMembers = products => products.flatMap(product => product.files.filter(
 
 // Collection descriptors remain host-only. The versioned manifest shares source
 // text and records each published PDF's own backend and mapping availability.
-function assembleRunMapping({ projectId, runId, collections, products }) {
+function assembleRunMapping({ projectId, runId, collections, products, compositions = [] }) {
   const base = { version: 2, projectId, buildId: runId };
   try {
     if (!isUuid(projectId) || !isUuid(runId)) throw mapping.failure("malformed-map");
@@ -96,32 +97,56 @@ function assembleRunMapping({ projectId, runId, collections, products }) {
         origins.set(file.id, { navigation, file });
       }
     }
+    const derived = new Map();
+    for (const item of compositions) {
+      const relation = checkedComposition(item.context, item.relation, item.products);
+      if (derived.has(relation.output.id) || origins.has(relation.output.id)) throw mapping.failure("malformed-map");
+      derived.set(relation.output.id, { relation, base: item.context.inputs.base });
+    }
     const artifacts = [], entries = [], ids = new Set();
     let pdfBytes = 0, retainedBytes = 0, decodedBytes = 0;
     for (const file of pdfMembers(products)) {
       if (ids.has(file.id)) throw mapping.failure("malformed-map");
       ids.add(file.id); pdfBytes += file.size;
       if (ids.size > mapping.MAX_MATCHES || pdfBytes > 128 * 1024 * 1024) throw mapping.failure("map-limit");
-      const origin = origins.get(file.id), m = origin?.navigation.manifest;
-      if (origin && (origin.file.size !== file.size || origin.file.contentHash !== file.contentHash)) throw mapping.failure("stale-artifact");
-      const original = m?.artifacts?.find(artifact => artifact.id === file.id);
+      let source = file;
+      const visited = new Set();
+      while (derived.has(source.id)) {
+        if (visited.has(source.id)) throw mapping.failure("malformed-map");
+        visited.add(source.id);
+        const { relation, base } = derived.get(source.id);
+        if (relation.output.contentHash !== source.contentHash || relation.output.size !== source.size) throw mapping.failure("stale-artifact");
+        source = base;
+      }
+      const origin = origins.get(source.id), m = origin?.navigation.manifest;
+      if (origin && (origin.file.size !== source.size || origin.file.contentHash !== source.contentHash)) throw mapping.failure("stale-artifact");
+      const original = m?.artifacts?.find(artifact => artifact.id === source.id);
       let status = m?.status === "disabled" ? "missing" : m?.status || "unsupported";
-      if (status === "ready" && !origin.navigation.mappedArtifacts.includes(file.id)) status = m.backend === "latex" ? "missing" : "unsupported";
-      if (status === "ready" && (!original || original.size !== file.size || original.contentHash !== file.contentHash)) throw mapping.failure("stale-artifact");
+      if (status === "ready" && !origin.navigation.mappedArtifacts.includes(source.id)) status = m.backend === "latex" ? "missing" : "unsupported";
+      if (status === "ready" && (!original || original.size !== source.size || original.contentHash !== source.contentHash)) throw mapping.failure("stale-artifact");
       const artifact = { ...(status === "ready" ? original : {}), id: file.id, fileName: `${file.id}.pdf`, size: file.size, contentHash: file.contentHash,
         backend: m?.backend || null, status, ...(status === "ready" ? { snapshotRoot: m.snapshotRoot } : {}),
         ...(status === "unavailable" ? { reason: m.reason } : {}) };
       artifacts.push(artifact);
       if (status !== "ready") continue;
-      for (const entry of m.entries) if (entry.artifactId === file.id) entries.push(entry);
+      for (const entry of m.entries) if (entry.artifactId === source.id) entries.push(source.id === file.id ? entry : { ...entry, artifactId: file.id });
       if (artifact.syncFile) {
         const native = origin.navigation.nativeFiles.find(item => item.name === artifact.syncFile);
         if (!native || native.contentHash !== artifact.syncHash || native.size !== artifact.syncSize) throw mapping.failure("malformed-map");
-        nativeFiles.set(native.name, native); retainedBytes += native.size; decodedBytes += artifact.decodedBytes;
+        const name = `${file.id}${native.name.endsWith(".gz") ? ".synctex.gz" : ".synctex"}`;
+        artifact.syncFile = name;
+        nativeFiles.set(name, { ...native, name }); retainedBytes += native.size; decodedBytes += artifact.decodedBytes;
       }
     }
+    // Several retained PDFs can share one compiler map after composition. Count
+    // both the collection work and the expanded retained mapping, without
+    // charging a private intermediate twice when only its final PDF is retained.
+    const recordCount = Math.max(sources.size + nativeRecords,
+      sources.size + entries.length + artifacts.reduce((sum, artifact) => sum + (artifact.entryCount || 0), 0));
+    decodedReadBytes = Math.max(decodedReadBytes, decodedBytes);
+    if (recordCount > mapping.MAX_ENTRIES || decodedReadBytes > mapping.MAX_MAP_BYTES) throw mapping.failure("map-limit");
     const manifest = { ...base, status: artifacts.length ? "ready" : "unsupported", sources: [...sources.values()], artifacts, entries,
-      recordCount: sources.size + nativeRecords, nativeReadBytes, decodedReadBytes };
+      recordCount, nativeReadBytes, decodedReadBytes };
     if (Buffer.byteLength(JSON.stringify(manifest)) + Math.max(retainedBytes, decodedBytes) > mapping.MAX_MAP_BYTES) throw mapping.failure("map-limit");
     return { manifest, nativeFiles: [...nativeFiles.values()] };
   } catch (error) {
@@ -130,7 +155,7 @@ function assembleRunMapping({ projectId, runId, collections, products }) {
 }
 
 function createRunMappingCollector({ projectId, runId }) {
-  let collections = [], sourceCache = new WeakMap(), exhausted;
+  let collections = [], compositions = [], sourceCache = new WeakMap(), exhausted;
   return {
     async collect(options) {
       options.context.signal?.throwIfAborted();
@@ -144,7 +169,12 @@ function createRunMappingCollector({ projectId, runId }) {
       }
       return navigation;
     },
-    assemble(products) { return exhausted || assembleRunMapping({ projectId, runId, collections, products }); },
+    collectComposition(options) {
+      options.context.signal?.throwIfAborted();
+      checkedComposition(options.context, options.relation, options.products);
+      if (!exhausted) compositions.push(options);
+    },
+    assemble(products) { return exhausted || assembleRunMapping({ projectId, runId, collections, products, compositions }); },
   };
 }
 

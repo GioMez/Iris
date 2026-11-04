@@ -23,6 +23,7 @@ const { createRegistry } = require("./pipeline/registry");
 const { createNativeRuntime } = require("./pipeline/runtime");
 const { createLuaTools, createLuaAdapter, createLuaCoordinator } = require("./pipeline/lua");
 const { createCompilerTools, createCompilerAdapters } = require("./pipeline/compilers");
+const { createPdfTool, createPdfAdapter } = require("./pipeline/pdf-runner");
 const { createRunWorkspace, disposeRunWorkspace, openCheckedFile, copyFile: copyPipelineFile } = require("./pipeline/workspaces");
 const { executePlan } = require("./pipeline/executor");
 const { writePublicationReceipt, inspectPublication } = require("./pipeline/publication");
@@ -4561,9 +4562,10 @@ async function getPipelineExecution() {
     const runtime = await createNativeRuntime({ root: path.join(DATA_DIR, ".pipeline-runtime"), coordinatorId: pipelineCoordinatorId,
       policy: { concurrency: COMPILE_CONCURRENCY, queueLimit: COMPILE_QUEUE },
       tools: [...createLuaTools({ luaBinPath: process.env.LUA_BIN_PATH || "" }),
+        createPdfTool(COMPILE_TIMEOUT_MS),
         ...createNavigationTools({ texBinPath: TEX_BIN_PATH }),
         ...createCompilerTools({ texBinPath: TEX_BIN_PATH, lilypondBinPath: LILYPOND_BIN_PATH, timeoutMs: COMPILE_TIMEOUT_MS })] });
-    const registry = createRegistry([createLuaAdapter({ execute() { throw requestError("PIPELINE_RUN_UNAVAILABLE", 503); } }),
+    const registry = createRegistry([createLuaAdapter({ execute() { throw requestError("PIPELINE_RUN_UNAVAILABLE", 503); } }), createPdfAdapter({ runtime }),
       ...createCompilerAdapters({ runtime, normalizeCompileProfile, runCompilePipeline, parseCompileArguments, kpathseaSearchPath })]);
     return { runtime, registry };
   })();
@@ -4718,7 +4720,7 @@ async function executeProjectPipeline(operation, execution, workspace, approval,
       operation.published = true;
     } };
   let state = "queued", coordinator, plan;
-  const compiled = new Map(), mapping = createRunMappingCollector({ projectId: accepted.projectId, runId: id });
+  const compiled = new Map(), composed = new Map(), mapping = createRunMappingCollector({ projectId: accepted.projectId, runId: id });
   const emit = async event => {
     const row = event.state
       ? await pipelineRuns.transitionStep(store, id, event.stepId, stepStates.get(event.stepId) || "pending", event.state, { diagnostics: event.diagnostics })
@@ -4728,6 +4730,8 @@ async function executeProjectPipeline(operation, execution, workspace, approval,
   };
   const stepStates = new Map();
   const registry = createRegistry([createLuaAdapter({ execute: context => coordinator.transformLua({ approval, plan, context, emit }) }),
+    createPdfAdapter({ runtime: execution.runtime, runId: id, deadlineAt: operation.deadlineAt,
+      onComposed: (context, relation) => composed.set(context.step.id, relation) }),
     ...createCompilerAdapters({ runtime: execution.runtime, runId: id, deadlineAt: operation.deadlineAt,
       normalizeCompileProfile, runCompilePipeline, parseCompileArguments, kpathseaSearchPath,
       onCompiled: (context, result) => compiled.set(context.step.id, result),
@@ -4746,6 +4750,7 @@ async function executeProjectPipeline(operation, execution, workspace, approval,
       gate: new ConcurrencyGate({ limit: 1 }), emit,
       onArtifacts: async (context, products) => {
         if (compiled.has(context.step.id)) await mapping.collect({ context, products, compiled: compiled.get(context.step.id) });
+        if (composed.has(context.step.id)) mapping.collectComposition({ context, products, relation: composed.get(context.step.id) });
       } });
     if (result.state !== "succeeded") {
       await pipelineRuns.transitionRun(store, id, state, result.state, { reason: result.state === "cancelled" ? "execution-cancelled" : "execution-failed" });

@@ -31,12 +31,12 @@ async function redPixels(pdf, directory, stem, color = "red") {
     assert.equal(token(), "255"); offset++;
     assert.equal(bytes.length - offset, 3 * width * height);
     const red = [];
-    for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+    for (let y = 0; color !== "rgb" && y < height; y++) for (let x = 0; x < width; x++) {
       const i = offset + 3 * (y * width + x);
       if (color === "ink" ? Math.min(bytes[i], bytes[i + 1], bytes[i + 2]) < 240
         : color === "black" ? bytes[i] < 100 && bytes[i + 1] < 100 && bytes[i + 2] < 100 : bytes[i] > 150 && bytes[i + 1] < 100 && bytes[i + 2] < 100) red.push([x, y]);
     }
-    pages.push({ page, width, height, red });
+    pages.push({ page, width, height, red, ...(color === "rgb" ? { pixels: bytes.subarray(offset) } : {}) });
   }
   return pages;
 }
